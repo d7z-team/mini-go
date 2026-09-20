@@ -107,10 +107,11 @@ Rust compiler tooling 测试使用 release 模式，遵循现有请求期限。
 
 ## 文档职责
 
-- [README.md](./README.md)：面向用户的项目介绍、安装、快速开始和导航。
+- [README.md](./README.md)、[README_zh.md](./README_zh.md)：英文/中文的项目介绍、安装、快速开始和导航。
 - [USAGE.md](./USAGE.md)、[RPC.md](./RPC.md)：公开 API、CLI 与 RPC 使用方式。
 - [ARCHITECTURE.md](./ARCHITECTURE.md)：包职责、依赖方向、状态机与生命周期。
 - [DEVELOPMENT.md](./DEVELOPMENT.md)：开发者维护流程、生成、内部协议、测试和性能诊断。
 - 组件 README 负责入门和导航，组件使用指南补充原生 API 与完整示例；通用构建命令集中在开发指南。
-- 手写文档使用中文，只描述当前行为；清理过时内容，不保留“已删除功能不应实现”一类说明。
+- 根 `README.md` 使用英文，`README_zh.md` 保存对应中文；其他手写文档使用中文。只描述当前行为，
+  清理过时内容，不保留“已删除功能不应实现”一类说明。
   `docs/` 由源码注释与 `make doc` 生成，不手改；许可证和移植版权声明保持原文。

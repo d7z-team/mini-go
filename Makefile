@@ -6,6 +6,8 @@ export GOTOOLCHAIN ?= go1.26.6
 
 TEST_PACKAGES ?= ./...
 TEST_FLAGS ?= -timeout=20m
+COVERAGE_PROFILE ?= coverage.txt
+COVERAGE_HTML ?= coverage.html
 RACE_PACKAGES ?= ./ffi ./runtime ./rpc/... ./compiler/cache ./compiler/workspace ./compiler/service ./compiler/language ./tooling/lsp ./tooling/dap
 RACE_FLAGS ?= -timeout=10m -p=1
 FUZZTIME ?= 10s
@@ -57,7 +59,7 @@ _compiler-identity:
 	@go generate -run compiler-identity .
 
 # Go 构建、测试与质量检查
-.PHONY: build test race bootstrap-test chaos-syntax fmt lint
+.PHONY: build test coverage race bootstrap-test chaos-syntax fmt lint
 
 build: _compiler-identity ## 构建 Go 包及 bin/ 下的命令
 	@go build ./...
@@ -65,6 +67,11 @@ build: _compiler-identity ## 构建 Go 包及 bin/ 下的命令
 
 test: _compiler-identity $(runtime_images) ## Go 测试；支持 TEST_PACKAGES、TEST_FLAGS
 	@go test $(TEST_FLAGS) $(TEST_PACKAGES)
+
+coverage: _compiler-identity $(runtime_images) ## Go 测试覆盖率；生成 coverage.txt 与 coverage.html
+	@go test $(TEST_FLAGS) -covermode=atomic -coverprofile="$(COVERAGE_PROFILE)" $(TEST_PACKAGES)
+	@go tool cover -html="$(COVERAGE_PROFILE)" -o "$(COVERAGE_HTML)"
+	@go tool cover -func="$(COVERAGE_PROFILE)" | awk 'END { print }'
 
 race: _compiler-identity $(runtime_images) ## Go race 检查；支持 RACE_PACKAGES、RACE_FLAGS
 	@go test -race $(RACE_FLAGS) $(RACE_PACKAGES)
@@ -177,6 +184,6 @@ runtime-wasm-pack: _npm-deps ## 通过 prepack 构建 npm tarball
 cache-clean: ## 清理 Mini-Go 编译缓存
 	@$(minigo) cache clean
 
-clean: cache-clean ## 清理 bin/.cache/build 与 Go test/fuzz 缓存
-	@$(RM) -r bin .cache build
+clean: cache-clean ## 清理构建、覆盖率与 Go test/fuzz 缓存
+	@$(RM) -r bin .cache build coverage.txt coverage.html
 	@go clean -testcache -fuzzcache

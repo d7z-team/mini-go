@@ -56,7 +56,7 @@ service Greeter {
 
 ### 2. 生成代码
 
-安装命令的方式见 [README](./README.md#安装)。在宿主项目目录执行：
+安装命令的方式见[中文 README](./README_zh.md#安装)。在宿主项目目录执行：
 
 ```bash
 mini-go rpc generate \

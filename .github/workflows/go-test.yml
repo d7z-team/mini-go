@@ -23,4 +23,24 @@ jobs:
           restore-keys: mini-go-oracle-${{ runner.os }}-
       - run: make generate
       - run: git diff --exit-code
-      - run: make lint test build
+      - run: make lint
+      - name: Test with coverage
+        run: |
+          make coverage
+          {
+            echo '### Go test coverage'
+            echo
+            echo '```text'
+            go tool cover -func=coverage.txt | tail -n 1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: |
+            coverage.txt
+            coverage.html
+          if-no-files-found: error
+          retention-days: 14
+      - run: make build

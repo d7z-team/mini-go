@@ -14,7 +14,7 @@ code --install-extension /tmp/mini-go.vsix
 
 安装扩展后，在 VS Code 设置中将 `mini-go.lsp.path` 设为已安装的 `mini-go` 可执行文件的绝对路径。
 留空时从 VS Code 进程的 `PATH` 查找 `mini-go`；扩展不捆绑编译器二进制。命令安装方式见
-[项目 README](https://github.com/d7z-team/mini-go/blob/main/README.md#安装)。
+[项目中文 README](https://github.com/d7z-team/mini-go/blob/main/README_zh.md#安装)。
 
 `mini-go.module` 设置应用导入前缀（默认 `app`）；`mini-go.sources` 接受
 `[{"module":"rules","directory":"../rules"}]`，相对工作区根装配其他源码。

@@ -22,11 +22,14 @@ Rust crate 的最低版本由各 `Cargo.toml` 的 `rust-version` 声明，Node.j
 ```bash
 make test TEST_PACKAGES='./compiler/semantic' TEST_FLAGS='-run TestName'
 make test TEST_PACKAGES='./rpc/... ./integrations'
+make coverage
 make race RACE_PACKAGES='./rpc/...'
 make lint test build
 ```
 
 `TEST_FLAGS` 替换默认 Go 测试参数；`-count=1` 只跳过 Go 测试结果缓存，Mini-Go 编译缓存仍可复用。
+`make coverage` 使用相同的包与参数设置，以 atomic 模式生成 `coverage.txt` 和 `coverage.html`；
+CI 在工作流摘要中报告总覆盖率，并将两份报告作为 `go-coverage` 产物保留 14 天。
 同一次 make 调用按依赖顺序执行生成、构建和消费步骤。Go 与 Cargo 内部仍可并行；受限环境可设置
 `GOFLAGS=-p=1`、`GOMAXPROCS`、`CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS`。
 
@@ -73,8 +76,9 @@ make runtime-compiler-image  # 仅 compiler 镜像
 修改生成输入后仍应执行 `make generate`，不能把“文件已存在”当作内容已更新。生成或构建完成后，再启动
 依赖对应产物的测试。
 
-手写文档按读者分工：README 负责入门与导航，USAGE/RPC 负责公共接入，ARCHITECTURE 负责边界与状态，
-本文负责维护流程；组件 README 只介绍本组件并指向完整指南，testdata README 说明数据归属和更新入口。
+手写文档按读者分工：README.md/README_zh.md 负责英文/中文入门与导航，USAGE/RPC 负责公共接入，
+ARCHITECTURE 负责边界与状态，本文负责维护流程；组件 README 只介绍本组件并指向完整指南，
+testdata README 说明数据归属和更新入口。
 调查、设计、性能原始数据和实施记录保存在 `/tmp`，不进入产品文档。
 
 ## 测试组织
