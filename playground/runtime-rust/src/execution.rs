@@ -1849,13 +1849,14 @@ mod tests {
                     break;
                 }
             }
-            assert_eq!(execution.scope_stats().steps, total as u64);
             // Entry completion and scope completion are intentionally
             // distinct: the final child may still need to return after its
-            // channel send released the root. The supervisor must settle that
-            // finite continuation without losing its instruction charge.
+            // channel send released the root. It may do so before this thread
+            // can sample live scope stats, so assert the two stable boundaries
+            // instead of racing the supervisor between them.
+            assert_eq!(total, 64_119);
             execution.wait_scope(&Cancellation::default()).unwrap();
-            assert_eq!(execution.scope_stats().steps, 64_120);
+            assert_eq!(execution.scope_stats().steps, total as u64 + 1);
             instance.shutdown(&Cancellation::default()).unwrap();
             executor.shutdown(&Cancellation::default()).unwrap();
         }
