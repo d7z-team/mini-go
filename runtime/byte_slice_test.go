@@ -3,16 +3,16 @@ package runtime
 import "testing"
 
 func TestPackedByteSliceSharesViewAndSeparatesOwnedCopy(t *testing.T) {
-	value := newByteSliceHeaderValue("Slice<Uint8>", []byte{1, 2, 3}, 0, 3, 3)
+	value := newByteSliceHeaderValue("Slice<Uint8>", []byte{1, 2, 3}, 3, 3)
 	header := value.Data.(*vmSlice)
-	view := newByteSliceHeaderValue("Slice<Uint8>", header.ByteBacking, 1, 2, 2)
+	view := newSliceViewValue("Slice<Uint8>", header, 1, 2, 2)
 	if err := view.Data.(*vmSlice).setValueAt(0, newVMValue("Uint8", uint64(9))); err != nil {
 		t.Fatal(err)
 	}
 	if got := header.ByteBacking[1]; got != 9 {
 		t.Fatalf("shared byte = %d, want 9", got)
 	}
-	owned := newByteSliceHeaderValue("Slice<Uint8>", append([]byte(nil), header.ByteBacking...), 0, 3, 3)
+	owned := newByteSliceHeaderValue("Slice<Uint8>", append([]byte(nil), header.ByteBacking...), 3, 3)
 	if err := owned.Data.(*vmSlice).setValueAt(0, newVMValue("Uint8", uint64(7))); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestAppendExpandedStringWritesDirectlyToByteSlice(t *testing.T) {
 	module := &moduleInstance{}
 	backing := make([]byte, 8)
 	copy(backing, "go")
-	target := newByteSliceHeaderValue("Slice<Uint8>", backing, 0, 2, len(backing))
+	target := newByteSliceHeaderValue("Slice<Uint8>", backing, 2, len(backing))
 
 	result, err := appendValue(module, target, []vmValue{newVMValue("String", "mini")}, true)
 	if err != nil {
@@ -93,5 +93,36 @@ func TestAppendExpandedStringWritesDirectlyToByteSlice(t *testing.T) {
 	}
 	if target.Data.(*vmSlice).Len != 2 {
 		t.Fatal("append changed the source slice header")
+	}
+}
+
+func TestAppendToByteArraySlicePreservesBackingWithinCapacity(t *testing.T) {
+	module := &moduleInstance{}
+	for _, expand := range []bool{false, true} {
+		array := newVMValue("Array<3, Uint8>", []vmValue{newVMValue("Uint8", uint64(1)), newVMValue("Uint8", uint64(0)), newVMValue("Uint8", uint64(0))})
+		view, err := sliceValue(module, array, newVMValue("Int", int64(0)), newVMValue("Int", int64(1)), vmValue{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		values := []vmValue{newVMValue("Uint8", uint64(2)), newVMValue("Uint8", uint64(3))}
+		if expand {
+			values = []vmValue{newVMValue("String", "\x02\x03")}
+		}
+		appended, err := appendValue(module, view, values, expand)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for index, want := range []uint64{1, 2, 3} {
+			got, err := numericAsUint64(array.Data.(*vmArray).valueAt(index))
+			if err != nil || got != want {
+				t.Fatalf("expand=%t, index=%d: got %d, want %d (%v)", expand, index, got, want, err)
+			}
+		}
+		if err := appended.Data.(*vmSlice).setValueAt(0, newVMValue("Uint8", uint64(9))); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := numericAsUint64(array.Data.(*vmArray).valueAt(0)); got != 9 {
+			t.Fatalf("appended view detached from array: %d", got)
+		}
 	}
 }

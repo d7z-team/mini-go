@@ -396,7 +396,7 @@ func hirResultCount(expr ir.Expression) int {
 			return 0
 		}
 		return hirResultCount(*expr.Body)
-	case ir.ExprDelete, ir.ExprClear, ir.ExprChanSubscribeRecv, ir.ExprChanSubscribeSend, ir.ExprChanClose:
+	case ir.ExprDelete, ir.ExprClear, ir.ExprChanClose:
 		return 0
 	default:
 		return 1

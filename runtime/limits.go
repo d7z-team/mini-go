@@ -8,14 +8,44 @@ import (
 	artifact "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
+type guestCensusRequest struct{ bytes int64 }
+
+func (request *guestCensusRequest) Error() string { return "guest memory census required" }
+
+func findGuestCensusRequest(err error) (*guestCensusRequest, bool) {
+	for err != nil {
+		if request, ok := err.(*guestCensusRequest); ok {
+			return request, true
+		}
+		switch wrapped := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapped.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, nested := range wrapped.Unwrap() {
+				if request, ok := findGuestCensusRequest(nested); ok {
+					return request, true
+				}
+			}
+			return nil, false
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+func allocationLimitError(limit int64) ResourceLimitError {
+	return ResourceLimitError{Code: "execution.allocation_limit", Message: fmt.Sprintf("execution allocation byte limit exceeded: max %d", limit)}
+}
+
 func (vm *vm) validateRuntimeValue(value vmValue) error {
 	switch data := value.Data.(type) {
 	case string:
 		if len(data) > vm.limits.MaxStringBytes {
 			return ResourceLimitError{Code: "execution.string_limit", Message: fmt.Sprintf("execution string byte limit exceeded: max %d", vm.limits.MaxStringBytes)}
 		}
-	case []vmValue:
-		if len(data) > vm.limits.MaxCollectionElements {
+	case *vmArray:
+		if data.Len > vm.limits.MaxCollectionElements {
 			return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements)}
 		}
 	case *vmStruct:
@@ -27,7 +57,7 @@ func (vm *vm) validateRuntimeValue(value vmValue) error {
 			return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements)}
 		}
 	case *vmMap:
-		if data != nil && len(data.Entries) > vm.limits.MaxCollectionElements {
+		if data != nil && data.length() > vm.limits.MaxCollectionElements {
 			return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements)}
 		}
 	}
@@ -77,17 +107,30 @@ func (vm *vm) chargeAllocationBytes(logicalBytes int64) error {
 	if limit == 0 {
 		limit = defaultLimits.MaxAllocatedBytes
 	}
-	current := vm.liveGuestBytes.Load() + vm.allocatedSinceSweep.Load()
-	if logicalBytes > limit-current && vm.owner.Load() {
-		current = vm.refreshLiveGuestBytes()
+	refreshed := false
+	for {
+		allocated := vm.allocatedSinceSweep.Load()
+		current := vm.liveGuestBytes.Load() + allocated
+		if logicalBytes > limit-current {
+			if !refreshed && vm.owner.Load() {
+				vm.refreshLiveGuestBytes()
+				refreshed = true
+				continue
+			}
+			vm.leaseMu.Lock()
+			running := vm.activeSlices != 0
+			vm.leaseMu.Unlock()
+			if running {
+				return &guestCensusRequest{bytes: logicalBytes}
+			}
+			return allocationLimitError(limit)
+		}
+		if vm.allocatedSinceSweep.CompareAndSwap(allocated, allocated+logicalBytes) {
+			addAtomicSaturating(&vm.totalAllocatedBytes, logicalBytes)
+			updateAtomicMaximum(&vm.peakGuestBytes, current+logicalBytes)
+			return nil
+		}
 	}
-	if logicalBytes > limit-current {
-		return ResourceLimitError{Code: "execution.allocation_limit", Message: fmt.Sprintf("execution allocation byte limit exceeded: max %d", limit)}
-	}
-	vm.allocatedSinceSweep.Add(logicalBytes)
-	addAtomicSaturating(&vm.totalAllocatedBytes, logicalBytes)
-	updateAtomicMaximum(&vm.peakGuestBytes, current+logicalBytes)
-	return nil
 }
 
 func (vm *vm) reservePendingEvent() error {
@@ -156,7 +199,7 @@ func addAtomicSaturating(value *atomic.Int64, delta int64) {
 
 const (
 	defaultPollQuantum     = 64 * 1024
-	taskInstructionQuantum = 64
+	taskInstructionQuantum = 1024
 )
 
 var defaultLimits = Limits{

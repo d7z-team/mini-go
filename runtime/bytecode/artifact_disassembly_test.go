@@ -46,7 +46,7 @@ func TestDisassembleProducesStableSnapshot(t *testing.T) {
 		t.Fatalf("Disassemble failed: %v", err)
 	}
 	want := strings.Join([]string{
-		"format mini-go-ir version 21 opcode_set minigo.ir.v9",
+		"format mini-go-ir version 22 opcode_set minigo.ir.v10",
 		"module example/module package main",
 		"require source test/dependency hash " + strings.Repeat("a", 64) + " exports [Add]",
 		"type type.User User = struct{ID:Int64 `json:\"id\"`}",

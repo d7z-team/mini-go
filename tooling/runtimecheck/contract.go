@@ -150,6 +150,8 @@ func GenerateRustContract(sources fs.FS) ([]byte, error) {
 		bytecode.MakeStructPayload{},
 		bytecode.MakeSlicePayload{},
 		bytecode.MakeWaitablePayload{},
+		bytecode.SelectPayload{},
+		bytecode.SelectCase{},
 		bytecode.CountPayload{},
 		bytecode.FieldPayload{},
 		bytecode.ExportPayload{},

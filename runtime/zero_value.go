@@ -54,17 +54,14 @@ func zeroVMValue(typ string) vmValue {
 
 func (m *moduleInstance) zeroValue(value any) vmValue {
 	runtimeType := m.resolvedRuntimeType(value)
-	if m != nil && m.zeroValueCache != nil {
-		if zero, ok := m.zeroValueCache[runtimeType.Ref]; ok {
+	if m != nil {
+		if zero, ok := m.zeroValueCache.load(runtimeType.Ref); ok {
 			return zero
 		}
 	}
 	if zero, ok := atomicZeroValue(runtimeType); ok {
 		if m != nil {
-			if m.zeroValueCache == nil {
-				m.zeroValueCache = make(map[types.TypeRef]vmValue)
-			}
-			m.zeroValueCache[runtimeType.Ref] = zero
+			m.zeroValueCache.store(runtimeType.Ref, zero)
 		}
 		return zero
 	}
@@ -149,7 +146,7 @@ func atomicZeroValue(runtimeType vmType) (vmValue, bool) {
 			return newVMValue(runtimeType, false), true
 		case types.PrimitiveString:
 			return newVMValue(runtimeType, ""), true
-		case types.PrimitiveError, types.PrimitiveFunction, types.PrimitiveWaitToken, types.PrimitiveWaitSet:
+		case types.PrimitiveError, types.PrimitiveFunction:
 			return newVMValue(runtimeType, nil), true
 		}
 	}

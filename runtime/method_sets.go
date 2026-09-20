@@ -29,7 +29,7 @@ func (m *moduleInstance) valueMethodSet(valueType string) map[string]string {
 	if m.registry != nil {
 		revision = m.registry.revision
 	}
-	if cached, ok := m.valueMethodSetCache[valueType]; ok && cached.revision == revision {
+	if cached, ok := m.valueMethodSetCache.load(valueType); ok && cached.revision == revision {
 		return cached.methods
 	}
 	out := map[string]string{}
@@ -41,10 +41,8 @@ func (m *moduleInstance) valueMethodSet(valueType string) map[string]string {
 			out[name] = signature
 		}
 	}
-	if m.valueMethodSetCache == nil {
-		m.valueMethodSetCache = make(map[string]methodSetResolution)
-	}
-	m.valueMethodSetCache[valueType] = methodSetResolution{methods: out, revision: revision}
+
+	m.valueMethodSetCache.store(valueType, methodSetResolution{methods: out, revision: revision})
 	return out
 }
 
@@ -56,7 +54,7 @@ func (m *moduleInstance) declaredMethodSet(valueType string) map[string]string {
 	if m.registry != nil {
 		revision = m.registry.revision
 	}
-	if cached, ok := m.declaredMethodSetCache[valueType]; ok && cached.revision == revision {
+	if cached, ok := m.declaredMethodSetCache.load(valueType); ok && cached.revision == revision {
 		return cached.methods
 	}
 	out := map[string]string{}
@@ -91,10 +89,7 @@ func (m *moduleInstance) declaredMethodSet(valueType string) map[string]string {
 }
 
 func (m *moduleInstance) cacheDeclaredMethodSet(valueType string, revision uint64, methods map[string]string) {
-	if m.declaredMethodSetCache == nil {
-		m.declaredMethodSetCache = make(map[string]methodSetResolution)
-	}
-	m.declaredMethodSetCache[valueType] = methodSetResolution{methods: methods, revision: revision}
+	m.declaredMethodSetCache.store(valueType, methodSetResolution{methods: methods, revision: revision})
 }
 
 type promotedRuntimeMethodCandidate struct {
@@ -176,7 +171,7 @@ func (m *moduleInstance) methodFunction(valueType any, method string) (*moduleIn
 		revision = m.registry.revision
 	}
 	cacheKey := typeText + "\x00" + method
-	if cached, ok := m.methodFunctionCache[cacheKey]; ok && cached.revision == revision {
+	if cached, ok := m.methodFunctionCache.load(cacheKey); ok && cached.revision == revision {
 		return cached.module, cached.functionID, cached.signature, cached.receiverType, cached.found
 	}
 	module, receiverTypes := m.methodReceiverTypes(typeText)
@@ -192,19 +187,15 @@ func (m *moduleInstance) methodFunction(valueType any, method string) (*moduleIn
 			continue
 		}
 		signature = module.qualifyLocalType(signature)
-		if m.methodFunctionCache == nil {
-			m.methodFunctionCache = make(map[string]methodFunctionResolution)
-		}
-		m.methodFunctionCache[cacheKey] = methodFunctionResolution{
+
+		m.methodFunctionCache.store(cacheKey, methodFunctionResolution{
 			module: module, functionID: functionID, signature: signature,
 			receiverType: receiver, revision: revision, found: true,
-		}
+		})
 		return module, functionID, signature, receiver, true
 	}
-	if m.methodFunctionCache == nil {
-		m.methodFunctionCache = make(map[string]methodFunctionResolution)
-	}
-	m.methodFunctionCache[cacheKey] = methodFunctionResolution{revision: revision}
+
+	m.methodFunctionCache.store(cacheKey, methodFunctionResolution{revision: revision})
 	return nil, "", "", "", false
 }
 

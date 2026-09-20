@@ -25,7 +25,7 @@ func TestRuntimeTimerLateCallbackCannotReviveStoppedTimer(t *testing.T) {
 		revision := &instanceRevision{}
 		module.revision = revision
 		signal := newTimerSignal(t, module)
-		if err := machine.startTimer(module, signal, time.Hour, 0); err != nil {
+		if err := machine.startTimer(machine.machine.scope(1), module, signal, time.Hour, 0); err != nil {
 			t.Fatal(err)
 		}
 		ready, done := make(chan struct{}), make(chan struct{})
@@ -62,7 +62,7 @@ func (nilAlarmClock) AfterFunc(time.Duration, func()) ClockTimer { return nil }
 func newTimerTestVM(clock Clock) (*vm, *moduleInstance) {
 	machine := &vm{
 		clock: clock, timers: make(map[*waitableResource]*runtimeTimer), wake: make(chan struct{}, 1),
-		limits: normalizeLimits(Limits{}), activeRunID: 1,
+		limits: normalizeLimits(Limits{}),
 	}
 	machine.machine = &executionMachine{vm: machine}
 	machine.machine.newScope(1, 1, false, nil)
@@ -98,10 +98,10 @@ func TestRuntimeTimersWakeSameDeadlineTogether(t *testing.T) {
 	clock := NewManualClock(time.Unix(100, 0))
 	machine, module := newTimerTestVM(clock)
 	first, second := newTimerSignal(t, module), newTimerSignal(t, module)
-	if err := machine.startTimer(module, first, time.Second, 0); err != nil {
+	if err := machine.startTimer(machine.machine.scope(1), module, first, time.Second, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := machine.startTimer(module, second, time.Second, 0); err != nil {
+	if err := machine.startTimer(machine.machine.scope(1), module, second, time.Second, 0); err != nil {
 		t.Fatal(err)
 	}
 	if got := machine.pendingEvents.Load(); got != 2 {
@@ -127,7 +127,7 @@ func TestRuntimeTimerStopClosesSignalAndReleasesEvent(t *testing.T) {
 	clock := NewManualClock(time.Unix(200, 0))
 	machine, module := newTimerTestVM(clock)
 	signal := newTimerSignal(t, module)
-	if err := machine.startTimer(module, signal, time.Hour, 0); err != nil {
+	if err := machine.startTimer(machine.machine.scope(1), module, signal, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	stopped, err := machine.stopTimer(module, signal)
@@ -152,7 +152,7 @@ func TestRuntimeTimerPinsItsCreatingRevision(t *testing.T) {
 	revision := &instanceRevision{}
 	module.revision = revision
 	signal := newTimerSignal(t, module)
-	if err := machine.startTimer(module, signal, time.Hour, 0); err != nil {
+	if err := machine.startTimer(machine.machine.scope(1), module, signal, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	if revision.pins != 1 {
@@ -170,7 +170,7 @@ func TestRuntimeTickerSkipsElapsedPeriods(t *testing.T) {
 	clock := NewManualClock(time.Unix(300, 0))
 	machine, module := newTimerTestVM(clock)
 	signal := newTimerSignal(t, module)
-	if err := machine.startTimer(module, signal, time.Second, time.Second); err != nil {
+	if err := machine.startTimer(machine.machine.scope(1), module, signal, time.Second, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := clock.Advance(3500 * time.Millisecond); err != nil {
@@ -210,7 +210,7 @@ func TestRuntimeTimerCleanupStopsEveryAlarmOnce(t *testing.T) {
 	clock := NewManualClock(time.Unix(400, 0))
 	machine, module := newTimerTestVM(clock)
 	for index := 0; index < 3; index++ {
-		if err := machine.startTimer(module, newTimerSignal(t, module), time.Hour, 0); err != nil {
+		if err := machine.startTimer(machine.machine.scope(1), module, newTimerSignal(t, module), time.Hour, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -223,7 +223,7 @@ func TestRuntimeTimerCleanupStopsEveryAlarmOnce(t *testing.T) {
 
 func TestRuntimeTimerStartFailureReleasesPendingEvent(t *testing.T) {
 	machine, module := newTimerTestVM(nilAlarmClock{now: time.Unix(500, 0)})
-	if err := machine.startTimer(module, newTimerSignal(t, module), time.Second, 0); err == nil {
+	if err := machine.startTimer(machine.machine.scope(1), module, newTimerSignal(t, module), time.Second, 0); err == nil {
 		t.Fatal("timer start accepted a nil clock alarm")
 	}
 	if got := machine.pendingEvents.Load(); got != 0 || len(machine.timers) != 0 {
@@ -235,15 +235,13 @@ func TestCancelScopeTimersKeepsOtherScopes(t *testing.T) {
 	clock := NewManualClock(time.Unix(600, 0))
 	machine, module := newTimerTestVM(clock)
 	first := newTimerSignal(t, module)
-	machine.activeRunID = 11
-	machine.machine.newScope(11, 11, false, nil)
-	if err := machine.startTimer(module, first, time.Hour, 0); err != nil {
+	firstScope := machine.machine.newScope(11, 11, false, nil)
+	if err := machine.startTimer(firstScope, module, first, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	second := newTimerSignal(t, module)
-	machine.activeRunID = 12
-	machine.machine.newScope(12, 12, false, nil)
-	if err := machine.startTimer(module, second, time.Hour, 0); err != nil {
+	secondScope := machine.machine.newScope(12, 12, false, nil)
+	if err := machine.startTimer(secondScope, module, second, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	machine.cancelScopeTimers(11)

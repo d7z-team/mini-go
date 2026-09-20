@@ -68,6 +68,21 @@ type MakeWaitablePayload struct {
 	Type types.TypeRef `json:"type"`
 }
 
+// SelectPayload commits one communication and stores its index and receive
+// results in locals. A default selection stores index -1.
+type SelectPayload struct {
+	Index   string       `json:"index"`
+	Default bool         `json:"default,omitempty"`
+	Cases   []SelectCase `json:"cases,omitempty"`
+}
+
+type SelectCase struct {
+	Channel string `json:"channel"`
+	Send    string `json:"send,omitempty"`
+	Value   string `json:"value,omitempty"`
+	OK      string `json:"ok,omitempty"`
+}
+
 type CountPayload struct {
 	Count  int  `json:"count"`
 	Expand bool `json:"expand,omitempty"`

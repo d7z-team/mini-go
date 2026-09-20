@@ -39,14 +39,15 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 		}
 		if clone {
 			normalized = module.cloneValueForStore(normalized)
+			normalized = module.assignPreparedValue(data.valueAt(int(i)), normalized)
 		}
 		return object, data.setValueAt(int(i), normalized)
-	case []vmValue:
+	case *vmArray:
 		i, err := asInt64(index)
 		if err != nil {
 			return vmValue{}, err
 		}
-		if i < 0 || int(i) >= len(data) {
+		if i < 0 || int(i) >= data.Len {
 			return vmValue{}, newGuestPanic(fmt.Errorf("array index out of range: %d", i))
 		}
 		elemType := module.arrayElemType(object.Type)
@@ -56,9 +57,9 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 		}
 		if clone {
 			normalized = module.cloneValueForStore(normalized)
+			normalized = module.assignPreparedValue(data.valueAt(int(i)), normalized)
 		}
-		data[i] = normalized
-		return object, nil
+		return object, data.setValueAt(int(i), normalized)
 	case *vmMap:
 		if data == nil {
 			return vmValue{}, newGuestPanic(errors.New("assignment to entry in nil map"))
@@ -82,18 +83,25 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 			return vmValue{}, err
 		}
 		key = data.keyForStore(key)
-		if _, exists := data.Entries[key]; !exists && module.vm != nil {
-			if _, _, err := module.vm.checkCollectionSize(int64(len(data.Entries)+1), int64(len(data.Entries)+1)); err != nil {
+		limit := 0
+		if module.vm != nil {
+			limit = module.vm.limits.MaxCollectionElements
+		}
+		if _, exists := data.loadEntry(key); !exists && module.vm != nil {
+			count := int64(data.length()) + 1
+			if _, _, err := module.vm.checkCollectionSize(count, count); err != nil {
 				return vmValue{}, err
 			}
 			if err := module.vm.chargeAllocationBytes(artifact.RuntimeMapEntryBytes); err != nil {
 				return vmValue{}, err
 			}
 		}
-		data.storeEntry(key, vmMapEntry{
+		if err := data.storeWithinLimit(key, vmMapEntry{
 			Key:   module.cloneValueForStore(keyValue),
 			Value: module.cloneValueForStore(valueToStore),
-		})
+		}, limit); err != nil {
+			return vmValue{}, err
+		}
 		return object, nil
 	default:
 		if module.isMapType(object.Type) && object.Data == nil {
@@ -117,7 +125,9 @@ func loadFieldValue(module *moduleInstance, object vmValue, field string) (vmVal
 	value, ok := structValueField(object.Data, field)
 	if !ok {
 		if fieldInfo, ok := module.structValueFieldInfo(object, field); ok {
-			return module.zeroValue(fieldInfo.RuntimeType), nil
+			storage := object.Data.(*vmStruct)
+			index, _, _ := storage.schema.field(field)
+			return storage.initializeField(index, module.zeroValue(fieldInfo.RuntimeType)), nil
 		}
 		return vmValue{}, fmt.Errorf("missing field %q in %s", field, object.Type)
 	}
@@ -160,6 +170,9 @@ func storeFieldValueMode(module *moduleInstance, object vmValue, field string, v
 	}
 	if clone {
 		stored = module.cloneValueForStore(stored)
+		if current, ok := structValueField(object.Data, field); ok {
+			stored = module.assignPreparedValue(current, stored)
+		}
 	}
 	object.Data, _ = updatedStructValue(object.Data, field, stored)
 	return object, nil

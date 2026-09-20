@@ -42,7 +42,7 @@ func makeSliceValue(module *moduleInstance, typ any, length, capacity vmValue) (
 	}
 	elemType := module.arrayElemType(typeText)
 	if module.sameRuntimeType(elemType, "Uint8") {
-		return newByteSliceHeaderValue(runtimeType, make([]byte, capacityInt), 0, lengthValue, capacityInt), nil
+		return newByteSliceHeaderValue(runtimeType, make([]byte, capacityInt), lengthValue, capacityInt), nil
 	}
 	backing := make([]vmValue, capacityInt)
 	for i := range backing {
@@ -74,7 +74,7 @@ func indexValue(module *moduleInstance, object, index vmValue) (vmValue, error) 
 		}
 		value := data.valueAt(int(i))
 		return module.projectElementValue(value, object.Type)
-	case []vmValue:
+	case *vmArray:
 		if module.isSliceType(object.Type) {
 			return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
 		}
@@ -82,17 +82,17 @@ func indexValue(module *moduleInstance, object, index vmValue) (vmValue, error) 
 		if err != nil {
 			return vmValue{}, err
 		}
-		if i < 0 || int(i) >= len(data) {
+		if i < 0 || int(i) >= data.Len {
 			return vmValue{}, newGuestPanic(fmt.Errorf("array index out of range: %d", i))
 		}
-		return module.projectElementValue(data[i], object.Type)
+		return module.projectElementValue(data.valueAt(int(i)), object.Type)
 	case *vmMap:
 		key, err := module.normalizedMapKey(object, index)
 		if err != nil {
 			return vmValue{}, err
 		}
 		if data != nil {
-			if entry, ok := data.Entries[key]; ok {
+			if entry, ok := data.loadEntry(key); ok {
 				return module.projectElementValue(entry.Value, object.Type)
 			}
 		}
@@ -159,7 +159,7 @@ func mapIndexOKValues(module *moduleInstance, object, index vmValue) (vmValue, v
 	switch data := object.Data.(type) {
 	case *vmMap:
 		if data != nil {
-			if entry, exists := data.Entries[key]; exists {
+			if entry, exists := data.loadEntry(key); exists {
 				value, err := module.projectElementValue(entry.Value, object.Type)
 				return value, newVMValue("Bool", true), err
 			}
@@ -282,7 +282,8 @@ func sliceValue(module *moduleInstance, object, start, end, maxValue vmValue) (v
 			resultCapacity = int(bound - lo)
 		}
 		return newSliceViewValue(module.sliceResultType(object.Type), data, start+int(lo), int(hi-lo), resultCapacity), nil
-	case []vmValue:
+	case *vmArray:
+		array := data
 		if module.isSliceType(object.Type) {
 			return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
 		}
@@ -290,14 +291,14 @@ func sliceValue(module *moduleInstance, object, start, end, maxValue vmValue) (v
 		if full {
 			bound = maxIndex
 		}
-		if int(bound) > len(data) {
-			return vmValue{}, newGuestPanic(fmt.Errorf("slice bounds out of range [%d:%d] with length %d", lo, hi, len(data)))
+		if int(bound) > array.Len {
+			return vmValue{}, newGuestPanic(fmt.Errorf("slice bounds out of range [%d:%d] with length %d", lo, hi, array.Len))
 		}
-		capacity := len(data) - int(lo)
+		capacity := array.Len - int(lo)
 		if full {
 			capacity = int(bound - lo)
 		}
-		return newSliceHeaderValue(module.sliceResultType(object.Type), data, int(lo), int(hi-lo), capacity), nil
+		return newSliceViewValue(module.sliceResultType(object.Type), &array.vmSlice, array.Start+int(lo), int(hi-lo), capacity), nil
 	case string:
 		if full {
 			return vmValue{}, errors.New("full slice is not supported for strings")
@@ -332,16 +333,16 @@ func lenValue(module *moduleInstance, object vmValue) (vmValue, error) {
 			return newVMValue("Int", int64(0)), nil
 		}
 		return newVMValue("Int", int64(data.Len)), nil
-	case []vmValue:
+	case *vmArray:
 		if module.isSliceType(object.Type) {
 			return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
 		}
-		return newVMValue("Int", int64(len(data))), nil
+		return newVMValue("Int", int64(data.Len)), nil
 	case *vmMap:
 		if data == nil {
 			return newVMValue("Int", int64(0)), nil
 		}
-		return newVMValue("Int", int64(len(data.Entries))), nil
+		return newVMValue("Int", int64(data.length())), nil
 	case string:
 		return newVMValue("Int", int64(len(data))), nil
 	case *waitableResource:
@@ -372,11 +373,11 @@ func capValue(module *moduleInstance, object vmValue) (vmValue, error) {
 			return newVMValue("Int", int64(0)), nil
 		}
 		return newVMValue("Int", int64(data.Cap)), nil
-	case []vmValue:
+	case *vmArray:
 		if module.isSliceType(object.Type) {
 			return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
 		}
-		return newVMValue("Int", int64(cap(data))), nil
+		return newVMValue("Int", int64(data.Len)), nil
 	case *waitableResource:
 		return waitableCapValue(data), nil
 	default:

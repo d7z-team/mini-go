@@ -1,12 +1,55 @@
 package runtime
 
 import (
+	"sync"
 	"testing"
 	"unsafe"
 
 	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
+
+func TestConcurrentFramePoolKeepsPrivateInvocationState(t *testing.T) {
+	function := loadedFunction{
+		Decl:       ir.Function{ID: "fn.concurrent", Locals: []ir.Local{{ID: "value", Type: types.Builtin(types.PrimitiveInt)}}},
+		LocalTypes: []vmType{predeclaredRuntimeTypes["Int"]}, LocalVariadic: []bool{false}, MaxStack: 2,
+	}
+	module := &moduleInstance{vm: &vm{}}
+	var group sync.WaitGroup
+	var mu sync.Mutex
+	active := make(map[*frame]bool)
+	for worker := range 4 {
+		group.Go(func() {
+			for sequence := range 100 {
+				id := int64(worker*100 + sequence)
+				invocation, _, err := newFrame(module, function, []vmValue{newVMValue("Int", id)}, nil, id)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				mu.Lock()
+				if active[invocation] {
+					t.Error("frame leased to multiple invocations")
+				}
+				active[invocation] = true
+				mu.Unlock()
+				invocation.push(invocation.localCells[0].load())
+				result, err := invocation.pop()
+				if err != nil || result.materializedData() != id {
+					t.Errorf("invocation %d: result=%v err=%v", id, result, err)
+				}
+				mu.Lock()
+				delete(active, invocation)
+				mu.Unlock()
+				invocation.recycle()
+			}
+		})
+	}
+	group.Wait()
+	if module.framePoolPhysicalBytes != module.vm.idleFrameBytes.Load() {
+		t.Fatal("frame pool physical accounting differs from instance accounting")
+	}
+}
 
 func TestFramePhysicalEvictionPreservesGuestCapacity(t *testing.T) {
 	function := loadedFunction{
@@ -196,8 +239,8 @@ func TestAddressPathKeepsEvaluatedIndexAfterFrameReuse(t *testing.T) {
 	if err := storePointer(pointer, newVMValue(intType, int64(9))); err != nil {
 		t.Fatalf("store through escaped pointer: %v", err)
 	}
-	values, ok := escapedArray.load().Data.([]vmValue)
-	if !ok || values[0].materializedData() != int64(9) || values[1].materializedData() != int64(2) {
+	values := escapedArray.load().Data.(*vmArray).values()
+	if values[0].materializedData() != int64(9) || values[1].materializedData() != int64(2) {
 		t.Fatalf("escaped array = %#v, want [9 2]", escapedArray.load().Data)
 	}
 }

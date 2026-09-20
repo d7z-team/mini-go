@@ -43,7 +43,7 @@ func TestDebugSnapshotPreservesPausedTaskScope(t *testing.T) {
 	second := newExecution(instance, instance.vm.profileOptions)
 	second.scopeID = scopeID
 	instance.vm.machine.attachExecution(scopeID, second)
-	instance.active = second
+	instance.active.Store(second)
 	outcome = instance.vm.runPrepared(defaultPollQuantum)
 	if outcome.state != ExecutionPaused {
 		t.Fatalf("second poll: %+v", outcome)

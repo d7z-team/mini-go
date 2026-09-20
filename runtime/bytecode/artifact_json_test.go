@@ -307,8 +307,8 @@ func TestValidationLimitCode(t *testing.T) {
 func TestDecodeJSONRejectsUnknownArtifactField(t *testing.T) {
 	data := []byte(`{
 		"format":"mini-go-ir",
-		"version":21,
-		"opcode_set":"minigo.ir.v9",
+		"version":22,
+		"opcode_set":"minigo.ir.v10",
 		"module":{"path":"example/module","package":"main"},
 		"type_table":{"nodes":[]},
 		"functions":[{"id":"fn.main","signature":{"params":[],"results":[]}}],
@@ -324,8 +324,8 @@ func TestDecodeJSONRejectsUnknownArtifactField(t *testing.T) {
 func TestDecodeJSONRejectsUnknownPayloadField(t *testing.T) {
 	data := []byte(`{
 		"format":"mini-go-ir",
-		"version":21,
-		"opcode_set":"minigo.ir.v9",
+		"version":22,
+		"opcode_set":"minigo.ir.v10",
 		"module":{"path":"example/module","package":"main"},
 		"type_table":{"nodes":[]},
 		"constants":[{"id":"c.answer","type":{"kind":3,"primitive":7},"value":42}],

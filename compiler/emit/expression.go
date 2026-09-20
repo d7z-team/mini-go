@@ -559,28 +559,6 @@ func lowerExpression(artifact *ir.Artifact, fn *ir.Function, expr hir.Expression
 			return err
 		}
 		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitableTrySend)})
-	case hir.ExprChanSubscribeRecv:
-		if expr.Operand == nil || expr.Token == nil {
-			return errors.New("chan_wait_recv expression missing operand")
-		}
-		if err := lowerExpression(artifact, fn, *expr.Operand); err != nil {
-			return err
-		}
-		if err := lowerExpression(artifact, fn, *expr.Token); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitableSubscribeRecv)})
-	case hir.ExprChanSubscribeSend:
-		if expr.Operand == nil || expr.Token == nil {
-			return errors.New("chan_wait_send expression missing operand")
-		}
-		if err := lowerExpression(artifact, fn, *expr.Operand); err != nil {
-			return err
-		}
-		if err := lowerExpression(artifact, fn, *expr.Token); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitableSubscribeSend)})
 	case hir.ExprChanCanSend:
 		if expr.Operand == nil {
 			return errors.New("chan_ready_send expression missing operand")
@@ -597,37 +575,6 @@ func lowerExpression(artifact *ir.Artifact, fn *ir.Function, expr hir.Expression
 			return err
 		}
 		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitableClose)})
-	case hir.ExprMakeWaitToken:
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpMakeWaitToken)})
-	case hir.ExprMakeWaitSet:
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpMakeWaitSet)})
-	case hir.ExprWaitSetAdd:
-		if expr.WaitSet == nil || expr.Token == nil {
-			return errors.New("wait_set_add expression missing operand")
-		}
-		if err := lowerExpression(artifact, fn, *expr.WaitSet); err != nil {
-			return err
-		}
-		if err := lowerExpression(artifact, fn, *expr.Token); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitSetAdd)})
-	case hir.ExprWaitSetPoll:
-		if expr.WaitSet == nil {
-			return errors.New("wait_set_poll expression missing waitset")
-		}
-		if err := lowerExpression(artifact, fn, *expr.WaitSet); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitSetPoll)})
-	case hir.ExprWaitSetPark:
-		if expr.WaitSet == nil {
-			return errors.New("wait_set_park expression missing waitset")
-		}
-		if err := lowerExpression(artifact, fn, *expr.WaitSet); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitSetPark)})
 	case hir.ExprRecover:
 		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpRecover)})
 	default:
@@ -753,7 +700,7 @@ func expressionResultCount(expr hir.Expression) int {
 		return expressionResultCount(*expr.Body)
 	case hir.ExprValues:
 		return totalExpressionResults(expr.Elements)
-	case hir.ExprDelete, hir.ExprClear, hir.ExprChanSubscribeRecv, hir.ExprChanSubscribeSend, hir.ExprChanClose:
+	case hir.ExprDelete, hir.ExprClear, hir.ExprChanClose:
 		return 0
 	default:
 		return 1

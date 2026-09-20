@@ -131,7 +131,8 @@ impl Instance {
                 let function = FunctionValue {
                     index: None,
                     revision: Some(
-                        self.frames
+                        self.running
+                            .frames
                             .last()
                             .map_or_else(|| self.revision.clone(), |frame| frame.revision.clone()),
                     ),
@@ -196,7 +197,7 @@ impl Instance {
                         data: Data::Method {
                             function: FunctionValue {
                                 index: None,
-                                revision: Some(self.frames.last().map_or_else(
+                                revision: Some(self.running.frames.last().map_or_else(
                                     || self.revision.clone(),
                                     |frame| frame.revision.clone(),
                                 )),

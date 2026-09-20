@@ -14,7 +14,7 @@ type vmPointer struct {
 	original *vmPointer
 	target   pointerTarget
 	module   *moduleInstance
-	cell     *vmValue
+	cell     *slot
 	parent   vmValue
 	field    string
 	index    int64
@@ -66,7 +66,7 @@ func (pointer *vmPointer) loadValue() (vmValue, error) {
 		if pointer.cell == nil {
 			return vmValue{}, errors.New("reflect: invalid cell pointer")
 		}
-		return *pointer.cell, nil
+		return pointer.cell.load(), nil
 	case pointerField, pointerIndex:
 		parent := pointer.parent
 		if parent.Type.ShapeKind() == types.Pointer {
@@ -81,14 +81,10 @@ func (pointer *vmPointer) loadValue() (vmValue, error) {
 		}
 		return indexValue(pointer.module, parent, newVMValue("Int", pointer.index))
 	case pointerArray:
-		if !pointer.array.ByteBacked {
-			return newVMValue(pointer.Type, pointer.array.Backing[pointer.array.Start:pointer.array.Start+pointer.arrayLen]), nil
-		}
-		values := make([]vmValue, pointer.arrayLen)
-		for i := range values {
-			values[i] = pointer.array.valueAt(i)
-		}
-		return newVMValue(pointer.Type, values), nil
+		return newVMValue(pointer.Type, &vmArray{vmSlice: vmSlice{
+			vmSliceStorage: pointer.array.vmSliceStorage,
+			Start:          pointer.array.Start, Len: pointer.arrayLen, Cap: pointer.arrayLen,
+		}}), nil
 	}
 	if pointer.slot == nil {
 		return vmValue{}, errors.New("invalid pointer")
@@ -113,7 +109,11 @@ func (pointer *vmPointer) storeValue(value vmValue, mutation bool) error {
 		if err != nil {
 			return err
 		}
-		*pointer.cell = pointer.module.cloneValueForStore(normalized)
+		if mutation {
+			pointer.cell.publish(normalized)
+		} else {
+			return pointer.cell.store(normalized)
+		}
 		return nil
 	case pointerField, pointerIndex:
 		parent := pointer.parent
@@ -126,29 +126,35 @@ func (pointer *vmPointer) storeValue(value vmValue, mutation bool) error {
 			}
 		}
 		if pointer.target == pointerField {
-			parent, err = storeFieldValue(pointer.module, parent, pointer.field, value)
+			parent, err = storeFieldValueMode(pointer.module, parent, pointer.field, value, !mutation)
 		} else {
-			parent, err = setIndexValue(pointer.module, parent, newVMValue("Int", pointer.index), value)
+			parent, err = setIndexValueMode(pointer.module, parent, newVMValue("Int", pointer.index), value, !mutation)
 		}
 		if err != nil {
 			return err
 		}
 		if indirect {
-			return storePointer(pointer.parent, parent)
+			return commitPointerMutation(pointer.parent, parent)
 		}
 		return nil
 	case pointerArray:
-		values, ok := value.Data.([]vmValue)
-		if !ok || len(values) != pointer.arrayLen {
-			return fmt.Errorf("array length mismatch: got %d, want %d", len(values), pointer.arrayLen)
+		array, ok := value.Data.(*vmArray)
+		if !ok || array.Len != pointer.arrayLen {
+			return fmt.Errorf("array assignment requires length %d", pointer.arrayLen)
 		}
+		values := array.values()
+		prepared := make([]vmValue, len(values))
 		_, elem, _ := pointer.Type.ArrayInfo()
 		for i, item := range values {
 			normalized, err := pointer.module.coerceAssignableValue(item, elem)
 			if err != nil {
 				return fmt.Errorf("array element %d: %w", i, err)
 			}
-			if err := pointer.array.setValueAt(i, pointer.module.cloneValueForStore(normalized)); err != nil {
+			prepared[i] = pointer.module.cloneValueForStore(normalized)
+		}
+		for i, value := range prepared {
+			value = pointer.module.assignPreparedValue(pointer.array.valueAt(i), value)
+			if err := pointer.array.setValueAt(i, value); err != nil {
 				return fmt.Errorf("array element %d: %w", i, err)
 			}
 		}
@@ -159,8 +165,7 @@ func (pointer *vmPointer) storeValue(value vmValue, mutation bool) error {
 	}
 	if len(pointer.path) == 0 {
 		if mutation {
-			pointer.slot.value = value
-			pointer.slot.initialized = true
+			pointer.slot.publish(value)
 			return nil
 		}
 		return pointer.slot.store(value)
@@ -169,8 +174,7 @@ func (pointer *vmPointer) storeValue(value vmValue, mutation bool) error {
 	if err != nil {
 		return err
 	}
-	pointer.slot.value = updated
-	pointer.slot.initialized = true
+	pointer.slot.publish(updated)
 	return nil
 }
 

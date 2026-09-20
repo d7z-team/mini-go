@@ -15,6 +15,33 @@ mod structure;
 pub use structure::StructStorage;
 mod zero;
 
+pub(crate) enum ValueRead<'a> {
+    Borrowed(&'a Value),
+    Owned(Value),
+    Shared(std::sync::Arc<Value>),
+}
+
+impl std::ops::Deref for ValueRead<'_> {
+    type Target = Value;
+    fn deref(&self) -> &Value {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Owned(value) => value,
+            Self::Shared(value) => value,
+        }
+    }
+}
+
+impl ValueRead<'_> {
+    pub(crate) fn into_owned(self) -> Value {
+        match self {
+            Self::Borrowed(value) => value.clone(),
+            Self::Owned(value) => value,
+            Self::Shared(value) => std::sync::Arc::unwrap_or_clone(value),
+        }
+    }
+}
+
 pub(crate) fn decode_rune(bytes: &[u8]) -> (u32, usize) {
     let bytes = &bytes[..bytes.len().min(4)];
     let prefix = match std::str::from_utf8(bytes) {

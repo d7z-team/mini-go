@@ -314,7 +314,7 @@ func (m *moduleInstance) underlyingType(typ string) (string, bool) {
 	if m.registry != nil {
 		revision = m.registry.revision
 	}
-	if cached, ok := m.underlyingTypeCache[typ]; ok && cached.revision == revision {
+	if cached, ok := m.underlyingTypeCache.load(typ); ok && cached.revision == revision {
 		return cached.text, cached.found
 	}
 	original := typ
@@ -346,10 +346,8 @@ func (m *moduleInstance) underlyingType(typ string) (string, bool) {
 		}
 		typ = next
 	}
-	if m.underlyingTypeCache == nil {
-		m.underlyingTypeCache = make(map[string]typeTextResolution)
-	}
+
 	found := typ != original
-	m.underlyingTypeCache[original] = typeTextResolution{text: typ, revision: revision, found: found}
+	m.underlyingTypeCache.store(original, typeTextResolution{text: typ, revision: revision, found: found})
 	return typ, found
 }

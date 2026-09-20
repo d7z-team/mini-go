@@ -14,9 +14,9 @@ type runtimeNumericEntry struct {
 	ok   bool
 }
 
-var runtimeNumericByPrimitive = func() [types.PrimitiveWaitSet + 1]runtimeNumericEntry {
-	var entries [types.PrimitiveWaitSet + 1]runtimeNumericEntry
-	for primitive := types.PrimitiveInvalid; primitive <= types.PrimitiveWaitSet; primitive++ {
+var runtimeNumericByPrimitive = func() [types.PrimitiveFunction + 1]runtimeNumericEntry {
+	var entries [types.PrimitiveFunction + 1]runtimeNumericEntry
+	for primitive := types.PrimitiveInvalid; primitive <= types.PrimitiveFunction; primitive++ {
 		entries[primitive].info, entries[primitive].ok = types.NumericTypeInfo(nil, types.TypeRef{
 			Kind:      types.Primitive,
 			Primitive: primitive,
@@ -30,7 +30,7 @@ var predeclaredRuntimeTypes = func() map[string]vmType {
 		"Void": {Ref: types.VoidType(), text: "Void"},
 		"Any":  {Ref: types.AnyType(), text: "Any"},
 	}
-	for primitive := types.PrimitiveBool; primitive <= types.PrimitiveWaitSet; primitive++ {
+	for primitive := types.PrimitiveBool; primitive <= types.PrimitiveFunction; primitive++ {
 		name := types.PrimitiveName(primitive)
 		values[name] = vmType{Ref: types.Builtin(primitive), text: name}
 	}
@@ -207,7 +207,7 @@ func (t vmType) Primitive(kind types.PrimitiveKind) bool {
 }
 
 func (t vmType) NumericInfo() (types.NumericInfo, bool) {
-	if t.Ref.Kind == types.Primitive && t.Ref.Primitive <= types.PrimitiveWaitSet {
+	if t.Ref.Kind == types.Primitive && t.Ref.Primitive <= types.PrimitiveFunction {
 		entry := runtimeNumericByPrimitive[t.Ref.Primitive]
 		return entry.info, entry.ok
 	}

@@ -57,6 +57,33 @@ cargo run -- /path/to/mini-go/playground/runtime-rust/examples/blocks/arithmetic
 常用输入可由 `HostValue::int` 等构造；复杂值见 [snapshot 模块](src/snapshot.rs)。
 共享实例通过 `stats()` 与 `heap_stats()` 观测 VM 费用和 arena；这些数值不等于进程 RSS。
 
+### 原生执行器与并行度
+
+`InstanceOptions.parallelism` 限制同一实例同时执行的 guest task，零值采用 1。原生 runtime
+使用进程级有界执行器，task 只占用一个有限 quantum，不对应固定系统线程；即使执行器只有
+一个 worker，spawn、等待和多个实例也能继续推进。
+
+需要独立控制容量时可创建 `Executor::new(workers)`，克隆后传入多个实例：
+
+```rust
+use mini_go::{Executor, InstanceOptions, ffi::Cancellation};
+
+let executor = Executor::new(4)?;
+let instance = program.instantiate(InstanceOptions {
+    parallelism: 4,
+    executor: Some(executor.clone()),
+    ..Default::default()
+})?;
+// 调用完成后先关闭实例；最后关闭宿主拥有的执行器。
+instance.shutdown(&Cancellation::default())?;
+executor.shutdown(&Cancellation::default())?;
+# Ok::<(), mini_go::RuntimeError>(())
+```
+
+自建 Executor 的 `shutdown` 会请求关闭仍关联的实例并等待其清理，然后停止 worker；开始关闭后
+不再接受新实例。进程级默认 Executor 不可关闭。不要从 VM 宿主回调中同步关闭执行器或调用
+同一实例，这类重入返回 `busy`。
+
 ## 等待、取消与关闭
 
 | 操作 | 含义 |
@@ -149,6 +176,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 将实现 `ffi::Bridge` 的共享宿主放入 `InstanceOptions.bridge`。
 纯计算可以不配置 Bridge，`clock` 与 `entropy` 可用于确定性测试。
+Bridge 的 `open`/`start`、Clock 与 Entropy 回调可能从执行线程调用，必须线程安全、
+快速返回，且不得同步重入同一实例。阻塞 I/O 应提交到宿主拥有的有界执行器，并通过
+Completion 异步交付；关闭时等待该工作结束。`stdlib-host` 的 blocking pool 提供这种边界。
 启用 `stdlib-host` 后可通过 `HostBuilder::memory` 装配 console、环境与内存文件系统；
 实例只拥有自身的 FFI 会话，共享 Host 由应用关闭。
 
@@ -235,7 +265,7 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 实例可反复承载有限调用，工作结束后按[生命周期约定](#等待取消与关闭)等待和关闭。
 `Limits::max_steps` 为 i64：0 或默认值表示 1 亿步，`UNLIMITED_STEPS`（-1）不限累计步数，
 正数设置有限预算，其他负数无效。推进批次和热更新不重置预算；无限模式仍保留取消、内存及任务限制。
-业务进度由宿主持久化；内存与版本存活的观测方法见[开发指南](../../DEVELOPMENT.md#缓存与性能诊断)。
+业务进度由宿主持久化；内存与版本存活的观测方法见[开发指南](../../DEVELOPMENT.md#缓存与性能)。
 
 [有限宿主循环示例](examples/long_running.rs)接收两个兼容的算术镜像，交替调用和更新，
 演示无限步数配置下的有限调用、scope 等待、热更新与关闭。

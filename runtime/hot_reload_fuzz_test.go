@@ -22,7 +22,7 @@ func FuzzPatchTransaction(f *testing.F) {
 		if newDelta == oldDelta {
 			newDelta++
 		}
-		shapeMode, applyMode := shapeInput%8, applyInput%4
+		shapeMode, applyMode := shapeInput%8, applyInput%3
 		base := patchTestProgram(t, patchGlobalArtifact(oldDelta), "fuzz-base")
 		if symbolInput&1 != 0 {
 			base = base.WithoutSymbols()
@@ -118,16 +118,6 @@ func FuzzPatchTransaction(f *testing.F) {
 			}
 			requireUnchangedPatchInstance(t, instance, baseRevision, baseRevisionState, cell, baseEntries, oldDelta+oldDelta)
 		case 2:
-			if err := instance.vm.enterOwnerContext(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			_, err := instance.ApplyPatch(plan)
-			instance.vm.leaveOwner()
-			if patchErrorCode(err) != "busy" {
-				t.Fatalf("busy patch error = %v", err)
-			}
-			requireUnchangedPatchInstance(t, instance, baseRevision, baseRevisionState, cell, baseEntries, oldDelta+oldDelta)
-		case 3:
 			if err := plan.Close(); err != nil {
 				t.Fatal(err)
 			}

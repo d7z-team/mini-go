@@ -109,9 +109,6 @@ func writeFunctions(w io.Writer, functions []Function, table *types.TypeTable) {
 		if fn.Signature.Variadic {
 			fmt.Fprint(w, " [variadic]")
 		}
-		if fn.NoSwitch {
-			fmt.Fprint(w, " [no-switch]")
-		}
 		fmt.Fprintln(w)
 		for _, local := range fn.Locals {
 			fmt.Fprintf(w, "  local %s %s", local.ID, types.FormatWithTable(table, local.Type))

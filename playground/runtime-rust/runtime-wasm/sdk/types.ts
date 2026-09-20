@@ -30,8 +30,7 @@ export type HostData =
   | { DynamicFunction: HostValue }
   | { Method: { function: HostValue; receiver?: HostValue } }
   | { Channel: { capacity: bigint; closed: boolean; queued: HostValue[] } }
-  | { WaitToken: { signaled: boolean; canceled: boolean } }
-  | { WaitSet: bigint[] };
+  | { Mutex: { locked: boolean; waiting: bigint; granted: boolean } };
 export type PathElement =
   | { Field: string }
   | { Index: bigint }

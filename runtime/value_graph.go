@@ -3,18 +3,17 @@ package runtime
 import ir "github.com/d7z-team/mini-go/runtime/bytecode"
 
 type runtimeValueWalker struct {
-	visitRevision func(*instanceRevision)
-	enter         func(vmValue) bool
-	leave         func()
-	stopped       bool
-	seenPointers  map[*vmPointer]pointerVisit
-	seenSlices    map[*vmSlice]bool
-	seenMaps      map[*vmMap]bool
-	seenStructs   map[*vmStruct]bool
-	seenSlots     map[*slot]bool
-	seenWaitables map[*waitableResource]bool
-	seenTokens    map[*waitTokenState]bool
-	seenWaitSets  map[*waitSetState]bool
+	visitRevision  func(*instanceRevision)
+	enter          func(vmValue) bool
+	leave          func()
+	stopped        bool
+	seenPointers   map[*vmPointer]pointerVisit
+	seenSlices     map[*vmSlice]bool
+	seenMaps       map[*vmMap]bool
+	seenStructs    map[*vmStruct]bool
+	seenSlots      map[*slot]bool
+	seenWaitables  map[*waitableResource]bool
+	seenSelections map[*channelSelection]bool
 }
 
 type pointerVisit uint8
@@ -29,9 +28,9 @@ func newRuntimeValueWalker(visitRevision func(*instanceRevision)) *runtimeValueW
 		visitRevision: visitRevision,
 		seenPointers:  make(map[*vmPointer]pointerVisit), seenSlices: make(map[*vmSlice]bool),
 		seenMaps: make(map[*vmMap]bool), seenSlots: make(map[*slot]bool),
-		seenStructs:   make(map[*vmStruct]bool),
-		seenWaitables: make(map[*waitableResource]bool), seenTokens: make(map[*waitTokenState]bool),
-		seenWaitSets: make(map[*waitSetState]bool),
+		seenStructs:    make(map[*vmStruct]bool),
+		seenWaitables:  make(map[*waitableResource]bool),
+		seenSelections: make(map[*channelSelection]bool),
 	}
 }
 
@@ -46,10 +45,11 @@ func (walker *runtimeValueWalker) slot(cell *slot) {
 		return
 	}
 	walker.seenSlots[cell] = true
-	if !cell.initialized {
+	value, initialized := cell.snapshot()
+	if !initialized {
 		return
 	}
-	walker.value(cell.value)
+	walker.value(value)
 }
 
 func (walker *runtimeValueWalker) value(value vmValue) {
@@ -63,6 +63,20 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 		defer walker.leave()
 	}
 	switch data := value.Data.(type) {
+	case *channelSelection:
+		if data == nil || walker.seenSelections[data] {
+			return
+		}
+		walker.seenSelections[data] = true
+		walker.value(data.value)
+		for _, selected := range data.cases {
+			if walker.stopped {
+				return
+			}
+			walker.value(selected.channel)
+			walker.value(selected.value)
+			walker.value(selected.zero)
+		}
 	case functionRef:
 		if data.exact != nil {
 			walker.visitRevision(data.exact.revision)
@@ -103,7 +117,7 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 	case *vmSlice:
 		if data != nil && !walker.seenSlices[data] {
 			walker.seenSlices[data] = true
-			for _, item := range data.Backing {
+			for _, item := range data.valuesSnapshot() {
 				if walker.stopped {
 					return
 				}
@@ -113,7 +127,7 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 	case *vmMap:
 		if data != nil && !walker.seenMaps[data] {
 			walker.seenMaps[data] = true
-			for _, entry := range data.Entries {
+			for _, entry := range data.snapshot() {
 				if walker.stopped {
 					return
 				}
@@ -121,8 +135,12 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 				walker.value(entry.Value)
 			}
 		}
-	case []vmValue:
-		for _, item := range data {
+	case *vmArray:
+		if data.ByteBacked {
+			return
+		}
+		values := data.values()
+		for _, item := range values {
 			if walker.stopped {
 				return
 			}
@@ -131,7 +149,8 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 	case *vmStruct:
 		if data != nil && !walker.seenStructs[data] {
 			walker.seenStructs[data] = true
-			for _, field := range data.values {
+			values, _ := data.snapshot()
+			for _, field := range values {
 				if walker.stopped {
 					return
 				}
@@ -143,41 +162,17 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 	case *waitableResource:
 		if data != nil && !walker.seenWaitables[data] {
 			walker.seenWaitables[data] = true
+			for selected := data.selectHead; selected != nil; selected = selected.next {
+				if walker.stopped {
+					return
+				}
+				walker.value(newVMValue("Any", selected.selection))
+			}
 			for _, item := range data.Buffer[data.bufferHead:] {
 				if walker.stopped {
 					return
 				}
 				walker.value(item)
-			}
-			for _, pending := range data.Pending[data.pendingHead:] {
-				if walker.stopped {
-					return
-				}
-				walker.value(pending.Value)
-			}
-			for _, token := range data.RecvWaiters {
-				if walker.stopped {
-					return
-				}
-				walker.waitToken(token)
-			}
-			for _, token := range data.SendWaiters {
-				if walker.stopped {
-					return
-				}
-				walker.waitToken(token)
-			}
-		}
-	case *waitTokenState:
-		walker.waitToken(data)
-	case *waitSetState:
-		if data != nil && !walker.seenWaitSets[data] {
-			walker.seenWaitSets[data] = true
-			for _, token := range data.Tokens {
-				if walker.stopped {
-					return
-				}
-				walker.waitToken(token)
 			}
 		}
 	}
@@ -203,7 +198,8 @@ func (walker *runtimeValueWalker) pointerContents(pointer *vmPointer) vmValue {
 	switch pointer.target {
 	case pointerCell:
 		if pointer.cell != nil {
-			return *pointer.cell
+			value, _ := pointer.cell.snapshot()
+			return value
 		}
 	case pointerField:
 		return walker.addressContents(pointer.parent, []ir.AddressPathSegment{{Kind: "field", Field: pointer.field}}, nil, true)
@@ -211,11 +207,14 @@ func (walker *runtimeValueWalker) pointerContents(pointer *vmPointer) vmValue {
 		return walker.addressContents(pointer.parent, []ir.AddressPathSegment{{Kind: "index"}}, []vmValue{newVMValue("Int", pointer.index)}, true)
 	case pointerArray:
 		if pointer.array != nil && !pointer.array.ByteBacked {
-			return newVMValue(pointer.Type, pointer.array.Backing[pointer.array.Start:pointer.array.Start+pointer.arrayLen])
+			return newVMValue(pointer.Type, &vmArray{vmSlice: vmSlice{
+				vmSliceStorage: pointer.array.vmSliceStorage,
+				Start:          pointer.array.Start, Len: pointer.arrayLen, Cap: pointer.arrayLen,
+			}})
 		}
 	case pointerSlot:
-		if pointer.slot != nil && pointer.slot.initialized {
-			return walker.addressContents(pointer.slot.value, pointer.path, pointer.indexes, false)
+		if value, initialized := pointer.slot.snapshot(); initialized {
+			return walker.addressContents(value, pointer.path, pointer.indexes, false)
 		}
 	}
 	return vmValue{}
@@ -268,38 +267,17 @@ func (walker *runtimeValueWalker) addressContents(value vmValue, path []ir.Addre
 				if data == nil || data.ByteBacked || index >= int64(data.Len) {
 					return vmValue{}
 				}
-				value = data.Backing[data.Start+int(index)]
-			case []vmValue:
-				if index >= int64(len(data)) {
+				value = data.valueAt(int(index))
+			case *vmArray:
+				if index >= int64(data.Len) || data.ByteBacked {
 					return vmValue{}
 				}
-				value = data[index]
+				value = data.valueAt(int(index))
 			default:
 				return vmValue{}
 			}
 		default:
 			return vmValue{}
-		}
-	}
-}
-
-func (walker *runtimeValueWalker) waitToken(token *waitTokenState) {
-	if walker.enter != nil {
-		if walker.stopped || !walker.enter(vmValue{}) {
-			return
-		}
-		defer walker.leave()
-	}
-	if token == nil || walker.seenTokens[token] {
-		return
-	}
-	walker.seenTokens[token] = true
-	for registration := range token.registrations {
-		if walker.stopped {
-			return
-		}
-		if resource, ok := registration.target.(*waitableResource); ok {
-			walker.value(newVMValue(resource.Type, resource))
 		}
 	}
 }

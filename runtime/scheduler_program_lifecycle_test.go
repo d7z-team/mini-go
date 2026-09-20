@@ -46,8 +46,8 @@ func TestProgramMainReturnStopsSpawnedTasks(t *testing.T) {
 
 func TestCancelProgramMainClosesOtherScopes(t *testing.T) {
 	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpMakeWaitSet)},
-		{Op: string(ir.OpWaitSetPark)},
+		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
+		{Op: string(ir.OpWaitableRecv)},
 		{Op: string(ir.OpPop)},
 		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
 	})

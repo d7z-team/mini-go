@@ -178,7 +178,7 @@ func reflectRegisterDynamicType(ctx intrinsicContext, typ string, overrides Type
 	typ = coerceRuntimeType(typ).String()
 	module := reflectRelationModule(ctx)
 	if ctx.vm != nil {
-		if info, ok := ctx.vm.reflectTypes[typ]; ok {
+		if info, ok := ctx.vm.reflectTypes.load(typ); ok {
 			return reflectTypeOK(reflectTypeValue(module, info)), nil
 		}
 	}
@@ -223,7 +223,7 @@ func reflectRegisterDynamicType(ctx intrinsicContext, typ string, overrides Type
 		info.Display = reflectSourceType(module, module.resolvedRuntimeType(typ))
 	}
 	if ctx.vm != nil {
-		ctx.vm.reflectTypes[info.Key] = info
+		ctx.vm.reflectTypes.store(info.Key, info)
 		ctx.vm.dynamicTypeCount++
 		ctx.vm.dynamicTypeBytes += size
 	}

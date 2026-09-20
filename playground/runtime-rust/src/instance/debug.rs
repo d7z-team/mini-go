@@ -60,8 +60,14 @@ pub struct Bindings {
 #[derive(Clone, Debug)]
 pub struct VariableRef {
     pub(super) epoch: u64,
-    pub(super) address: Address,
+    pub(super) root: VariableRoot,
     pub(super) path: Vec<VariablePath>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) enum VariableRoot {
+    Address(Address),
+    Local { frame: FrameRef, index: usize },
 }
 
 #[derive(Clone, Debug)]
@@ -155,11 +161,11 @@ impl Instance {
         if !self.debug.break_on_panic {
             return;
         }
-        let frame = self.frames.last().unwrap();
+        let frame = self.running.frames.last().unwrap();
         let info = self.frame_info(
-            self.current_task,
-            self.current_scope,
-            self.frames.len() - 1,
+            self.running.id,
+            self.running.scope,
+            self.running.frames.len() - 1,
             frame,
             frame.pc.saturating_sub(1),
         );
@@ -200,7 +206,7 @@ impl Instance {
         }
     }
     pub(super) fn debug_cancel_scope(&mut self, scope: u64) {
-        if self.current_scope == scope {
+        if self.running.scope == scope {
             self.debug.paused = false;
             self.debug.resume = None;
             self.debug.epoch = self.debug.epoch.saturating_add(1);
@@ -323,7 +329,7 @@ impl Instance {
             self.debug.resume = None;
         }
         let sample = self.debug.profile_every != 0 && self.debug.profile_phase == 0;
-        let frame = self.frames.last().unwrap();
+        let frame = self.running.frames.last().unwrap();
         let breakpoint = frame.revision.generation == self.revision.generation
             && self
                 .debug
@@ -337,9 +343,9 @@ impl Instance {
             return false;
         }
         let info = self.frame_info(
-            self.current_task,
-            self.current_scope,
-            self.frames.len() - 1,
+            self.running.id,
+            self.running.scope,
+            self.running.frames.len() - 1,
             frame,
             frame.pc,
         );
@@ -392,7 +398,7 @@ impl Instance {
             .debug
             .resume
             .as_ref()
-            .is_some_and(|(_, previous)| previous.reference.task == self.current_task)
+            .is_some_and(|(_, previous)| previous.reference.task == self.running.id)
         {
             self.debug.resumed_instructions = self.debug.resumed_instructions.saturating_add(1);
         }
@@ -446,15 +452,15 @@ impl Instance {
 
     pub fn debug_threads(&self) -> Vec<ThreadInfo> {
         let mut result = Vec::new();
-        if !self.frames.is_empty() {
+        if !self.running.frames.is_empty() {
             result.push(ThreadInfo {
-                id: self.current_task,
+                id: self.running.id,
                 state: if self.debug.paused {
                     "paused"
                 } else {
                     "running"
                 },
-                frames: self.frames.len(),
+                frames: self.running.frames.len(),
             });
         }
         for task in &self.runnable {
@@ -487,10 +493,10 @@ impl Instance {
             ));
         }
         let mut frames = Vec::new();
-        for (depth, frame) in self.frames.iter().enumerate().rev() {
+        for (depth, frame) in self.running.frames.iter().enumerate().rev() {
             frames.push(self.frame_info(
-                self.current_task,
-                self.current_scope,
+                self.running.id,
+                self.running.scope,
                 depth,
                 frame,
                 frame.pc,
@@ -509,10 +515,10 @@ impl Instance {
         reference: &FrameRef,
         limits: crate::snapshot::SnapshotLimits,
     ) -> Result<Bindings, RuntimeError> {
-        let bindings = self.debug_binding_addresses(reference)?;
+        let bindings = self.debug_binding_roots(reference)?;
         let values = bindings
             .iter()
-            .map(|(_, address)| self.borrow_address(address).map(|value| value.into_owned()))
+            .map(|(_, root)| self.debug_root_value(root).map(|value| value.into_owned()))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Bindings {
             names: bindings.into_iter().map(|(name, _)| name).collect(),
@@ -525,10 +531,7 @@ impl Instance {
         })
     }
 
-    pub(super) fn debug_binding_addresses(
-        &self,
-        reference: &FrameRef,
-    ) -> Result<Vec<(String, Address)>, RuntimeError> {
+    pub(super) fn debug_frame(&self, reference: &FrameRef) -> Result<&Frame, RuntimeError> {
         if !self.debug.paused || reference.epoch != self.debug.epoch {
             return Err(RuntimeError::new(
                 "stale_reference",
@@ -536,8 +539,8 @@ impl Instance {
                 "inspection epoch has expired",
             ));
         }
-        let frames = if reference.task == self.current_task {
-            Some(&self.frames)
+        let frames = if reference.task == self.running.id {
+            Some(&self.running.frames)
         } else {
             self.runnable
                 .iter()
@@ -545,11 +548,33 @@ impl Instance {
                 .find(|task| task.id == reference.task)
                 .map(|task| &task.frames)
         };
-        let frame = frames
+        frames
             .and_then(|frames| frames.get(reference.depth))
-            .ok_or_else(|| {
-                RuntimeError::new("stale_reference", "debug", "frame no longer exists")
-            })?;
+            .ok_or_else(|| RuntimeError::new("stale_reference", "debug", "frame no longer exists"))
+    }
+
+    pub(super) fn debug_root_value(
+        &self,
+        root: &VariableRoot,
+    ) -> Result<crate::value::ValueRead<'_>, RuntimeError> {
+        match root {
+            VariableRoot::Address(address) => self.snapshot_address(address),
+            VariableRoot::Local { frame, index } => {
+                let value = self.debug_frame(frame)?.locals[*index].value(&self.heap)?;
+                if matches!(value.data, Data::Uninitialized) {
+                    Ok(crate::value::ValueRead::Owned(self.zero(&value.typ, 0)?))
+                } else {
+                    Ok(value)
+                }
+            }
+        }
+    }
+
+    pub(super) fn debug_binding_roots(
+        &self,
+        reference: &FrameRef,
+    ) -> Result<Vec<(String, VariableRoot)>, RuntimeError> {
+        let frame = self.debug_frame(reference)?;
         let function = &frame.prepared;
         let symbols = frame
             .revision
@@ -584,10 +609,9 @@ impl Instance {
                     .filter(|symbol| !symbol.name.is_empty())
                     .map_or_else(|| local.id.clone(), |symbol| symbol.name.clone()),
             );
-            addresses.push(Address {
-                identity: std::sync::Arc::default(),
-                root: frame.locals[index],
-                path: Vec::new(),
+            addresses.push(VariableRoot::Local {
+                frame: reference.clone(),
+                index,
             });
         }
         for (index, upvalue) in function.declaration.upvalues.iter().enumerate() {
@@ -602,7 +626,7 @@ impl Instance {
                     .filter(|symbol| !symbol.name.is_empty())
                     .map_or_else(|| upvalue.id.clone(), |symbol| symbol.name.clone()),
             );
-            addresses.push(frame.upvalues[index].clone());
+            addresses.push(VariableRoot::Address(frame.upvalues[index].clone()));
         }
         for ((module, id), handle) in &self.globals {
             if module.as_str() != frame.module.as_ref() {
@@ -613,17 +637,17 @@ impl Instance {
                     .and_then(|package| package.globals.iter().find(|symbol| symbol.id == *id))
                     .map_or_else(|| id.clone(), |symbol| symbol.name.clone()),
             );
-            addresses.push(Address {
+            addresses.push(VariableRoot::Address(Address {
                 identity: std::sync::Arc::default(),
                 root: *handle,
                 path: Vec::new(),
-            });
+            }));
         }
         Ok(names.into_iter().zip(addresses).collect())
     }
 
     pub fn debug_resume(&mut self, mode: StepMode) -> Result<(), RuntimeError> {
-        self.debug_resume_task(mode, self.current_task)
+        self.debug_resume_task(mode, self.running.id)
     }
 
     pub fn debug_resume_task(&mut self, mode: StepMode, task: u64) -> Result<(), RuntimeError> {

@@ -23,7 +23,7 @@ func HashExecutionImage(image ExecutionImage) (string, error) {
 const (
 	ExecutionFormat   = "mini-go-execution-image"
 	ExecutionVersion  = 15
-	ExecutionContract = "minigo.execution.v15"
+	ExecutionContract = "minigo.execution.v16"
 	DefaultEntryName  = "default"
 )
 

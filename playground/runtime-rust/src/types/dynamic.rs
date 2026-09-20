@@ -118,7 +118,7 @@ impl TypeRegistry {
             TypeIdentity::Void => text.push_str("Void"),
             TypeIdentity::Any => text.push_str("Any"),
             TypeIdentity::Primitive(primitive) => {
-                const NAMES: [&str; 22] = [
+                const NAMES: [&str; 20] = [
                     "",
                     "Bool",
                     "String",
@@ -139,8 +139,6 @@ impl TypeRegistry {
                     "Complex128",
                     "Error",
                     "Function",
-                    "WaitToken",
-                    "WaitSet",
                 ];
                 text.push_str(NAMES[*primitive as usize]);
             }
@@ -293,12 +291,9 @@ impl TypeRegistry {
                 | wire::PrimitiveInt64
                 | wire::PrimitiveUint8
                 | wire::PrimitiveError => 5,
-                wire::PrimitiveUintptr
-                | wire::PrimitiveFloat32
-                | wire::PrimitiveFloat64
-                | wire::PrimitiveWaitSet => 7,
+                wire::PrimitiveUintptr | wire::PrimitiveFloat32 | wire::PrimitiveFloat64 => 7,
                 wire::PrimitiveFunction => 8,
-                wire::PrimitiveComplex64 | wire::PrimitiveWaitToken => 9,
+                wire::PrimitiveComplex64 => 9,
                 wire::PrimitiveComplex128 => 10,
                 _ => {
                     return Err(RuntimeError::new(

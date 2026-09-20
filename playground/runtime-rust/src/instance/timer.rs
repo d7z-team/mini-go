@@ -149,11 +149,11 @@ impl Instance {
             let timer = self.timers.pop().unwrap();
             timer
                 .channel
-                .trace(&mut |handle| self.transient_roots.push(handle));
+                .trace(&mut |handle| self.running.transient_roots.push(handle));
             expired.push(timer);
         }
         for mut timer in expired {
-            self.try_send(&timer.channel, Value::boolean(true), true)?;
+            self.try_send(&timer.channel, Value::boolean(true))?;
             if let Some(missed) = (now - timer.deadline).checked_div(timer.period) {
                 let periods = missed.saturating_add(1);
                 timer.deadline = timer
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn deadlines_remain_ordered_after_restart_and_scope_removal() {
-        let mut heap = Heap::new(16, 4096).unwrap();
+        let heap = Heap::new(16, 4096).unwrap();
         let mut timers = TimerQueue::default();
         let mut handles = Vec::new();
         for (scope, deadline) in [40, 10, 30, 10, 50, 20].into_iter().enumerate() {

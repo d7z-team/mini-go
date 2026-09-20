@@ -106,7 +106,7 @@ func TestMapIteratorSkipsReinsertedKeyAndObservesUpdates(t *testing.T) {
 	if values[2].Data != false {
 		t.Fatal("reinserted key visited")
 	}
-	if err = module.vm.executeInstruction(f, &preparedInstruction{op: preparedMapIterClose, local: &ir.LocalPayload{Local: "range"}}); err != nil {
+	if err = module.vm.executeInstruction(nil, f, &preparedInstruction{op: preparedMapIterClose, local: &ir.LocalPayload{Local: "range"}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.mapIterators) != 0 {

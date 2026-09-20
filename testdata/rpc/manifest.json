@@ -44,25 +44,25 @@
       "oracle": "MRPC catalog and generator"
     },
     "images/call.json.gz": {
-      "sha256": "5e077eeb90e945b818f695a578623227c9641d736a8b784f2562ee222a61f7bb",
+      "sha256": "0163d69acb37435095a7ce3ca852c05510a360ee033d964569377cf1237c8d2c",
       "kind": "image",
       "source": "source/call",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "5202006ab8645543c7861a2e69b309605109b6c872f97735f7fbc92c4b8749a2"
+      "compiler_id": "0b9eaab8bb4a16bb01477ea6d200d0862f9064d1ab127f6a054ab3168c6d6261"
     },
     "images/provider-patch.json.gz": {
-      "sha256": "1e48f93bbd4d1bad9976cca407c3fdb8227dac7fc2bbad1a188edd259694a4cb",
+      "sha256": "cd062420c49c46386a472b874c7db9528c4b76966868b85d1a21997eede57e2c",
       "kind": "image",
       "source": "source/provider",
       "oracle": "unoptimized revision with the same RPC contract",
-      "compiler_id": "5202006ab8645543c7861a2e69b309605109b6c872f97735f7fbc92c4b8749a2"
+      "compiler_id": "0b9eaab8bb4a16bb01477ea6d200d0862f9064d1ab127f6a054ab3168c6d6261"
     },
     "images/provider.json.gz": {
-      "sha256": "6cbbf0f9ec68e3fb4fbfafcd07230b145568f4953d5fa02fe00a3bbc8bca0ab7",
+      "sha256": "43402a2b4813fcbb5b99a132791e9f26f7c4453a31e7bbc5daa35e42a11b42b5",
       "kind": "image",
       "source": "source/provider",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "5202006ab8645543c7861a2e69b309605109b6c872f97735f7fbc92c4b8749a2"
+      "compiler_id": "0b9eaab8bb4a16bb01477ea6d200d0862f9064d1ab127f6a054ab3168c6d6261"
     },
     "scenarios/close.json": {
       "sha256": "5f7cc97cad4feb7c699d34c28699996e3e92b71505085074a54950edd462085d",
@@ -439,11 +439,12 @@
     "stdlib/src/strings/strings_test.mgo": "96dc157b980369476c31eddccd87d2954f56a1935df3a3528fd8fb17a709ff2a",
     "stdlib/src/strings/trim.mgo": "5f9288192b73bb0c0c32625092705da011a9e3b32f43a4a184795a5fe7c456d5",
     "stdlib/src/sync/cond.mgo": "8138efcab1d224f7f7df30c82bb3d043301dc98d3166f53c4d10e8b5e9472e6f",
+    "stdlib/src/sync/intrinsic.mgo": "ce0683e3cc697bf7846bc2dd4febfa1c4cbb88bfd733eb48d4037bfbc29cdfa3",
     "stdlib/src/sync/map.mgo": "b9b27c17c3365e7f5f46294188b89c2b0e9ce812edde3fc2d3dd70d5666d2e7f",
-    "stdlib/src/sync/mutex.mgo": "b4954fa72e7d21a7a284c61b425d4a6c7dcec90738e643c7e49b79e548040eea",
+    "stdlib/src/sync/mutex.mgo": "c045643d545954b13977c89e23fed336310b540b0573d9cb734672c49d63ac87",
     "stdlib/src/sync/once.mgo": "bf173fb17ebe4ebb225936c00c9ba377f741ef093203f877a08835ef17366578",
     "stdlib/src/sync/pool.mgo": "009a0c22da3d88035a534000585fe35809d32ec8e3434276b575e4240ca80a94",
-    "stdlib/src/sync/sync_test.mgo": "1e1a6359dc08be93842c742701f5f959f5181fc585cb671094eacb5ed8f43284",
+    "stdlib/src/sync/sync_test.mgo": "ad4fca726c75d5009cdd7db79ce928989ec12b3d68fe518fba4aa905349c8b24",
     "stdlib/src/sync/waitgroup.mgo": "94c49edd16f6d17823cb20fcfece65a1e101238c93b759259618c0ab22e597e5",
     "stdlib/src/testing/fstest/mapfs.mgo": "e2440645b3830d83ec05bc975343cc2e7ac8dc827e54bd9e035e83e72cd81430",
     "stdlib/src/testing/fstest/mapfs_test.mgo": "a172375e571d673e98346542936a051f4b49e74d913c90c57ea751aa9383171d",

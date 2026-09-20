@@ -79,7 +79,7 @@ func reflectNew(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		return nil, err
 	}
 	cell := reflectZeroValue(module, typ)
-	ptr := reflectCellPointer(module, typ, "reflect-new:"+typ, &cell)
+	ptr := reflectCellPointer(module, typ, "reflect-new:"+typ, cell)
 	out, err := reflectValueSnapshot(ctx, ptr)
 	if err != nil {
 		return reflectValueError(err.Error()), nil
@@ -129,7 +129,7 @@ func reflectMakeSlice(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		backing[i] = reflectZeroValue(module, elemType)
 	}
 	cell := newSliceHeaderValue(typ, backing, 0, lengthValue, capacityValue)
-	ptr := reflectCellPointer(module, typ, "reflect-make-slice:"+typ, &cell)
+	ptr := reflectCellPointer(module, typ, "reflect-make-slice:"+typ, cell)
 	out, err := reflectValueSnapshotWithTarget(ctx, cell, ptr, true, true, true)
 	if err != nil {
 		return reflectValueError(err.Error()), nil
@@ -153,7 +153,7 @@ func reflectMakeMap(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if err != nil {
 		return reflectValueError(err.Error()), nil
 	}
-	ptr := reflectCellPointer(module, typ, "reflect-make-map:"+typ, &cell)
+	ptr := reflectCellPointer(module, typ, "reflect-make-map:"+typ, cell)
 	out, err := reflectValueSnapshotWithTarget(ctx, cell, ptr, true, true, true)
 	if err != nil {
 		return reflectValueError(err.Error()), nil

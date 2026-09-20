@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/d7z-team/mini-go/compiler/types"
@@ -34,6 +35,7 @@ type frameCapacity struct {
 }
 
 type slot struct {
+	mu          *sync.Mutex
 	typ         vmType
 	variadic    bool
 	module      *moduleInstance
@@ -48,18 +50,52 @@ const (
 )
 
 func newSlot(typ vmType, module *moduleInstance, variadic bool) *slot {
-	return &slot{typ: typ, variadic: variadic, module: module}
+	return &slot{mu: new(sync.Mutex), typ: typ, variadic: variadic, module: module}
+}
+
+// snapshot does not materialize a zero value, so tracing never creates roots.
+func (s *slot) snapshot() (vmValue, bool) {
+	if s == nil {
+		return vmValue{}, false
+	}
+	if s.mu == nil {
+		return s.value, s.initialized
+	}
+	s.mu.Lock()
+	value, initialized := s.value, s.initialized
+	s.mu.Unlock()
+	return value, initialized
+}
+
+func (s *slot) publish(value vmValue) {
+	if s.mu == nil {
+		s.value, s.initialized = value, true
+		return
+	}
+	s.mu.Lock()
+	s.value, s.initialized = value, true
+	s.mu.Unlock()
 }
 
 func (s *slot) load() vmValue {
 	if s == nil {
 		return vmValue{}
 	}
-	if !s.initialized {
-		s.value = s.module.zeroValue(s.typ)
-		s.initialized = true
+	if value, initialized := s.snapshot(); initialized {
+		return value
 	}
-	return s.value
+	zero := s.module.zeroValue(s.typ)
+	if s.mu == nil {
+		s.value, s.initialized = zero, true
+		return zero
+	}
+	s.mu.Lock()
+	if !s.initialized {
+		s.value, s.initialized = zero, true
+	}
+	value := s.value
+	s.mu.Unlock()
+	return value
 }
 
 func (s *slot) store(value vmValue) error {
@@ -71,16 +107,14 @@ func (s *slot) store(value vmValue) error {
 		if err != nil {
 			return err
 		}
-		s.value = normalized
-		s.initialized = true
+		s.publish(s.module.cloneValueForStore(normalized))
 		return nil
 	}
 	if s.typ.Equal(value.Type) {
 		value.Type = s.typ
 		switch s.typ.Ref.Kind {
 		case types.Void, types.Primitive, types.Map, types.Pointer, types.Waitable, types.Function:
-			s.value = value
-			s.initialized = true
+			s.publish(value)
 			return nil
 		}
 	}
@@ -88,14 +122,16 @@ func (s *slot) store(value vmValue) error {
 	if err != nil {
 		return err
 	}
-	s.value = s.module.cloneValueForStore(normalized)
-	s.initialized = true
+	prepared := s.module.cloneValueForStore(normalized)
+	current, _ := s.snapshot()
+	s.publish(s.module.assignPreparedValue(current, prepared))
 	return nil
 }
 
 func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, captured map[string]*slot, executionContextID int64) (*frame, bool, error) {
 	var callFrame *frame
 	allocated := true
+	module.framePoolMu.Lock()
 	pool := module.framePools[function.Decl.ID]
 	if len(pool) != 0 {
 		last := len(pool) - 1
@@ -113,6 +149,7 @@ func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, c
 		}
 		allocated = false
 	}
+	module.framePoolMu.Unlock()
 	if callFrame == nil {
 		callFrame = &frame{idleCapacity: frameCapacity{
 			locals: len(function.Decl.Locals), upvalues: len(function.Decl.Upvalues), stack: function.MaxStack,
@@ -142,6 +179,9 @@ func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, c
 	callFrame.defers = callFrame.defers[:0]
 	for i, local := range function.Decl.Locals {
 		cell := &callFrame.localStorage[i]
+		if i < len(function.LocalEscapes) && function.LocalEscapes[i] {
+			cell = newSlot(function.LocalTypes[i], module, function.LocalVariadic[i])
+		}
 		callFrame.localCells[i] = cell
 		if i < len(args) {
 			if err := cell.store(args[i]); err != nil {
@@ -190,6 +230,8 @@ func (f *frame) recycle() {
 	f.popValues = f.popValues[:0]
 	f.returnValues = f.returnValues[:0]
 	f.defers = f.defers[:0]
+	module.framePoolMu.Lock()
+	defer module.framePoolMu.Unlock()
 	if module.framePools == nil {
 		module.framePools = make(map[string][]*frame)
 	}
@@ -201,18 +243,25 @@ func (f *frame) recycle() {
 			int64(cap(f.localCells)+cap(f.upvalueCells))*int64(unsafe.Sizeof((*slot)(nil))) +
 			int64(cap(f.stack)+cap(f.popValues)+cap(f.returnValues))*int64(unsafe.Sizeof(vmValue{})) +
 			int64(cap(f.defers))*int64(unsafe.Sizeof(deferredCall{}))
-		retained := module.framePoolPhysicalBytes
-		current := true
+		retainPhysical := physicalBytes <= maxPhysicalFrameCacheBytes-module.framePoolPhysicalBytes
 		if module.vm != nil {
-			retained = module.vm.idleFrameBytes.Load()
-			current = module.revision == module.vm.revision.Load()
+			retainPhysical = false
+			if module.revision == module.vm.revision.Load() {
+				for {
+					retained := module.vm.idleFrameBytes.Load()
+					if physicalBytes > maxPhysicalFrameCacheBytes-retained {
+						break
+					}
+					if module.vm.idleFrameBytes.CompareAndSwap(retained, retained+physicalBytes) {
+						retainPhysical = true
+						break
+					}
+				}
+			}
 		}
-		if current && physicalBytes <= maxPhysicalFrameCacheBytes-retained {
+		if retainPhysical {
 			f.idlePhysicalBytes = physicalBytes
 			module.framePoolPhysicalBytes += physicalBytes
-			if module.vm != nil {
-				module.vm.idleFrameBytes.Add(physicalBytes)
-			}
 		} else {
 			// Keep only the guest capacity ledger when physical storage is
 			// evicted. A later hit restores these exact capacities without
@@ -313,22 +362,12 @@ func (f *frame) push(value vmValue) {
 	f.stack = append(f.stack, value)
 }
 
-func (f *frame) peek() (vmValue, error) {
-	if len(f.stack) == 0 {
-		return vmValue{}, errors.New("stack underflow")
-	}
-	return f.stack[len(f.stack)-1], nil
-}
-
 func (f *frame) pop() (vmValue, error) {
-	value, err := f.peek()
+	values, err := f.popN(1)
 	if err != nil {
 		return vmValue{}, err
 	}
-	last := len(f.stack) - 1
-	f.stack[last] = vmValue{}
-	f.stack = f.stack[:last]
-	return value, nil
+	return values[0], nil
 }
 
 func (f *frame) popN(count int) ([]vmValue, error) {
@@ -358,15 +397,11 @@ func (f *frame) retainReturnValues(values []vmValue) []vmValue {
 }
 
 func (f *frame) pop2() (vmValue, vmValue, error) {
-	if len(f.stack) < 2 {
-		return vmValue{}, vmValue{}, fmt.Errorf("stack underflow: need 2 values, have %d", len(f.stack))
+	values, err := f.popN(2)
+	if err != nil {
+		return vmValue{}, vmValue{}, err
 	}
-	start := len(f.stack) - 2
-	left := f.stack[start]
-	right := f.stack[start+1]
-	clear(f.stack[start:])
-	f.stack = f.stack[:start]
-	return left, right, nil
+	return values[0], values[1], nil
 }
 
 func (f *frame) address(payload ir.AddressPayload) (vmValue, error) {
@@ -397,8 +432,9 @@ func (f *frame) slotAddress(slot *slot, payload ir.AddressPayload) (vmValue, err
 func (f *frame) pathAddress(root *slot, payload ir.AddressPayload) (vmValue, error) {
 	current := root.load()
 	identity := fmt.Sprintf("slot:%p", root)
+	path := payload.Path
 	var indexes []vmValue
-	for _, segment := range payload.Path {
+	for position, segment := range payload.Path {
 		switch segment.Kind {
 		case "indirect":
 			pointer, err := pointerValue(current)
@@ -432,20 +468,32 @@ func (f *frame) pathAddress(root *slot, payload ir.AddressPayload) (vmValue, err
 			if err != nil {
 				return vmValue{}, err
 			}
-			if slice, ok := indexed.Data.(*vmSlice); ok && slice != nil {
+			var slice *vmSlice
+			switch data := indexed.Data.(type) {
+			case *vmSlice:
+				slice = data
+			case *vmArray:
+				slice = &data.vmSlice
+			}
+			if slice != nil {
 				i, err := asInt64(index)
 				if err != nil {
 					return vmValue{}, err
 				}
-				identity = fmt.Sprintf("slice:%p.index:%d", slice.storage, int64(slice.Start)+i)
+				identity = fmt.Sprintf("slice:%p.index:%d", slice.vmSliceStorage, int64(slice.Start)+i)
+				// Element addresses capture the backing, not the variable that
+				// currently contains the slice header.
+				root = &slot{typ: indexed.Type, module: root.module, value: indexed, initialized: true}
+				path = payload.Path[position:]
+				indexes = []vmValue{index}
 			} else {
-				identity += fmt.Sprintf(".index:%v", index.Data)
+				identity += fmt.Sprintf(".index:%v", index.materializedData())
 			}
 		default:
 			return vmValue{}, fmt.Errorf("unsupported address path segment kind %q", segment.Kind)
 		}
 	}
-	return newPathPointerValue(root.module.qualifyLocalType(current.Type.String()), identity, root, payload.Path, indexes), nil
+	return newPathPointerValue(root.module.qualifyLocalType(current.Type.String()), identity, root, path, indexes), nil
 }
 
 func loadAddressPath(module *moduleInstance, root vmValue, path []ir.AddressPathSegment, indexes []vmValue) (vmValue, error) {
@@ -580,10 +628,6 @@ func (f *frame) capture(payload ir.AddressPayload) (*slot, error) {
 		index, ok := f.function.LocalIndexes[payload.Local]
 		if !ok || index < 0 || index >= len(f.localCells) || f.localCells[index] == nil {
 			return nil, fmt.Errorf("unknown local %q", payload.Local)
-		}
-		if index < len(f.function.LocalEscapes) && f.function.LocalEscapes[index] && f.localCells[index] == &f.localStorage[index] {
-			detached := *f.localCells[index]
-			f.localCells[index] = &detached
 		}
 		return f.localCells[index], nil
 	case "upvalue":

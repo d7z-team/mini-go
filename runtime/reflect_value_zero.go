@@ -29,11 +29,12 @@ func reflectValueIsZero(module *moduleInstance, value vmValue) bool {
 		return false
 	case *vmSlice:
 		return data == nil
-	case []vmValue:
-		if data == nil {
+	case *vmArray:
+		values := data.values()
+		if values == nil {
 			return true
 		}
-		for _, item := range data {
+		for _, item := range values {
 			if !reflectValueIsZero(module, item) {
 				return false
 			}
@@ -41,15 +42,15 @@ func reflectValueIsZero(module *moduleInstance, value vmValue) bool {
 		if _, _, ok := module.arrayType(value.Type); ok {
 			return true
 		}
-		return len(data) == 0
+		return len(values) == 0
 	case *vmStruct:
 		if data == nil || data.schema == nil {
 			return false
 		}
 		for index, field := range data.schema.fields {
 			value := module.zeroValue(field.RuntimeType)
-			if index < len(data.values) && data.values[index].Type.Valid() {
-				value = data.values[index]
+			if stored, ok := data.fieldAt(index); ok {
+				value = stored
 			}
 			if !reflectValueIsZero(module, value) {
 				return false

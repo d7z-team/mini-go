@@ -167,7 +167,14 @@ func TestModuleExportsObserveInitializationState(t *testing.T) {
 			if test.initializing {
 				module.state.beginInitialization()
 			}
-			result, err := instance.Call(context.Background(), "run")
+			execution, err := instance.Start("run")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.initializing {
+				module.state.initTask = instance.vm.machine.runnableTasks()[0]
+			}
+			result, err := execution.Wait(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}

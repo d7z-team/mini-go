@@ -2,116 +2,111 @@
 
 use super::*;
 
+pub(super) struct ResourceRead(Arc<Value>);
+
+impl std::ops::Deref for ResourceRead {
+    type Target = Resource;
+    fn deref(&self) -> &Resource {
+        let Data::Resource(resource) = &self.0.data else {
+            unreachable!()
+        };
+        resource
+    }
+}
+
+#[derive(Default)]
 pub(super) struct Task {
     pub id: u64,
     pub scope: u64,
     pub frames: Vec<Frame>,
+    pub suspended_frames: Vec<Frame>,
     pub blocked: Option<Blocked>,
+    pub transient_roots: Vec<Handle>,
+    pub allocation_roots: Vec<Value>,
+    pub popped_frame: Option<usize>,
+    pub scheduling_phase: u8,
+    pub step_grant: Option<budget::StepGrant>,
+    pub selection_completion: Option<Box<select::Selection>>,
+    pub pending_write: Option<mutation::PendingWrite>,
+    pub write_collection: mutation::WriteCollection,
+    // An allocating instruction may have to stop at the owner boundary for a
+    // complete guest-memory census. Keep its exact operands until the owner
+    // either rejects the allocation or resumes the same PC without charging
+    // another bytecode step.
+    pub instruction_active: bool,
+    pub instruction_pc: usize,
+    pub instruction_stack_len: usize,
+    pub retry_instruction: bool,
+    pub retry_operands: Vec<Value>,
+    pub census_request: Option<u64>,
+    pub pending_error: Option<RuntimeError>,
+}
+
+impl Trace for Task {
+    fn trace(&self, visit: &mut dyn FnMut(Handle)) {
+        if let Some(write) = &self.pending_write {
+            write.trace(visit);
+        }
+        if let Some(selection) = &self.selection_completion {
+            selection.trace(visit);
+        }
+        for frame in self.frames.iter().chain(&self.suspended_frames) {
+            frame.trace(visit);
+        }
+        for handle in &self.transient_roots {
+            visit(*handle);
+        }
+        for value in &self.allocation_roots {
+            value.trace(visit);
+        }
+        for value in &self.retry_operands {
+            value.trace(visit);
+        }
+        if let Some(operation) = &self.blocked {
+            operation.trace(visit);
+        }
+    }
 }
 
 #[derive(Clone)]
 pub(super) enum Blocked {
-    Send {
-        channel: Value,
-        value: Value,
-    },
-    Receive {
-        channel: Value,
-        with_ok: bool,
-        token: Handle,
-    },
-    WaitSet(Value),
+    Select(Box<select::Selection>),
+    Mutex(Handle),
     Ffi(u64),
+    Module(String),
 }
 
 impl Trace for Blocked {
     fn trace(&self, visit: &mut dyn FnMut(Handle)) {
         match self {
-            Self::Send { channel, value } => {
-                channel.trace(visit);
-                value.trace(visit);
-            }
-            Self::Receive { channel, token, .. } => {
-                channel.trace(visit);
-                visit(*token);
-            }
-            Self::WaitSet(value) => value.trace(visit),
-            Self::Ffi(_) => {}
+            Self::Select(selection) => selection.trace(visit),
+            Self::Mutex(handle) => visit(*handle),
+            Self::Ffi(_) | Self::Module(_) => {}
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Resource {
+    Mutex {
+        locked: bool,
+        grant: Option<u64>,
+        waiters: VecDeque<u64>,
+    },
     Channel {
         capacity: usize,
-        pending_capacity: usize,
         closed: bool,
         values: VecDeque<Value>,
-        receive_tokens: Vec<Handle>,
-        send_tokens: Vec<Handle>,
     },
-    Token {
-        signaled: bool,
-        canceled: bool,
-        registrations: Vec<(Handle, bool)>,
-    },
-    WaitSet(Vec<Handle>),
-}
-
-impl Clone for Resource {
-    fn clone(&self) -> Self {
-        fn copy_capacity<T: Clone>(values: &Vec<T>) -> Vec<T> {
-            let mut copy = Vec::with_capacity(values.capacity());
-            copy.extend_from_slice(values);
-            copy
-        }
-        match self {
-            Self::Channel {
-                capacity,
-                pending_capacity,
-                closed,
-                values,
-                receive_tokens,
-                send_tokens,
-            } => Self::Channel {
-                capacity: *capacity,
-                pending_capacity: *pending_capacity,
-                closed: *closed,
-                values: values.clone(),
-                receive_tokens: copy_capacity(receive_tokens),
-                send_tokens: copy_capacity(send_tokens),
-            },
-            Self::Token {
-                signaled,
-                canceled,
-                registrations,
-            } => Self::Token {
-                signaled: *signaled,
-                canceled: *canceled,
-                registrations: registrations.clone(),
-            },
-            Self::WaitSet(tokens) => Self::WaitSet(copy_capacity(tokens)),
-        }
-    }
 }
 
 impl Resource {
     pub(crate) fn logical_bytes(&self) -> u64 {
         128 + match self {
-            Self::Channel {
-                capacity,
-                pending_capacity,
-                receive_tokens,
-                send_tokens,
-                ..
-            } => {
-                (*capacity + *pending_capacity + receive_tokens.capacity() + send_tokens.capacity())
-                    as u64
-                    * 16
+            Self::Mutex { grant, waiters, .. } => {
+                (waiters.len() as u64 + u64::from(grant.is_some())) * 144
             }
-            Self::Token { registrations, .. } => registrations.len() as u64 * 16,
-            Self::WaitSet(tokens) => tokens.capacity() as u64 * 16,
+            Self::Channel { capacity, .. } => *capacity as u64 * 16,
         }
     }
 }
@@ -119,27 +114,10 @@ impl Resource {
 impl Trace for Resource {
     fn trace(&self, visit: &mut dyn FnMut(Handle)) {
         match self {
-            Self::Channel {
-                values,
-                receive_tokens,
-                send_tokens,
-                ..
-            } => {
+            Self::Mutex { .. } => {}
+            Self::Channel { values, .. } => {
                 for value in values {
                     value.trace(visit);
-                }
-                for token in receive_tokens.iter().chain(send_tokens) {
-                    visit(*token);
-                }
-            }
-            Self::Token { registrations, .. } => {
-                for (resource, _) in registrations {
-                    visit(*resource);
-                }
-            }
-            Self::WaitSet(tokens) => {
-                for token in tokens {
-                    visit(*token);
                 }
             }
         }
@@ -147,6 +125,26 @@ impl Trace for Resource {
 }
 
 impl Instance {
+    pub(super) fn tasks(&self) -> impl Iterator<Item = &Task> {
+        std::iter::once(&self.running)
+            .chain(&self.preparing_task)
+            .chain(&self.resuming_task)
+            .chain(&self.runnable)
+            .chain(self.blocked.iter())
+    }
+
+    pub(super) fn admit_task(&self) -> Result<(), RuntimeError> {
+        let active: usize = self.scope_work.values().map(|work| work.tasks).sum();
+        if active >= self.limits.max_tasks {
+            return Err(RuntimeError::new(
+                "task_limit",
+                "scheduler",
+                "task limit exceeded",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn close_channel(&mut self, channel: &Value) -> Result<(), RuntimeError> {
         if matches!(channel.data, Data::Nil) {
             return Err(RuntimeError::new("panic", "close", "close of nil channel"));
@@ -164,8 +162,7 @@ impl Instance {
             ));
         }
         *closed = true;
-        self.store_resource(handle, resource)?;
-        self.signal_channel(handle)
+        self.store_resource(handle, resource)
     }
 
     fn ffi_values(&mut self, reply: crate::ffi::Reply) -> Result<Vec<Value>, RuntimeError> {
@@ -225,21 +222,15 @@ impl Instance {
     }
 
     pub(super) fn yield_task(&mut self) {
-        if !self.frames.is_empty() {
-            self.runnable.push_back(Task {
-                id: self.current_task,
-                scope: self.current_scope,
-                frames: std::mem::take(&mut self.frames),
-                blocked: None,
-            });
+        self.running.step_grant = None;
+        if !self.running.frames.is_empty() {
+            self.runnable.push_back(std::mem::take(&mut self.running));
         }
     }
 
     pub(super) fn schedule_next(&mut self) -> bool {
         if let Some(task) = self.runnable.pop_front() {
-            self.current_task = task.id;
-            self.current_scope = task.scope;
-            self.frames = task.frames;
+            self.running = task;
             true
         } else {
             false
@@ -247,114 +238,37 @@ impl Instance {
     }
 
     pub(super) fn park(&mut self, operation: Blocked) {
+        self.running.step_grant = None;
         if matches!(operation, Blocked::Ffi(_)) {
             self.scope_work
-                .entry(self.current_scope)
+                .entry(self.running.scope)
                 .or_default()
                 .ffi_calls += 1;
-            self.changed_scopes.insert(self.current_scope);
+            self.changed_scopes.insert(self.running.scope);
         }
         let mut dependencies = Vec::new();
         match &operation {
-            Blocked::Send { channel, .. } | Blocked::Receive { channel, .. } => {
-                if let Data::ResourceRef(handle) = channel.data {
-                    dependencies.push(handle);
-                }
-            }
-            Blocked::WaitSet(value) => {
-                if let Data::ResourceRef(handle) = value.data {
-                    dependencies.push(handle);
-                    if let Ok(Resource::WaitSet(tokens)) = self.resource(handle) {
-                        dependencies.extend(tokens.iter().copied());
+            Blocked::Select(selection) => {
+                for case in &selection.cases {
+                    if let Data::ResourceRef(handle) = case.channel.data {
+                        dependencies.push(handle);
                     }
                 }
+                let mut seen = HashSet::new();
+                dependencies.retain(|handle| seen.insert(*handle));
             }
-            Blocked::Ffi(_) => {}
+            Blocked::Mutex(handle) => dependencies.push(*handle),
+            Blocked::Ffi(_) | Blocked::Module(_) => {}
         }
-        self.blocked.push(
-            Task {
-                id: self.current_task,
-                scope: self.current_scope,
-                frames: std::mem::take(&mut self.frames),
-                blocked: Some(operation),
-            },
-            dependencies,
-        );
+        let mut task = std::mem::take(&mut self.running);
+        task.blocked = Some(operation);
+        self.blocked.push(task, dependencies);
     }
 
-    pub(super) fn park_receive(
-        &mut self,
-        channel: Value,
-        with_ok: bool,
-    ) -> Result<(), RuntimeError> {
-        let token = self.allocate(Value {
-            typ: TypeIdentity::Any,
-            data: Data::Resource(Box::new(Resource::Token {
-                signaled: false,
-                canceled: false,
-                registrations: Vec::new(),
-            })),
-        })?;
-        self.subscribe_channel(&channel, token, false)?;
-        self.park(Blocked::Receive {
-            channel,
-            with_ok,
-            token,
-        });
-        Ok(())
-    }
-
-    pub(super) fn reserve_pending_send(
-        &mut self,
-        channel: &Value,
-        value: &Value,
-    ) -> Result<usize, RuntimeError> {
-        let Data::ResourceRef(handle) = channel.data else {
-            return Ok(0);
-        };
-        let resource = self.resource(handle)?;
-        let Resource::Channel {
-            pending_capacity,
-            capacity,
-            values,
-            ..
-        } = resource
-        else {
-            unreachable!()
-        };
-        let queued = if *capacity == 0 { values.len() } else { 0 };
-        let pending = self.blocked.send_count(handle);
-        let needed = queued + pending + 1;
-        if needed > self.limits.max_sequence_elements {
-            return Err(RuntimeError::new(
-                "value_limit",
-                "send",
-                "pending send count exceeds limit",
-            ));
-        }
-        if needed <= *pending_capacity {
-            return Ok(*pending_capacity);
-        }
-        let growth = needed - *pending_capacity;
-        self.memory.allocation_roots = vec![channel.clone(), value.clone()];
-        let charged = self.charge_guest(growth as u64 * 16);
-        self.memory.allocation_roots.clear();
-        charged?;
-        let mut resource = self.resource(handle)?.clone();
-        let Resource::Channel {
-            pending_capacity, ..
-        } = &mut resource
-        else {
-            unreachable!()
-        };
-        *pending_capacity = needed;
-        self.store_resource(handle, resource)?;
-        Ok(needed)
-    }
-
-    pub(super) fn resource(&self, handle: Handle) -> Result<&Resource, RuntimeError> {
-        match &self.heap.get(handle)?.data {
-            Data::Resource(resource) => Ok(resource),
+    pub(super) fn resource(&self, handle: Handle) -> Result<ResourceRead, RuntimeError> {
+        let value = self.heap.get(handle)?;
+        match &value.data {
+            Data::Resource(_) => Ok(ResourceRead(value)),
             _ => Err(RuntimeError::new(
                 "type_error",
                 "resource",
@@ -363,14 +277,18 @@ impl Instance {
         }
     }
 
-    fn store_resource(&mut self, handle: Handle, resource: Resource) -> Result<(), RuntimeError> {
+    pub(super) fn store_resource(
+        &mut self,
+        handle: Handle,
+        resource: Resource,
+    ) -> Result<(), RuntimeError> {
         self.blocked.notify_resource(handle);
         let value = Value {
             typ: TypeIdentity::Any,
             data: Data::Resource(Box::new(resource)),
         };
         let bytes = value.logical_bytes()? + 128;
-        value.trace(&mut |handle| self.transient_roots.push(handle));
+        value.trace(&mut |handle| self.running.transient_roots.push(handle));
         self.prepare_heap_replacements(&[(handle, bytes)])?;
         self.heap
             .replace(handle, value, bytes)
@@ -401,9 +319,8 @@ impl Instance {
             capacity,
             closed,
             values,
-            receive_tokens,
             ..
-        } = self.resource(handle)?
+        } = &*self.resource(handle)?
         else {
             return Err(RuntimeError::new(
                 "type_error",
@@ -413,20 +330,13 @@ impl Instance {
         };
         Ok(*closed
             || if sending {
-                values.len() < *capacity
-                    || *capacity == 0 && !receive_tokens.is_empty()
-                    || self.blocked.first(handle, false).is_some()
+                values.len() < *capacity || self.blocked.select_peer(handle, true).is_some()
             } else {
-                !values.is_empty() || self.blocked.first(handle, true).is_some()
+                !values.is_empty() || self.blocked.select_peer(handle, false).is_some()
             })
     }
 
-    pub(super) fn try_send(
-        &mut self,
-        channel: &Value,
-        value: Value,
-        allow_waiting_select: bool,
-    ) -> Result<bool, RuntimeError> {
+    pub(super) fn try_send(&mut self, channel: &Value, value: Value) -> Result<bool, RuntimeError> {
         let value = self.coerce(value, &self.element_type(&channel.typ)?)?;
         if matches!(channel.data, Data::Nil) {
             return Ok(false);
@@ -435,10 +345,8 @@ impl Instance {
         let mut resource = self.resource(handle)?.clone();
         let Resource::Channel {
             capacity,
-            pending_capacity,
             closed,
             values,
-            receive_tokens,
             ..
         } = &mut resource
         else {
@@ -447,34 +355,23 @@ impl Instance {
         if *closed {
             return Err(RuntimeError::new("panic", "send", "send on closed channel"));
         }
-        if *capacity == 0 && !allow_waiting_select {
-            return Ok(false);
-        }
-        if *capacity == 0 && self.channel_ready(channel, true)? {
-            *pending_capacity = self.reserve_pending_send(channel, &value)?;
-        }
-        if let Some(index) = self.blocked.first(handle, false) {
-            let mut task = self.blocked.remove(index).task;
-            let Some(Blocked::Receive { with_ok, token, .. }) = task.blocked.take() else {
-                unreachable!()
-            };
-            self.finish_token(token, false)?;
-            let frame = task.frames.last_mut().unwrap();
-            frame.stack.push(value);
-            if with_ok {
-                frame.stack.push(Value::boolean(true));
-            }
-            self.runnable.push_back(task);
+        if let Some((key, index, _)) = self.blocked.select_peer(handle, true) {
+            self.blocked.complete_selection(
+                key,
+                select::SelectOutcome {
+                    index: index as i64,
+                    value: Some(value),
+                    received: true,
+                    error: None,
+                },
+            );
             return Ok(true);
         }
-        if values.len() >= *capacity
-            && !(allow_waiting_select && *capacity == 0 && !receive_tokens.is_empty())
-        {
+        if values.len() >= *capacity {
             return Ok(false);
         }
         values.push_back(value);
         self.store_resource(handle, resource)?;
-        self.signal_channel(handle)?;
         Ok(true)
     }
 
@@ -495,9 +392,8 @@ impl Instance {
             ));
         };
         if let Some(value) = values.pop_front() {
-            value.trace(&mut |handle| self.transient_roots.push(handle));
+            value.trace(&mut |handle| self.running.transient_roots.push(handle));
             self.store_resource(handle, resource)?;
-            self.signal_channel(handle)?;
             return Ok(Some((value, true)));
         }
         if *closed {
@@ -506,122 +402,19 @@ impl Instance {
                 false,
             )));
         }
-        if let Some(index) = self.blocked.first(handle, true) {
-            let mut task = self.blocked.remove(index).task;
-            let Some(Blocked::Send { value, .. }) = task.blocked.take() else {
-                unreachable!()
-            };
-            value.trace(&mut |handle| self.transient_roots.push(handle));
-            self.runnable.push_back(task);
-            self.signal_channel(handle)?;
-            return Ok(Some((value, true)));
+        if let Some((key, index, value)) = self.blocked.select_peer(handle, false) {
+            self.blocked.complete_selection(
+                key,
+                select::SelectOutcome {
+                    index: index as i64,
+                    value: None,
+                    received: false,
+                    error: None,
+                },
+            );
+            return Ok(Some((value.unwrap(), true)));
         }
         Ok(None)
-    }
-
-    pub(super) fn finish_token(
-        &mut self,
-        handle: Handle,
-        cancel: bool,
-    ) -> Result<(), RuntimeError> {
-        let mut resource = self.resource(handle)?.clone();
-        let Resource::Token {
-            signaled,
-            canceled,
-            registrations,
-        } = &mut resource
-        else {
-            return Err(RuntimeError::new(
-                "type_error",
-                "token",
-                "expected wait token",
-            ));
-        };
-        if *canceled {
-            return Ok(());
-        }
-        *canceled = cancel;
-        *signaled = !cancel;
-        let registrations = std::mem::take(registrations);
-        self.store_resource(handle, resource)?;
-        for (channel, sending) in registrations {
-            let mut resource = self.resource(channel)?.clone();
-            let Resource::Channel {
-                send_tokens,
-                receive_tokens,
-                ..
-            } = &mut resource
-            else {
-                continue;
-            };
-            if sending {
-                send_tokens.retain(|token| *token != handle);
-            } else {
-                receive_tokens.retain(|token| *token != handle);
-            }
-            self.store_resource(channel, resource)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn signal_channel(&mut self, handle: Handle) -> Result<(), RuntimeError> {
-        let Resource::Channel {
-            closed,
-            values,
-            capacity,
-            receive_tokens,
-            send_tokens,
-            ..
-        } = self.resource(handle)?
-        else {
-            return Err(RuntimeError::new(
-                "type_error",
-                "channel",
-                "expected channel",
-            ));
-        };
-        let mut tokens = Vec::new();
-        let has_sender = self.blocked.first(handle, true).is_some();
-        let has_receiver = self.blocked.first(handle, false).is_some();
-        if *closed {
-            tokens.extend(receive_tokens);
-            tokens.extend(send_tokens);
-        } else {
-            if !values.is_empty() || has_sender {
-                tokens.extend(receive_tokens.first());
-            }
-            if values.len() < *capacity || has_receiver {
-                tokens.extend(send_tokens.first());
-            }
-        }
-        for token in tokens {
-            self.finish_token(token, false)?;
-        }
-        Ok(())
-    }
-
-    fn wait_set_index(&mut self, value: &Value) -> Result<i64, RuntimeError> {
-        let Resource::WaitSet(tokens) = self.resource(Self::resource_handle(value)?)? else {
-            return Err(RuntimeError::new(
-                "type_error",
-                "waitset",
-                "expected wait set",
-            ));
-        };
-        let mut ready = Vec::new();
-        for (index, token) in tokens.iter().enumerate() {
-            if matches!(
-                self.resource(*token)?,
-                Resource::Token {
-                    signaled: true,
-                    canceled: false,
-                    ..
-                }
-            ) {
-                ready.push(index);
-            }
-        }
-        Ok(self.choose_ready(&ready))
     }
 
     pub(super) fn choose_ready(&mut self, ready: &[usize]) -> i64 {
@@ -643,111 +436,6 @@ impl Instance {
         ready[state as usize % ready.len()] as i64
     }
 
-    pub(super) fn subscribe_channel(
-        &mut self,
-        channel: &Value,
-        token: Handle,
-        sending: bool,
-    ) -> Result<(), RuntimeError> {
-        if self.channel_ready(channel, sending)? {
-            self.finish_token(token, false)?;
-        } else if !matches!(channel.data, Data::Nil) {
-            let handle = Self::resource_handle(channel)?;
-            let mut token_resource = self.resource(token)?.clone();
-            let Resource::Token {
-                signaled,
-                canceled,
-                registrations,
-            } = &mut token_resource
-            else {
-                return Err(RuntimeError::new(
-                    "type_error",
-                    "subscribe",
-                    "expected token",
-                ));
-            };
-            if !*signaled && !*canceled && !registrations.contains(&(handle, sending)) {
-                registrations.push((handle, sending));
-                let mut channel_resource = self.resource(handle)?.clone();
-                let Resource::Channel {
-                    send_tokens,
-                    receive_tokens,
-                    ..
-                } = &mut channel_resource
-                else {
-                    return Err(RuntimeError::new(
-                        "type_error",
-                        "subscribe",
-                        "expected channel",
-                    ));
-                };
-                let waiters = if sending { send_tokens } else { receive_tokens };
-                if waiters.len() >= self.limits.max_sequence_elements {
-                    return Err(RuntimeError::new(
-                        "value_limit",
-                        "subscribe",
-                        "waiter count exceeds limit",
-                    ));
-                }
-                let growth = usize::from(waiters.len() == waiters.capacity());
-                self.memory.allocation_roots = vec![
-                    channel.clone(),
-                    Value {
-                        typ: TypeIdentity::Any,
-                        data: Data::ResourceRef(token),
-                    },
-                ];
-                let charged = self.charge_guest((growth as u64 + 1) * 16);
-                self.memory.allocation_roots.clear();
-                charged?;
-                if growth != 0 {
-                    waiters.reserve_exact(1);
-                }
-                waiters.push(token);
-                let token_value = Value {
-                    typ: TypeIdentity::Any,
-                    data: Data::Resource(Box::new(token_resource)),
-                };
-                let channel_value = Value {
-                    typ: TypeIdentity::Any,
-                    data: Data::Resource(Box::new(channel_resource)),
-                };
-                let token_bytes =
-                    token_value
-                        .logical_bytes()?
-                        .checked_add(128)
-                        .ok_or_else(|| {
-                            RuntimeError::new(
-                                "allocation_limit",
-                                "subscribe",
-                                "token size overflow",
-                            )
-                        })?;
-                let channel_bytes =
-                    channel_value
-                        .logical_bytes()?
-                        .checked_add(128)
-                        .ok_or_else(|| {
-                            RuntimeError::new(
-                                "allocation_limit",
-                                "subscribe",
-                                "channel size overflow",
-                            )
-                        })?;
-                token_value.trace(&mut |handle| self.transient_roots.push(handle));
-                channel_value.trace(&mut |handle| self.transient_roots.push(handle));
-                self.prepare_heap_replacements(&[(token, token_bytes), (handle, channel_bytes)])?;
-                self.blocked.notify_resource(token);
-                self.blocked.notify_resource(handle);
-                self.heap.replace_pair([
-                    (token, token_value, token_bytes),
-                    (handle, channel_value, channel_bytes),
-                ])?;
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn resume_blocked(&mut self) -> Result<(), RuntimeError> {
         for call in self.ffi_calls.take_ready_ids() {
             self.blocked.notify_call(call);
@@ -765,6 +453,36 @@ impl Instance {
                 .unwrap();
             let outcome = (|| -> Result<bool, RuntimeError> {
                 Ok(match &operation {
+                    Blocked::Select(selection) => {
+                        let mut selection = selection.clone();
+                        if self.try_selection(&mut selection)? {
+                            self.resuming_task.as_mut().unwrap().selection_completion =
+                                Some(selection);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Blocked::Mutex(handle) => {
+                        let mut resource = self.resource(*handle)?.clone();
+                        let Resource::Mutex { locked, grant, .. } = &mut resource else {
+                            unreachable!()
+                        };
+                        if *grant == Some(self.resuming_task.as_ref().unwrap().id) {
+                            *grant = None;
+                            *locked = true;
+                            self.store_resource(*handle, resource)?;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    Blocked::Module(module) => {
+                        if let Some(error) = self.failed_initializations.get(module) {
+                            return Err(error.clone());
+                        }
+                        !self.initializing.contains_key(module)
+                    }
                     Blocked::Ffi(id) => {
                         if let Some(reply) = self.ffi_calls.take(*id) {
                             let values = self.ffi_values(reply)?;
@@ -776,48 +494,6 @@ impl Instance {
                                 .unwrap()
                                 .stack
                                 .extend(values);
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    Blocked::Send { channel, value } => {
-                        self.try_send(channel, value.clone(), false)?
-                    }
-                    Blocked::Receive {
-                        channel,
-                        with_ok,
-                        token,
-                    } => {
-                        if let Some((value, ok)) = self.try_receive(channel)? {
-                            self.finish_token(*token, false)?;
-                            let frame = self
-                                .resuming_task
-                                .as_mut()
-                                .unwrap()
-                                .frames
-                                .last_mut()
-                                .unwrap();
-                            frame.stack.push(value);
-                            if *with_ok {
-                                frame.stack.push(Value::boolean(ok));
-                            }
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    Blocked::WaitSet(value) => {
-                        let selected = self.wait_set_index(value)?;
-                        if selected >= 0 {
-                            self.resuming_task
-                                .as_mut()
-                                .unwrap()
-                                .frames
-                                .last_mut()
-                                .unwrap()
-                                .stack
-                                .push(Value::int(selected));
                             true
                         } else {
                             false
@@ -878,9 +554,10 @@ impl Instance {
         use Instruction::*;
         let mut result = None;
         match instruction {
+            Select(payload) => return self.execute_select(payload),
             CallFfi(_) => {
-                let payload = self.pop()?;
-                let route = self.pop()?;
+                let payload = self.running.pop()?;
+                let route = self.running.pop()?;
                 let Data::String(route) = route.data else {
                     return Err(RuntimeError::new(
                         "type_error",
@@ -916,17 +593,13 @@ impl Instance {
                 };
                 let values =
                     self.ffi_values(crate::ffi::Reply::new(Vec::new(), Some(error), None))?;
-                self.frames.last_mut().unwrap().stack.extend(values);
+                self.running.frames.last_mut().unwrap().stack.extend(values);
             }
             Spawn(payload) => {
-                if self.runnable.len() + self.blocked.len() + 1 >= self.limits.max_tasks {
-                    return Err(RuntimeError::new(
-                        "task_limit",
-                        "spawn",
-                        "task limit exceeded",
-                    ));
-                }
-                let mut arguments = self.pop_values(payload.arg_count as usize + 1)?;
+                self.admit_task()?;
+                let mut arguments = self
+                    .running
+                    .pop_values(&self.frame_pool, payload.arg_count as usize + 1)?;
                 let value = arguments.remove(0);
                 let Data::Function(callee) = value.data else {
                     return Err(RuntimeError::new(
@@ -935,29 +608,29 @@ impl Instance {
                         "expected callable",
                     ));
                 };
-                for frame in &self.frames {
-                    frame.trace(&mut |handle| self.transient_roots.push(handle));
-                }
-                self.suspended_frames = std::mem::take(&mut self.frames);
+                let id = self.allocate_task_id()?;
+                let scope = self.running.scope;
+                self.preparing_task = Some(std::mem::replace(
+                    &mut self.running,
+                    Task {
+                        id,
+                        scope,
+                        ..Task::default()
+                    },
+                ));
                 let created =
                     self.push_frame(callee, arguments, payload.result_count as usize, false);
                 let child =
-                    std::mem::replace(&mut self.frames, std::mem::take(&mut self.suspended_frames));
+                    std::mem::replace(&mut self.running, self.preparing_task.take().unwrap());
                 created?;
                 self.charge_guest(128)?;
-                let id = self.allocate_task_id()?;
-                self.scope_work.entry(self.current_scope).or_default().tasks += 1;
-                self.changed_scopes.insert(self.current_scope);
-                self.runnable.push_back(Task {
-                    id,
-                    scope: self.current_scope,
-                    frames: child,
-                    blocked: None,
-                });
+                self.scope_work.entry(self.running.scope).or_default().tasks += 1;
+                self.changed_scopes.insert(self.running.scope);
+                self.runnable.push_back(child);
                 self.yield_task();
             }
             MakeWaitable(payload) => {
-                let capacity = self.pop()?.integer()?;
+                let capacity = self.running.pop()?.integer()?;
                 if capacity < 0 || capacity as u64 > self.limits.max_sequence_elements as u64 {
                     return Err(RuntimeError::new(
                         "value_limit",
@@ -969,11 +642,8 @@ impl Instance {
                 let typ = self.types.resolve(module, &payload.r#type)?;
                 let resource = Resource::Channel {
                     capacity: capacity as usize,
-                    pending_capacity: 0,
                     closed: false,
                     values: VecDeque::new(),
-                    receive_tokens: Vec::new(),
-                    send_tokens: Vec::new(),
                 };
                 let handle = self.allocate(Value {
                     typ: TypeIdentity::Any,
@@ -986,163 +656,45 @@ impl Instance {
             }
             WaitableSend | WaitableTrySend => {
                 let blocking = matches!(instruction, WaitableSend);
-                let value = self.pop()?;
-                let channel = self.pop()?;
-                let sent = self.try_send(&channel, value.clone(), !blocking)?;
-                if !sent && blocking {
-                    self.reserve_pending_send(&channel, &value)?;
-                    let handle = if let Data::ResourceRef(handle) = channel.data {
-                        Some(handle)
-                    } else {
-                        None
-                    };
-                    self.park(Blocked::Send { channel, value });
-                    if let Some(handle) = handle {
-                        self.signal_channel(handle)?;
-                    }
-                } else if !blocking {
-                    result = Some(Value::boolean(sent));
+                let value = self.running.pop()?;
+                let channel = self.running.pop()?;
+                if blocking {
+                    self.wait_channel(channel, Some(value), false)?;
+                } else {
+                    result = Some(Value::boolean(self.try_send(&channel, value)?));
                 }
             }
             WaitableRecv | WaitableRecvOk | WaitableTryRecv => {
                 let with_ok = !matches!(instruction, WaitableRecv);
                 let blocking = !matches!(instruction, WaitableTryRecv);
-                let channel = self.pop()?;
-                if let Some((value, ok)) = self.try_receive(&channel)? {
-                    self.frames.last_mut().unwrap().stack.push(value);
+                let channel = self.running.pop()?;
+                if blocking {
+                    self.wait_channel(channel, None, with_ok)?;
+                } else if let Some((value, ok)) = self.try_receive(&channel)? {
+                    self.running.frames.last_mut().unwrap().stack.push(value);
                     if with_ok {
                         result = Some(Value::boolean(ok));
                     }
-                } else if blocking {
-                    let handle = if let Data::ResourceRef(handle) = channel.data {
-                        Some(handle)
-                    } else {
-                        None
-                    };
-                    self.park_receive(channel, with_ok)?;
-                    if let Some(handle) = handle {
-                        self.signal_channel(handle)?;
-                    }
                 } else {
                     let zero = self.zero(&self.element_type(&channel.typ)?, 0)?;
-                    self.frames.last_mut().unwrap().stack.push(zero);
+                    self.running.frames.last_mut().unwrap().stack.push(zero);
                     result = Some(Value::boolean(false));
                 }
             }
             WaitableCanRecv | WaitableCanSend => {
-                let channel = self.pop()?;
+                let channel = self.running.pop()?;
                 result = Some(Value::boolean(
                     self.channel_ready(&channel, matches!(instruction, WaitableCanSend))?,
                 ));
             }
             WaitableClose => {
-                let channel = self.pop()?;
+                let channel = self.running.pop()?;
                 self.close_channel(&channel)?;
-            }
-            MakeWaitToken | MakeWaitSet => {
-                self.charge_guest(128)?;
-                let token = matches!(instruction, MakeWaitToken);
-                let resource = if token {
-                    Resource::Token {
-                        signaled: false,
-                        canceled: false,
-                        registrations: Vec::new(),
-                    }
-                } else {
-                    Resource::WaitSet(Vec::new())
-                };
-                let handle = self.allocate(Value {
-                    typ: TypeIdentity::Any,
-                    data: Data::Resource(Box::new(resource)),
-                })?;
-                result = Some(Value {
-                    typ: TypeIdentity::Primitive(if token {
-                        wire::PrimitiveWaitToken
-                    } else {
-                        wire::PrimitiveWaitSet
-                    }),
-                    data: Data::ResourceRef(handle),
-                });
-            }
-            WaitTokenSignal | WaitTokenCancel => {
-                let token = self.pop()?;
-                self.finish_token(
-                    Self::resource_handle(&token)?,
-                    matches!(instruction, WaitTokenCancel),
-                )?;
-            }
-            WaitSetAdd => {
-                let mut values = self.pop_values(2)?;
-                let token = values.pop().unwrap();
-                let set = values.pop().unwrap();
-                let handle = Self::resource_handle(&set)?;
-                let token = Self::resource_handle(&token)?;
-                if !matches!(self.resource(token)?, Resource::Token { .. }) {
-                    return Err(RuntimeError::new("type_error", "waitset", "expected token"));
-                }
-                let mut resource = self.resource(handle)?.clone();
-                let Resource::WaitSet(tokens) = &mut resource else {
-                    return Err(RuntimeError::new(
-                        "type_error",
-                        "waitset",
-                        "expected wait set",
-                    ));
-                };
-                if tokens.len() >= self.limits.max_sequence_elements {
-                    return Err(RuntimeError::new(
-                        "value_limit",
-                        "waitset",
-                        "wait set limit exceeded",
-                    ));
-                }
-                if tokens.len() == tokens.capacity() {
-                    let capacity = tokens
-                        .len()
-                        .saturating_mul(2)
-                        .max(tokens.len() + 1)
-                        .min(self.limits.max_sequence_elements);
-                    self.charge_guest((capacity - tokens.capacity()) as u64 * 16)?;
-                    tokens.reserve_exact(capacity - tokens.len());
-                }
-                tokens.push(token);
-                self.store_resource(handle, resource)?;
-                result = Some(set);
-            }
-            WaitSetPoll | WaitSetPark => {
-                let set = self.pop()?;
-                let selected = self.wait_set_index(&set)?;
-                if selected < 0 && matches!(instruction, WaitSetPark) {
-                    self.park(Blocked::WaitSet(set));
-                } else {
-                    result = Some(Value::int(selected));
-                }
-            }
-            WaitSetCancel => {
-                let set = self.pop()?;
-                let handle = Self::resource_handle(&set)?;
-                let Resource::WaitSet(tokens) = self.resource(handle)?.clone() else {
-                    return Err(RuntimeError::new(
-                        "type_error",
-                        "waitset",
-                        "expected wait set",
-                    ));
-                };
-                for token in tokens {
-                    self.finish_token(token, true)?;
-                }
-                self.store_resource(handle, Resource::WaitSet(Vec::new()))?;
-            }
-            WaitableSubscribeRecv | WaitableSubscribeSend => {
-                let token = self.pop()?;
-                let channel = self.pop()?;
-                let token = Self::resource_handle(&token)?;
-                let sending = matches!(instruction, WaitableSubscribeSend);
-                self.subscribe_channel(&channel, token, sending)?;
             }
             _ => unreachable!("wait dispatch only receives wait instructions"),
         }
         if let Some(value) = result {
-            self.frames.last_mut().unwrap().stack.push(value);
+            self.running.frames.last_mut().unwrap().stack.push(value);
         }
         Ok(())
     }

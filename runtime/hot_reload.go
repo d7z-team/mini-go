@@ -177,8 +177,8 @@ func (i *Instance) ApplyPatch(plan *PatchPlan) (PatchResult, error) {
 		cleanupErr := plan.Close()
 		return errors.Join(err, cleanupErr)
 	}
-	if !i.vm.owner.CompareAndSwap(false, true) {
-		return PatchResult{}, fail(PatchError{Code: "busy", Message: "runtime is executing"})
+	if err := i.vm.enterOwnerContext(context.Background()); err != nil {
+		return PatchResult{}, fail(err)
 	}
 	defer i.vm.leaveOwner()
 	if !i.isOpen() {

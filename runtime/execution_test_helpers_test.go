@@ -9,7 +9,7 @@ func startTestExecution(machine *vm, export string, args ...vmValue) (*Execution
 	if machine == nil {
 		return nil, errors.New("nil VM")
 	}
-	instance := &Instance{vm: machine, done: make(chan struct{}), supervisor: make(chan struct{}, 1)}
+	instance := &Instance{vm: machine, done: make(chan struct{})}
 	execution, err := instance.start(context.Background(), false, func(revision *instanceRevision) (int64, error) {
 		if revision.root != nil && revision.root.executable != nil {
 			if declaration, ok := revision.root.executable.Exports[export]; ok && declaration.Kind == "function" {

@@ -3,6 +3,7 @@ package runtime
 import (
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/d7z-team/mini-go/compiler/types"
 )
@@ -80,6 +81,8 @@ func setRuntimeStructField(value *vmStruct, name string, field vmValue) {
 	if value == nil || value.schema == nil {
 		return
 	}
+	value.mu.Lock()
+	defer value.mu.Unlock()
 	if index, _, ok := value.schema.field(name); ok && index < len(value.values) {
 		value.values[index] = field
 	}
@@ -99,10 +102,39 @@ func (schema *structSchema) field(name string) (int, TypeFieldInfo, bool) {
 // vmStruct is a slot-based struct value. Uninitialized slots denote declared
 // zero values and are attached to the value when first observed.
 type vmStruct struct {
+	mu     sync.Mutex
 	schema *structSchema
 	values []vmValue
-	shared bool
 	sparse bool
+}
+
+func (value *vmStruct) snapshot() ([]vmValue, bool) {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	values := make([]vmValue, len(value.values), cap(value.values))
+	copy(values, value.values)
+	return values, value.sparse
+}
+
+func (value *vmStruct) fieldAt(index int) (vmValue, bool) {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	if index < 0 || index >= len(value.values) || !value.values[index].Type.Valid() {
+		return vmValue{}, false
+	}
+	return value.values[index], true
+}
+
+func (value *vmStruct) initializeField(index int, zero vmValue) vmValue {
+	value.mu.Lock()
+	defer value.mu.Unlock()
+	if len(value.values) == 0 {
+		value.values = make([]vmValue, len(value.schema.fields))
+	}
+	if !value.values[index].Type.Valid() {
+		value.values[index] = zero
+	}
+	return value.values[index]
 }
 
 func structValueField(data any, field string) (vmValue, bool) {
@@ -111,10 +143,10 @@ func structValueField(data any, field string) (vmValue, bool) {
 		return vmValue{}, false
 	}
 	index, _, ok := value.schema.field(field)
-	if !ok || index >= len(value.values) || !value.values[index].Type.Valid() {
+	if !ok {
 		return vmValue{}, false
 	}
-	return value.values[index], true
+	return value.fieldAt(index)
 }
 
 func (m *moduleInstance) structValueFieldInfo(object vmValue, field string) (TypeFieldInfo, bool) {
@@ -142,11 +174,12 @@ func materializeStructValue(data any) (map[string]vmValue, bool) {
 	if !ok || value == nil || value.schema == nil {
 		return nil, false
 	}
-	fields := make(map[string]vmValue, len(value.values))
+	values, sparse := value.snapshot()
+	fields := make(map[string]vmValue, len(values))
 	for index, field := range value.schema.fields {
-		if index < len(value.values) && value.values[index].Type.Valid() {
-			fields[field.Name] = value.values[index]
-		} else if !value.sparse {
+		if index < len(values) && values[index].Type.Valid() {
+			fields[field.Name] = values[index]
+		} else if !sparse {
 			zero, ok := atomicZeroValue(field.RuntimeType)
 			if !ok {
 				zero = zeroVMValue(field.RuntimeType.String())
@@ -167,11 +200,9 @@ func updatedStructValue(data any, field string, value vmValue) (any, bool) {
 	if !ok {
 		return nil, false
 	}
-	if current.shared {
-		values := make([]vmValue, len(current.schema.fields))
-		copy(values, current.values)
-		current = &vmStruct{schema: current.schema, values: values, sparse: current.sparse}
-	} else if len(current.values) == 0 {
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if len(current.values) == 0 {
 		current.values = make([]vmValue, len(current.schema.fields))
 	}
 	current.values[index] = value
@@ -190,19 +221,17 @@ func (m *moduleInstance) structSchema(typ any) (*structSchema, bool) {
 	if key == "" {
 		return nil, false
 	}
-	if schema, ok := m.structSchemaCache[key]; ok {
+	if schema, ok := m.structSchemaCache.load(key); ok {
 		return schema, schema != nil
 	}
-	if m.structSchemaCache == nil {
-		m.structSchemaCache = make(map[string]*structSchema)
-	}
+
 	fields, ok := m.moduleStructFieldInfo(runtimeType)
 	if !ok {
-		m.structSchemaCache[key] = nil
+		m.structSchemaCache.store(key, nil)
 		return nil, false
 	}
 	schema := newStructSchema(runtimeType, fields)
-	m.structSchemaCache[key] = schema
+	m.structSchemaCache.store(key, schema)
 	return schema, true
 }
 

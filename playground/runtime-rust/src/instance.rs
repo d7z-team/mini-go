@@ -16,6 +16,7 @@ use std::{
 };
 
 mod address;
+mod budget;
 mod collection;
 mod conversion;
 pub mod debug;
@@ -26,15 +27,21 @@ use frame::Frame;
 #[cfg(test)]
 mod budget_tests;
 mod host;
+#[cfg(test)]
+mod initialization_tests;
 mod intrinsic;
 pub mod memory;
+mod mutation;
+mod mutex;
 pub mod patch;
 mod reflect;
 mod reflect_async;
 mod reflect_method;
 mod reflect_value;
 pub mod scheduler;
+mod select;
 pub mod stats;
+pub(crate) mod task_runner;
 #[cfg(test)]
 mod test_helpers;
 mod timer;
@@ -127,21 +134,22 @@ pub enum PollStatus {
     Paused,
 }
 
+// Source generation/function/PC maps to the resolved generation/function.
+type CallBindings = HashMap<(u64, usize, usize), (u64, usize)>;
+
 pub struct Instance {
     revision: Arc<crate::program::Revision>,
     types: crate::types::TypeRegistry,
-    heap: Heap<Value>,
-    memory: memory::GuestMemory,
-    transient_roots: Vec<Handle>,
+    heap: Arc<Heap<Value>>,
+    memory: Arc<memory::GuestMemory>,
     globals: BTreeMap<(String, String), Handle>,
     constant_values: BTreeMap<(u64, usize), Value>,
-    call_bindings: HashMap<(u64, usize, usize), (u64, usize)>,
-    frames: Vec<Frame>,
-    frame_pool: frame::FramePool,
-    suspended_frames: Vec<Frame>,
-    popped_frame: Option<(u64, usize)>,
+    call_bindings: std::sync::Mutex<CallBindings>,
+    running: scheduler::Task,
+    frame_pool: Arc<frame::FramePool>,
+    preparing_task: Option<scheduler::Task>,
     initialized: HashSet<String>,
-    initializing: HashSet<String>,
+    initializing: HashMap<String, u64>,
     failed_initializations: BTreeMap<String, RuntimeError>,
     root_initialization: Option<u64>,
     cleanup: Option<crate::ffi::Shutdown<'static>>,
@@ -153,14 +161,11 @@ pub struct Instance {
     limits: ExecutionLimits,
     steps: u64,
     pub(crate) last_poll_steps: usize,
-    scheduling_phase: u8,
-    scope_steps: BTreeMap<u64, u64>,
+    scope_steps: BTreeMap<u64, Arc<budget::StepBudget>>,
     scope_work: BTreeMap<u64, stats::ScopeWork>,
     pub(crate) changed_scopes: std::collections::BTreeSet<u64>,
     closed: bool,
     faulted: bool,
-    current_task: u64,
-    current_scope: u64,
     next_task: u64,
     foreground: Option<u64>,
     runnable: VecDeque<scheduler::Task>,
@@ -179,7 +184,7 @@ pub struct Instance {
     reflected_type_keys: HashMap<String, usize>,
     // Method-set validation is immutable within a published revision. Keep only
     // successful assignments, with a fixed bound on this owner-local memo.
-    interface_assignments: std::cell::RefCell<HashSet<(TypeIdentity, TypeIdentity)>>,
+    interface_assignments: std::sync::Mutex<HashSet<(TypeIdentity, TypeIdentity)>>,
     scope_cancellations: BTreeMap<u64, crate::ffi::CancellationListener>,
     cancellation_events: Arc<crate::ffi::CancellationEvents>,
     pub(crate) debug: debug::DebugState,
@@ -217,18 +222,16 @@ impl Instance {
                 generation: 1,
                 program,
             }),
-            heap: Heap::new(limits.max_objects, limits.max_heap_bytes)?,
-            memory: memory::GuestMemory::default(),
-            transient_roots: Vec::new(),
+            heap: Arc::new(Heap::new(limits.max_objects, limits.max_heap_bytes)?),
+            memory: Arc::default(),
             globals: BTreeMap::new(),
             constant_values: BTreeMap::new(),
-            call_bindings: HashMap::new(),
-            frames: Vec::new(),
-            frame_pool: frame::FramePool::default(),
-            suspended_frames: Vec::new(),
-            popped_frame: None,
+            call_bindings: Default::default(),
+            running: scheduler::Task::default(),
+            frame_pool: Arc::default(),
+            preparing_task: None,
             initialized: HashSet::new(),
-            initializing: HashSet::new(),
+            initializing: HashMap::new(),
             failed_initializations: BTreeMap::new(),
             root_initialization: None,
             cleanup: None,
@@ -240,14 +243,11 @@ impl Instance {
             limits,
             steps: 0,
             last_poll_steps: 0,
-            scheduling_phase: 0,
             scope_steps: BTreeMap::new(),
             scope_work: BTreeMap::new(),
             changed_scopes: Default::default(),
             closed: false,
             faulted: false,
-            current_task: 0,
-            current_scope: 0,
             next_task: 1,
             foreground: None,
             runnable: VecDeque::new(),
@@ -268,7 +268,7 @@ impl Instance {
             reflected_types: Vec::new(),
             reflected_type_indices: HashMap::new(),
             reflected_type_keys: HashMap::new(),
-            interface_assignments: std::cell::RefCell::new(HashSet::new()),
+            interface_assignments: std::sync::Mutex::new(HashSet::new()),
             scope_cancellations: BTreeMap::new(),
             cancellation_events: Arc::new(crate::ffi::CancellationEvents::new(wake.clone())),
             debug: debug::DebugState::default(),
@@ -403,7 +403,7 @@ impl Instance {
             return Ok(PollStatus::Ready);
         }
         if self.root_initialization.is_none()
-            && (self.foreground.is_some() || !self.frames.is_empty())
+            && (self.foreground.is_some() || !self.running.frames.is_empty())
         {
             return Err(RuntimeError::new(
                 "busy",
@@ -423,9 +423,10 @@ impl Instance {
                     return Ok(PollStatus::Ready);
                 }
                 let task = self.allocate_task_id()?;
-                self.current_task = task;
-                self.current_scope = task;
-                self.scope_steps.insert(task, 0);
+                self.running.id = task;
+                self.running.scope = task;
+                self.scope_steps
+                    .insert(task, Arc::new(budget::StepBudget::new(&self.wake)));
                 self.scope_work.insert(
                     task,
                     stats::ScopeWork {
@@ -459,7 +460,7 @@ impl Instance {
         entropy: Arc<dyn crate::environment::Entropy>,
     ) -> Result<(), RuntimeError> {
         if self.foreground.is_some()
-            || !self.frames.is_empty()
+            || !self.running.frames.is_empty()
             || !self.runnable.is_empty()
             || !self.blocked.is_empty()
             || !self.timers.is_empty()
@@ -512,6 +513,7 @@ impl Instance {
         if self.foreground.is_some() {
             return Err(RuntimeError::new("busy", "instance", "execution is active"));
         }
+        self.admit_task()?;
         self.types
             .use_context(self.revision.program.decoded.types());
         let entry = self
@@ -532,10 +534,14 @@ impl Instance {
             .signature
             .results
             .len();
-        for frame in &self.frames {
-            frame.trace(&mut |handle| self.transient_roots.push(handle));
-        }
-        self.suspended_frames = std::mem::take(&mut self.frames);
+        self.preparing_task = Some(std::mem::replace(
+            &mut self.running,
+            scheduler::Task {
+                id: task_id,
+                scope: task_id,
+                ..scheduler::Task::default()
+            },
+        ));
         let initialized = self.initialized.clone();
         let initializing = self.initializing.clone();
         let result = self
@@ -552,20 +558,20 @@ impl Instance {
                 false,
             )
             .and_then(|()| {
-                let frames = std::mem::take(&mut self.frames);
+                let frames = std::mem::take(&mut self.running.frames);
                 let result = self.charge_guest(128);
-                self.frames = frames;
+                self.running.frames = frames;
                 result
             });
         let preparing_initialization = result.is_ok();
         let result = result.and_then(|()| self.initialize_module(&entry.module_path).map(|_| ()));
-        let prepared_frames =
-            std::mem::replace(&mut self.frames, std::mem::take(&mut self.suspended_frames));
+        let prepared_task =
+            std::mem::replace(&mut self.running, self.preparing_task.take().unwrap());
         if let Err(error) = result {
             self.initialized = initialized;
             self.initializing = initializing;
             if preparing_initialization {
-                for frame in &prepared_frames {
+                for frame in &prepared_task.frames {
                     self.memory.recycle_frame_storage(
                         frame.revision.generation,
                         frame.prepared.module_index,
@@ -574,7 +580,7 @@ impl Instance {
                     );
                 }
             }
-            drop(prepared_frames);
+            drop(prepared_task);
             self.collect_at_boundary()?;
             return Err(error);
         }
@@ -588,7 +594,7 @@ impl Instance {
             .chain(self.blocked.iter())
             .map(|task| task.scope)
             .chain(self.timers.iter().map(|timer| timer.scope))
-            .chain((!self.frames.is_empty()).then_some(self.current_scope))
+            .chain((!self.running.frames.is_empty()).then_some(self.running.scope))
             .collect();
         self.scope_steps.retain(|scope, _| active.contains(scope));
         self.scope_work.retain(|scope, _| active.contains(scope));
@@ -596,10 +602,10 @@ impl Instance {
             .scope_profile_dropped
             .retain(|scope, _| active.contains(scope));
         self.yield_task();
-        self.current_task = task_id;
-        self.current_scope = task_id;
+        self.running = prepared_task;
         self.foreground = Some(task_id);
-        self.scope_steps.insert(task_id, 0);
+        self.scope_steps
+            .insert(task_id, Arc::new(budget::StepBudget::new(&self.wake)));
         self.scope_work.insert(
             task_id,
             stats::ScopeWork {
@@ -608,8 +614,7 @@ impl Instance {
             },
         );
         self.changed_scopes.insert(task_id);
-        self.frames = prepared_frames;
-        self.transient_roots.clear();
+        self.running.transient_roots.clear();
         Ok(())
     }
 
@@ -632,6 +637,7 @@ impl Instance {
         if self.foreground.is_some() {
             return Err(RuntimeError::new("busy", "instance", "execution is active"));
         }
+        self.admit_task()?;
         if bytes.len() > self.limits.max_sequence_elements
             || bytes.len() as u64 > self.limits.max_heap_bytes
         {
@@ -662,6 +668,236 @@ impl Instance {
         self.poll(count, false)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn poll_parallel(
+        &mut self,
+        count: usize,
+        parallelism: usize,
+        executor: &Arc<crate::executor_pool::Pool>,
+        control_waiters: &std::sync::atomic::AtomicUsize,
+        observer: Option<&Arc<dyn Fn(u64, bool) + Send + Sync>>,
+    ) -> Result<PollStatus, RuntimeError> {
+        if count == 0 {
+            return Err(RuntimeError::new(
+                "step_limit",
+                "poll",
+                "poll budget must be positive",
+            ));
+        }
+        let parallelism = parallelism.max(1);
+        let mut executed = 0usize;
+        while executed < count {
+            if self.closed {
+                return Err(RuntimeError::new(
+                    "closed",
+                    "instance",
+                    "instance is closed",
+                ));
+            }
+            if self.faulted {
+                return Err(RuntimeError::new(
+                    "faulted",
+                    "instance",
+                    "instance execution failed",
+                ));
+            }
+            self.cancel_requested_scopes()?;
+            if self.debug.paused {
+                self.last_poll_steps = executed;
+                return Ok(PollStatus::Paused);
+            }
+            if self.foreground.is_none() {
+                self.last_poll_steps = executed;
+                return Ok(PollStatus::Ready);
+            }
+            if let Err(error) = self.deliver_timers().and_then(|()| self.resume_blocked()) {
+                self.faulted = true;
+                self.abort()?;
+                return Err(error);
+            }
+
+            let remaining = count - executed;
+            if let Some(batch) = self.take_task_batch(parallelism, remaining)? {
+                let runs = match task_runner::run_private_batch(
+                    executor,
+                    batch,
+                    self.types.clone(),
+                    observer,
+                ) {
+                    Ok(runs) => runs,
+                    Err((error, tasks)) => {
+                        for mut task in tasks.into_iter().rev() {
+                            task.step_grant = None;
+                            self.runnable.push_front(task);
+                        }
+                        return Err(error);
+                    }
+                };
+                let progressed = self.merge_parallel_runs(runs);
+                executed = executed.saturating_add(progressed);
+                if progressed != 0 {
+                    if control_waiters.load(std::sync::atomic::Ordering::Acquire) != 0 {
+                        self.last_poll_steps = executed;
+                        return Ok(PollStatus::Running);
+                    }
+                    continue;
+                }
+            }
+
+            // The next operation is a control transaction. Execute it through
+            // the existing interpreter after every task has returned its
+            // private continuation; this is also the progress path when the
+            // executor contains only one worker.
+            let status = self.poll_steps(1)?;
+            let serial_steps = self.last_poll_steps;
+            executed = executed.saturating_add(serial_steps);
+            if status != PollStatus::Running || serial_steps == 0 {
+                self.last_poll_steps = executed;
+                return Ok(status);
+            }
+        }
+        self.last_poll_steps = executed;
+        Ok(if self.foreground.is_none() {
+            PollStatus::Ready
+        } else {
+            PollStatus::Running
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn start_background_task_batch(
+        &mut self,
+        parallelism: usize,
+        executor: &Arc<crate::executor_pool::Pool>,
+        observer: Option<&Arc<dyn Fn(u64, bool) + Send + Sync>>,
+    ) -> Result<Option<task_runner::TaskBatch>, RuntimeError> {
+        self.deliver_timers()?;
+        self.resume_blocked()?;
+        let Some(tasks) = self.take_task_batch(parallelism.max(1), 256)? else {
+            return Ok(None);
+        };
+        match task_runner::start_private_batch(
+            executor,
+            tasks,
+            self.types.clone(),
+            observer,
+            Some(self.wake.clone()),
+        ) {
+            Ok(batch) => Ok(Some(batch)),
+            Err((error, tasks)) => {
+                for mut task in tasks.into_iter().rev() {
+                    task.step_grant = None;
+                    self.runnable.push_front(task);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn merge_parallel_runs(&mut self, runs: Vec<task_runner::TaskRun>) -> usize {
+        let mut progressed = 0usize;
+        for mut run in runs {
+            run.task.step_grant = None;
+            self.steps = self.steps.saturating_add(run.steps as u64);
+            progressed = progressed.saturating_add(run.steps);
+            self.changed_scopes.insert(run.task.scope);
+            self.runnable.push_back(run.task);
+        }
+        progressed
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn take_task_batch(
+        &mut self,
+        parallelism: usize,
+        budget: usize,
+    ) -> Result<Option<Vec<(scheduler::Task, usize)>>, RuntimeError> {
+        if self.debug.profile_every != 0
+            || self.debug.resume.is_some()
+            || !self.debug.breakpoints.is_empty()
+            || self.debug.pause.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(None);
+        }
+        self.yield_task();
+        let available = self.runnable.len();
+        let wanted = parallelism.min(budget).min(available);
+        if wanted == 0 {
+            return Ok(None);
+        }
+        // Preserve queue fairness across the task/control boundary. A CPU task
+        // can remain private-runner eligible indefinitely; skipping an older
+        // task at a channel, call or other short control instruction would
+        // starve that operation forever when the executor has one worker.
+        if self
+            .runnable
+            .front()
+            .is_some_and(|task| !task_runner::can_run_privately(task))
+        {
+            return Ok(None);
+        }
+        let mut selected = Vec::with_capacity(wanted);
+        for _ in 0..available {
+            let task = self.runnable.pop_front().unwrap();
+            if selected.len() < wanted && task_runner::can_run_privately(&task) {
+                selected.push(task);
+            } else {
+                self.runnable.push_back(task);
+            }
+        }
+        if selected.is_empty() {
+            return Ok(None);
+        }
+        if selected.len() < wanted && !self.runnable.is_empty() {
+            // Let the owner advance the short control transactions first so
+            // several tasks become runnable together. Dispatching the first
+            // private task immediately would accidentally serialize a mixed
+            // workload behind one task's next control operation.
+            self.runnable.extend(selected);
+            return Ok(None);
+        }
+
+        let mut selected = VecDeque::from(selected);
+        let mut runs = Vec::with_capacity(selected.len());
+        let mut remaining = budget;
+        let selected_count = selected.len();
+        for index in 0..selected_count {
+            let mut task = selected.pop_front().unwrap();
+            let tasks_left = selected_count - index;
+            let quantum = remaining
+                .div_ceil(tasks_left)
+                .clamp(1, task_runner::INSTRUCTION_QUANTUM);
+            let Some(steps) = self.scope_steps.get(&task.scope) else {
+                self.runnable.push_front(task);
+                for task in selected.into_iter().rev() {
+                    self.runnable.push_front(task);
+                }
+                for (task, _) in runs.into_iter().rev() {
+                    self.runnable.push_front(task);
+                }
+                return Ok(None);
+            };
+            match steps.reserve(self.limits.max_steps, quantum as u64) {
+                Ok(Some(grant)) => task.step_grant = Some(grant),
+                Ok(None) | Err(_) => {
+                    self.runnable.push_front(task);
+                    for task in selected.into_iter().rev() {
+                        self.runnable.push_front(task);
+                    }
+                    for (mut task, _) in runs.into_iter().rev() {
+                        task.step_grant = None;
+                        self.runnable.push_front(task);
+                    }
+                    return Ok(None);
+                }
+            }
+            runs.push((task, quantum));
+            remaining -= quantum;
+        }
+        Ok(Some(runs))
+    }
+
     pub fn poll_background(&mut self, count: usize) -> Result<PollStatus, RuntimeError> {
         if self.foreground.is_some() {
             return Err(RuntimeError::new(
@@ -674,6 +910,23 @@ impl Instance {
     }
 
     fn poll(&mut self, count: usize, background: bool) -> Result<PollStatus, RuntimeError> {
+        let result = self.poll_loop(count, background);
+        self.running.step_grant = None;
+        result
+    }
+
+    fn poll_ready(&self, background: bool) -> bool {
+        if background {
+            self.running.frames.is_empty()
+                && self.runnable.is_empty()
+                && self.blocked.is_empty()
+                && self.timers.is_empty()
+        } else {
+            self.foreground.is_none()
+        }
+    }
+
+    fn poll_loop(&mut self, count: usize, background: bool) -> Result<PollStatus, RuntimeError> {
         self.last_poll_steps = 0;
         if self.closed {
             return Err(RuntimeError::new(
@@ -694,13 +947,7 @@ impl Instance {
             if self.debug.paused {
                 return Ok(PollStatus::Paused);
             }
-            if !background && self.foreground.is_none()
-                || background
-                    && self.frames.is_empty()
-                    && self.runnable.is_empty()
-                    && self.blocked.is_empty()
-                    && self.timers.is_empty()
-            {
+            if self.poll_ready(background) {
                 return Ok(PollStatus::Ready);
             }
             if let Err(error) = self.deliver_timers().and_then(|()| self.resume_blocked()) {
@@ -708,40 +955,87 @@ impl Instance {
                 self.abort()?;
                 return Err(error);
             }
-            if self.frames.is_empty() && !self.schedule_next() {
+            if self.running.frames.is_empty() && !self.schedule_next() {
                 return Ok(PollStatus::Pending);
             }
-            let frame = self.frames.last().unwrap();
-            let instruction_step = frame.returning.is_none()
+            let pending_error = self.running.pending_error.take();
+            let frame = self.running.frames.last().unwrap();
+            let retrying = self.running.retry_instruction;
+            let instruction_step = pending_error.is_none()
+                && frame.returning.is_none()
+                && self.running.selection_completion.is_none()
+                && self.running.pending_write.is_none()
                 && frame.resume.is_none()
                 && frame.tail_return.is_none()
+                && frame.after_init.is_none()
                 && frame.pc < frame.prepared.code.len();
-            if instruction_step && self.debug_before_instruction() {
+            let counted_instruction = instruction_step && !retrying;
+            if counted_instruction && self.debug_before_instruction() {
                 return Ok(PollStatus::Paused);
             }
-            if instruction_step
-                && self.limits.max_steps > 0
-                && self.scope_steps[&self.current_scope] >= self.limits.max_steps as u64
-            {
-                let foreground = self.foreground == Some(self.current_scope);
-                self.cancel_scope(self.current_scope)?;
-                if !foreground {
-                    continue;
+            if counted_instruction {
+                if self
+                    .running
+                    .step_grant
+                    .as_ref()
+                    .is_some_and(|grant| grant.remaining == 0)
+                {
+                    self.running.step_grant = None;
                 }
-                return Err(RuntimeError::new(
-                    "step_limit",
-                    "instance",
-                    "instruction budget exhausted",
-                ));
+                if self.running.step_grant.is_none() {
+                    match self.scope_steps[&self.running.scope].reserve(self.limits.max_steps, 64) {
+                        Ok(Some(grant)) => self.running.step_grant = Some(grant),
+                        Ok(None) => {
+                            self.yield_task();
+                            return Ok(PollStatus::Pending);
+                        }
+                        Err(error) => {
+                            let foreground = self.foreground == Some(self.running.scope);
+                            self.cancel_scope(self.running.scope)?;
+                            if !foreground {
+                                continue;
+                            }
+                            return Err(error);
+                        }
+                    }
+                }
+                self.running.step_grant.as_mut().unwrap().consume();
             }
-            let scope = self.current_scope;
-            let outcome = self.step();
-            if instruction_step {
+            let scope = self.running.scope;
+            let task_id = self.running.id;
+            let outcome = if let Some(error) = pending_error {
+                Err(error)
+            } else {
+                (|| {
+                    if let Some(request) = self.running.write_collection.request.take() {
+                        match request {
+                            mutation::CollectionRequest::Heap { clear_cache } => {
+                                if clear_cache {
+                                    self.frame_pool.clear();
+                                }
+                                self.collect_rooted()?;
+                                self.running.write_collection.heap_collected = true;
+                            }
+                            mutation::CollectionRequest::Census => {
+                                self.memory.publish_census(self.live_guest_bytes()?);
+                                self.running.write_collection.census_published = true;
+                            }
+                        }
+                    }
+                    if instruction_step {
+                        if retrying {
+                            self.running.restore_instruction();
+                            self.running.retry_instruction = false;
+                        }
+                        let pc = self.running.frames.last().unwrap().pc;
+                        self.running.begin_instruction(pc);
+                    }
+                    self.step()
+                })()
+            };
+            if counted_instruction {
                 self.steps = self.steps.saturating_add(1);
-                let steps = self.scope_steps.entry(scope).or_default();
-                *steps = steps.saturating_add(1);
                 self.last_poll_steps += 1;
-                self.scheduling_phase = (self.scheduling_phase + 1) % 64;
                 if self.debug.profile_every != 0 {
                     self.debug.profile_phase =
                         if self.debug.profile_phase >= self.debug.profile_every - 1 {
@@ -752,9 +1046,59 @@ impl Instance {
                 }
                 self.changed_scopes.insert(scope);
             }
+            if outcome
+                .as_ref()
+                .is_err_and(|error| error.code == "census_required")
+            {
+                let requested = self.running.census_request.ok_or_else(|| {
+                    RuntimeError::new(
+                        "internal",
+                        "scheduler",
+                        "census request lost its allocation size",
+                    )
+                })?;
+                // Module initialization retains the triggering instruction in
+                // `after_init`. Its ordinary PC already points at the next
+                // instruction, so rewinding it here would execute the owner
+                // action twice after initialization finishes. Other
+                // allocation failures use the regular instruction retry
+                // continuation and must restore their original PC/operands.
+                let initialization_continuation = self
+                    .running
+                    .frames
+                    .last()
+                    .is_some_and(|frame| frame.after_init.is_some());
+                if initialization_continuation {
+                    self.running.finish_instruction();
+                } else {
+                    self.running.suspend_instruction();
+                }
+                let live = self.live_guest_bytes()?;
+                self.memory.publish_census(live);
+                if requested > self.limits.max_allocated_bytes.saturating_sub(live) {
+                    if !initialization_continuation {
+                        let pc = self.running.instruction_pc;
+                        self.running.frames.last_mut().unwrap().pc = pc.saturating_add(1);
+                    }
+                    self.running.finish_instruction();
+                    self.running.pending_error = Some(RuntimeError::new(
+                        "allocation_limit",
+                        "guest",
+                        "guest allocation byte limit exceeded",
+                    ));
+                } else if !initialization_continuation {
+                    self.running.retry_instruction = true;
+                }
+                self.running.transient_roots.clear();
+                self.running.popped_frame = None;
+                if counted_instruction {
+                    self.running.scheduling_phase = (self.running.scheduling_phase + 1) % 64;
+                }
+                return Ok(PollStatus::Running);
+            }
             if let Err(mut error) = outcome {
-                if error.code == "panic" && !self.frames.is_empty() {
-                    let frame = self.frames.last_mut().unwrap();
+                if error.code == "panic" && !self.running.frames.is_empty() {
+                    let frame = self.running.frames.last_mut().unwrap();
                     frame.panic = Some(Arc::new(Value {
                         typ: TypeIdentity::Primitive(wire::PrimitiveString),
                         data: Data::String(error.message.into_bytes().into()),
@@ -762,9 +1106,9 @@ impl Instance {
                     frame.returning = Some(Vec::new());
                     self.debug_panic();
                 } else {
-                    let initialization_failed =
-                        error.code == "internal" && error.path == "module_init";
-                    if let Some(frame) = self.frames.last() {
+                    let initialization_failed = error.path == "module_init"
+                        && matches!(error.code, "internal" | "runtime.error");
+                    if let Some(frame) = self.running.frames.last() {
                         error.path = format!(
                             "{}/{}@{}: {}",
                             frame.module,
@@ -797,47 +1141,46 @@ impl Instance {
                     return Err(error);
                 }
             }
-            self.transient_roots.clear();
-            if let Some((task, index)) = self.popped_frame.take() {
-                let frames = if task == self.current_task {
-                    Some(&mut self.frames)
-                } else {
-                    self.runnable
-                        .iter_mut()
-                        .chain(self.blocked.iter_mut())
-                        .find(|candidate| candidate.id == task)
-                        .map(|task| &mut task.frames)
-                };
-                if let Some(frame) = frames.and_then(|frames| frames.get_mut(index)) {
+            let task = if self.running.id == task_id {
+                Some(&mut self.running)
+            } else {
+                self.runnable
+                    .iter_mut()
+                    .chain(self.blocked.iter_mut())
+                    .find(|task| task.id == task_id)
+            };
+            let mutation_pending = task
+                .as_ref()
+                .is_some_and(|task| task.pending_write.is_some());
+            if let Some(task) = task {
+                task.finish_instruction();
+                task.transient_roots.clear();
+                if counted_instruction {
+                    task.scheduling_phase = (task.scheduling_phase + 1) % 64;
+                }
+                if let Some(frame) = task
+                    .popped_frame
+                    .take()
+                    .and_then(|index| task.frames.get_mut(index))
+                {
                     frame.popped_roots.clear();
                 }
             }
             if self.debug.paused {
                 return Ok(PollStatus::Paused);
             }
-            if instruction_step
-                && self.scheduling_phase == 0
-                && !self
-                    .frames
-                    .iter()
-                    .any(|frame| frame.prepared.declaration.no_switch)
-            {
+            if mutation_pending {
+                return Ok(PollStatus::Running);
+            }
+            if counted_instruction && self.running.scheduling_phase == 0 {
                 self.yield_task();
             }
         }
-        Ok(
-            if !background && self.foreground.is_none()
-                || background
-                    && self.frames.is_empty()
-                    && self.runnable.is_empty()
-                    && self.blocked.is_empty()
-                    && self.timers.is_empty()
-            {
-                PollStatus::Ready
-            } else {
-                PollStatus::Running
-            },
-        )
+        Ok(if self.poll_ready(background) {
+            PollStatus::Ready
+        } else {
+            PollStatus::Running
+        })
     }
 
     pub fn cancel(&mut self) -> Result<(), RuntimeError> {
@@ -885,13 +1228,13 @@ impl Instance {
         self.debug_cancel_scope(scope);
         self.scope_cancellations.remove(&scope);
         let mut removed = Vec::new();
-        if self.current_scope == scope && !self.frames.is_empty() {
-            removed.push(scheduler::Task {
-                id: self.current_task,
-                scope,
-                frames: std::mem::take(&mut self.frames),
-                blocked: None,
-            });
+        if self.running.scope == scope && self.running.id != 0 {
+            removed.push(std::mem::take(&mut self.running));
+        }
+        for pending in [&mut self.preparing_task, &mut self.resuming_task] {
+            if pending.as_ref().is_some_and(|task| task.scope == scope) {
+                removed.push(pending.take().unwrap());
+            }
         }
         let mut runnable = VecDeque::new();
         for task in self.runnable.drain(..) {
@@ -904,13 +1247,14 @@ impl Instance {
         self.runnable = runnable;
         removed.extend(self.blocked.remove_scope(scope));
         for task in removed {
-            for frame in &task.frames {
+            for frame in task.frames.iter().chain(&task.suspended_frames) {
                 if frame.initializing {
                     self.initializing.remove(frame.module.as_ref());
+                    self.blocked.notify_module(frame.module.as_ref());
                     self.failed_initializations.insert(
                         frame.module.to_string(),
                         RuntimeError::new(
-                            "internal",
+                            "runtime.error",
                             "module_init",
                             "module initialization aborted",
                         ),
@@ -922,25 +1266,11 @@ impl Instance {
                     frame.prepared.index,
                     frame.memory,
                 );
-                if let Some(reflect_async::IntrinsicResume::Select { tokens, .. }) = &frame.resume {
-                    for token in tokens {
-                        self.finish_token(*token, true)?;
-                    }
-                }
             }
-            if let Some(scheduler::Blocked::Ffi(id)) = task.blocked {
+            if let Some(scheduler::Blocked::Mutex(handle)) = task.blocked {
+                self.cancel_mutex_wait(handle, task.id)?;
+            } else if let Some(scheduler::Blocked::Ffi(id)) = task.blocked {
                 self.ffi_calls.cancel(id);
-            } else if let Some(scheduler::Blocked::Receive { token, .. }) = task.blocked {
-                self.finish_token(token, true)?;
-            } else if let Some(scheduler::Blocked::WaitSet(set)) = task.blocked {
-                let scheduler::Resource::WaitSet(tokens) =
-                    self.resource(Self::resource_handle(&set)?)?.clone()
-                else {
-                    unreachable!()
-                };
-                for token in tokens {
-                    self.finish_token(token, true)?;
-                }
             }
         }
         self.timers.retain(|timer| timer.scope != scope);
@@ -976,19 +1306,18 @@ impl Instance {
         self.ffi_calls.close();
         self.globals.clear();
         self.constant_values.clear();
-        self.call_bindings.clear();
-        self.frame_pool = frame::FramePool::default();
+        self.call_bindings.get_mut().unwrap().clear();
+        self.frame_pool.clear();
         self.retired_revisions.clear();
         self.reflected_types.clear();
         self.reflected_type_indices.clear();
         self.reflected_type_keys.clear();
-        self.interface_assignments.get_mut().clear();
+        self.interface_assignments.get_mut().unwrap().clear();
         self.failed_initializations.clear();
         self.types.clear_dynamic();
         let accounting = self.heap.set_external_bytes(0);
         let aborted = self.abort();
-        self.memory.stats.live_bytes = 0;
-        self.memory.stats.allocated_since_sweep = 0;
+        self.memory.publish_census(0);
         self.memory.retain_revisions(|_| false);
         self.scope_steps.clear();
         let session = self.ffi_session.take();
@@ -1031,27 +1360,27 @@ impl Instance {
             self.globals.clear();
         }
         self.initializing.clear();
-        for frame in self
-            .frames
-            .iter()
-            .chain(&self.suspended_frames)
-            .chain(self.runnable.iter().flat_map(|task| &task.frames))
-            .chain(self.blocked.iter().flat_map(|task| &task.frames))
+        for task in std::iter::once(&self.running)
+            .chain(&self.preparing_task)
+            .chain(&self.resuming_task)
+            .chain(&self.runnable)
+            .chain(self.blocked.iter())
         {
-            self.memory.recycle_frame_storage(
-                frame.revision.generation,
-                frame.prepared.module_index,
-                frame.prepared.index,
-                frame.memory,
-            );
-        }
-        self.frames.clear();
-        self.suspended_frames.clear();
-        for task in self.blocked.iter() {
+            for frame in task.frames.iter().chain(&task.suspended_frames) {
+                self.memory.recycle_frame_storage(
+                    frame.revision.generation,
+                    frame.prepared.module_index,
+                    frame.prepared.index,
+                    frame.memory,
+                );
+            }
             if let Some(scheduler::Blocked::Ffi(id)) = task.blocked {
                 self.ffi_calls.cancel(id);
             }
         }
+        self.running = scheduler::Task::default();
+        self.preparing_task = None;
+        self.resuming_task = None;
         self.runnable.clear();
         self.blocked.clear();
         self.changed_scopes.extend(self.scope_work.keys().copied());
@@ -1116,12 +1445,29 @@ impl Instance {
         if self.initialized.contains(module) {
             return Ok(false);
         }
-        if self.initializing.contains(module) {
-            return Err(RuntimeError::new(
-                "internal",
-                "module_init",
-                "recursive module initialization",
-            ));
+        if let Some(&owner) = self.initializing.get(module) {
+            let mut owner = Some(owner);
+            while let Some(task) = owner {
+                if task == self.running.id {
+                    return Err(RuntimeError::new(
+                        "internal",
+                        "module_init",
+                        "module initialization cycle",
+                    ));
+                }
+                owner = self
+                    .blocked
+                    .iter()
+                    .find(|waiting| waiting.id == task)
+                    .and_then(|waiting| match &waiting.blocked {
+                        Some(scheduler::Blocked::Module(module)) => {
+                            self.initializing.get(module).copied()
+                        }
+                        _ => None,
+                    });
+            }
+            self.park(scheduler::Blocked::Module(module.to_owned()));
+            return Ok(true);
         }
         if !self
             .revision
@@ -1145,41 +1491,14 @@ impl Instance {
             true,
         );
         if let Err(error) = prepared {
-            self.failed_initializations
-                .insert(module.to_owned(), error.clone());
+            if error.code != "census_required" {
+                self.failed_initializations
+                    .insert(module.to_owned(), error.clone());
+            }
             return Err(error);
         }
-        self.initializing.insert(module.to_owned());
+        self.initializing.insert(module.to_owned(), self.running.id);
         Ok(true)
-    }
-
-    fn pop(&mut self) -> Result<Value, RuntimeError> {
-        let value = self
-            .frames
-            .last_mut()
-            .and_then(|frame| frame.stack.pop())
-            .ok_or_else(|| {
-                RuntimeError::new("invalid_stack", "frame", "operand stack underflow")
-            })?;
-        value.trace(&mut |handle| self.transient_roots.push(handle));
-        Ok(value)
-    }
-
-    fn pop_values(&mut self, count: usize) -> Result<Vec<Value>, RuntimeError> {
-        let mut values = self.frame_pool.take_operands(count);
-        self.popped_frame = Some((self.current_task, self.frames.len() - 1));
-        let frame = self.frames.last_mut().unwrap();
-        frame.memory.popped = memory::grow_frame_buffer(frame.memory.popped, count, false)?;
-        let stack = &mut frame.stack;
-        let start = stack.len().checked_sub(count).ok_or_else(|| {
-            RuntimeError::new("invalid_stack", "frame", "operand stack underflow")
-        })?;
-        values.extend(stack.drain(start..));
-        frame.popped_roots.capture(&values);
-        for value in &values {
-            value.trace(&mut |handle| self.transient_roots.push(handle));
-        }
-        Ok(values)
     }
 
     fn coerce(&self, mut value: Value, typ: &TypeIdentity) -> Result<Value, RuntimeError> {
@@ -1203,7 +1522,12 @@ impl Instance {
                 });
             }
             let assignment = (value.typ.clone(), typ.clone());
-            if !self.interface_assignments.borrow().contains(&assignment) {
+            let known = self
+                .interface_assignments
+                .lock()
+                .unwrap()
+                .contains(&assignment);
+            if !known {
                 if !registry.implements(&value.typ, typ)? {
                     return Err(RuntimeError::new(
                         "type_error",
@@ -1211,7 +1535,7 @@ impl Instance {
                         "dynamic type does not implement interface",
                     ));
                 }
-                let mut assignments = self.interface_assignments.borrow_mut();
+                let mut assignments = self.interface_assignments.lock().unwrap();
                 if assignments.len() == 256 {
                     assignments.clear();
                 }
@@ -1301,7 +1625,7 @@ impl Instance {
             return Ok(bytes.to_vec());
         }
         if let Data::Slice(slice) = &value.data {
-            let backing = self.borrow_address(&slice.storage)?;
+            let backing = self.snapshot_address(&slice.storage)?;
             if let Data::Bytes(bytes) = &backing.data {
                 return bytes
                     .get(slice.start..slice.start + slice.length)
@@ -1327,7 +1651,7 @@ impl Instance {
     fn slice_values(&self, value: &Value) -> Result<Vec<Value>, RuntimeError> {
         match &value.data {
             Data::Slice(slice) => {
-                let backing = self.borrow_address(&slice.storage)?;
+                let backing = self.snapshot_address(&slice.storage)?;
                 if let Data::Bytes(bytes) = &backing.data {
                     return bytes
                         .get(slice.start..slice.start + slice.length)
@@ -1600,126 +1924,66 @@ impl Instance {
     }
 
     fn store_index(&mut self, object: Value, key: Value, value: Value) -> Result<(), RuntimeError> {
-        if let Data::Map(root) = object.data {
-            let key = self.map_key(&object.typ, key)?;
-            let value = self.coerce(value, &self.element_type(&object.typ)?)?;
-            let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
-                return Err(RuntimeError::new("invalid_map", "map", "invalid backing"));
-            };
-            let position = entries.find(&key, &self.types)?;
-            let mut old_edges = Vec::new();
-            let mut new_edges = Vec::new();
-            value.trace(&mut |handle| new_edges.push(handle));
-            let previous_bytes = if let Some(index) = position {
-                entries[index].1.trace(&mut |handle| old_edges.push(handle));
-                entries[index].1.logical_bytes()?
-            } else {
-                if entries.len() >= self.limits.max_sequence_elements {
-                    return Err(RuntimeError::new(
-                        "value_limit",
-                        "map",
-                        "entry limit exceeded",
-                    ));
-                }
-                key.trace(&mut |handle| new_edges.push(handle));
-                0
-            };
-            let added = value.logical_bytes()?.checked_add(if position.is_none() {
-                key.logical_bytes()?
-            } else {
-                0
-            });
-            let allocation = self.heap.allocation_bytes(root)?;
-            let bytes = added
-                .and_then(|added| allocation.checked_sub(previous_bytes)?.checked_add(added))
-                .ok_or_else(|| {
-                    RuntimeError::new("allocation_limit", "map", "logical size overflow")
-                })?;
-            self.transient_roots.extend(new_edges.iter().copied());
-            key.trace(&mut |handle| self.transient_roots.push(handle));
-            self.prepare_heap_replacements(&[(root, bytes)])?;
-            if position.is_none() {
-                self.charge_guest(32)?;
-            }
-            return self
-                .heap
-                .update(root, bytes, old_edges == new_edges, |backing| {
-                    let Data::MapEntries(entries) = &mut backing.data else {
-                        unreachable!()
-                    };
-                    if let Some(index) = position {
-                        entries.set_value(index, value);
-                    } else {
-                        entries.insert(key, value);
-                    }
-                });
-        }
-        if matches!(object.data, Data::Nil) {
-            return Err(RuntimeError::new(
-                "panic",
-                "store_index",
-                "assignment to nil container",
-            ));
-        }
-        let index = usize::try_from(key.integer()?)
-            .map_err(|_| RuntimeError::new("panic", "store_index", "negative index"))?;
-        let mut address = match object.data {
-            Data::Pointer(address) => address,
-            Data::Slice(slice) => {
-                if index >= slice.length {
-                    return Err(RuntimeError::new(
-                        "panic",
-                        "store_index",
-                        "index outside slice",
-                    ));
-                }
-                let mut address = slice.storage;
-                address.path.push(PathElement::Index(slice.start + index));
-                return self.write_address(&address, value);
-            }
-            _ => {
-                return Err(RuntimeError::new(
-                    "invalid_address",
-                    "store_index",
-                    "expected addressable sequence",
-                ));
-            }
-        };
-        address.path.push(PathElement::Index(index));
-        self.write_address(&address, value)
+        let mut write = self.prepare_index_write(object, key, value)?;
+        let mut collection = mutation::WriteCollection::IMMEDIATE;
+        while !self.attempt_write(&mut write, &mut collection)? {}
+        Ok(())
     }
 
     fn step(&mut self) -> Result<(), RuntimeError> {
-        self.types
-            .use_context(self.frames.last().unwrap().revision.program.decoded.types());
-        if self.frames.last().unwrap().panic.is_some() {
-            self.frames.last_mut().unwrap().resume = None;
-            self.frames.last_mut().unwrap().tail_return = None;
+        if self.running.pending_write.is_some() {
+            return self.resume_write();
         }
-        if let Some(resume) = self.frames.last_mut().unwrap().resume.take() {
-            resume.trace(&mut |handle| self.transient_roots.push(handle));
+        if self.running.selection_completion.is_some() {
+            return self.finish_selection();
+        }
+        self.types.use_context(
+            self.running
+                .frames
+                .last()
+                .unwrap()
+                .revision
+                .program
+                .decoded
+                .types(),
+        );
+        // Native workers and the serial/WASM owner share this implementation
+        // for task-private instructions. The owner reaches the larger match
+        // below only for shared storage, control transactions, allocation or
+        // an error path that needs instance state.
+        if task_runner::can_run_privately(&self.running)
+            && task_runner::step_private_instruction(&mut self.running, &self.types)
+        {
+            return Ok(());
+        }
+        if self.running.frames.last().unwrap().panic.is_some() {
+            self.running.frames.last_mut().unwrap().resume = None;
+            self.running.frames.last_mut().unwrap().tail_return = None;
+        }
+        if let Some(resume) = self.running.frames.last_mut().unwrap().resume.take() {
+            resume.trace(&mut |handle| self.running.transient_roots.push(handle));
             return self.resume_reflect(resume);
         }
-        if let Some(count) = self.frames.last_mut().unwrap().tail_return.take() {
-            let values = self.pop_values(count)?;
+        if let Some(count) = self.running.frames.last_mut().unwrap().tail_return.take() {
+            let values = self.running.pop_values(&self.frame_pool, count)?;
             return self.begin_return(values);
         }
-        let frame = self.frames.last().unwrap();
+        let frame = self.running.frames.last().unwrap();
         if frame.returning.is_some() {
             return self.finish_frame();
         }
         let revision = frame.revision.clone();
         let function = frame.prepared.clone();
         let module = &function.module;
-        let pc = if let Some(pc) = self.frames.last_mut().unwrap().after_init.take() {
+        let pc = if let Some(pc) = self.running.frames.last_mut().unwrap().after_init.take() {
             pc
         } else {
-            let pc = self.frames.last().unwrap().pc;
+            let pc = self.running.frames.last().unwrap().pc;
             if pc == function.code.len() {
-                self.frames.last_mut().unwrap().returning = Some(Vec::new());
+                self.running.frames.last_mut().unwrap().returning = Some(Vec::new());
                 return self.finish_frame();
             }
-            self.frames.last_mut().unwrap().pc += 1;
+            self.running.frames.last_mut().unwrap().pc += 1;
             pc
         };
         let instruction = &function.code[pc];
@@ -1734,13 +1998,14 @@ impl Instance {
             && !target.is_empty()
             && target.as_str() != module.as_ref()
             && !self.initialized.contains(target)
-            && !self.initializing.contains(target)
+            && self.initializing.get(target) != Some(&self.running.id)
         {
-            let caller = self.frames.len() - 1;
+            let caller = self.running.frames.len() - 1;
+            self.running.frames[caller].after_init = Some(pc);
             if self.initialize_module(target)? {
-                self.frames[caller].after_init = Some(pc);
                 return Ok(());
             }
+            self.running.frames[caller].after_init = None;
         }
         let mut result = None;
         use crate::program::PreparedInstruction as Prepared;
@@ -1754,35 +2019,45 @@ impl Instance {
                 store,
                 rebind,
             } => {
-                let root = self.frames.last().unwrap().locals[index];
                 if !store {
-                    result = Some(self.load_slot(root)?);
+                    result = Some(self.load_local(index)?);
                 } else {
-                    let value = self.pop()?;
-                    if rebind {
-                        let typ = self.heap.get(root)?.typ.clone();
-                        let handle = self.allocate(self.zero(&typ, 0)?)?;
-                        self.frames.last_mut().unwrap().locals[index] = handle;
-                        self.store_slot(handle, value)?;
+                    let value = self.running.pop()?;
+                    if let Some(root) = self.shared_local_target(index, rebind)? {
+                        self.start_address_write(
+                            Address {
+                                identity: Arc::default(),
+                                root,
+                                path: Vec::new(),
+                            },
+                            value,
+                        )?;
                     } else {
-                        self.store_slot(root, value)?;
+                        self.store_local(index, value, false)?;
                     }
                 }
             }
             Prepared::Upvalue { index, store } => {
-                let address = self.frames.last().unwrap().upvalues[index].clone();
+                let address = self.running.frames.last().unwrap().upvalues[index].clone();
                 if store {
-                    let value = self.pop()?;
-                    self.write_address(&address, value)?;
+                    let value = self.running.pop()?;
+                    self.start_address_write(address, value)?;
                 } else {
                     result = Some(self.read_address(&address)?);
                 }
             }
             Prepared::Global { index, store } => {
-                let root = self.frames.last().unwrap().globals[index];
+                let root = self.running.frames.last().unwrap().globals[index];
                 if store {
-                    let value = self.pop()?;
-                    self.store_slot(root, value)?;
+                    let value = self.running.pop()?;
+                    self.start_address_write(
+                        Address {
+                            identity: Arc::default(),
+                            root,
+                            path: Vec::new(),
+                        },
+                        value,
+                    )?;
                 } else {
                     result = Some(self.load_slot(root)?);
                 }
@@ -1792,7 +2067,7 @@ impl Instance {
                 conditional,
             } => {
                 let jump = if conditional {
-                    let value = self.pop()?;
+                    let value = self.running.pop()?;
                     let Data::Bool(condition) = value.data else {
                         return Err(RuntimeError::new("type_error", "jump_if", "expected bool"));
                     };
@@ -1801,16 +2076,16 @@ impl Instance {
                     true
                 };
                 if jump {
-                    self.frames.last_mut().unwrap().pc = target;
+                    self.running.frames.last_mut().unwrap().pc = target;
                 }
             }
             Prepared::Unary(operator) => {
-                let value = self.pop()?;
+                let value = self.running.pop()?;
                 result = Some(crate::operators::unary(operator, value, &self.types)?);
             }
             Prepared::Binary(operator) => {
-                let right = self.pop()?;
-                let left = self.pop()?;
+                let right = self.running.pop()?;
+                let left = self.running.pop()?;
                 if operator == crate::operators::Operator::Add
                     && let (Data::String(left), Data::String(right)) = (&left.data, &right.data)
                 {
@@ -1832,7 +2107,7 @@ impl Instance {
                     result = Some(self.zero(function.operand_types[pc].as_ref().unwrap(), 0)?);
                 }
                 Pop => {
-                    self.pop()?;
+                    self.running.pop()?;
                 }
                 AddressOf(payload) => {
                     self.charge_guest(128)?;
@@ -1844,7 +2119,7 @@ impl Instance {
                     let pointee = if address.path.is_empty() {
                         self.heap.get(address.root)?.typ.clone()
                     } else {
-                        self.borrow_address(&address)?.typ.clone()
+                        self.snapshot_address(&address)?.typ.clone()
                     };
                     let typ = TypeIdentity::Pointer(std::sync::Arc::new(pointee));
                     result = Some(Value {
@@ -1853,7 +2128,7 @@ impl Instance {
                     });
                 }
                 LoadIndirect => {
-                    let value = self.pop()?;
+                    let value = self.running.pop()?;
                     let Data::Pointer(address) = value.data else {
                         return Err(RuntimeError::new(
                             if matches!(value.data, Data::Nil) {
@@ -1868,8 +2143,8 @@ impl Instance {
                     result = Some(self.read_address(&address)?);
                 }
                 StoreIndirect => {
-                    let value = self.pop()?;
-                    let pointer = self.pop()?;
+                    let value = self.running.pop()?;
+                    let pointer = self.running.pop()?;
                     let Data::Pointer(address) = pointer.data else {
                         return Err(RuntimeError::new(
                             if matches!(pointer.data, Data::Nil) {
@@ -1881,10 +2156,12 @@ impl Instance {
                             "cannot dereference value",
                         ));
                     };
-                    self.write_address(&address, value)?;
+                    self.start_address_write(address, value)?;
                 }
                 MakeStruct(payload) => {
-                    let values = self.pop_values(payload.fields.len())?;
+                    let values = self
+                        .running
+                        .pop_values(&self.frame_pool, payload.fields.len())?;
                     self.charge_guest_object(payload.fields.len(), 0)?;
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
                     let mut value = self.zero(&typ, 0)?;
@@ -1904,7 +2181,9 @@ impl Instance {
                     result = Some(value);
                 }
                 MakeSequence(payload) => {
-                    let values = self.pop_values(payload.element_count as usize)?;
+                    let values = self
+                        .running
+                        .pop_values(&self.frame_pool, payload.element_count as usize)?;
                     self.charge_guest_object(values.len(), 0)?;
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
                     if self
@@ -1934,7 +2213,9 @@ impl Instance {
                     }
                 }
                 MakeSlice(payload) => {
-                    let values = self.pop_values(if payload.has_capacity { 2 } else { 1 })?;
+                    let values = self
+                        .running
+                        .pop_values(&self.frame_pool, if payload.has_capacity { 2 } else { 1 })?;
                     let length = values[0].integer()?;
                     let capacity = if payload.has_capacity {
                         values[1].integer()?
@@ -1966,8 +2247,10 @@ impl Instance {
                 }
                 MakeMap(payload) => {
                     let entry_values = payload.entry_count as usize * 2;
-                    let mut values =
-                        self.pop_values(entry_values + usize::from(payload.has_capacity))?;
+                    let mut values = self.running.pop_values(
+                        &self.frame_pool,
+                        entry_values + usize::from(payload.has_capacity),
+                    )?;
                     let mut requested_capacity = payload.entry_count as usize;
                     if payload.has_capacity {
                         let capacity = values.pop().unwrap().integer()?;
@@ -2013,7 +2296,7 @@ impl Instance {
                     result = Some(map);
                 }
                 LoadField(payload) => {
-                    let mut value = self.pop()?;
+                    let mut value = self.running.pop()?;
                     if matches!(value.data, Data::Nil)
                         && self.types.pointer_element(&value.typ)?.is_some()
                     {
@@ -2038,8 +2321,8 @@ impl Instance {
                     })?);
                 }
                 StoreField(payload) => {
-                    let value = self.pop()?;
-                    let object = self.pop()?;
+                    let value = self.running.pop()?;
+                    let object = self.running.pop()?;
                     let Data::Pointer(mut address) = object.data else {
                         return Err(RuntimeError::new(
                             "invalid_address",
@@ -2048,29 +2331,31 @@ impl Instance {
                         ));
                     };
                     address.path.push(PathElement::Field(payload.field.clone()));
-                    self.write_address(&address, value)?;
+                    self.start_address_write(address, value)?;
                 }
                 LoadIndex | LoadIndexOk => {
                     let with_ok = matches!(
-                        function.code[self.frames.last().unwrap().pc - 1],
+                        function.code[self.running.frames.last().unwrap().pc - 1],
                         LoadIndexOk
                     );
-                    let key = self.pop()?;
-                    let object = self.pop()?;
+                    let key = self.running.pop()?;
+                    let object = self.running.pop()?;
                     let (value, ok) = self.index_value(&object, &key)?;
                     if with_ok {
-                        self.frames.last_mut().unwrap().stack.push(value);
+                        self.running.frames.last_mut().unwrap().stack.push(value);
                         result = Some(Value::boolean(ok));
                     } else {
                         result = Some(value);
                     }
                 }
                 StoreIndex => {
-                    let mut values = self.pop_values(3)?;
+                    let mut values = self.running.pop_values(&self.frame_pool, 3)?;
                     let value = values.pop().unwrap();
                     let key = values.pop().unwrap();
                     let object = values.pop().unwrap();
-                    self.store_index(object, key, value)?;
+                    self.running.pending_write =
+                        Some(self.prepare_index_write(object, key, value)?);
+                    self.resume_write()?;
                 }
                 MakeClosure(payload) => {
                     self.charge_guest_object(payload.captures.len(), 0)?;
@@ -2093,15 +2378,15 @@ impl Instance {
                 }
                 CallDirect(payload) | TailCallDirect(payload) | CallValue(payload) => {
                     let tail = matches!(
-                        function.code[self.frames.last().unwrap().pc - 1],
+                        function.code[self.running.frames.last().unwrap().pc - 1],
                         TailCallDirect(_)
                     );
                     let indirect = matches!(
-                        function.code[self.frames.last().unwrap().pc - 1],
+                        function.code[self.running.frames.last().unwrap().pc - 1],
                         CallValue(_)
                     );
                     let mut arguments = if tail {
-                        let stack = &self.frames.last().unwrap().stack;
+                        let stack = &self.running.frames.last().unwrap().stack;
                         let start = stack
                             .len()
                             .checked_sub(payload.arg_count as usize)
@@ -2114,7 +2399,10 @@ impl Instance {
                             })?;
                         stack[start..].to_vec()
                     } else {
-                        self.pop_values(payload.arg_count as usize + usize::from(indirect))?
+                        self.running.pop_values(
+                            &self.frame_pool,
+                            payload.arg_count as usize + usize::from(indirect),
+                        )?
                     };
                     let callee = if indirect {
                         let value = arguments.remove(0);
@@ -2153,11 +2441,12 @@ impl Instance {
                         } else {
                             bound_revision = self.revision.clone();
                             let key = (revision.generation, function.index, pc);
-                            target_index = match self.call_bindings.get(&key) {
+                            let cached = self.call_bindings.lock().unwrap().get(&key).copied();
+                            target_index = match cached {
                                 Some((generation, index))
-                                    if *generation == bound_revision.generation =>
+                                    if generation == bound_revision.generation =>
                                 {
-                                    *index
+                                    index
                                 }
                                 _ => {
                                     let index = bound_revision
@@ -2165,6 +2454,8 @@ impl Instance {
                                         .function(&source.module, &source.name)?
                                         .index;
                                     self.call_bindings
+                                        .lock()
+                                        .unwrap()
                                         .insert(key, (bound_revision.generation, index));
                                     index
                                 }
@@ -2179,7 +2470,7 @@ impl Instance {
                             captures: Vec::new(),
                         }
                     };
-                    let caller = self.frames.last().unwrap();
+                    let caller = self.running.frames.last().unwrap();
                     let replace = tail
                         && caller.defers.is_empty()
                         && caller.module == callee.module
@@ -2187,19 +2478,21 @@ impl Instance {
                         && self.debug.resume.is_none()
                         && !self.debug.pause.load(std::sync::atomic::Ordering::Acquire);
                     if replace {
-                        self.suspended_frames.push(self.frames.pop().unwrap());
+                        self.running
+                            .suspended_frames
+                            .push(self.running.frames.pop().unwrap());
                     }
-                    let frame_index = self.frames.len();
+                    let frame_index = self.running.frames.len();
                     let created =
                         self.push_frame(callee, arguments, payload.result_count as usize, false);
                     let old = if replace {
-                        self.suspended_frames.pop()
+                        self.running.suspended_frames.pop()
                     } else {
                         None
                     };
                     if let Err(error) = created {
                         if let Some(old) = old {
-                            self.frames.push(old);
+                            self.running.frames.push(old);
                         }
                         return Err(error);
                     }
@@ -2211,13 +2504,13 @@ impl Instance {
                             old.prepared.index,
                             old.memory,
                         );
-                        let frame = &mut self.frames[frame_index];
+                        let frame = &mut self.running.frames[frame_index];
                         frame.initializing = old.initializing;
                         frame.deferred = old.deferred;
                         frame.recovered = old.recovered;
                         frame.expected_results = old.expected_results;
                     } else if tail {
-                        let caller = &mut self.frames[frame_index - 1];
+                        let caller = &mut self.running.frames[frame_index - 1];
                         caller
                             .stack
                             .truncate(caller.stack.len() - payload.arg_count as usize);
@@ -2225,7 +2518,9 @@ impl Instance {
                     }
                 }
                 CallInterface(payload) => {
-                    let mut arguments = self.pop_values(payload.arg_count as usize + 1)?;
+                    let mut arguments = self
+                        .running
+                        .pop_values(&self.frame_pool, payload.arg_count as usize + 1)?;
                     let value = arguments.remove(0);
                     let receiver = match value.data {
                         Data::Interface(value) => *value,
@@ -2262,11 +2557,13 @@ impl Instance {
                     )?;
                 }
                 Return(payload) => {
-                    let values = self.pop_values(payload.result_count as usize)?;
+                    let values = self
+                        .running
+                        .pop_values(&self.frame_pool, payload.result_count as usize)?;
                     self.begin_return(values)?;
                 }
                 DeferPush(payload) => {
-                    let value = self.pop()?;
+                    let value = self.running.pop()?;
                     let Data::Function(callee) = value.data else {
                         return Err(RuntimeError::new(
                             "nil_function",
@@ -2275,6 +2572,7 @@ impl Instance {
                         ));
                     };
                     let owner = self
+                        .running
                         .frames
                         .len()
                         .checked_sub(payload.owner_depth as usize + 1)
@@ -2285,7 +2583,7 @@ impl Instance {
                                 "owner depth exceeds call stack",
                             )
                         })?;
-                    let frame = &mut self.frames[owner];
+                    let frame = &mut self.running.frames[owner];
                     frame.memory.deferred = memory::grow_frame_buffer(
                         frame.memory.deferred,
                         frame.defers.len() + 1,
@@ -2294,14 +2592,14 @@ impl Instance {
                     frame.defers.push(callee);
                 }
                 Panic => {
-                    let mut value = self.pop()?;
+                    let mut value = self.running.pop()?;
                     if matches!(value.data, Data::Nil) {
                         value = Value {
                             typ: TypeIdentity::Primitive(wire::PrimitiveString),
                             data: Data::String((&b"panic called with nil argument"[..]).into()),
                         };
                     }
-                    let frame = self.frames.last_mut().unwrap();
+                    let frame = self.running.frames.last_mut().unwrap();
                     frame.panic = Some(Arc::new(value));
                     frame.returning = Some(Vec::new());
                     self.debug_panic();
@@ -2311,17 +2609,17 @@ impl Instance {
                         typ: TypeIdentity::Any,
                         data: Data::Nil,
                     });
-                    let mut top = self.frames.len() - 1;
-                    if !self.frames[top].deferred && top > 0 {
+                    let mut top = self.running.frames.len() - 1;
+                    if !self.running.frames[top].deferred && top > 0 {
                         top -= 1;
                     }
                     if top > 0
-                        && self.frames[top].deferred
-                        && self.frames[top].recovered.is_none()
-                        && let Some(panic) = self.frames[top - 1].panic.clone()
+                        && self.running.frames[top].deferred
+                        && self.running.frames[top].recovered.is_none()
+                        && let Some(panic) = self.running.frames[top - 1].panic.clone()
                     {
                         result = Some((*panic).clone());
-                        self.frames[top].recovered = Some(panic);
+                        self.running.frames[top].recovered = Some(panic);
                     }
                 }
                 LoadExport(payload) => {
@@ -2348,6 +2646,7 @@ impl Instance {
                         "global" => self
                             .heap
                             .get(self.globals[&(payload.module_path.clone(), export.id.clone())])?
+                            .as_ref()
                             .clone(),
                         _ => {
                             return Err(RuntimeError::new(
@@ -2362,8 +2661,11 @@ impl Instance {
                     self.initialize_module(&payload.module_path)?;
                 }
                 Len | Cap => {
-                    let capacity = matches!(function.code[self.frames.last().unwrap().pc - 1], Cap);
-                    let mut value = self.pop()?;
+                    let capacity = matches!(
+                        function.code[self.running.frames.last().unwrap().pc - 1],
+                        Cap
+                    );
+                    let mut value = self.running.pop()?;
                     let pointee = self.types.pointer_element(&value.typ)?;
                     if let Some(elem) = pointee
                         && let Some((_, node)) = self.types.node(&elem)?
@@ -2373,7 +2675,8 @@ impl Instance {
                     }
                     if result.is_some() {
                         // The type determines the length even for a nil pointer.
-                        self.frames
+                        self.running
+                            .frames
                             .last_mut()
                             .unwrap()
                             .stack
@@ -2409,7 +2712,7 @@ impl Instance {
                                 capacity: size,
                                 values,
                                 ..
-                            } = self.resource(root)?
+                            } = &*self.resource(root)?
                             else {
                                 return Err(RuntimeError::new(
                                     "type_error",
@@ -2439,7 +2742,7 @@ impl Instance {
                     });
                 }
                 Slice => {
-                    let mut values = self.pop_values(4)?;
+                    let mut values = self.running.pop_values(&self.frame_pool, 4)?;
                     let max = values.pop().unwrap();
                     let high = values.pop().unwrap().integer()?;
                     let low = values.pop().unwrap().integer()?;
@@ -2447,7 +2750,9 @@ impl Instance {
                     result = Some(self.slice_value(object, low, high, max)?);
                 }
                 Append(payload) => {
-                    let mut values = self.pop_values(payload.count as usize + 1)?;
+                    let mut values = self
+                        .running
+                        .pop_values(&self.frame_pool, payload.count as usize + 1)?;
                     let object = values.remove(0);
                     if payload.expand {
                         values = self.slice_values(&values[0])?;
@@ -2455,17 +2760,20 @@ impl Instance {
                     result = Some(self.append_values(object, values)?);
                 }
                 Copy => {
-                    let source = self.pop()?;
-                    let destination = self.pop()?;
+                    let source = self.running.pop()?;
+                    let destination = self.running.pop()?;
                     result = Some(Value::int(self.copy_values(destination, source)? as i64));
                 }
                 Delete => {
-                    let key = self.pop()?;
-                    let object = self.pop()?;
-                    self.delete_key(object, key)?;
+                    let key = self.running.pop()?;
+                    let object = self.running.pop()?;
+                    self.running.pending_write = self.prepare_delete(object, key)?;
+                    if self.running.pending_write.is_some() {
+                        self.resume_write()?;
+                    }
                 }
                 Clear => {
-                    let object = self.pop()?;
+                    let object = self.running.pop()?;
                     match &object.data {
                         Data::Map(root) => {
                             let Data::MapEntries(entries) = &self.heap.get(*root)?.data else {
@@ -2505,23 +2813,29 @@ impl Instance {
                     }
                 }
                 MapIterInit(payload) => {
-                    let object = self.pop()?;
+                    let object = self.running.pop()?;
                     self.init_map_iterator(&payload.local, object)?;
                 }
                 MapIterNext(payload) => {
                     let (key, value, ok) = self.next_map_entry(&payload.local)?;
-                    self.frames.last_mut().unwrap().stack.extend([key, value]);
+                    self.running
+                        .frames
+                        .last_mut()
+                        .unwrap()
+                        .stack
+                        .extend([key, value]);
                     result = Some(Value::boolean(ok));
                 }
                 MapIterClose(payload) => {
-                    self.frames
+                    self.running
+                        .frames
                         .last_mut()
                         .unwrap()
                         .map_iterators
                         .remove(&payload.local);
                 }
                 MapKeys => {
-                    let object = self.pop()?;
+                    let object = self.running.pop()?;
                     let values = match object.data {
                         Data::Map(root) => {
                             let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
@@ -2555,12 +2869,12 @@ impl Instance {
                 }
                 StringRuneAt | StringNextRuneIndex => {
                     let next_index = matches!(
-                        function.code[self.frames.last().unwrap().pc - 1],
+                        function.code[self.running.frames.last().unwrap().pc - 1],
                         StringNextRuneIndex
                     );
-                    let index = usize::try_from(self.pop()?.integer()?)
+                    let index = usize::try_from(self.running.pop()?.integer()?)
                         .map_err(|_| RuntimeError::new("panic", "string", "negative rune index"))?;
-                    let object = self.pop()?;
+                    let object = self.running.pop()?;
                     let Data::String(bytes) = object.data else {
                         return Err(RuntimeError::new("type_error", "string", "expected string"));
                     };
@@ -2583,10 +2897,10 @@ impl Instance {
                 }
                 TypeAssert(_) | TypeAssertOk(_) => {
                     let with_ok = matches!(
-                        function.code[self.frames.last().unwrap().pc - 1],
+                        function.code[self.running.frames.last().unwrap().pc - 1],
                         TypeAssertOk(_)
                     );
-                    let value = self.pop()?;
+                    let value = self.running.pop()?;
                     let nil_interface = matches!(value.data, Data::Nil)
                         && (value.typ == TypeIdentity::Any
                             || value.typ == TypeIdentity::Primitive(wire::PrimitiveError)
@@ -2615,38 +2929,21 @@ impl Instance {
                         self.zero(&typ, 0)?
                     };
                     if with_ok {
-                        self.frames.last_mut().unwrap().stack.push(value);
+                        self.running.frames.last_mut().unwrap().stack.push(value);
                         result = Some(Value::boolean(ok));
                     } else {
                         result = Some(value);
                     }
                 }
                 Convert(_) => {
-                    let value = self.pop()?;
+                    let value = self.running.pop()?;
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
                     result = Some(self.convert_value(value, typ)?);
                 }
-                instruction @ (CallFfi(_)
-                | Spawn(_)
-                | MakeWaitable(_)
-                | WaitableSend
-                | WaitableRecv
-                | WaitableRecvOk
-                | WaitableTryRecv
-                | WaitableTrySend
-                | WaitableCanRecv
-                | WaitableCanSend
-                | WaitableClose
-                | WaitableSubscribeRecv
-                | WaitableSubscribeSend
-                | MakeWaitToken
-                | WaitTokenSignal
-                | WaitTokenCancel
-                | MakeWaitSet
-                | WaitSetAdd
-                | WaitSetPoll
-                | WaitSetPark
-                | WaitSetCancel) => {
+                instruction @ (CallFfi(_) | Spawn(_) | MakeWaitable(_) | Select(_)
+                | WaitableSend | WaitableRecv | WaitableRecvOk | WaitableTryRecv
+                | WaitableTrySend | WaitableCanRecv | WaitableCanSend
+                | WaitableClose) => {
                     self.execute_wait(instruction.clone(), module)?;
                 }
                 CallIntrinsic(_) | Unary(_) | Binary(_) | Const(_) | LoadLocal(_)
@@ -2660,7 +2957,7 @@ impl Instance {
             if let Data::String(bytes) = &value.data {
                 self.check_string_size(bytes.len())?;
             }
-            self.frames.last_mut().unwrap().stack.push(value);
+            self.running.frames.last_mut().unwrap().stack.push(value);
         }
         Ok(())
     }

@@ -207,7 +207,6 @@ func (a *analyzer) analyzeFunc(decl *ast.FuncDecl, parent ScopeID, objectID Obje
 	a.resultTypes = signature.Results
 	a.analyzeBlock(&decl.Body, scope, false)
 	a.resultTypes = previousResults
-	a.validateNoSwitchFunction(decl)
 }
 
 func (a *analyzer) storeFunctionType(nodeID ast.NodeID, role string, signature types.FunctionSignature) types.TypeRef {

@@ -9,8 +9,41 @@ import (
 
 func (machine *executionMachine) executeControl(task *executionTask, current *executionFrame, pc int, inst *preparedInstruction) (taskYield, bool, error) {
 	callFrame := current.frame
-	defer callFrame.releasePopValues()
+	yield, handled, err := machine.executeControlBody(task, current, pc, inst)
+	if _, census := findGuestCensusRequest(err); !census {
+		callFrame.releasePopValues()
+	}
+	task.preparingSelection = nil
+	return yield, handled, err
+}
+
+func (machine *executionMachine) executeControlBody(task *executionTask, current *executionFrame, pc int, inst *preparedInstruction) (taskYield, bool, error) {
+	callFrame := current.frame
 	switch inst.op {
+	case preparedSelect:
+		payload := inst.selection
+		cases := make([]channelSelectCase, len(payload.Cases))
+		for index, selected := range payload.Cases {
+			cases[index].channel = callFrame.localCells[callFrame.function.LocalIndexes[selected.Channel]].load()
+			if selected.Send != "" {
+				cases[index].send = true
+				cases[index].value = callFrame.localCells[callFrame.function.LocalIndexes[selected.Send]].load()
+			}
+		}
+		selection, err := machine.vm.prepareChannelSelection(task, callFrame.module, cases)
+		if err != nil {
+			return taskYield{}, true, err
+		}
+		if !selection.tryCommit() {
+			if payload.Default {
+				selection.complete(-1, vmValue{}, false)
+			} else {
+				selection.register()
+				machine.blockTask(task, current, pc, inst, &blockedOperation{kind: "select", selection: selection, selectPayload: payload})
+				return taskYield{kind: taskYieldBlocked}, true, nil
+			}
+		}
+		return taskYield{}, true, selection.deliver(callFrame, payload, false)
 	case preparedAddressOf:
 		payload := inst.address
 		module, err := machine.module(payload.ModulePath)
@@ -32,7 +65,7 @@ func (machine *executionMachine) executeControl(task *executionTask, current *ex
 			caller.frame.push(value)
 			return nil
 		}
-		if module.state.initState == moduleInitializing {
+		if module.state.initState == moduleInitializing && module.state.initTask == task {
 			return taskYield{}, true, ready(task, current)
 		}
 		return taskYield{}, true, machine.initializeModule(task, current, module, ready)
@@ -50,7 +83,7 @@ func (machine *executionMachine) executeControl(task *executionTask, current *ex
 			caller.frame.push(value)
 			return nil
 		}
-		if module.state.initState == moduleInitializing {
+		if module.state.initState == moduleInitializing && module.state.initTask == task {
 			return taskYield{}, true, ready(task, current)
 		}
 		return taskYield{}, true, machine.initializeModule(task, current, module, ready)
@@ -67,18 +100,20 @@ func (machine *executionMachine) executeControl(task *executionTask, current *ex
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		if target.state != callFrame.module.state && target.state.initState != moduleReady && target.state.initState != moduleInitializing {
+		if target.state != callFrame.module.state && target.state.initState != moduleReady && target.state.initTask != task {
 			return taskYield{}, true, machine.initializeModule(task, current, target, func(task *executionTask, caller *executionFrame) error {
 				args, err := caller.frame.popN(payload.ArgCount)
 				if err != nil {
 					return err
 				}
-				defer caller.frame.releasePopValues()
 				qualify := target.modulePath() != caller.frame.module.modulePath()
 				if qualify {
 					args = caller.frame.module.qualifyValuesForArgumentBoundary(args)
 				}
 				callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, payload.ResultCount, qualify)
+				if _, census := findGuestCensusRequest(err); !census {
+					caller.frame.releasePopValues()
+				}
 				if err != nil {
 					return err
 				}
@@ -106,7 +141,7 @@ func (machine *executionMachine) executeControl(task *executionTask, current *ex
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		if target.state != callFrame.module.state && target.state.initState != moduleReady && target.state.initState != moduleInitializing {
+		if target.state != callFrame.module.state && target.state.initState != moduleReady && target.state.initTask != task {
 			err = machine.initializeModule(task, current, target, func(task *executionTask, caller *executionFrame) error {
 				return machine.enterDirectTailCall(task, caller, target, function, payload)
 			})
@@ -204,64 +239,27 @@ func (machine *executionMachine) executeControl(task *executionTask, current *ex
 		}
 		child := &executionTask{id: childID, scope: task.scope, execution: task.execution, budget: task.budget, frames: []*executionFrame{childFrame}, debugParents: machine.debugParentSnapshot(task)}
 		return taskYield{kind: taskYieldSpawn, child: child}, true, nil
-	case preparedWaitableSend:
-		waitable, value, err := callFrame.pop2()
+	case preparedWaitableSend, preparedWaitableRecv, preparedWaitableRecvOK:
+		selected := channelSelectCase{send: inst.op == preparedWaitableSend}
+		var err error
+		if selected.send {
+			selected.channel, selected.value, err = callFrame.pop2()
+		} else {
+			selected.channel, err = callFrame.pop()
+		}
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		resource, blocked, err := waitableSendTaskValue(callFrame.module, waitable, value, task.id)
+		selection, err := machine.vm.prepareChannelSelection(task, callFrame.module, []channelSelectCase{selected})
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		if blocked {
-			machine.blockTask(task, current, pc, inst, &blockedOperation{kind: "send", resource: resource})
+		if !selection.tryCommit() {
+			selection.register()
+			machine.blockTask(task, current, pc, inst, &blockedOperation{kind: "select", selection: selection, withOK: inst.op == preparedWaitableRecvOK})
 			return taskYield{kind: taskYieldBlocked}, true, nil
 		}
-		return taskYield{}, true, nil
-	case preparedWaitableRecv, preparedWaitableRecvOK:
-		waitable, err := callFrame.pop()
-		if err != nil {
-			return taskYield{}, true, err
-		}
-		value, ok, closed, err := waitableTryRecvValue(callFrame.module, waitable)
-		if err != nil {
-			return taskYield{}, true, err
-		}
-		if !ok && !closed {
-			resource, err := waitableValueData(callFrame.module, waitable)
-			if err != nil {
-				return taskYield{}, true, err
-			}
-			token := machine.vm.newWaitTokenValue()
-			if err := waitableWaitRecvValue(callFrame.module, waitable, token); err != nil {
-				return taskYield{}, true, err
-			}
-			machine.blockTask(task, current, pc, inst, &blockedOperation{
-				kind: "recv", resource: resource, waitable: waitable, recvToken: token, withOK: inst.op == preparedWaitableRecvOK,
-			})
-			return taskYield{kind: taskYieldBlocked}, true, nil
-		}
-		callFrame.push(value)
-		if inst.op == preparedWaitableRecvOK {
-			callFrame.push(newVMValue("Bool", ok))
-		}
-		return taskYield{}, true, nil
-	case preparedWaitSetPark:
-		waitSet, err := callFrame.pop()
-		if err != nil {
-			return taskYield{}, true, err
-		}
-		index, err := parkWaitSet(machine.vm, waitSet)
-		if err == nil {
-			callFrame.push(index)
-			return taskYield{}, true, nil
-		}
-		var blocked WaitBlockedError
-		if !errors.As(err, &blocked) {
-			return taskYield{}, true, err
-		}
-		machine.blockTask(task, current, pc, inst, &blockedOperation{kind: "waitset", waitSet: waitSet})
-		return taskYield{kind: taskYieldBlocked}, true, nil
+		return taskYield{}, true, selection.deliver(callFrame, nil, inst.op == preparedWaitableRecvOK)
 	case preparedCallFFI:
 		payload := inst.callFFI
 		args, err := callFrame.popN(payload.ArgCount)
@@ -282,7 +280,7 @@ func (machine *executionMachine) executeControl(task *executionTask, current *ex
 			callFrame.push(newVMValue("Int", int64(1)))
 			return taskYield{}, true, nil
 		}
-		pending, err := machine.vm.startFFICall(route, bytes)
+		pending, err := machine.vm.startFFICall(task.scope, route, bytes)
 		if err != nil {
 			return taskYield{}, true, err
 		}
@@ -350,7 +348,7 @@ func (machine *executionMachine) enterDirectTailCall(task *executionTask, curren
 	if qualify {
 		args = callFrame.module.qualifyValuesForArgumentBoundary(args)
 	}
-	debugging := machine.vm.breakpointsActive.Load() || machine.vm.debugStep.Active || machine.vm.hostPauseRequested.Load()
+	debugging := machine.vm.breakpointsActive.Load() || machine.vm.debugStepActive.Load() || machine.vm.hostPauseRequested.Load()
 	if !debugging && len(callFrame.defers) == 0 && !qualify {
 		callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, current.expectedResults, current.qualifyResults)
 		if err != nil {

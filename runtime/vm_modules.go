@@ -6,14 +6,6 @@ import (
 	"strings"
 )
 
-func (vm *vm) loadExport(modulePath, exportName string) (vmValue, error) {
-	module, err := vm.loadModule(modulePath)
-	if err != nil {
-		return vmValue{}, err
-	}
-	return loadInitializedExport(module, exportName)
-}
-
 func loadInitializedExport(module *moduleInstance, exportName string) (vmValue, error) {
 	if module == nil || module.executable == nil {
 		return vmValue{}, errors.New("nil module")
@@ -46,17 +38,6 @@ func loadInitializedExport(module *moduleInstance, exportName string) (vmValue, 
 	}
 }
 
-func (vm *vm) loadModule(modulePath string) (*moduleInstance, error) {
-	module, ok := vm.moduleRegistry().module(modulePath)
-	if !ok {
-		return nil, fmt.Errorf("module %q is not loaded", modulePath)
-	}
-	if err := vm.ensureModuleInitialized(module); err != nil {
-		return nil, err
-	}
-	return module, nil
-}
-
 func (vm *vm) directCallModule(current *moduleInstance, modulePath string) (*moduleInstance, error) {
 	modulePath = strings.TrimSpace(modulePath)
 	if modulePath == "" || modulePath == current.executable.Artifact.Module.Path {
@@ -70,38 +51,6 @@ func (vm *vm) directCallModule(current *moduleInstance, modulePath string) (*mod
 		return nil, fmt.Errorf("module %q is not loaded", modulePath)
 	}
 	return module, nil
-}
-
-func (vm *vm) ensureModuleInitialized(module *moduleInstance) error {
-	if module == nil || module.executable == nil {
-		return errors.New("nil module")
-	}
-	if module.state.initState == moduleReady {
-		return nil
-	}
-	if module.state.initState == moduleFailed {
-		return module.state.initErr
-	}
-	if module.state.initState == moduleInitializing {
-		return fmt.Errorf("module %q initialization cycle", module.executable.Artifact.Module.Path)
-	}
-	if _, ok := module.executable.Functions[moduleInitFunctionID]; !ok {
-		module.state.initState = moduleReady
-		return nil
-	}
-	module.state.beginInitialization()
-	values, err := vm.runFunction(module, moduleInitFunctionID, nil)
-	if err != nil {
-		module.state.finishInitialization(err)
-		return err
-	}
-	if len(values) != 0 {
-		err = fmt.Errorf("module %q init returned %d values", module.executable.Artifact.Module.Path, len(values))
-		module.state.finishInitialization(err)
-		return err
-	}
-	module.state.finishInitialization(nil)
-	return nil
 }
 
 func (vm *vm) moduleForFunctionRef(current *moduleInstance, ref functionRef) (*moduleInstance, error) {

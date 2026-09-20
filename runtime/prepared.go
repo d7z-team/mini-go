@@ -67,26 +67,18 @@ const (
 	preparedWaitableCanRecv
 	preparedWaitableTryRecv
 	preparedWaitableTrySend
-	preparedWaitableSubscribeRecv
-	preparedWaitableSubscribeSend
 	preparedWaitableCanSend
 	preparedWaitableClose
 	preparedInitModule
 	preparedLoadExport
 	preparedSpawn
-	preparedMakeWaitToken
-	preparedWaitTokenSignal
-	preparedWaitTokenCancel
-	preparedMakeWaitSet
-	preparedWaitSetAdd
-	preparedWaitSetPoll
-	preparedWaitSetPark
-	preparedWaitSetCancel
 	preparedCallFFI
 	preparedCallIntrinsic
+	preparedSelect
 )
 
 var preparedOpcodes = map[string]preparedOpcode{
+	string(ir.OpSelect):      preparedSelect,
 	string(ir.OpMapIterInit): preparedMapIterInit, string(ir.OpMapIterNext): preparedMapIterNext, string(ir.OpMapIterClose): preparedMapIterClose,
 	string(ir.OpConst): preparedConst, string(ir.OpZero): preparedZero, string(ir.OpPop): preparedPop,
 	string(ir.OpUnary): preparedUnary, string(ir.OpBinary): preparedBinary,
@@ -113,15 +105,10 @@ var preparedOpcodes = map[string]preparedOpcode{
 	string(ir.OpStoreIndirect): preparedStoreIndirect, string(ir.OpWaitableSend): preparedWaitableSend,
 	string(ir.OpWaitableRecv): preparedWaitableRecv, string(ir.OpWaitableRecvOK): preparedWaitableRecvOK,
 	string(ir.OpWaitableCanRecv): preparedWaitableCanRecv, string(ir.OpWaitableTryRecv): preparedWaitableTryRecv,
-	string(ir.OpWaitableTrySend): preparedWaitableTrySend, string(ir.OpWaitableSubscribeRecv): preparedWaitableSubscribeRecv,
-	string(ir.OpWaitableSubscribeSend): preparedWaitableSubscribeSend, string(ir.OpWaitableCanSend): preparedWaitableCanSend,
+	string(ir.OpWaitableTrySend): preparedWaitableTrySend, string(ir.OpWaitableCanSend): preparedWaitableCanSend,
 	string(ir.OpWaitableClose): preparedWaitableClose, string(ir.OpInitModule): preparedInitModule,
 	string(ir.OpLoadExport): preparedLoadExport, string(ir.OpSpawn): preparedSpawn,
-	string(ir.OpMakeWaitToken):   preparedMakeWaitToken,
-	string(ir.OpWaitTokenSignal): preparedWaitTokenSignal, string(ir.OpWaitTokenCancel): preparedWaitTokenCancel,
-	string(ir.OpMakeWaitSet): preparedMakeWaitSet, string(ir.OpWaitSetAdd): preparedWaitSetAdd,
-	string(ir.OpWaitSetPoll): preparedWaitSetPoll, string(ir.OpWaitSetPark): preparedWaitSetPark,
-	string(ir.OpWaitSetCancel): preparedWaitSetCancel, string(ir.OpCallFFI): preparedCallFFI,
+	string(ir.OpCallFFI):       preparedCallFFI,
 	string(ir.OpCallIntrinsic): preparedCallIntrinsic,
 }
 
@@ -240,6 +227,7 @@ type preparedInstruction struct {
 	deferValue    *ir.DeferPayload
 	callFFI       *ir.CallFFIPayload
 	callIntrinsic *ir.CallIntrinsicPayload
+	selection     *ir.SelectPayload
 
 	constantIndex     int
 	localIndex        int
@@ -278,6 +266,8 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 	}
 	var err error
 	switch op {
+	case preparedSelect:
+		out.selection, err = decodePreparedPayload[ir.SelectPayload](inst)
 	case preparedConst:
 		out.constant, err = decodePreparedPayload[ir.ConstPayload](inst)
 	case preparedZero, preparedTypeAssert, preparedTypeAssertOK, preparedConvert:
@@ -345,10 +335,12 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 
 func preparedControlOpcode(op preparedOpcode) bool {
 	switch op {
+	case preparedSelect:
+		return true
 	case preparedLoadExport, preparedInitModule,
 		preparedCallDirect, preparedTailCallDirect, preparedCallValue, preparedCallInterface,
 		preparedSpawn, preparedWaitableSend, preparedWaitableRecv, preparedWaitableRecvOK,
-		preparedWaitSetPark, preparedCallFFI, preparedDeferPush, preparedRecover,
+		preparedCallFFI, preparedDeferPush, preparedRecover,
 		preparedPanic, preparedReturn:
 		return true
 	default:

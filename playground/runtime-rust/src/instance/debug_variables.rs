@@ -19,16 +19,16 @@ impl Instance {
                 "page size exceeds limit",
             ));
         }
-        self.debug_binding_addresses(frame)?
+        self.debug_binding_roots(frame)?
             .into_iter()
             .skip(offset)
             .take(limit)
-            .map(|(name, address)| {
+            .map(|(name, root)| {
                 self.debug_variable_info(
                     name,
                     VariableRef {
                         epoch: self.debug.epoch,
-                        address,
+                        root,
                         path: Vec::new(),
                     },
                 )
@@ -116,7 +116,7 @@ impl Instance {
     fn debug_variable_value(
         &self,
         reference: &VariableRef,
-    ) -> Result<std::borrow::Cow<'_, Value>, RuntimeError> {
+    ) -> Result<crate::value::ValueRead<'_>, RuntimeError> {
         let stale = || {
             RuntimeError::new(
                 "stale_reference",
@@ -131,13 +131,10 @@ impl Instance {
         {
             return Err(stale());
         }
-        let mut value = self.borrow_address(&reference.address)?;
+        let mut value = self.debug_root_value(&reference.root)?;
         for path in &reference.path {
             let previous = value;
-            let data = match &previous {
-                std::borrow::Cow::Borrowed(value) => &value.data,
-                std::borrow::Cow::Owned(value) => &value.data,
-            };
+            let data = &previous.data;
             let child = match (path, data) {
                 (VariablePath::Field(name), Data::Struct(fields)) => {
                     fields.get(name).ok_or_else(stale)?
@@ -148,44 +145,50 @@ impl Instance {
                 (VariablePath::Index(index), Data::Slice(slice)) if *index < slice.length => {
                     let mut address = slice.storage.clone();
                     address.path.push(PathElement::Index(slice.start + index));
-                    value = self.borrow_address(&address)?;
+                    value = self.snapshot_address(&address)?;
                     continue;
                 }
                 (
                     VariablePath::MapKey(index) | VariablePath::MapValue(index),
                     Data::Map(handle),
                 ) => {
-                    let Data::MapEntries(entries) = &self.heap.get(*handle)?.data else {
+                    let snapshot = self.heap.get(*handle)?;
+                    let Data::MapEntries(entries) = &snapshot.data else {
                         return Err(stale());
                     };
                     let entry = entries.get(*index).ok_or_else(stale)?;
-                    if matches!(path, VariablePath::MapKey(_)) {
-                        &entry.0
-                    } else {
-                        &entry.1
-                    }
+                    value = crate::value::ValueRead::Owned(
+                        if matches!(path, VariablePath::MapKey(_)) {
+                            entry.0.clone()
+                        } else {
+                            entry.1.clone()
+                        },
+                    );
+                    continue;
                 }
                 (VariablePath::Dereference, Data::Pointer(address)) => {
-                    value = self.borrow_address(address)?;
+                    value = self.snapshot_address(address)?;
                     continue;
                 }
                 (VariablePath::Dereference, Data::Interface(inner)) => inner,
                 _ => return Err(stale()),
             };
             value = match previous {
-                std::borrow::Cow::Borrowed(parent) => {
+                crate::value::ValueRead::Borrowed(parent) => {
                     let child = match (path, &parent.data) {
                         (VariablePath::Field(name), Data::Struct(fields)) => &fields[name],
                         (VariablePath::Index(index), Data::Array(values)) => &values[*index],
                         (VariablePath::Dereference, Data::Interface(inner)) => inner,
                         _ => {
-                            value = std::borrow::Cow::Owned(child.clone());
+                            value = crate::value::ValueRead::Owned(child.clone());
                             continue;
                         }
                     };
-                    std::borrow::Cow::Borrowed(child)
+                    crate::value::ValueRead::Borrowed(child)
                 }
-                std::borrow::Cow::Owned(_) => std::borrow::Cow::Owned(child.clone()),
+                crate::value::ValueRead::Owned(_) | crate::value::ValueRead::Shared(_) => {
+                    crate::value::ValueRead::Owned(child.clone())
+                }
             };
         }
         Ok(value)

@@ -19,7 +19,13 @@ impl Instance {
                 "",
             );
         }
-        let mut arguments = self.pop_values(arg_count)?;
+        let mut arguments = self.running.pop_values(&self.frame_pool, arg_count)?;
+        if matches!(
+            intrinsic,
+            SyncMutexLock | SyncMutexTryLock | SyncMutexUnlock
+        ) {
+            return self.execute_mutex(id, &arguments[0]);
+        }
         if matches!(
             intrinsic,
             ReflectMakeChan
@@ -43,7 +49,12 @@ impl Instance {
                     "result count mismatch",
                 ));
             }
-            self.frames.last_mut().unwrap().stack.extend(results);
+            self.running
+                .frames
+                .last_mut()
+                .unwrap()
+                .stack
+                .extend(results);
             return Ok(());
         }
         let mut results = Vec::new();
@@ -219,16 +230,16 @@ impl Instance {
                 }
                 self.timers.push(Timer {
                     order: 0,
-                    scope: self.current_scope,
+                    scope: self.running.scope,
                     channel,
                     deadline: self.clock.monotonic_ns().saturating_add(delay),
                     period,
                 });
                 self.scope_work
-                    .entry(self.current_scope)
+                    .entry(self.running.scope)
                     .or_default()
                     .timers += 1;
-                self.changed_scopes.insert(self.current_scope);
+                self.changed_scopes.insert(self.running.scope);
             }
             TimeTimerStop => {
                 let Data::ResourceRef(handle) = arguments[0].data else {
@@ -261,7 +272,12 @@ impl Instance {
                 "result count mismatch",
             ));
         }
-        self.frames.last_mut().unwrap().stack.append(&mut results);
+        self.running
+            .frames
+            .last_mut()
+            .unwrap()
+            .stack
+            .append(&mut results);
         self.frame_pool
             .recycle_operands(arguments, self.limits.max_frame_cache_bytes);
         self.frame_pool

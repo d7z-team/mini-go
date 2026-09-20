@@ -29,7 +29,7 @@ func TestRuntimeTypeStructuredAccessors(t *testing.T) {
 }
 
 func TestRuntimePredeclaredTypesDoNotBuildTransientTables(t *testing.T) {
-	for _, name := range []string{"Void", "Any", "Bool", "String", "Int", "Uint64", "Float64", "WaitToken"} {
+	for _, name := range []string{"Void", "Any", "Bool", "String", "Int", "Uint64", "Float64"} {
 		runtimeType := runtimeTypeFromText(name)
 		if !runtimeType.Valid() || runtimeType.Table != nil || runtimeType.String() != name {
 			t.Fatalf("runtime type %q = %#v", name, runtimeType)
@@ -259,7 +259,7 @@ func TestPointerConversionPreservesStorageAndNamedIdentity(t *testing.T) {
 	}
 	module, _ := registry.module("example")
 	stored := newVMValue("example.Left", int64(1))
-	original := reflectCellPointer(module, "example.Left", "stored", &stored)
+	original := reflectCellPointer(module, "example.Left", "stored", stored)
 	converted, err := module.convertValue(original, "Ptr<example.Right>")
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +271,7 @@ func TestPointerConversionPreservesStorageAndNamedIdentity(t *testing.T) {
 	if err := storePointer(converted, newVMValue("example.Right", int64(9))); err != nil {
 		t.Fatal(err)
 	}
+	stored = original.Data.(*vmPointer).cell.load()
 	if stored.Type.String() != "example.Left" || stored.materializedData() != int64(9) {
 		t.Fatalf("converted store: %#v", stored)
 	}

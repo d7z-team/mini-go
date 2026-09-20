@@ -327,7 +327,7 @@ func (m *moduleInstance) runtimeTypeIdentity(typ any) string {
 		if m.registry != nil {
 			revision = m.registry.revision
 		}
-		if cached, ok := m.typeIdentityCache[typeText]; ok && cached.revision == revision {
+		if cached, ok := m.typeIdentityCache.load(typeText); ok && cached.revision == revision {
 			return cached.text
 		}
 		var identity string
@@ -363,10 +363,8 @@ func (m *moduleInstance) runtimeTypeIdentity(typ any) string {
 				identity = normalized
 			}
 		}
-		if m.typeIdentityCache == nil {
-			m.typeIdentityCache = make(map[string]typeTextResolution)
-		}
-		m.typeIdentityCache[typeText] = typeTextResolution{text: identity, revision: revision, found: true}
+
+		m.typeIdentityCache.store(typeText, typeTextResolution{text: identity, revision: revision, found: true})
 		return identity
 	}
 	if module, name, ok := m.namedRuntimeType(typeText); ok {

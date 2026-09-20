@@ -151,30 +151,13 @@ func (e *Execution) pollSteps(ctx context.Context, maxSteps int, waitForOwner bo
 	if state != ExecutionRunning && state != ExecutionPending {
 		return state, 0, executionErr
 	}
-	var err error
-	if waitForOwner {
-		err = e.instance.vm.enterOwnerContext(ctx)
-	} else {
-		err = e.instance.vm.enterOwner()
-	}
-	if err != nil {
-		return state, 0, err
-	}
-	defer e.instance.vm.leaveOwner()
-	// Cancellation or another owner may have completed this execution while we waited.
-	state, _, executionErr = e.stateSnapshot()
-	if state != ExecutionRunning && state != ExecutionPending {
-		return state, 0, executionErr
-	}
-	machine := e.instance.vm.machine
-	outcome := e.instance.vm.runPrepared(maxSteps)
-	executed := 0
-	if machine != nil {
-		executed = machine.pollExecuted
+	outcome := e.instance.driveTasks(ctx, maxSteps, waitForOwner)
+	if outcome.err != nil && errors.Is(outcome.err, ErrBusy) {
+		return state, 0, outcome.err
 	}
 	e.capture(outcome)
 	state, _, executionErr = e.stateSnapshot()
-	return state, executed, executionErr
+	return state, outcome.executed, executionErr
 }
 
 func (e *Execution) waitValues(ctx context.Context) (vmResult, error) {
@@ -228,7 +211,10 @@ func (e *Execution) Cancel() {
 	if e == nil || e.instance == nil {
 		return
 	}
-	e.requestCancel()
+	e.cancelRequested.Store(true)
+	// This caller performs the control transition itself. Waking a second
+	// driver would leave an obsolete owner request after Cancel has returned.
+	e.instance.vm.signalPollWake()
 	if err := e.instance.vm.enterOwnerContext(context.Background()); err != nil {
 		return
 	}
@@ -304,6 +290,14 @@ func (e *Execution) Err() error {
 
 func (e *Execution) capture(outcome runOutcome) {
 	e.mu.Lock()
+	// A synchronous control transition (for example cancellation while a
+	// driver is acquiring full ownership) may settle the execution before the
+	// driver's observational outcome is returned. That later pending/running
+	// observation must not resurrect a terminal handle.
+	if terminalExecutionState(e.state) {
+		e.mu.Unlock()
+		return
+	}
 	e.result, e.err, e.pause = outcome.result, outcome.err, outcome.pause
 	if outcome.state != ExecutionCompleted || e.state != ExecutionCanceled {
 		e.state = outcome.state
@@ -319,7 +313,7 @@ func (e *Execution) capture(outcome runOutcome) {
 		program := e.program
 		executionErr := e.err
 		e.mu.Unlock()
-		e.instance.active = nil
+		e.instance.active.CompareAndSwap(e, nil)
 		if failed && !scopeFailure {
 			e.instance.fail(executionErr)
 		} else if program && (terminalState == ExecutionCompleted || terminalState == ExecutionCanceled) {

@@ -1,10 +1,8 @@
 //! Intrinsics that suspend a frame resume through the owner scheduler.
 
+use super::reflect_value::ReflectedValue;
+use super::scheduler::Resource;
 use super::*;
-use super::{
-    reflect_value::ReflectedValue,
-    scheduler::{Blocked, Resource},
-};
 
 pub(super) enum IntrinsicResume {
     Send,
@@ -16,51 +14,19 @@ pub(super) enum IntrinsicResume {
         results: Vec<TypeIdentity>,
         reflected: bool,
     },
-    Select {
-        cases: Vec<SelectCase>,
-        tokens: Vec<Handle>,
-    },
-}
-
-pub(super) struct SelectCase {
-    index: usize,
-    channel: Value,
-    send: Option<Value>,
 }
 
 impl Trace for IntrinsicResume {
-    fn trace(&self, visit: &mut dyn FnMut(Handle)) {
-        if let Self::Select { cases, tokens } = self {
-            for case in cases {
-                case.channel.trace(visit);
-                if let Some(value) = &case.send {
-                    value.trace(visit);
-                }
-            }
-            for token in tokens {
-                visit(*token);
-            }
-        }
-    }
+    fn trace(&self, _visit: &mut dyn FnMut(Handle)) {}
 }
 
 impl Instance {
     pub(super) fn resume_reflect(&mut self, resume: IntrinsicResume) -> Result<(), RuntimeError> {
         let (values, reflected) = match resume {
-            IntrinsicResume::Select { cases, tokens } => {
-                let index = self.pop()?.integer()?;
-                for token in tokens {
-                    self.finish_token(token, true)?;
-                }
-                let case = cases.into_iter().nth(index as usize).ok_or_else(|| {
-                    RuntimeError::new("invalid_select", "reflect.Select", "invalid selected case")
-                })?;
-                (self.complete_reflect_select(case)?, false)
-            }
             IntrinsicResume::Send => (vec![Value::string(""), Value::boolean(true)], false),
             IntrinsicResume::Receive => {
-                let received = self.pop()?;
-                let value = self.pop()?;
+                let received = self.running.pop()?;
+                let value = self.running.pop()?;
                 (
                     vec![
                         self.reflect_snapshot(ReflectedValue::owned(value), 0)?,
@@ -71,9 +37,11 @@ impl Instance {
                     false,
                 )
             }
-            IntrinsicResume::Call { count } => (self.pop_values(count)?, true),
+            IntrinsicResume::Call { count } => {
+                (self.running.pop_values(&self.frame_pool, count)?, true)
+            }
             IntrinsicResume::Callback { results, reflected } => {
-                let values = self.pop()?;
+                let values = self.running.pop()?;
                 let values = self.slice_values(&values)?;
                 if values.len() != results.len() {
                     return Err(RuntimeError::new(
@@ -119,7 +87,12 @@ impl Instance {
         } else {
             values
         };
-        self.frames.last_mut().unwrap().stack.extend(results);
+        self.running
+            .frames
+            .last_mut()
+            .unwrap()
+            .stack
+            .extend(results);
         Ok(())
     }
 
@@ -178,7 +151,7 @@ impl Instance {
             }),
         )));
         let values = self.make_slice(typ, snapshots.len(), snapshots.len(), snapshots)?;
-        self.frames.last_mut().unwrap().resume =
+        self.running.frames.last_mut().unwrap().resume =
             Some(IntrinsicResume::Callback { results, reflected });
         self.push_frame(callee, vec![values], 1, false)
     }
@@ -192,7 +165,8 @@ impl Instance {
             if id == "reflect.select" {
                 let mut cases = Vec::new();
                 let mut default = None;
-                let mut ready = Vec::new();
+                let mut indexes = Vec::new();
+                let mut receives = Vec::new();
                 for (index, value) in self.slice_values(&arguments[0])?.into_iter().enumerate() {
                     let Data::Struct(fields) = value.data else {
                         return Err(RuntimeError::new(
@@ -257,61 +231,26 @@ impl Instance {
                     } else {
                         None
                     };
-                    if self.channel_ready(&channel, sending)? {
-                        ready.push(cases.len());
-                    }
-                    cases.push(SelectCase {
-                        index,
+                    indexes.push(index);
+                    receives.push(!sending);
+                    cases.push(select::SelectCase {
                         channel,
                         send,
+                        zero: None,
                     });
                 }
-                let chosen = self.choose_ready(&ready);
-                if chosen >= 0 {
-                    return self
-                        .complete_reflect_select(cases.remove(chosen as usize))
-                        .map(Some);
-                }
-                if let Some(index) = default {
-                    return Ok(Some(vec![
-                        Value::int(index as i64),
-                        self.reflect_struct("Value", [])?,
-                        Value::boolean(false),
-                        Value::string(""),
-                        Value::boolean(true),
-                    ]));
-                }
-                self.charge_guest((cases.len() as u64 + 1) * 128 + cases.len() as u64 * 16)?;
-                let mut tokens = Vec::new();
-                for case in &cases {
-                    let token = self.allocate(Value {
-                        typ: TypeIdentity::Any,
-                        data: Data::Resource(Box::new(Resource::Token {
-                            signaled: false,
-                            canceled: false,
-                            registrations: Vec::new(),
-                        })),
-                    })?;
-                    if let Err(error) =
-                        self.subscribe_channel(&case.channel, token, case.send.is_some())
-                    {
-                        for registered in tokens {
-                            self.finish_token(registered, true)?;
-                        }
-                        return Err(error);
-                    }
-                    tokens.push(token);
-                }
-                let set = self.allocate(Value {
-                    typ: TypeIdentity::Any,
-                    data: Data::Resource(Box::new(Resource::WaitSet(tokens.clone()))),
-                })?;
-                self.frames.last_mut().unwrap().resume =
-                    Some(IntrinsicResume::Select { cases, tokens });
-                self.park(Blocked::WaitSet(Value {
-                    typ: TypeIdentity::Primitive(wire::PrimitiveWaitSet),
-                    data: Data::ResourceRef(set),
-                }));
+                self.start_selection(
+                    select::Selection {
+                        cases,
+                        destination: select::SelectDestination::Reflect {
+                            indexes,
+                            receives,
+                            default,
+                        },
+                        outcome: None,
+                    },
+                    default.is_some(),
+                )?;
                 return Ok(None);
             }
             if id == "reflect.make_func" {
@@ -450,15 +389,17 @@ impl Instance {
                                 .resolve(&function.module, &parameter.r#type)?;
                             values.insert(0, self.method_receiver(*receiver, &expected)?);
                         }
-                        self.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Call {
-                            count: result_count,
-                        });
+                        self.running.frames.last_mut().unwrap().resume =
+                            Some(IntrinsicResume::Call {
+                                count: result_count,
+                            });
                         self.push_frame(function, values, result_count, false)?;
                     }
                     Data::Function(callee) => {
-                        self.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Call {
-                            count: result_count,
-                        });
+                        self.running.frames.last_mut().unwrap().resume =
+                            Some(IntrinsicResume::Call {
+                                count: result_count,
+                            });
                         self.push_frame(callee, values, result_count, false)?;
                     }
                     Data::DynamicFunction(_) => {
@@ -496,11 +437,8 @@ impl Instance {
                     typ: TypeIdentity::Any,
                     data: Data::Resource(Box::new(Resource::Channel {
                         capacity,
-                        pending_capacity: 0,
                         closed: false,
                         values: VecDeque::new(),
-                        receive_tokens: Vec::new(),
-                        send_tokens: Vec::new(),
                     })),
                 })?;
                 let value = self.reflect_snapshot(
@@ -557,15 +495,8 @@ impl Instance {
                         Value::boolean(true),
                     ]));
                 }
-                self.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Receive);
-                let handle = match channel.data {
-                    Data::ResourceRef(handle) => Some(handle),
-                    _ => None,
-                };
-                self.park_receive(channel, true)?;
-                if let Some(handle) = handle {
-                    self.signal_channel(handle)?;
-                }
+                self.running.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Receive);
+                self.wait_channel(channel, None, true)?;
                 return Ok(None);
             }
             let value = self
@@ -573,7 +504,7 @@ impl Instance {
                 .current
                 .ok_or_else(|| RuntimeError::new("reflect", id, "reflect: invalid send Value"))?;
             let value = self.coerce(value, &self.element_type(&channel.typ)?)?;
-            let sent = self.try_send(&channel, value.clone(), id == "reflect.value_try_send")?;
+            let sent = self.try_send(&channel, value.clone())?;
             if id == "reflect.value_try_send" {
                 return Ok(Some(vec![
                     Value::boolean(sent),
@@ -584,16 +515,8 @@ impl Instance {
             if sent {
                 return Ok(Some(vec![Value::string(""), Value::boolean(true)]));
             }
-            self.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Send);
-            self.reserve_pending_send(&channel, &value)?;
-            let handle = match channel.data {
-                Data::ResourceRef(handle) => Some(handle),
-                _ => None,
-            };
-            self.park(Blocked::Send { channel, value });
-            if let Some(handle) = handle {
-                self.signal_channel(handle)?;
-            }
+            self.running.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Send);
+            self.wait_channel(channel, Some(value), false)?;
             Ok(None)
         })();
         let results = match outcome {
@@ -641,51 +564,12 @@ impl Instance {
                 results
             }
         };
-        self.frames.last_mut().unwrap().stack.extend(results);
+        self.running
+            .frames
+            .last_mut()
+            .unwrap()
+            .stack
+            .extend(results);
         Ok(())
-    }
-
-    fn complete_reflect_select(&mut self, case: SelectCase) -> Result<Vec<Value>, RuntimeError> {
-        let outcome = if let Some(value) = case.send {
-            self.try_send(&case.channel, value, true).and_then(|sent| {
-                if sent {
-                    Ok((None, false))
-                } else {
-                    Err(RuntimeError::new(
-                        "invalid_select",
-                        "reflect.Select",
-                        "selected send is no longer ready",
-                    ))
-                }
-            })
-        } else {
-            self.try_receive(&case.channel).and_then(|result| {
-                result.map(|(value, ok)| (Some(value), ok)).ok_or_else(|| {
-                    RuntimeError::new(
-                        "invalid_select",
-                        "reflect.Select",
-                        "selected receive is no longer ready",
-                    )
-                })
-            })
-        };
-        let (index, value, received, message, success) = match outcome {
-            Ok((value, received)) => (case.index, value, received, String::new(), true),
-            Err(error) if matches!(error.code, "panic" | "type_error") => {
-                (0, None, false, error.message, false)
-            }
-            Err(error) => return Err(error),
-        };
-        let value = match value {
-            Some(value) => self.reflect_snapshot(ReflectedValue::owned(value), 0)?,
-            None => self.reflect_struct("Value", [])?,
-        };
-        Ok(vec![
-            Value::int(index as i64),
-            value,
-            Value::boolean(received),
-            Value::string(message),
-            Value::boolean(success),
-        ])
     }
 }

@@ -57,15 +57,12 @@ func parseScanned(modulePath string, scanned scanner.Result, limits Limits) (res
 	collector.AddAll(scanned.Diagnostics...)
 	embedDirectives, embedSpans, embedDiagnostics := scanEmbedDirectives(scanned)
 	collector.AddAll(embedDiagnostics...)
-	noSwitchDirectives, noSwitchDiagnostics := scanNoSwitchDirectives(scanned)
-	collector.AddAll(noSwitchDiagnostics...)
 	p := &parser{
 		modulePath: strings.TrimSpace(modulePath),
 		file:       scanned.File,
 		tokens:     scanned.Tokens,
 		embed:      embedDirectives,
 		embedSpans: embedSpans,
-		noSwitch:   noSwitchDirectives,
 		limits:     limits,
 	}
 	program := p.parseProgram()
@@ -73,12 +70,6 @@ func parseScanned(modulePath string, scanned scanner.Result, limits Limits) (res
 		p.diagnostics = append(p.diagnostics, source.Diagnostic{
 			Code: "parser.embed.declaration", Severity: source.SeverityError,
 			Message: "misplaced //go:embed directive; expected a package variable declaration", Primary: p.embedSpans[offset],
-		})
-	}
-	for _, span := range p.noSwitch {
-		p.diagnostics = append(p.diagnostics, source.Diagnostic{
-			Code: "parser.noswitch.declaration", Severity: source.SeverityError,
-			Message: "//minigo:noswitch must precede a named function or method declaration", Primary: span,
 		})
 	}
 	collector.AddAll(p.diagnostics...)
@@ -103,7 +94,6 @@ type parser struct {
 	tokens      []scanner.Token
 	embed       map[int][]string
 	embedSpans  map[int]source.Span
-	noSwitch    map[int]source.Span
 	pos         int
 	diagnostics []source.Diagnostic
 	syncPos     int
@@ -384,8 +374,6 @@ func (p *parser) parseTypeSpec(start scanner.Token) ast.Decl {
 
 func (p *parser) parseFuncDecl() ast.Decl {
 	start := p.expect(token.Func, "parser.func", "expected func")
-	_, noSwitch := p.noSwitch[start.Span.Start.Offset]
-	delete(p.noSwitch, start.Span.Start.Offset)
 	var receiver *ast.Field
 	if p.at(token.Lparen) && p.looksLikeReceiver() {
 		fields := p.parseParameterList()
@@ -419,7 +407,6 @@ func (p *parser) parseFuncDecl() ast.Decl {
 			Params:     params,
 			Results:    results,
 			Body:       body,
-			NoSwitch:   noSwitch,
 		},
 	}
 }

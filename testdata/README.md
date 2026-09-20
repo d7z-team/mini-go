@@ -17,9 +17,9 @@
 
 ## 维护方式
 
-手写输入与预期由测试独立校验；生成观察记录工具链的实际输出。
-RPC、runtime 和 stdlib-host 的 manifest 绑定来源、文件 hash 与镜像身份。
-修改场景时审阅预期，再从仓库根运行 `make generate` 更新派生物，完成后运行受影响测试。
+手写输入与预期由各后端独立校验；生成观察只记录当前工具链输出。RPC、runtime 和 stdlib-host 的
+manifest 绑定来源、文件 hash 与镜像身份。修改场景时先审阅预期，再运行 `make generate` 更新派生物，
+最后执行受影响测试。
 
 Go、Rust 和 WASM 按各自支持范围独立断言；标准库宿主场景还区分 Go 与 Rust provider。
 测试组织与运行命令见[开发指南](../DEVELOPMENT.md#测试组织)，协议和运行时数据格式见对应目录说明。

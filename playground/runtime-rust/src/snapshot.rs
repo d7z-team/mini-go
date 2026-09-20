@@ -93,16 +93,16 @@ pub enum HostData {
         receiver: Option<Box<HostValue>>,
     },
     Resource(usize),
+    Mutex {
+        locked: bool,
+        waiting: usize,
+        granted: bool,
+    },
     Channel {
         capacity: usize,
         closed: bool,
         queued: Vec<HostValue>,
     },
-    WaitToken {
-        signaled: bool,
-        canceled: bool,
-    },
-    WaitSet(Vec<usize>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -158,7 +158,7 @@ impl HostSnapshot {
         let mut objects = Vec::new();
         while objects.len() < builder.pending.len() {
             let value = heap.get(builder.pending[objects.len()])?;
-            objects.push(builder.value(value, 0)?);
+            objects.push(builder.value(&value, 0)?);
         }
         Ok(Self {
             roots,
@@ -583,6 +583,15 @@ impl SnapshotBuilder<'_> {
             },
             Data::ResourceRef(handle) => HostData::Resource(self.object(*handle)?),
             Data::Resource(resource) => match &**resource {
+                Resource::Mutex {
+                    locked,
+                    grant,
+                    waiters,
+                } => HostData::Mutex {
+                    locked: *locked,
+                    waiting: waiters.len(),
+                    granted: grant.is_some(),
+                },
                 Resource::Channel {
                     capacity,
                     closed,
@@ -596,18 +605,6 @@ impl SnapshotBuilder<'_> {
                         .map(|value| self.value(value, depth + 1))
                         .collect::<Result<_, _>>()?,
                 },
-                Resource::Token {
-                    signaled, canceled, ..
-                } => HostData::WaitToken {
-                    signaled: *signaled,
-                    canceled: *canceled,
-                },
-                Resource::WaitSet(tokens) => HostData::WaitSet(
-                    tokens
-                        .iter()
-                        .map(|handle| self.object(*handle))
-                        .collect::<Result<_, _>>()?,
-                ),
             },
         };
         Ok(HostValue {

@@ -35,7 +35,7 @@ func reflectSameReference(ctx intrinsicContext, args []vmValue) ([]vmValue, erro
 		equal = ok && left == right
 	case *vmSlice:
 		right, ok := values[1].Data.(*vmSlice)
-		equal = ok && (left == right || left != nil && right != nil && left.storage != nil && left.storage == right.storage && left.Start == right.Start && left.Len == right.Len)
+		equal = ok && (left == right || left != nil && right != nil && left.vmSliceStorage != nil && left.vmSliceStorage == right.vmSliceStorage && left.Start == right.Start && left.Len == right.Len)
 	}
 	return []vmValue{newVMValue("Bool", equal)}, nil
 }

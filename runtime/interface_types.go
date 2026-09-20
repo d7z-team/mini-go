@@ -43,7 +43,7 @@ func (m *moduleInstance) interfaceType(typ string) (string, bool) {
 		revision = m.registry.revision
 	}
 	if m != nil {
-		if cached, ok := m.interfaceTypeCache[typ]; ok && cached.revision == revision {
+		if cached, ok := m.interfaceTypeCache.load(typ); ok && cached.revision == revision {
 			return cached.text, cached.found
 		}
 	}
@@ -57,10 +57,7 @@ func (m *moduleInstance) interfaceType(typ string) (string, bool) {
 		}
 	}
 	if m != nil {
-		if m.interfaceTypeCache == nil {
-			m.interfaceTypeCache = make(map[string]typeTextResolution)
-		}
-		m.interfaceTypeCache[typ] = typeTextResolution{text: resolved, revision: revision, found: found}
+		m.interfaceTypeCache.store(typ, typeTextResolution{text: resolved, revision: revision, found: found})
 	}
 	return resolved, found
 }
@@ -132,7 +129,7 @@ func (m *moduleInstance) implementsInterface(valueType any, target string) bool 
 		revision = m.registry.revision
 	}
 	cacheKey := valueTypeText + "\x00" + resolvedTarget.String()
-	if cached, ok := m.interfaceImplementationCache[cacheKey]; ok && cached.revision == revision {
+	if cached, ok := m.interfaceImplementationCache.load(cacheKey); ok && cached.revision == revision {
 		return cached.value
 	}
 	methods := m.interfaceMethods(target, map[string]struct{}{})
@@ -159,10 +156,7 @@ func (m *moduleInstance) implementsInterface(valueType any, target string) bool 
 }
 
 func (m *moduleInstance) cacheInterfaceImplementation(key string, revision uint64, value bool) {
-	if m.interfaceImplementationCache == nil {
-		m.interfaceImplementationCache = make(map[string]boolResolution)
-	}
-	m.interfaceImplementationCache[key] = boolResolution{value: value, revision: revision}
+	m.interfaceImplementationCache.store(key, boolResolution{value: value, revision: revision})
 }
 
 func sameNamedRuntimeType(left, right vmType) bool {
@@ -183,7 +177,7 @@ func (m *moduleInstance) interfaceMethods(typ string, seen map[string]struct{}) 
 	}
 	topLevel := len(seen) == 0
 	if topLevel {
-		if cached, ok := m.interfaceMethodsCache[typ]; ok && cached.revision == revision {
+		if cached, ok := m.interfaceMethodsCache.load(typ); ok && cached.revision == revision {
 			return cached.methods
 		}
 	}
@@ -261,10 +255,7 @@ func (m *moduleInstance) interfaceMethods(typ string, seen map[string]struct{}) 
 }
 
 func (m *moduleInstance) cacheInterfaceMethods(typ string, revision uint64, methods map[string]string) {
-	if m.interfaceMethodsCache == nil {
-		m.interfaceMethodsCache = make(map[string]methodSetResolution)
-	}
-	m.interfaceMethodsCache[typ] = methodSetResolution{methods: methods, revision: revision}
+	m.interfaceMethodsCache.store(typ, methodSetResolution{methods: methods, revision: revision})
 }
 
 func (m *moduleInstance) interfaceTypeDecl(typ string) (*moduleInstance, types.TypeNode, bool) {

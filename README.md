@@ -1,17 +1,17 @@
 # Mini-Go
 
-Mini-Go 是一个用 Go 编写的嵌入式脚本引擎，使用接近 Go 的语法。你可以在 Go 应用中编译并调用脚本，
-也可以用 `mini-go` 命令直接运行 `.mgo` 文件，编写小工具。
+Mini-Go 是使用 Go-like 语法的嵌入式脚本引擎。Go 应用可以直接编译并调用脚本，Rust 应用可以执行
+同一字节码，浏览器与 Node.js 可通过 WebAssembly SDK 接入；`mini-go` CLI 也能直接运行 `.mgo` 文件。
 
 **[快速开始](#快速开始) · [嵌入 Go](#在-go-中使用) · [使用指南](./USAGE.md) · [标准库](./docs/reference/README.md) · [RPC](./RPC.md)**
 
 ## 主要功能
 
 - **Go-like 语言**：泛型、闭包、channel/select、defer/panic/recover、反射和嵌入资源。
-- **应用内执行**：复用编译结果，创建独立脚本实例，设置取消、执行步数和内存限制。
-- **宿主扩展**：通过 FFI 接入 Go 功能，通过生成的 RPC 客户端调用本地或远程服务。
-- **常驻脚本**：热更新代码，附加调试符号，使用断点和单步调试。
-- **开发工具**：编译缓存、本地源码装配、格式化、文档生成，以及 LSP/DAP 编辑器集成。
+- **可嵌入运行时**：共享 Program、独立 Instance、有界并行、取消、资源限制和热更新。
+- **宿主扩展**：通过 FFI 接入宿主能力，通过 MRPC 调用本地或远程服务。
+- **多环境接入**：Go runtime、Rust runtime，以及面向浏览器和 Node.js 的 TypeScript SDK。
+- **工具链**：本地源码装配、编译缓存、格式化、LSP、DAP 和 VS Code 扩展。
 
 随引擎提供字符串、容器、编码、模板等精选标准库。Mini-Go 面向脚本场景，语言与 API 的支持范围见
 [使用指南](./USAGE.md)和[标准库参考](./docs/reference/README.md)。
@@ -62,8 +62,6 @@ Program 可复用，实例状态相互独立。可直接运行的代码见[完�
 
 ## 文档
 
-接入与使用：
-
 | 文档 | 内容 |
 | --- | --- |
 | [使用指南](./USAGE.md) | 嵌入 API、CLI、源码装配、执行控制与调试 |
@@ -72,12 +70,14 @@ Program 可复用，实例状态相互独立。可直接运行的代码见[完�
 | [VS Code 扩展](./vscode-ext/README.md) | 语法高亮与语言服务配置 |
 | [Rust 运行时](./playground/runtime-rust/README.md) · [使用指南](./playground/runtime-rust/USAGE.md) | 原生调用、取消、异步接入、调试与热更新 |
 | [浏览器与 Node.js](./playground/runtime-rust/runtime-wasm/README.md) | TypeScript SDK、Worker、WASM 与语言工具 |
+| [架构](./ARCHITECTURE.md) | 组件边界、数据流、状态所有权与生命周期 |
+| [开发指南](./DEVELOPMENT.md) | 生成、测试、跨语言验证与性能诊断 |
+| [共享测试数据](./testdata/README.md) | 跨后端语料、预期与更新入口 |
 
 ## 参与开发
 
-开始修改前阅读[架构说明](./ARCHITECTURE.md)与[开发指南](./DEVELOPMENT.md)，
-测试数据的归属见[共享测试数据](./testdata/README.md)。
-在仓库根运行 `make help` 查看构建、生成与各后端验证入口。
+开始修改前阅读[架构](./ARCHITECTURE.md)与[开发指南](./DEVELOPMENT.md)。在仓库根运行
+`make help` 查看构建、生成与各后端验证入口。
 提交问题时请附上最小 `.mgo` 示例、执行命令、预期行为和实际结果。
 
 ## 许可证

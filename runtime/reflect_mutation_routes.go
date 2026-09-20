@@ -77,12 +77,12 @@ func reflectValueGrow(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	var grown vmValue
 	if slice != nil && slice.ByteBacked {
 		backing := make([]byte, checkedCapacity)
-		copy(backing, slice.ByteBacking[slice.Start:slice.Start+slice.Len])
-		grown = newByteSliceHeaderValue(current.Type, backing, 0, length, checkedCapacity)
+		copy(backing, slice.bytes())
+		grown = newByteSliceHeaderValue(current.Type, backing, length, checkedCapacity)
 	} else {
 		backing := make([]vmValue, checkedCapacity)
 		if slice != nil {
-			copy(backing, slice.Backing[slice.Start:slice.Start+slice.Len])
+			copy(backing, slice.values())
 		}
 		elemType := module.arrayElemType(current.Type)
 		for i := length; i < len(backing); i++ {
@@ -271,7 +271,7 @@ func reflectValueSetMapIndex(ctx intrinsicContext, args []vmValue) ([]vmValue, e
 		if err != nil {
 			return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
 		}
-		delete(data.Entries, encoded)
+		data.deleteEntry(encoded)
 	} else if _, err := setIndexValue(module, targetMap, keyValue, elemValue); err != nil {
 		return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
 	}

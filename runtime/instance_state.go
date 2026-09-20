@@ -24,6 +24,9 @@ func (i *Instance) finish(err error) {
 	if i == nil {
 		return
 	}
+	if job := i.supervisor.Load(); job != nil {
+		job.stop()
+	}
 	i.terminalMu.Lock()
 	if i.terminalErr == nil {
 		i.terminalErr = err
@@ -134,62 +137,92 @@ func (i *Instance) isBackgroundPaused(execution *Execution) bool {
 }
 
 func (i *Instance) signalSupervisor() {
-	if i == nil || i.supervisor == nil {
+	if i == nil {
 		return
 	}
-	select {
-	case i.supervisor <- struct{}{}:
-	default:
+	if job := i.supervisor.Load(); job != nil {
+		job.wake()
 	}
 }
 
-func (i *Instance) supervise() {
-	for {
-		select {
-		case <-i.Done():
-			return
-		case <-i.supervisor:
-		}
-		if !i.isOpen() || i.vm == nil {
-			continue
-		}
-		if err := i.vm.enterOwnerContext(context.Background()); err != nil {
-			continue
-		}
-		if !i.isOpen() || i.vm.machine == nil {
-			i.vm.leaveOwner()
-			continue
-		}
-		i.applyRequestedCancellationsLocked()
-		if !i.isOpen() || i.active != nil || i.vm.machine == nil || i.vm.machine.paused != nil {
-			i.vm.leaveOwner()
-			continue
-		}
-		outcome := i.vm.machine.run(defaultPollQuantum)
-		switch outcome.state {
-		case ExecutionRunning:
-			i.vm.activeRunID = 0
-			i.signalSupervisor()
-		case ExecutionPending:
-			i.vm.activeRunID = 0
-			if len(i.vm.machine.scopes) == 0 {
-				i.vm.finishForeground()
-			}
-		case ExecutionPaused:
-			i.vm.activeRunID = 0
-			if paused := i.vm.machine.paused; paused != nil && paused.execution != nil {
-				paused.execution.captureBackgroundPause(outcome.pause)
-			}
-		case ExecutionFailed, ExecutionCanceled:
-			i.vm.machine.abortQueuedTasks(outcome.err)
-			i.vm.finishRun()
-			i.fail(outcome.err)
-		default:
-			i.vm.activeRunID = 0
-		}
-		i.vm.sweepRetiredRevisions()
-		i.vm.leaveOwner()
+func (i *Instance) supervise() bool {
+	if !i.isOpen() || i.vm == nil {
+		return false
 	}
+	if !i.driveMu.TryLock() {
+		return false
+	}
+	defer i.driveMu.Unlock()
+	if batch := i.batch; batch != nil {
+		select {
+		case <-batch.done:
+		default:
+			return false
+		}
+		i.supervisorRetry.Store(true)
+		if err := i.vm.enterOwner(); err != nil {
+			return false
+		}
+		i.supervisorRetry.Store(false)
+		outcome := batch.machine.mergeTaskBatch(batch)
+		i.batch = nil
+		outcome = i.vm.finishPreparedOutcome(outcome)
+		var paused *Execution
+		if outcome.state == ExecutionPaused && i.vm.machine != nil && i.vm.machine.paused != nil {
+			paused = i.vm.machine.paused.execution
+		}
+		i.vm.leaveOwner()
+		switch outcome.state {
+		case ExecutionPaused:
+			if paused != nil {
+				paused.captureBackgroundPause(outcome.pause)
+			}
+			return false
+		case ExecutionFailed, ExecutionCanceled:
+			i.fail(outcome.err)
+			return false
+		}
+	}
+	// Register before attempting ownership so release cannot race a failed
+	// acquisition and leave this job asleep. Never park a pool worker on owner.
+	i.supervisorRetry.Store(true)
+	if err := i.vm.enterOwner(); err != nil {
+		return false
+	}
+	i.supervisorRetry.Store(false)
+	if !i.isOpen() || i.vm.machine == nil {
+		i.vm.leaveOwner()
+		return false
+	}
+	i.applyRequestedCancellationsLocked()
+	if !i.isOpen() || i.active.Load() != nil || i.vm.machine == nil || i.vm.machine.paused != nil {
+		i.vm.leaveOwner()
+		return false
+	}
+	batch, outcome := i.vm.machine.prepareTaskBatch(i.parallelism, defaultPollQuantum)
+	if batch != nil {
+		batch.instance = i
+		i.batch = batch
+		i.vm.publishSlices(len(batch.runs))
+		batch.launch()
+		return false
+	}
+	outcome = i.vm.finishPreparedOutcome(outcome)
+	var paused *Execution
+	if outcome.state == ExecutionPaused && i.vm.machine != nil && i.vm.machine.paused != nil {
+		paused = i.vm.machine.paused.execution
+	}
+	i.vm.sweepRetiredRevisions()
+	i.vm.leaveOwner()
+	switch outcome.state {
+	case ExecutionPaused:
+		if paused != nil {
+			paused.captureBackgroundPause(outcome.pause)
+		}
+	case ExecutionFailed, ExecutionCanceled:
+		i.fail(outcome.err)
+	}
+	return false
 }
 
 func (i *Instance) applyRequestedCancellationsLocked() {
@@ -220,6 +253,19 @@ func (i *Instance) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	i.beginShutdown()
+	select {
+	case <-i.shutdownDone:
+		return i.shutdownErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (i *Instance) beginShutdown() {
+	if i == nil || i.vm == nil {
+		return
+	}
 	i.shutdownOnce.Do(func() {
 		i.lifecycle.Store(uint32(instanceClosing))
 		i.vm.interruptRequested.Store(true)
@@ -231,17 +277,21 @@ func (i *Instance) Shutdown(ctx context.Context) error {
 			close(i.shutdownDone)
 		}()
 	})
-	select {
-	case <-i.shutdownDone:
-		return i.shutdownErr
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 func (i *Instance) shutdownInstance() error {
+	defer i.executor.unregister(i)
+	i.driveMu.Lock()
+	defer i.driveMu.Unlock()
 	if err := i.vm.enterOwnerContext(context.Background()); err != nil {
 		return err
+	}
+	if batch := i.batch; batch != nil {
+		// Full ownership implies every published slice returned its roots and
+		// result. Merge before aborting so no task is left detached from the
+		// scheduler lifecycle.
+		batch.machine.mergeTaskBatch(batch)
+		i.batch = nil
 	}
 	i.patchMu.Lock()
 	pendingPatch := i.pendingPatch
@@ -254,12 +304,10 @@ func (i *Instance) shutdownInstance() error {
 		return err
 	}
 	if i.vm.machine != nil {
-		i.vm.machine.abortQueuedTasks(context.Canceled)
+		i.vm.machine.abortTasks(context.Canceled)
 	}
-	if i.active != nil {
-		active := i.active
+	if active := i.active.Swap(nil); active != nil {
 		i.vm.finishRun()
-		i.active = nil
 		active.cancelOwned()
 	} else {
 		i.vm.finishRun()

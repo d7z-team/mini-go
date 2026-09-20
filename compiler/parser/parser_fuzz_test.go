@@ -14,8 +14,6 @@ func FuzzParseTerminatesWithBoundedDiagnostics(f *testing.F) {
 	f.Add("package main\nfunc broken( {\n")
 	f.Add("package main\nfunc make(value int) int { return value }; func Main() { _ = make(1) }\n")
 	f.Add("package main\nfunc F[T int | ~int](value T) {}\n")
-	f.Add("package main\n//minigo:noswitch\nfunc update(value *int) { *value++ }\n")
-	f.Add("package main\nvar update = //minigo:noswitch\nfunc() {}\n")
 	f.Add("########0A#0A##0A!####0A#0A#0A###0A#0A#0A##0A##0A##0A##0A\"")
 	f.Fuzz(func(t *testing.T, source string) {
 		if len(source) > 1<<20 {

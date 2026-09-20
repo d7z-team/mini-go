@@ -133,7 +133,7 @@ func reflectValueIndex(ctx intrinsicContext, args []vmValue) ([]vmValue, error) 
 		module := reflectRelationModule(ctx)
 		if module != nil && module.isSliceType(current.Type) {
 			cell := current
-			pointer := reflectCellPointer(module, current.Type.String(), fmt.Sprintf("reflect-slice-index:%p", current.Data), &cell)
+			pointer := reflectCellPointer(module, current.Type.String(), fmt.Sprintf("reflect-slice-index:%p", current.Data), cell)
 			indexPtr, indexErr := reflectIndexPointer(module, pointer, index)
 			if indexErr != nil {
 				return reflectValueError(indexErr.Error()), nil

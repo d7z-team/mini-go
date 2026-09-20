@@ -17,7 +17,7 @@ func TestDynamicReflectionMetadataBudgets(t *testing.T) {
 		{"allocation", Limits{MaxAllocatedBytes: 1}, "execution.allocation_limit"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			machine := &vm{limits: normalizeLimits(test.limits), reflectTypes: make(map[string]TypeInfo)}
+			machine := &vm{limits: normalizeLimits(test.limits)}
 			for i := 0; ; i++ {
 				beforeCount, beforeBytes := machine.dynamicTypeCount, machine.dynamicTypeBytes
 				_, err := reflectRegisterDynamicType(intrinsicContext{vm: machine}, fmt.Sprintf("Array<%d,Int>", i), TypeInfo{})
@@ -26,7 +26,7 @@ func TestDynamicReflectionMetadataBudgets(t *testing.T) {
 					if !errors.As(err, &limit) || limit.Code != test.code {
 						t.Fatalf("error = %v", err)
 					}
-					if machine.dynamicTypeCount != beforeCount || machine.dynamicTypeBytes != beforeBytes || len(machine.reflectTypes) != beforeCount {
+					if machine.dynamicTypeCount != beforeCount || machine.dynamicTypeBytes != beforeBytes || len(machine.reflectTypes.snapshot()) != beforeCount {
 						t.Fatal("failed registration partially committed")
 					}
 					break
@@ -60,7 +60,7 @@ func TestReflectionConstructorsUseTypeBudget(t *testing.T) {
 		{"new", reflectNew, func(typ vmValue) []vmValue { return []vmValue{typ} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			machine := &vm{limits: normalizeLimits(Limits{MaxDynamicTypes: 1}), reflectTypes: make(map[string]TypeInfo)}
+			machine := &vm{limits: normalizeLimits(Limits{MaxDynamicTypes: 1})}
 			ctx := intrinsicContext{vm: machine}
 			if _, err := reflectRegisterDynamicType(ctx, "Array<42,Int>", TypeInfo{}); err != nil {
 				t.Fatal(err)
@@ -110,7 +110,7 @@ func TestDynamicReflectionTypeIdentitySurvivesPatch(t *testing.T) {
 	if err := instance.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if machine.dynamicTypeCount != 0 || machine.dynamicTypeBytes != 0 || len(machine.reflectTypes) != 0 {
+	if machine.dynamicTypeCount != 0 || machine.dynamicTypeBytes != 0 || len(machine.reflectTypes.snapshot()) != 0 {
 		t.Fatal("close retained metadata")
 	}
 }
@@ -121,7 +121,7 @@ func FuzzDynamicReflectionTypeBudget(f *testing.F) {
 		if len(lengths) > 128 {
 			lengths = lengths[:128]
 		}
-		machine := &vm{limits: normalizeLimits(Limits{MaxDynamicTypes: 8}), reflectTypes: make(map[string]TypeInfo)}
+		machine := &vm{limits: normalizeLimits(Limits{MaxDynamicTypes: 8})}
 		seen := make(map[byte]bool)
 		for _, length := range lengths {
 			_, err := reflectRegisterDynamicType(intrinsicContext{vm: machine}, fmt.Sprintf("Array<%d,Int>", length), TypeInfo{})
@@ -136,7 +136,7 @@ func FuzzDynamicReflectionTypeBudget(f *testing.F) {
 					t.Fatalf("error = %v", err)
 				}
 			}
-			if len(seen) != machine.dynamicTypeCount || len(machine.reflectTypes) != len(seen) {
+			if len(seen) != machine.dynamicTypeCount || len(machine.reflectTypes.snapshot()) != len(seen) {
 				t.Fatal("registration identity/accounting diverged")
 			}
 		}

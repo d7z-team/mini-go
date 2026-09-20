@@ -88,7 +88,7 @@ func reflectResolvedTypeInfo(ctx intrinsicContext, value vmValue) (TypeInfo, err
 	if ctx.vm == nil {
 		return TypeInfo{}, errors.New("reflect: Type requires VM context")
 	}
-	if info, ok := ctx.vm.reflectTypes[key]; ok {
+	if info, ok := ctx.vm.reflectTypes.load(key); ok {
 		return info, nil
 	}
 	return TypeInfo{}, fmt.Errorf("reflect: type %s is unavailable", key)
@@ -301,7 +301,7 @@ func reflectValueSliceBounds(ctx intrinsicContext, args []vmValue, full bool) ([
 		identity = fmt.Sprintf("%s:%d", identity, maxIndex)
 	}
 	cell := view
-	ptr := reflectCellPointer(module, view.Type.String(), identity, &cell)
+	ptr := reflectCellPointer(module, view.Type.String(), identity, cell)
 	out, err := reflectValueSnapshotWithTarget(ctx, view, ptr, false, false, reflectBoolField(fields.get("interfaceable")))
 	if err != nil {
 		return reflectValueError(err.Error()), nil

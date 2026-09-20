@@ -9,6 +9,61 @@ use serde_json::json;
 use std::sync::Arc;
 
 #[test]
+fn entry_admission_counts_background_tasks_after_root_completion() {
+    let mut worker = Vec::new();
+    for _ in 0..64 {
+        worker.push(json!({"op":"zero","payload":{"type":{"kind":3,"primitive":1}}}));
+        worker.push(json!({"op":"pop"}));
+    }
+    worker.extend([
+        json!({"op":"make_closure","payload":{"function":"child"}}),
+        json!({"op":"spawn","payload":{"arg_count":0}}),
+        json!({"op":"zero","payload":{"type":{"kind":9,"node":"channel"}}}),
+        json!({"op":"waitable_recv"}),
+        json!({"op":"pop"}),
+    ]);
+    let image = support::image(json!({
+        "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":{"kind":3,"primitive":3}}]},
+        "functions":[
+            {"id":"fn.Main","instructions":[
+                {"op":"make_closure","payload":{"function":"worker"}},
+                {"op":"spawn","payload":{"arg_count":0}},
+                {"op":"return","payload":{"result_count":0}}
+            ]},
+            {"id":"worker","instructions":worker},
+            {"id":"child","instructions":[
+                {"op":"zero","payload":{"type":{"kind":9,"node":"channel"}}},{"op":"waitable_recv"},{"op":"pop"}
+            ]}
+        ]
+    }));
+    let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
+    let mut instance = Instance::new(
+        program,
+        ExecutionLimits {
+            max_tasks: 2,
+            ..ExecutionLimits::default()
+        },
+    )
+    .unwrap();
+    instance.start("default", vec![]).unwrap();
+    assert_eq!(instance.poll_steps(1000).unwrap(), PollStatus::Ready);
+    assert_eq!(instance.poll_background(1000).unwrap(), PollStatus::Pending);
+    assert_eq!(instance.stats().blocked_tasks, 2);
+    let before = instance.heap_stats();
+    assert_eq!(
+        instance.start("default", vec![]).unwrap_err().code,
+        "task_limit"
+    );
+    assert_eq!(
+        instance.heap_stats().total_allocated_bytes,
+        before.total_allocated_bytes
+    );
+    assert_eq!(instance.stats().blocked_tasks, 2);
+    instance.close().unwrap();
+    assert_eq!(instance.heap_stats().live_objects, 0);
+}
+
+#[test]
 fn backing_capacity_overflow_returns_a_resource_error() {
     for primitive in [3, 9] {
         let image = support::image(json!({
@@ -141,7 +196,9 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
         assert!(after.total_allocated_bytes >= before.total_allocated_bytes);
         assert!(after.peak_bytes <= 1024);
     }
-    assert_eq!(instance.steps(), 68);
+    // The child owns a full quantum, independent of the parent's two spawn
+    // instructions. Main executes four instructions and quick executes two.
+    assert_eq!(instance.steps(), 64 + 4 + 2);
     assert_eq!(instance.poll_background(100).unwrap(), PollStatus::Ready);
     assert_eq!(instance.steps(), 102);
     assert_eq!(instance.heap_stats().live_objects, 0);

@@ -7,10 +7,11 @@ import (
 
 // runOutcome separates cooperative scheduler stops from execution failures.
 type runOutcome struct {
-	state  ExecutionState
-	result vmResult
-	err    error
-	pause  *debugEvent
+	executed int
+	state    ExecutionState
+	result   vmResult
+	err      error
+	pause    *debugEvent
 }
 
 func failedRun(err error) runOutcome {

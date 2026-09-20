@@ -230,12 +230,12 @@ func TestLowerSelectDefaultAndEmptySelect(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Empty function, got %#v", program.Functions)
 	}
-	if len(empty.Body) < 1 || empty.Body[0].Kind != ir.StmtExpr || empty.Body[0].Expr.Kind != ir.ExprWaitSetPark {
-		t.Fatalf("expected empty select to park an empty waitset, got %#v", empty.Body)
+	if len(empty.Body) < 1 || empty.Body[0].Kind != ir.StmtSelect || len(empty.Body[0].SelectCases) != 0 || empty.Body[0].SelectDefault {
+		t.Fatalf("expected empty blocking select, got %#v", empty.Body)
 	}
 }
 
-func TestLowerNoDefaultSelectRegistersWaitTokens(t *testing.T) {
+func TestLowerSelectDescribesReceiveDestinations(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	chanType := ast.TypeExpr{Kind: ast.TypeChan, Elem: &intType}
 	program, diagnostics := lowerTestProgram(ast.Program{
@@ -288,36 +288,22 @@ func TestLowerNoDefaultSelectRegistersWaitTokens(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
-	var sawWaitSet, sawToken, sawAdd, sawWaitRecv, sawCommitRecv, sawPark, sawCancel bool
 	for _, stmt := range fn.Body {
-		if stmt.Kind == ir.StmtWaitSetCancel {
-			sawCancel = true
-		}
-		if stmt.Expr.Kind == ir.ExprMakeWaitSet {
-			sawWaitSet = true
-		}
-		if stmt.Expr.Kind == ir.ExprMakeWaitToken {
-			sawToken = true
-		}
-		if stmt.Expr.Kind == ir.ExprWaitSetAdd {
-			sawAdd = true
-		}
-		if stmt.Expr.Kind == ir.ExprChanSubscribeRecv {
-			sawWaitRecv = true
-		}
-		if stmt.Expr.Kind == ir.ExprChanRecv {
-			sawCommitRecv = true
-		}
-		if stmt.Expr.Kind == ir.ExprWaitSetPark {
-			sawPark = true
+		if stmt.Kind == ir.StmtSelect {
+			if stmt.SelectDefault || len(stmt.SelectCases) != 1 {
+				t.Fatalf("invalid receive selection: %#v", stmt)
+			}
+			selected := stmt.SelectCases[0]
+			if selected.Channel == "" || selected.Send != "" || selected.Value == "" || selected.OK == "" {
+				t.Fatalf("invalid receive destinations: %#v", selected)
+			}
+			return
 		}
 	}
-	if !sawWaitSet || !sawToken || !sawAdd || !sawWaitRecv || !sawCommitRecv || !sawPark || !sawCancel {
-		t.Fatalf("expected waitset registration, receive commit, park, and cancel in no-default select emit, got %#v", fn.Body)
-	}
+	t.Fatal("missing receive selection")
 }
 
-func TestLowerNoDefaultSelectRegistersSendWaitTokens(t *testing.T) {
+func TestLowerSelectBindsSendValueBeforeCommunication(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	chanType := ast.TypeExpr{Kind: ast.TypeChan, Elem: &intType}
 	program, diagnostics := lowerTestProgram(ast.Program{
@@ -355,24 +341,22 @@ func TestLowerNoDefaultSelectRegistersSendWaitTokens(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
-	var sawWaitSend, sawCommitSend, sawBoundValue bool
+	boundValue := ""
 	for _, stmt := range fn.Body {
-		if stmt.Expr.Kind == ir.ExprChanSubscribeSend {
-			sawWaitSend = true
-		}
-		if stmt.Kind == ir.StmtChanSend {
-			sawCommitSend = true
-		}
 		if stmt.Kind == ir.StmtStoreLocal && strings.Contains(stmt.Local, "select.send") {
-			sawBoundValue = true
+			boundValue = stmt.Local
+		}
+		if stmt.Kind == ir.StmtSelect {
+			if boundValue == "" || stmt.SelectDefault || len(stmt.SelectCases) != 1 || stmt.SelectCases[0].Send != boundValue {
+				t.Fatalf("send does not use its evaluated operand: %#v", stmt)
+			}
+			return
 		}
 	}
-	if !sawWaitSend || !sawCommitSend || !sawBoundValue {
-		t.Fatalf("expected send value binding, wait registration, and commit in no-default select emit, got %#v", fn.Body)
-	}
+	t.Fatal("missing send selection")
 }
 
-func TestLowerSelectWithDefaultPollsRegisteredCases(t *testing.T) {
+func TestLowerSelectDefaultKeepsCommunicationCases(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	chanType := ast.TypeExpr{Kind: ast.TypeChan, Elem: &intType}
 	program, diagnostics := lowerTestProgram(ast.Program{
@@ -433,25 +417,13 @@ func TestLowerSelectWithDefaultPollsRegisteredCases(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
-	var sawWaitRecv, sawCommitRecv, sawWaitSend, sawCommitSend, sawPoll bool
 	for _, stmt := range fn.Body {
-		if stmt.Expr.Kind == ir.ExprChanSubscribeRecv {
-			sawWaitRecv = true
-		}
-		if stmt.Expr.Kind == ir.ExprChanRecv {
-			sawCommitRecv = true
-		}
-		if stmt.Expr.Kind == ir.ExprChanSubscribeSend {
-			sawWaitSend = true
-		}
-		if stmt.Kind == ir.StmtChanSend {
-			sawCommitSend = true
-		}
-		if stmt.Expr.Kind == ir.ExprWaitSetPoll {
-			sawPoll = true
+		if stmt.Kind == ir.StmtSelect {
+			if !stmt.SelectDefault || len(stmt.SelectCases) != 2 || stmt.SelectCases[0].Value == "" || stmt.SelectCases[1].Send == "" {
+				t.Fatalf("invalid default selection: %#v", stmt)
+			}
+			return
 		}
 	}
-	if !sawWaitRecv || !sawCommitRecv || !sawWaitSend || !sawCommitSend || !sawPoll {
-		t.Fatalf("expected registered receive/send cases, non-blocking poll, and commits, got %#v", fn.Body)
-	}
+	t.Fatal("missing default selection")
 }

@@ -20,7 +20,9 @@ func reflectRuntimeTypeFromTypeValue(ctx intrinsicContext, value vmValue) (strin
 	return typ, nil
 }
 
-func reflectCellPointer(module *moduleInstance, typ, identity string, cell *vmValue) vmValue {
+func reflectCellPointer(module *moduleInstance, typ, identity string, value vmValue) vmValue {
+	cell := newSlot(coerceRuntimeType(typ), module, false)
+	cell.publish(value)
 	return newTargetPointer(&vmPointer{Type: coerceRuntimeType(typ), Identity: identity, target: pointerCell, module: module, cell: cell})
 }
 
@@ -48,8 +50,8 @@ func reflectTypeValueFromVM(vm *vm, info TypeInfo) vmValue {
 	key := reflectTypeKey(info)
 	info.Key = key
 	if vm != nil {
-		vm.reflectTypes[key] = info
-		if value, ok := vm.reflectTypeValues[key]; ok {
+		vm.reflectTypes.store(key, info)
+		if value, ok := vm.reflectTypeValues.load(key); ok {
 			return value
 		}
 	}
@@ -59,10 +61,7 @@ func reflectTypeValueFromVM(vm *vm, info TypeInfo) vmValue {
 	}
 	value := reflectTypeValue(module, info)
 	if vm != nil {
-		if vm.reflectTypeValues == nil {
-			vm.reflectTypeValues = make(map[string]vmValue)
-		}
-		vm.reflectTypeValues[key] = value
+		value = vm.reflectTypeValues.loadOrStore(key, value)
 	}
 	return value
 }
@@ -107,7 +106,7 @@ func reflectTypeDescriptorValue(ctx intrinsicContext, info TypeInfo) vmValue {
 	module := reflectRelationModule(ctx)
 	cacheKey := reflectTypeKey(info)
 	if module != nil {
-		if descriptor, ok := module.reflectTypeDescriptorCache[cacheKey]; ok {
+		if descriptor, ok := module.reflectTypeDescriptorCache.load(cacheKey); ok {
 			return descriptor
 		}
 	}
@@ -175,10 +174,7 @@ func reflectTypeDescriptorValue(ctx intrinsicContext, info TypeInfo) vmValue {
 		"methodCount": newVMValue("Int", int64(len(info.Methods))),
 	})
 	if module != nil {
-		if module.reflectTypeDescriptorCache == nil {
-			module.reflectTypeDescriptorCache = make(map[string]vmValue)
-		}
-		module.reflectTypeDescriptorCache[cacheKey] = descriptor
+		module.reflectTypeDescriptorCache.store(cacheKey, descriptor)
 	}
 	return descriptor
 }

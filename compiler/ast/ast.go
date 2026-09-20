@@ -98,7 +98,6 @@ type FuncDecl struct {
 	Results    []Field     `json:"results,omitempty"`
 	Body       BlockStmt   `json:"body,omitempty"`
 	Template   bool        `json:"template,omitempty"`
-	NoSwitch   bool        `json:"no_switch,omitempty"`
 }
 
 type TypeParam struct {

@@ -4,17 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 )
-
-func (machine *executionMachine) syncCallStack(task *executionTask) {
-	machine.vm.callStack = machine.vm.callStack[:0]
-	for _, active := range task.frames {
-		machine.vm.callStack = append(machine.vm.callStack, active.frame)
-	}
-	machine.vm.debugParents = append(machine.vm.debugParents[:0], task.debugParents...)
-}
 
 func (machine *executionMachine) debugParentSnapshot(task *executionTask) []debugFrame {
 	out := append([]debugFrame(nil), task.debugParents...)
@@ -106,7 +97,20 @@ func (machine *executionMachine) initializeModule(task *executionTask, caller *e
 		return module.state.initErr
 	}
 	if module.state.initState == moduleInitializing {
-		return fmt.Errorf("module %q initialization cycle", modulePath)
+		for owner := module.state.initTask; owner != nil; {
+			if owner == task {
+				return fmt.Errorf("module %q initialization cycle", modulePath)
+			}
+			if owner.blocked == nil || owner.blocked.module == nil {
+				break
+			}
+			owner = owner.blocked.module.state.initTask
+		}
+		if caller == nil {
+			return fmt.Errorf("module %q initialization has no continuation", modulePath)
+		}
+		task.blocked = &blockedOperation{kind: "module", module: module, moduleReady: ready}
+		return nil
 	}
 	if _, ok := module.executable.Functions[moduleInitFunctionID]; !ok {
 		module.state.initState = moduleReady
@@ -115,12 +119,16 @@ func (machine *executionMachine) initializeModule(task *executionTask, caller *e
 		}
 		return ready(task, caller)
 	}
-	module.state.beginInitialization()
 	initFrame, err := machine.vm.newExecutionFrame(module, moduleInitFunctionID, nil, nil, task.id, 0, false)
 	if err != nil {
-		module.state.finishInitialization(err)
 		return err
 	}
+	// Frame preparation may request a guest census. Do not publish the
+	// initializing state until preparation succeeds, otherwise retrying the
+	// instruction observes its own transient request as a permanent module
+	// failure and can loop without executing another bytecode step.
+	module.state.beginInitialization()
+	module.state.initTask = task
 	initFrame.abort = func() { module.state.finishInitialization(errors.New("module initialization aborted")) }
 	initFrame.resume = func(task *executionTask, caller *executionFrame, _ []vmValue) error {
 		module.state.finishInitialization(nil)
@@ -134,26 +142,11 @@ func (machine *executionMachine) initializeModule(task *executionTask, caller *e
 	return nil
 }
 
-func (machine *executionMachine) admitTasks(count int) error {
-	active := machine.runnableCount() + len(machine.blocked)
-	if machine.paused != nil {
-		active++
-	}
-	if limit := machine.vm.limits.MaxTasks; limit > 0 && active+count > limit {
+func (machine *executionMachine) admitTask() error {
+	active := len(machine.tasks)
+	if limit := machine.vm.limits.MaxTasks; limit > 0 && active >= limit {
 		return ResourceLimitError{Code: "execution.task_limit", Message: fmt.Sprintf("execution task limit exceeded: max %d", limit)}
 	}
-	return nil
-}
-
-func (machine *executionMachine) enqueueTask(task *executionTask) error {
-	if task == nil {
-		return errors.New("cannot enqueue nil execution task")
-	}
-	if err := machine.admitTasks(1); err != nil {
-		return err
-	}
-	machine.addTask(task)
-	machine.pushRunnable(task)
 	return nil
 }
 
@@ -164,6 +157,8 @@ const (
 	taskYieldPause     = "pause"
 	taskYieldCooperate = "cooperate"
 	taskYieldPoll      = "poll"
+	taskYieldBudget    = "budget"
+	taskYieldCensus    = "census"
 )
 
 func (vm *vm) newExecutionFrame(module *moduleInstance, functionID string, args []vmValue, upvalues map[string]*slot, contextID int64, expectedResults int, qualifyResults bool) (*executionFrame, error) {
@@ -211,35 +206,21 @@ func (vm *vm) newPreparedExecutionFrame(module *moduleInstance, fn loadedFunctio
 	return &callFrame.execution, nil
 }
 
-func (vm *vm) runScheduledFunction(module *moduleInstance, functionID string, args []vmValue, upvalues map[string]*slot, contextID int64) ([]vmValue, error) {
-	scopeID := vm.beginRun()
-	machine, err := vm.prepareScheduledFunction(module, functionID, args, upvalues, contextID, scopeID, false)
-	if err != nil {
-		return nil, err
-	}
-	outcome := machine.run(0)
-	if outcome.suspended() {
-		if outcome.pause != nil {
-			return nil, debugPauseError{Event: *outcome.pause}
-		}
-		return nil, ExecutionPendingError{}
+func (vm *vm) prepareScheduledFunction(module *moduleInstance, functionID string, args []vmValue, contextID, scopeID int64, program bool) error {
+	machine := vm.machine
+	if machine == nil {
+		machine = &executionMachine{vm: vm}
+		vm.machine = machine
 	}
 	if machine.foreground != nil {
-		machine.publishScopeRoot(machine.foreground.id, outcome.state, outcome.err)
+		return errors.New("VM already has an active execution")
 	}
-	if outcome.err != nil {
-		machine.abortQueuedTasks(outcome.err)
-		vm.finishRun()
-	} else {
-		vm.finishForeground()
+	if err := machine.admitTask(); err != nil {
+		return err
 	}
-	return outcome.result.Values, outcome.err
-}
-
-func (vm *vm) prepareScheduledFunction(module *moduleInstance, functionID string, args []vmValue, upvalues map[string]*slot, contextID, scopeID int64, program bool) (*executionMachine, error) {
-	root, err := vm.newExecutionFrame(module, functionID, args, upvalues, contextID, -1, false)
+	root, err := vm.newExecutionFrame(module, functionID, args, nil, contextID, -1, false)
 	if err != nil {
-		return nil, Error{
+		return Error{
 			Generation:  module.revision.generation,
 			ProgramHash: module.revision.code.image.Hash,
 			ModulePath:  module.modulePath(),
@@ -248,32 +229,24 @@ func (vm *vm) prepareScheduledFunction(module *moduleInstance, functionID string
 		}
 	}
 	if err := vm.chargeAllocation(); err != nil {
-		return nil, err
-	}
-	machine := vm.machine
-	if machine == nil {
-		machine = &executionMachine{vm: vm}
-		vm.machine = machine
+		root.frame.recycle()
+		return err
 	}
 	scope := machine.newScope(scopeID, contextID, program, module.revision)
 	task := &executionTask{id: contextID, scope: scope, budget: scope.budget, frames: []*executionFrame{root}}
-	if machine.foreground != nil {
-		machine.abortTask(task)
-		delete(machine.scopes, scopeID)
-		return nil, errors.New("VM already has an active execution")
-	}
 	machine.foreground = scope
+	machine.addTask(task)
 	if functionID != moduleInitFunctionID {
 		if err := machine.initializeModule(task, root, module, nil); err != nil {
 			machine.abortTask(task)
+			machine.finishTask(task, err)
 			machine.foreground = nil
 			delete(machine.scopes, scopeID)
-			return nil, err
+			return err
 		}
 	}
-	machine.addTask(task)
 	machine.pushRunnable(task)
-	return machine, nil
+	return nil
 }
 
 func (vm *vm) prepareRootInitialization() (int64, bool, error) {
@@ -298,25 +271,29 @@ func (vm *vm) prepareRootInitialization() (int64, bool, error) {
 		machine = &executionMachine{vm: vm}
 		vm.machine = machine
 	}
+	if err := machine.admitTask(); err != nil {
+		return 0, false, err
+	}
 	scope := machine.newScope(scopeID, contextID, false, root.revision)
 	task := &executionTask{id: contextID, scope: scope, budget: scope.budget}
 	machine.foreground = scope
+	machine.addTask(task)
 	if err := machine.initializeModule(task, nil, root, nil); err != nil {
 		machine.abortTask(task)
+		machine.finishTask(task, err)
 		machine.foreground = nil
 		delete(machine.scopes, scopeID)
 		vm.finishForeground()
 		return 0, false, err
 	}
-	machine.addTask(task)
 	machine.pushRunnable(task)
 	return scopeID, true, nil
 }
 
-func (machine *executionMachine) run(instructionBudget int) runOutcome {
-	machine.pollBudget = instructionBudget
-	machine.pollAttempts = 0
-	machine.pollExecuted = 0
+func (machine *executionMachine) run(instructionBudget int) (outcome runOutcome) {
+	attempted := 0
+	executed := 0
+	defer func() { outcome.executed = executed }()
 	if machine.cancelRequestedScopes() != nil {
 		return failedRun(context.Canceled)
 	}
@@ -326,80 +303,30 @@ func (machine *executionMachine) run(instructionBudget int) runOutcome {
 	}
 	for {
 		if machine.runnableCount() != 0 {
-			task := machine.popRunnable()
-			if task.scope != nil {
-				machine.vm.activeRunID = task.scope.id
-			} else {
-				machine.vm.activeRunID = 0
-			}
-			machine.running = task
-			yield, values, err := machine.runTask(task)
-			machine.running = nil
-			if err != nil {
-				scopeCanceled := task.scope != nil && task.execution != nil && task.execution.cancelRequested.Load()
-				scopeLimited := task.scope != nil && !task.scope.program && isScopePolicyError(err)
-				if scopeCanceled || scopeLimited {
-					scope := task.scope
-					foreground := machine.foreground == scope
-					machine.abortTask(task)
-					machine.finishTask(task, nil, err)
-					machine.cancelScope(scope, err)
-					if foreground {
-						return failedRun(err)
-					}
-					continue
-				}
-				machine.abortTask(task)
-				if task.terminal != nil {
-					machine.finishTask(task, nil, err)
-					continue
-				}
-				machine.finishTask(task, nil, err)
-				machine.abortQueuedTasks(err)
-				return failedRun(err)
-			}
-			if yield.kind == taskYieldPoll {
-				machine.pushRunnableFront(task)
+			if instructionBudget > 0 && attempted >= instructionBudget {
 				return runOutcome{state: ExecutionRunning}
 			}
-			if yield.kind != taskYieldPause {
-				task.quantumSteps = 0
+			task := machine.popRunnable()
+			if !task.ownership.acquire() {
+				continue
 			}
-			switch yield.kind {
-			case taskYieldComplete:
-				root := machine.foreground != nil && task.id == machine.foreground.rootID
-				program := root && machine.foreground.program
-				machine.finishTask(task, values, nil)
-				if root {
-					if program {
-						machine.abortQueuedTasks(nil)
-					}
-					return runOutcome{state: ExecutionCompleted, result: vmResult{Values: values}}
-				}
-			case taskYieldSpawn:
-				if err := machine.admitTasks(2); err != nil {
-					machine.abortTask(yield.child)
-					machine.abortTask(task)
-					if task.terminal != nil {
-						machine.finishTask(task, nil, err)
-						continue
-					}
-					machine.finishTask(task, nil, err)
-					machine.abortQueuedTasks(err)
-					return failedRun(err)
-				}
-				machine.addTask(yield.child)
-				machine.pushRunnable(yield.child, task)
-			case taskYieldBlocked:
-				machine.blocked = append(machine.blocked, task)
-			case taskYieldPause:
-				machine.paused = task
-				event := machine.vm.pausedEvent()
-				return runOutcome{state: ExecutionPaused, pause: &event}
-			case taskYieldCooperate:
-				machine.pushRunnable(task)
-			default:
-				return failedRun(fmt.Errorf("unknown task yield %q", yield.kind))
+			slice := taskSlice{}
+			if instructionBudget > 0 {
+				slice.limit = instructionBudget - attempted
+			}
+			yield, values, err := machine.runTask(task, &slice)
+			task.ownership.relinquish()
+			attempted += slice.attempted
+			executed += slice.executed
+			current := machine.applyTaskRunResult(&taskRun{task: task, slice: slice, yield: yield, values: values, err: err})
+			if current.state != ExecutionRunning {
+				return current
+			}
+			// Poll and census yields deliberately return to the caller. A census can
+			// execute no bytecode, so retrying it inside this loop could otherwise
+			// turn one bounded PollSteps call into an unbounded control loop.
+			if yield.kind == taskYieldPoll || yield.kind == taskYieldCensus {
+				return current
 			}
 			if err := machine.wakeBlocked(); err != nil {
 				return failedRun(err)
@@ -413,6 +340,11 @@ func (machine *executionMachine) run(instructionBudget int) runOutcome {
 			continue
 		}
 		if len(machine.blocked) != 0 {
+			// A task between queues still owns a continuation. Its running or
+			// parking lease is a progress source, not evidence of deadlock.
+			if len(machine.tasks) != len(machine.blocked) {
+				return runOutcome{state: ExecutionPending}
+			}
 			if len(machine.vm.timers) != 0 {
 				return runOutcome{state: ExecutionPending}
 			}
@@ -426,7 +358,6 @@ func (machine *executionMachine) run(instructionBudget int) runOutcome {
 			}
 			return failedRun(machine.allBlockedError())
 		}
-		machine.vm.callStack = nil
 		if machine.foreground == nil {
 			return runOutcome{state: ExecutionPending}
 		}
@@ -434,8 +365,20 @@ func (machine *executionMachine) run(instructionBudget int) runOutcome {
 	}
 }
 
-func (machine *executionMachine) runTask(task *executionTask) (taskYield, []vmValue, error) {
+func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) (taskYield, []vmValue, error) {
+	defer task.releaseStepGrant()
+	defer func() { task.preparingSelection = nil }()
+	if task.blocked != nil {
+		if task.blocked.ticket == nil {
+			task.blocked.ticket = task.ownership.beginWait()
+		}
+		return taskYield{kind: taskYieldBlocked}, nil, nil
+	}
 	for {
+		task.preparingSelection = nil
+		if machine.vm.controlWaiters.Load() != 0 {
+			return taskYield{kind: taskYieldPoll}, nil, nil
+		}
 		if task.pendingErr != nil {
 			err := task.pendingErr
 			task.pendingErr = nil
@@ -449,15 +392,21 @@ func (machine *executionMachine) runTask(task *executionTask) (taskYield, []vmVa
 		}
 		current := task.frames[len(task.frames)-1]
 		if current.completion != nil {
+			machine.controlMu.Lock()
 			values, done, err := machine.advanceCompletion(task)
+			machine.controlMu.Unlock()
+			if census, ok := findGuestCensusRequest(err); ok {
+				if len(task.frames) == 0 || task.frames[len(task.frames)-1].frame.pc == 0 {
+					return taskYield{}, nil, errors.New("census continuation has no caller instruction")
+				}
+				caller := task.frames[len(task.frames)-1].frame
+				caller.pc--
+				task.retryInstruction = true
+				task.pendingCensus = census.bytes
+				return taskYield{kind: taskYieldCensus}, nil, nil
+			}
 			if err != nil || done {
 				return taskYield{kind: taskYieldComplete}, values, err
-			}
-			if machine.blockedWakePending {
-				machine.blockedWakePending = false
-				if err := machine.wakeBlocked(); err != nil {
-					return taskYield{}, nil, err
-				}
 			}
 			continue
 		}
@@ -494,62 +443,70 @@ func (machine *executionMachine) runTask(task *executionTask) (taskYield, []vmVa
 		}
 		pc := callFrame.pc
 		inst := &callFrame.function.Instructions[pc]
+		retrying := task.retryInstruction
 		if task.execution != nil && task.execution.cancelRequested.Load() {
 			return taskYield{}, nil, context.Canceled
 		}
 		if machine.vm.interruptRequested.Load() {
 			return taskYield{}, nil, context.Canceled
 		}
-		if machine.pollBudget > 0 && machine.pollAttempts >= machine.pollBudget {
-			return taskYield{kind: taskYieldPoll}, nil, nil
-		}
-		if task.quantumSteps >= taskInstructionQuantum && machine.runnableCount() != 0 && !task.inNoSwitchRegion() {
+		if !retrying && task.quantumSteps >= taskInstructionQuantum {
 			return taskYield{kind: taskYieldCooperate}, nil, nil
 		}
-		machine.pollAttempts++
-		if task.quantumSteps < taskInstructionQuantum {
-			task.quantumSteps++
+		if !retrying && slice.limit > 0 && slice.attempted >= slice.limit {
+			return taskYield{kind: taskYieldPoll}, nil, nil
 		}
-		debugging := machine.vm.breakpointsActive.Load() || machine.vm.debugStep.Active || machine.vm.hostPauseRequested.Load()
+		if retrying {
+			callFrame.stack = append(callFrame.stack, callFrame.popValues...)
+			callFrame.releasePopValues()
+			task.retryInstruction = false
+		} else {
+			slice.attempted++
+			if task.quantumSteps < taskInstructionQuantum {
+				task.quantumSteps++
+			}
+		}
+		debugging := !retrying && (machine.vm.breakpointsActive.Load() || machine.vm.debugStepActive.Load() || machine.vm.hostPauseRequested.Load())
 		if debugging {
-			machine.syncCallStack(task)
-			if _, ok := machine.vm.checkDebugPause(callFrame, functionID, pc); ok {
+			machine.controlMu.Lock()
+			if _, ok := machine.vm.checkDebugPause(task, callFrame, functionID, pc); ok {
 				if machine.vm.paused == nil {
 					machine.vm.paused = &debugPauseState{frame: callFrame, functionID: functionID}
 				}
+				machine.controlMu.Unlock()
 				return taskYield{kind: taskYieldPause}, nil, nil
+			}
+			machine.controlMu.Unlock()
+		}
+		if !retrying {
+			if err := task.consumeStep(machine.vm.maxSteps); err != nil {
+				if errors.Is(err, errStepBudgetReserved) {
+					return taskYield{kind: taskYieldBudget}, nil, nil
+				}
+				return taskYield{}, nil, Error{
+					Generation:         callFrame.revisionGeneration(),
+					ProgramHash:        callFrame.revisionHash(),
+					ModulePath:         callFrame.module.modulePath(),
+					FunctionID:         functionID,
+					PC:                 pc,
+					Op:                 inst.opcodeText(),
+					ExecutionContextID: callFrame.executionContextID,
+					Loc:                runtimeLocation(callFrame, functionID, pc),
+					Err:                err,
+				}
 			}
 		}
 		callFrame.pc++
-		if err := task.consumeStep(machine.vm.maxSteps); err != nil {
-			return taskYield{}, nil, Error{
-				Generation:         callFrame.revisionGeneration(),
-				ProgramHash:        callFrame.revisionHash(),
-				ModulePath:         callFrame.module.modulePath(),
-				FunctionID:         functionID,
-				PC:                 pc,
-				Op:                 inst.opcodeText(),
-				ExecutionContextID: callFrame.executionContextID,
-				Loc:                runtimeLocation(callFrame, functionID, pc),
-				Err:                err,
-			}
+		if !retrying {
+			slice.executed++
 		}
-		machine.pollExecuted++
-		if machine.vm.executedSteps < math.MaxInt64 {
-			machine.vm.executedSteps++
-		}
-		if execution := task.execution; execution != nil && execution.profileEvery != 0 && task.budget.profilePhase&execution.profileMask == 0 {
+		if execution := task.execution; !retrying && execution != nil && execution.profileEvery != 0 && task.profilePhase&execution.profileMask == 0 {
 			execution.recordGuestSample(callFrame, functionID, pc, inst)
 		}
 		if inst.control {
-			yield, handled, err := machine.executeControl(task, current, pc, inst)
+			yield, handled, err := machine.runControlInstruction(task, current, pc, inst)
 			if err != nil {
-				var guestFault *guestPanic
-				if errors.As(err, &guestFault) {
-					machine.startPanic(task, current, pc, guestFault.value)
-					continue
-				}
-				return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
+				return taskYield{}, nil, err
 			}
 			if !handled {
 				return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, errors.New("prepared control opcode is not handled"))
@@ -559,104 +516,12 @@ func (machine *executionMachine) runTask(task *executionTask) (taskYield, []vmVa
 			}
 			continue
 		}
-		if err := machine.vm.executeInstruction(callFrame, inst); err != nil {
-			var selectRequest *reflectSelectRequest
-			if errors.As(err, &selectRequest) {
-				index, selectErr := parkWaitSet(machine.vm, selectRequest.waitSet)
-				if selectErr != nil {
-					var blocked WaitBlockedError
-					if !errors.As(selectErr, &blocked) {
-						return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, selectErr)
-					}
-					machine.blockTask(task, current, pc, inst, &blockedOperation{
-						kind: "waitset", waitSet: selectRequest.waitSet, reflectSelect: selectRequest,
-					})
-					return taskYield{kind: taskYieldBlocked}, nil, nil
-				}
-				selected, _ := asInt64(index)
-				values, selectErr := selectRequest.complete(int(selected))
-				if selectErr != nil {
-					machine.startPanic(task, current, pc, newVMValue("String", selectErr.Error()))
-					continue
-				}
-				for _, value := range values {
-					callFrame.push(value)
-				}
-				continue
-			}
-			var send *reflectSendRequest
-			if errors.As(err, &send) {
-				module := send.ctx.module
-				resource, blocked, sendErr := waitableSendTaskValue(module, send.waitable, send.value, task.id)
-				if sendErr != nil {
-					machine.startPanic(task, current, pc, newVMValue("String", sendErr.Error()))
-					continue
-				}
-				if blocked {
-					machine.blockTask(task, current, pc, inst, &blockedOperation{
-						kind: "send", resource: resource, waitable: send.waitable,
-						reflectSend: true,
-					})
-					return taskYield{kind: taskYieldBlocked}, nil, nil
-				}
-				callFrame.push(newVMValue("String", ""))
-				callFrame.push(newVMValue("Bool", true))
-				continue
-			}
-			var recv *reflectRecvRequest
-			if errors.As(err, &recv) {
-				module := recv.ctx.module
-				value, ok, closed, recvErr := waitableTryRecvValue(module, recv.waitable)
-				if recvErr != nil {
-					return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, recvErr)
-				}
-				if !ok && !closed {
-					resource, resourceErr := waitableValueData(module, recv.waitable)
-					if resourceErr != nil {
-						return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, resourceErr)
-					}
-					token := machine.vm.newWaitTokenValue()
-					if waitErr := waitableWaitRecvValue(module, recv.waitable, token); waitErr != nil {
-						return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, waitErr)
-					}
-					machine.blockTask(task, current, pc, inst, &blockedOperation{
-						kind: "recv", resource: resource, waitable: recv.waitable, recvToken: token, reflectRecv: recv,
-					})
-					return taskYield{kind: taskYieldBlocked}, nil, nil
-				}
-				values, recvErr := recv.complete(value, ok)
-				if recvErr != nil {
-					return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, recvErr)
-				}
-				if len(values) != inst.callIntrinsic.ResultCount {
-					return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, fmt.Errorf("reflect receive resumed with %d results, expected %d", len(values), inst.callIntrinsic.ResultCount))
-				}
-				for _, value := range values {
-					callFrame.push(value)
-				}
-				continue
-			}
-			var request *artifactCallbackRequest
-			if errors.As(err, &request) {
-				callee, frameErr := machine.vm.newExecutionFrame(request.module, request.functionID, request.args, request.upvalues, task.id, request.resultCount, false)
-				if frameErr != nil {
-					return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, frameErr)
-				}
-				callee.resume = machine.reflectCallCompletion(request.result, request.resumeResults, "artifact callback "+request.functionID+" resumed with")
-				task.frames = append(task.frames, callee)
-				continue
-			}
-			var guestFault *guestPanic
-			if errors.As(err, &guestFault) {
-				machine.startPanic(task, current, pc, guestFault.value)
-				continue
-			}
-			return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
+		yield, err := machine.runDataInstruction(task, current, pc, inst)
+		if err != nil {
+			return taskYield{}, nil, err
 		}
-		if len(callFrame.stack) != 0 && (inst.op == preparedBinary || inst.op == preparedConvert || inst.op == preparedCallIntrinsic) {
-			if err := machine.vm.validateRuntimeValue(callFrame.stack[len(callFrame.stack)-1]); err != nil {
-				return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
-			}
+		if yield.kind != "" {
+			return yield, nil, nil
 		}
 	}
 }

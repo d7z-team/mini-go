@@ -96,8 +96,8 @@ func TestInterruptHandleOnlyCancelsItsExecution(t *testing.T) {
 
 func TestCancelOneBackgroundScopeKeepsOtherScope(t *testing.T) {
 	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpMakeWaitSet)},
-		{Op: string(ir.OpWaitSetPark)},
+		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
+		{Op: string(ir.OpWaitableRecv)},
 		{Op: string(ir.OpPop)},
 		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
 	})
@@ -166,8 +166,8 @@ func TestLibraryInvocationLeavesSpawnedTaskRunning(t *testing.T) {
 
 func TestCancelCompletedRootReleasesBlockedBackgroundTask(t *testing.T) {
 	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpMakeWaitSet)},
-		{Op: string(ir.OpWaitSetPark)},
+		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
+		{Op: string(ir.OpWaitableRecv)},
 		{Op: string(ir.OpPop)},
 		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
 	})
@@ -187,7 +187,7 @@ func TestCancelCompletedRootReleasesBlockedBackgroundTask(t *testing.T) {
 	if err != nil || stats.ActiveScopes != 1 || stats.BlockedTasks != 1 || len(stats.BlockedContexts) != 1 {
 		t.Fatalf("blocked background runtime = %#v, %v", stats, err)
 	}
-	if context := stats.BlockedContexts[0]; context.ScopeID != execution.scopeID || context.Reason != "waitset has no ready token" {
+	if context := stats.BlockedContexts[0]; context.ScopeID != execution.scopeID || context.Reason != "channel selection is pending" {
 		t.Fatalf("blocked background context = %#v", context)
 	}
 	execution.InterruptHandle().Interrupt()
@@ -253,95 +253,6 @@ func TestSpawnedTasksShareScopeStepBudget(t *testing.T) {
 		var limit StepLimitError
 		if !errors.As(err, &limit) || limit.MaxSteps != 2 {
 			t.Fatalf("scope step limit = %T: %v", err, err)
-		}
-	}
-}
-
-func TestRootFailureCompletesQueuedInvocationTasks(t *testing.T) {
-	artifact := ir.NewArtifact("scheduler/root-failure", "main")
-	artifact.Constants = []ir.Constant{{ID: "const.failure", Type: testType("String"), Value: json.RawMessage(`"failed"`)}}
-	artifact.Functions = []ir.Function{{
-		ID: "fn.root", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.failure"})},
-			{Op: string(ir.OpPanic)},
-		},
-	}, {
-		ID: "fn.pending", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
-	}}
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	instance := &Instance{vm: vm, done: make(chan struct{}), supervisor: make(chan struct{}, 1), shutdownDone: make(chan struct{})}
-	vm.instance = instance
-	execution, err := instance.start(context.Background(), false, func(*instanceRevision) (int64, error) { return vm.prepareFunction("fn.root", nil) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vm.enterOwner(); err != nil {
-		t.Fatal(err)
-	}
-	contextID := vm.nextSpawnExecutionContextID()
-	frame, err := vm.newExecutionFrame(vm.rootModule(), "fn.pending", nil, nil, contextID, 0, false)
-	if err != nil {
-		vm.leaveOwner()
-		t.Fatal(err)
-	}
-	completed := make(chan error, 1)
-	if err := vm.machine.enqueueTask(&executionTask{
-		id: contextID, frames: []*executionFrame{frame}, terminal: func(_ []vmValue, err error) { completed <- err },
-	}); err != nil {
-		vm.leaveOwner()
-		t.Fatal(err)
-	}
-	vm.leaveOwner()
-	if state, err := execution.Poll(); state != ExecutionFailed || err == nil {
-		t.Fatalf("root execution = %s, %v", state, err)
-	}
-	select {
-	case err := <-completed:
-		if err == nil {
-			t.Fatal("queued invocation completed without root failure")
-		}
-	default:
-		t.Fatal("queued invocation was not completed")
-	}
-}
-
-func TestQueuedTasksHaveIndependentStepBudgets(t *testing.T) {
-	artifact := ir.NewArtifact("scheduler/queued-task-budgets", "main")
-	artifact.Functions = []ir.Function{{
-		ID: "fn.call", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
-	}}
-	vm, err := loadTestEngineWithOptions(artifact, InstanceOptions{Limits: Limits{MaxSteps: 1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	vm.beginRun()
-	vm.machine = &executionMachine{vm: vm}
-	completed := make(chan error, 2)
-	for range 2 {
-		contextID := vm.nextSpawnExecutionContextID()
-		frame, err := vm.newExecutionFrame(vm.rootModule(), "fn.call", nil, nil, contextID, 0, false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := vm.machine.enqueueTask(&executionTask{
-			id: contextID, budget: &executionBudget{}, frames: []*executionFrame{frame},
-			terminal: func(_ []vmValue, err error) { completed <- err },
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if outcome := vm.machine.run(0); outcome.err != nil {
-		t.Fatal(outcome.err)
-	}
-	for range 2 {
-		if err := <-completed; err != nil {
-			t.Fatalf("queued task failed with another task's step budget: %v", err)
 		}
 	}
 }

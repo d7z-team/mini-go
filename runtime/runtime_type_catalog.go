@@ -18,14 +18,12 @@ func (m *moduleInstance) resolvedRuntimeType(value any) vmType {
 			return resolved
 		}
 		if m != nil {
-			if cached, ok := m.resolvedRuntimeTypes[value.Ref]; ok {
+			if cached, ok := m.resolvedRuntimeTypes.load(value.Ref); ok {
 				return cached
 			}
 			resolved := m.resolveNamedRuntimeType(value)
-			if m.resolvedRuntimeTypes == nil {
-				m.resolvedRuntimeTypes = make(map[types.TypeRef]vmType)
-			}
-			m.resolvedRuntimeTypes[value.Ref] = resolved
+
+			m.resolvedRuntimeTypes.store(value.Ref, resolved)
 			return resolved
 		}
 		if value.Table != nil || m == nil || m.executable == nil {
@@ -41,8 +39,8 @@ func (m *moduleInstance) resolvedRuntimeType(value any) vmType {
 		if text == "" {
 			return vmType{}
 		}
-		if m != nil && m.runtimeTypeCache != nil {
-			if cached, ok := m.runtimeTypeCache[text]; ok {
+		if m != nil {
+			if cached, ok := m.runtimeTypeCache.load(text); ok {
 				return m.resolvedRuntimeType(cached)
 			}
 		}
@@ -105,8 +103,6 @@ func (m *moduleInstance) cacheRuntimeType(text string, runtimeType vmType) {
 	if m == nil {
 		return
 	}
-	if m.runtimeTypeCache == nil {
-		m.runtimeTypeCache = make(map[string]vmType)
-	}
-	m.runtimeTypeCache[text] = runtimeType
+
+	m.runtimeTypeCache.store(text, runtimeType)
 }

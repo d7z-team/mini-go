@@ -22,7 +22,7 @@ func TestRevisionRootsByteArrayPointerRespectsBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 		module := instance.vm.rootModule()
-		source := newVMValue("Slice<Uint8>", &vmSlice{ByteBacked: true, ByteBacking: make([]byte, length), Len: length, Cap: length})
+		source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, length), length, length)
 		pointer, ok, err := module.convertSliceToArrayPointer(source, runtimeTypeFromText(fmt.Sprintf("Ptr<Array<%d, Uint8>>", length)))
 		if err != nil || !ok {
 			t.Fatalf("conversion: %v %v", ok, err)

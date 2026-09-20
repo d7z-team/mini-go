@@ -13,11 +13,51 @@ pub(super) struct Waiters {
     entries: BTreeMap<u64, WaitingTask>,
     resources: HashMap<Handle, BTreeSet<u64>>,
     calls: HashMap<u64, u64>,
+    modules: HashMap<String, BTreeSet<u64>>,
     ready: BTreeSet<u64>,
     next: u64,
 }
 
 impl Waiters {
+    pub fn select_peer(
+        &self,
+        resource: Handle,
+        sending: bool,
+    ) -> Option<(u64, usize, Option<Value>)> {
+        for key in self.resources.get(&resource)? {
+            let Some(Blocked::Select(selection)) = &self.entries[key].task.blocked else {
+                continue;
+            };
+            if selection.outcome.is_some() {
+                continue;
+            }
+            for (index, case) in selection.cases.iter().enumerate() {
+                if case.send.is_some() != sending
+                    && matches!(case.channel.data, Data::ResourceRef(handle) if handle == resource)
+                {
+                    return Some((*key, index, case.send.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn complete_selection(&mut self, key: u64, outcome: select::SelectOutcome) {
+        let waiting = self.entries.get_mut(&key).expect("live selection");
+        let Some(Blocked::Select(selection)) = &mut waiting.task.blocked else {
+            unreachable!()
+        };
+        assert!(selection.outcome.is_none(), "selection completed twice");
+        selection.outcome = Some(outcome);
+        for handle in waiting.dependencies.drain(..) {
+            let keys = self.resources.get_mut(&handle).unwrap();
+            keys.remove(&key);
+            if keys.is_empty() {
+                self.resources.remove(&handle);
+            }
+        }
+        self.ready.insert(key);
+    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -34,6 +74,7 @@ impl Waiters {
         self.entries.clear();
         self.resources.clear();
         self.calls.clear();
+        self.modules.clear();
         self.ready.clear();
     }
     pub fn push(&mut self, task: Task, dependencies: Vec<Handle>) {
@@ -48,6 +89,9 @@ impl Waiters {
         }
         if let Some(Blocked::Ffi(call)) = waiting.task.blocked {
             self.calls.insert(call, key);
+        }
+        if let Some(Blocked::Module(module)) = &waiting.task.blocked {
+            self.modules.entry(module.clone()).or_default().insert(key);
         }
         self.entries.insert(key, waiting);
     }
@@ -64,6 +108,13 @@ impl Waiters {
         if let Some(Blocked::Ffi(call)) = waiting.task.blocked {
             self.calls.remove(&call);
         }
+        if let Some(Blocked::Module(module)) = &waiting.task.blocked {
+            let keys = self.modules.get_mut(module).unwrap();
+            keys.remove(&key);
+            if keys.is_empty() {
+                self.modules.remove(module);
+            }
+        }
         waiting
     }
     pub fn next_ready(&mut self) -> Option<u64> {
@@ -79,21 +130,10 @@ impl Waiters {
             self.ready.insert(*key);
         }
     }
-    pub fn first(&self, handle: Handle, send: bool) -> Option<u64> {
-        self.resources.get(&handle)?.iter().copied().find(|key| {
-            matches!(
-                (&self.entries[key].task.blocked, send),
-                (Some(Blocked::Send { .. }), true) | (Some(Blocked::Receive { .. }), false)
-            )
-        })
-    }
-    pub fn send_count(&self, handle: Handle) -> usize {
-        self.resources
-            .get(&handle)
-            .into_iter()
-            .flatten()
-            .filter(|key| matches!(self.entries[key].task.blocked, Some(Blocked::Send { .. })))
-            .count()
+    pub fn notify_module(&mut self, module: &str) {
+        if let Some(keys) = self.modules.get(module) {
+            self.ready.extend(keys);
+        }
     }
     pub fn remove_scope(&mut self, scope: u64) -> Vec<Task> {
         let keys: Vec<_> = self
@@ -112,7 +152,7 @@ mod tests {
 
     #[test]
     fn ready_events_are_deduplicated_ordered_and_detached_on_cancel() {
-        let mut heap = Heap::new(4, 1024).unwrap();
+        let heap = Heap::new(4, 1024).unwrap();
         let resource = heap.allocate(Value::int(0), 16).unwrap();
         let unrelated = heap.allocate(Value::int(0), 16).unwrap();
         let mut waiters = Waiters::default();
@@ -123,6 +163,7 @@ mod tests {
                     scope: id,
                     frames: Vec::new(),
                     blocked: Some(Blocked::Ffi(id)),
+                    ..Task::default()
                 },
                 vec![if id <= 2 { resource } else { unrelated }],
             );

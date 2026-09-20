@@ -82,10 +82,6 @@ func PrimitiveName(kind PrimitiveKind) string {
 		return "Error"
 	case PrimitiveFunction:
 		return "Function"
-	case PrimitiveWaitToken:
-		return "WaitToken"
-	case PrimitiveWaitSet:
-		return "WaitSet"
 	default:
 		return ""
 	}

@@ -7,6 +7,8 @@ pub mod contract_generated;
 pub mod environment;
 pub mod error;
 pub mod execution;
+#[cfg(not(target_arch = "wasm32"))]
+mod executor_pool;
 pub mod ffi;
 pub mod heap;
 pub mod instance;
@@ -23,6 +25,8 @@ pub mod types;
 pub mod value;
 
 pub use error::RuntimeError;
+#[cfg(not(target_arch = "wasm32"))]
+pub use execution::Executor;
 pub use execution::{
     Debugger, Execution, ExecutionState, InstanceOptions, ScopeStats, SharedInstance as Instance,
 };

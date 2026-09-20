@@ -33,6 +33,21 @@ func validateInstructionPayload(path string, inst Instruction) error {
 		return nil
 	}
 	switch inst.Op {
+	case string(OpSelect):
+		var payload SelectPayload
+		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+			return err
+		}
+		if strings.TrimSpace(payload.Index) == "" {
+			return missingValidationError(path+".payload.index", errors.New("missing select index local"))
+		}
+		for index, selected := range payload.Cases {
+			if strings.TrimSpace(selected.Channel) == "" ||
+				(selected.Send == "" && (selected.Value == "" || selected.OK == "")) ||
+				(selected.Send != "" && (selected.Value != "" || selected.OK != "")) {
+				return newValidationError(fmt.Sprintf("%s.payload.cases[%d]", path, index), errors.New("select case requires channel and either send or value/ok locals"))
+			}
+		}
 	case string(OpConst):
 		var payload ConstPayload
 		if err := decodePayload(path, inst.Payload, &payload); err != nil {

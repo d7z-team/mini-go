@@ -53,10 +53,11 @@ func BenchmarkVMIntegerLoop(b *testing.B) {
 }
 
 func BenchmarkVMSchedulerRotation(b *testing.B) {
+	const workPairs = 2048
 	artifact := ir.NewArtifact("benchmark/scheduler", "main")
 	artifact.Globals = []ir.Global{{ID: "global.done", Type: testType("Bool")}}
-	work := make([]ir.Instruction, 0, taskInstructionQuantum*4+3)
-	for range taskInstructionQuantum * 2 {
+	work := make([]ir.Instruction, 0, workPairs*2+3)
+	for range workPairs {
 		work = append(work,
 			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
 			ir.Instruction{Op: string(ir.OpPop)},

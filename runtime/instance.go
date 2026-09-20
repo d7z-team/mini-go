@@ -26,7 +26,11 @@ var ErrInstanceFaulted = errors.New("runtime instance is faulted")
 
 type Instance struct {
 	vm               *vm
-	active           *Execution
+	parallelism      int
+	executor         *Executor
+	driveMu          sync.Mutex
+	batch            *taskBatch
+	active           atomic.Pointer[Execution]
 	lifecycle        atomic.Uint32
 	terminalMu       sync.RWMutex
 	terminalErr      error
@@ -34,7 +38,8 @@ type Instance struct {
 	debugPaused      *Execution
 	doneOnce         sync.Once
 	done             chan struct{}
-	supervisor       chan struct{}
+	supervisor       atomic.Pointer[executionJob]
+	supervisorRetry  atomic.Bool
 	patchMu          sync.Mutex
 	pendingPatch     *PatchPlan
 	shutdownOnce     sync.Once
@@ -90,10 +95,32 @@ func (p *Program) Instantiate(ctx context.Context, options InstanceOptions) (*In
 		return nil, err
 	}
 	instance := &Instance{
-		vm: vm, done: make(chan struct{}), supervisor: make(chan struct{}, 1),
+		vm: vm, done: make(chan struct{}),
 		shutdownDone: make(chan struct{}), hostCapabilities: installed,
 	}
+	instance.parallelism = options.Parallelism
+	if instance.parallelism == 0 {
+		instance.parallelism = 1
+	}
+	instance.executor = options.Executor
+	if instance.executor == nil {
+		instance.executor = defaultExecutor()
+	}
+	if instance.executor.pool == nil || instance.executor.workers <= 0 {
+		if vm.ffiSession != nil {
+			_ = vm.ffiSession.Shutdown(context.Background())
+		}
+		return nil, errors.New("runtime executor is unavailable")
+	}
 	vm.instance = instance
+	if err := instance.executor.register(instance); err != nil {
+		vm.instance = nil
+		if vm.ffiSession != nil {
+			_ = vm.ffiSession.Shutdown(context.Background())
+		}
+		return nil, err
+	}
+	instance.supervisor.Store(instance.executor.pool.job(instance.supervise))
 	if _, hasInit := vm.rootModule().executable.Functions[moduleInitFunctionID]; hasInit {
 		execution, startErr := instance.start(ctx, false, func(*instanceRevision) (int64, error) {
 			scopeID, prepared, prepareErr := vm.prepareRootInitialization()
@@ -113,6 +140,5 @@ func (p *Program) Instantiate(ctx context.Context, options InstanceOptions) (*In
 			return nil, fmt.Errorf("initialize root module: %w", startErr)
 		}
 	}
-	go instance.supervise()
 	return instance, nil
 }

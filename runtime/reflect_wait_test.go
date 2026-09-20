@@ -16,10 +16,11 @@ func TestReflectSelectWaitingReportsCapturedRevision(t *testing.T) {
 	}
 	cleanupTestInstance(t, instance)
 	module := instance.vm.rootModule()
-	task := &executionTask{id: 9, blocked: &blockedOperation{kind: "waitset", reflectSelect: &reflectSelectRequest{
-		cases: []reflectSelectCaseState{{send: newVMValue("Function", functionRef{exact: module, FunctionID: "fn.entry"})}},
+	task := &executionTask{id: 9, blocked: &blockedOperation{kind: "select", selection: &channelSelection{
+		cases: []channelSelectCase{{send: true, value: newVMValue("Function", functionRef{exact: module, FunctionID: "fn.entry"})}},
 	}}}
 	instance.vm.machine = &executionMachine{vm: instance.vm, blocked: []*executionTask{task}}
+	instance.vm.machine.addTask(task)
 	t.Cleanup(func() { instance.vm.machine = nil })
 	roots, err := instance.RevisionRoots(t.Context(), 1, RevisionRootLimits{})
 	if err != nil {
@@ -27,7 +28,7 @@ func TestReflectSelectWaitingReportsCapturedRevision(t *testing.T) {
 	}
 	found := false
 	for _, root := range roots.Roots {
-		found = found || root.TaskID == 9 && strings.Contains(root.Path, "/reflect select/case 0/send")
+		found = found || root.TaskID == 9 && strings.Contains(root.Path, "/select/case 0/value")
 	}
 	if !roots.Complete || !found {
 		t.Fatalf("missing pending send root: %+v", roots)
@@ -38,7 +39,7 @@ func TestReflectSelectWaitingReportsCapturedRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, root := range roots.Roots {
-		if strings.Contains(root.Path, "/reflect select/") {
+		if strings.Contains(root.Path, "/select/") {
 			t.Fatalf("canceled wait retained root: %+v", root)
 		}
 	}
@@ -63,7 +64,7 @@ func TestReflectSelectWaitingOwnsSendValueUntilCancellation(t *testing.T) {
 		return out
 	}
 	const size = 65536
-	send := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), 0, size, size)
+	send := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), size, size)
 	selected := newRuntimeStructValue(nil, "reflect.SelectCase", map[string]vmValue{
 		"Dir": newVMValue("Int", int64(reflectSelectSend)), "Chan": wrap(channel), "Send": wrap(send),
 	})
@@ -73,17 +74,17 @@ func TestReflectSelectWaitingOwnsSendValueUntilCancellation(t *testing.T) {
 		t.Fatalf("expected blocked selection, got %v", err)
 	}
 	resource := channel.Data.(*waitableResource)
-	if len(resource.Pending) != 0 {
+	if request.selection.done || resource.bufferLen() != 0 {
 		t.Fatal("select sent before choosing a case")
 	}
-	task := &executionTask{blocked: &blockedOperation{kind: "waitset", waitSet: request.waitSet, reflectSelect: request}}
+	task := &executionTask{blocked: &blockedOperation{kind: "select", selection: request.selection, reflectSelect: request}}
 	sizer := newRuntimeValueSizer()
 	sizer.task(task)
-	if !sizer.seenStorage[send.Data.(*vmSlice).storage] || sizer.bytes < size*ir.RuntimeByteBytes {
+	if !sizer.seenStorage[send.Data.(*vmSlice).vmSliceStorage] || sizer.bytes < size*ir.RuntimeByteBytes {
 		t.Fatal("waiting send storage missing from census")
 	}
 	instance.vm.machine.cancelBlockedOperation(task)
-	if task.blocked != nil || len(resource.SendWaiters) != 0 {
+	if task.blocked != nil || resource.selectHead != nil {
 		t.Fatal("cancel retained waiting registration")
 	}
 	sizer = newRuntimeValueSizer()

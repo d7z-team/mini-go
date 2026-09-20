@@ -26,13 +26,16 @@ fn saturated_totals_preserve_poll_fairness_and_sampling() {
     let scope = vm.foreground_scope().unwrap();
     vm.start_profile(4, 32).unwrap();
     vm.steps = u64::MAX - 1;
-    vm.scope_steps.insert(scope, u64::MAX - 1);
+    vm.scope_steps.insert(
+        scope,
+        Arc::new(budget::StepBudget::with_executed(u64::MAX - 1)),
+    );
     for _ in 0..256 {
         assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Running);
         assert_eq!(vm.last_poll_steps, 1);
     }
     assert_eq!(vm.steps(), u64::MAX);
-    assert_eq!(vm.scope_steps[&scope], u64::MAX);
+    assert_eq!(vm.scope_steps[&scope].executed(), u64::MAX);
     assert_eq!(
         vm.scope_work[&scope].tasks, 1,
         "spawned child must run despite saturated totals"

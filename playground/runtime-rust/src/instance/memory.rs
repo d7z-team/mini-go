@@ -144,8 +144,12 @@ pub struct MemoryStats {
 
 #[derive(Default)]
 pub(super) struct GuestMemory {
-    pub stats: MemoryStats,
-    pub allocation_roots: Vec<Value>,
+    state: std::sync::Mutex<GuestMemoryState>,
+}
+
+#[derive(Default)]
+struct GuestMemoryState {
+    stats: MemoryStats,
     frames: BTreeMap<(u64, usize, usize), Vec<GuestFrameAccounting>>,
     pooled_bytes: BTreeMap<(u64, usize), u64>,
 }
@@ -170,54 +174,86 @@ impl GuestFrameAccounting {
 }
 
 impl GuestMemory {
+    pub fn stats(&self) -> MemoryStats {
+        self.state.lock().unwrap().stats
+    }
+
+    pub fn try_charge(&self, bytes: u64, limit: u64) -> bool {
+        let mut state = self.state.lock().unwrap();
+        let stats = &mut state.stats;
+        if bytes > limit.saturating_sub(stats.live_bytes) {
+            return false;
+        }
+        stats.live_bytes = stats.live_bytes.saturating_add(bytes);
+        stats.allocated_since_sweep = stats.allocated_since_sweep.saturating_add(bytes);
+        stats.total_allocated_bytes = stats.total_allocated_bytes.saturating_add(bytes);
+        stats.peak_bytes = stats.peak_bytes.max(stats.live_bytes);
+        true
+    }
+
+    // The controller publishes a census only after every task is quiescent.
+    pub fn publish_census(&self, live: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.stats.live_bytes = live;
+        state.stats.allocated_since_sweep = 0;
+        state.stats.peak_bytes = state.stats.peak_bytes.max(live);
+    }
+
     pub fn take_frame(
-        &mut self,
+        &self,
         generation: u64,
         module: usize,
         function: usize,
     ) -> Option<GuestFrameAccounting> {
-        let storage = self
+        let mut state = self.state.lock().unwrap();
+        let storage = state
             .frames
             .get_mut(&(generation, module, function))?
             .pop()?;
-        *self.pooled_bytes.get_mut(&(generation, module)).unwrap() -=
+        *state.pooled_bytes.get_mut(&(generation, module)).unwrap() -=
             storage.bytes() + storage.deferred as u64 * 16;
         Some(storage)
     }
 
     pub fn recycle_frame_storage(
-        &mut self,
+        &self,
         generation: u64,
         module: usize,
         function: usize,
         storage: GuestFrameAccounting,
     ) {
-        let bytes = self.pooled_bytes.entry((generation, module)).or_default();
+        let mut state = self.state.lock().unwrap();
+        let GuestMemoryState {
+            frames,
+            pooled_bytes,
+            ..
+        } = &mut *state;
+        let bytes = pooled_bytes.entry((generation, module)).or_default();
         let pooled = storage.bytes().saturating_add(storage.deferred as u64 * 16);
         if bytes.saturating_add(pooled) > 8 << 20 {
             return;
         }
-        let pool = self
-            .frames
-            .entry((generation, module, function))
-            .or_default();
+        let pool = frames.entry((generation, module, function)).or_default();
         if pool.len() < 8 {
             *bytes += pooled;
             pool.push(storage);
         }
     }
 
-    pub fn retain_revisions(&mut self, mut retain: impl FnMut(u64) -> bool) {
-        self.frames
+    pub fn retain_revisions(&self, mut retain: impl FnMut(u64) -> bool) {
+        let mut state = self.state.lock().unwrap();
+        state
+            .frames
             .retain(|(generation, _, _), _| retain(*generation));
-        self.pooled_bytes
+        state
+            .pooled_bytes
             .retain(|(generation, _), _| retain(*generation));
     }
 }
 
 impl Instance {
     pub fn memory_stats(&self) -> MemoryStats {
-        self.memory.stats
+        self.memory.stats()
     }
 
     pub(super) fn charge_guest_object(
@@ -244,30 +280,33 @@ impl Instance {
             return Ok(());
         }
         let limit = self.limits.max_allocated_bytes;
-        if bytes > limit.saturating_sub(self.memory.stats.live_bytes) {
-            let live = self.live_guest_bytes()?;
-            self.memory.stats.live_bytes = live;
-            self.memory.stats.allocated_since_sweep = 0;
-            self.memory.stats.peak_bytes = self.memory.stats.peak_bytes.max(live);
+        if self.memory.try_charge(bytes, limit) {
+            return Ok(());
         }
-        if bytes > limit.saturating_sub(self.memory.stats.live_bytes) {
+        if self.running.instruction_active {
+            self.running.census_request = Some(bytes);
+            return Err(RuntimeError::new(
+                "census_required",
+                "guest",
+                "guest memory census required",
+            ));
+        }
+        let live = self.live_guest_bytes()?;
+        self.memory.publish_census(live);
+        if !self.memory.try_charge(bytes, limit) {
             return Err(RuntimeError::new(
                 "allocation_limit",
                 "guest",
                 "guest allocation byte limit exceeded",
             ));
         }
-        let stats = &mut self.memory.stats;
-        stats.live_bytes = stats.live_bytes.saturating_add(bytes);
-        stats.allocated_since_sweep = stats.allocated_since_sweep.saturating_add(bytes);
-        stats.total_allocated_bytes = stats.total_allocated_bytes.saturating_add(bytes);
-        stats.peak_bytes = stats.peak_bytes.max(stats.live_bytes);
         Ok(())
     }
 
-    fn live_guest_bytes(&self) -> Result<u64, RuntimeError> {
+    pub(super) fn live_guest_bytes(&self) -> Result<u64, RuntimeError> {
+        let heap = self.heap.snapshot();
         let mut sizer = GuestSizer {
-            instance: self,
+            heap: &heap,
             bytes: self.types.dynamic_stats().1,
             slots: HashSet::new(),
             storage: HashSet::new(),
@@ -277,9 +316,8 @@ impl Instance {
             pointers: HashSet::new(),
             slices: HashSet::new(),
             pending: self
-                .memory
-                .allocation_roots
-                .iter()
+                .tasks()
+                .flat_map(|task| &task.allocation_roots)
                 .map(|value| &value.data)
                 .collect(),
             pending_resources: Vec::new(),
@@ -291,20 +329,19 @@ impl Instance {
             .pending
             .extend(self.reflected_types.iter().map(|(_, value)| &value.data));
         for frame in self
-            .frames
-            .iter()
-            .chain(&self.suspended_frames)
-            .chain(self.runnable.iter().flat_map(|task| &task.frames))
-            .chain(self.blocked.iter().flat_map(|task| &task.frames))
-            .chain(self.resuming_task.iter().flat_map(|task| &task.frames))
+            .tasks()
+            .flat_map(|task| task.frames.iter().chain(&task.suspended_frames))
         {
             sizer.add(frame.memory.bytes());
             for iterator in frame.map_iterators.values() {
                 sizer.add(128 + iterator.entries.capacity() as u64 * 32);
                 sizer.pending.push(&iterator.object.data);
             }
-            for handle in &frame.locals {
-                sizer.slot(*handle)?;
+            for local in &frame.locals {
+                match local {
+                    frame::Local::Shared(handle) => sizer.slot(*handle)?,
+                    frame::Local::Private(value) => sizer.pending.push(&value.get().data),
+                }
             }
             for address in &frame.upvalues {
                 sizer.slot(address.root)?;
@@ -333,17 +370,31 @@ impl Instance {
                 }
             }
         }
-        for task in self.blocked.iter().chain(&self.resuming_task) {
-            match &task.blocked {
-                Some(scheduler::Blocked::Send { channel, value }) => {
-                    sizer.pending.push(&channel.data);
+        for task in self.tasks() {
+            sizer
+                .pending
+                .extend(task.retry_operands.iter().map(|value| &value.data));
+            match &task.pending_write {
+                Some(mutation::PendingWrite::Map(write)) => {
+                    sizer.slot(write.root)?;
+                    sizer.pending.extend([&write.key.data, &write.value.data]);
+                }
+                Some(mutation::PendingWrite::Delete { root, key }) => {
+                    sizer.slot(*root)?;
+                    sizer.pending.push(&key.data);
+                }
+                Some(mutation::PendingWrite::Address { address, value }) => {
+                    sizer.slot(address.root)?;
                     sizer.pending.push(&value.data);
                 }
-                Some(scheduler::Blocked::Receive { channel, token, .. }) => {
-                    sizer.pending.push(&channel.data);
-                    sizer.pending_resources.push(*token);
-                }
-                Some(scheduler::Blocked::WaitSet(value)) => sizer.pending.push(&value.data),
+                None => {}
+            }
+            if let Some(selection) = &task.selection_completion {
+                sizer.selection(selection);
+            }
+            match &task.blocked {
+                Some(scheduler::Blocked::Select(selection)) => sizer.selection(selection),
+                Some(scheduler::Blocked::Mutex(handle)) => sizer.pending_resources.push(*handle),
                 _ => {}
             }
         }
@@ -355,7 +406,7 @@ impl Instance {
 }
 
 struct GuestSizer<'a> {
-    instance: &'a Instance,
+    heap: &'a crate::heap::HeapSnapshot<Value>,
     bytes: u64,
     slots: HashSet<Handle>,
     storage: HashSet<Address>,
@@ -369,13 +420,30 @@ struct GuestSizer<'a> {
 }
 
 impl<'a> GuestSizer<'a> {
+    fn selection(&mut self, selection: &'a select::Selection) {
+        self.add(128 + selection.cases.len() as u64 * 176);
+        for case in &selection.cases {
+            self.pending.push(&case.channel.data);
+            if let Some(value) = &case.send {
+                self.pending.push(&value.data);
+            }
+            if let Some(value) = &case.zero {
+                self.pending.push(&value.data);
+            }
+        }
+        if let Some(outcome) = &selection.outcome
+            && let Some(value) = &outcome.value
+        {
+            self.pending.push(&value.data);
+        }
+    }
     fn add(&mut self, bytes: u64) {
         self.bytes = self.bytes.saturating_add(bytes);
     }
 
     fn slot(&mut self, handle: Handle) -> Result<(), RuntimeError> {
         if self.slots.insert(handle) {
-            self.pending.push(&self.instance.heap.get(handle)?.data);
+            self.pending.push(&self.heap.get(handle)?.data);
         }
         Ok(())
     }
@@ -388,7 +456,7 @@ impl<'a> GuestSizer<'a> {
         path: &[PathElement],
         charge: bool,
     ) -> Result<(), RuntimeError> {
-        let mut value = self.instance.heap.get(root)?;
+        let mut value = self.heap.get(root)?;
         let mut window: Option<std::ops::Range<usize>> = None;
         for segment in path {
             match segment {
@@ -480,26 +548,19 @@ impl<'a> GuestSizer<'a> {
                 if !self.resources.insert(handle) {
                     continue;
                 }
-                let resource = self.instance.resource(handle)?;
+                let Data::Resource(resource) = &self.heap.get(handle)?.data else {
+                    return Err(RuntimeError::new(
+                        "type_error",
+                        "resource",
+                        "invalid resource handle",
+                    ));
+                };
                 self.add(resource.logical_bytes());
-                match resource {
-                    scheduler::Resource::Channel {
-                        values,
-                        receive_tokens,
-                        send_tokens,
-                        ..
-                    } => {
+                match &**resource {
+                    scheduler::Resource::Channel { values, .. } => {
                         self.pending.extend(values.iter().map(|value| &value.data));
-                        self.pending_resources
-                            .extend(receive_tokens.iter().chain(send_tokens).copied());
                     }
-                    scheduler::Resource::Token { registrations, .. } => {
-                        self.pending_resources
-                            .extend(registrations.iter().map(|(handle, _)| *handle));
-                    }
-                    scheduler::Resource::WaitSet(handles) => {
-                        self.pending_resources.extend(handles.iter().copied())
-                    }
+                    scheduler::Resource::Mutex { .. } => {}
                 }
                 continue;
             }
@@ -555,7 +616,7 @@ impl<'a> GuestSizer<'a> {
                     }
                 }
                 Data::Map(handle) if self.maps.insert(*handle) => {
-                    let Data::MapEntries(entries) = &self.instance.heap.get(*handle)?.data else {
+                    let Data::MapEntries(entries) = &self.heap.get(*handle)?.data else {
                         unreachable!()
                     };
                     self.add(128 + entries.len() as u64 * 32);
@@ -615,15 +676,55 @@ mod tests {
                 &vec![42; size],
             )
             .unwrap();
-        instance.memory.allocation_roots = vec![value.clone(), value];
+        instance.running.allocation_roots = vec![value.clone(), value];
         assert_eq!(instance.live_guest_bytes().unwrap(), 128 + size as u64);
         assert_eq!(instance.live_guest_bytes().unwrap(), 128 + size as u64);
         instance.close().unwrap();
     }
 
     #[test]
+    fn concurrent_allocations_share_one_guest_limit_and_failed_charges_leave_stats_unchanged() {
+        for workers in [1, 2, 4] {
+            let memory = GuestMemory::default();
+            let admitted = std::sync::atomic::AtomicU64::new(0);
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    scope.spawn(|| {
+                        for _ in 0..256 {
+                            if memory.try_charge(16, 2048) {
+                                admitted.fetch_add(16, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    });
+                }
+            });
+            assert_eq!(admitted.load(std::sync::atomic::Ordering::Relaxed), 2048);
+            let full = MemoryStats {
+                live_bytes: 2048,
+                allocated_since_sweep: 2048,
+                total_allocated_bytes: 2048,
+                peak_bytes: 2048,
+            };
+            assert_eq!(memory.stats(), full);
+            assert!(!memory.try_charge(1, 2048));
+            assert_eq!(memory.stats(), full);
+            memory.publish_census(1024);
+            assert!(memory.try_charge(1024, 2048));
+            assert_eq!(
+                memory.stats(),
+                MemoryStats {
+                    live_bytes: 2048,
+                    allocated_since_sweep: 1024,
+                    total_allocated_bytes: 3072,
+                    peak_bytes: 2048
+                }
+            );
+        }
+    }
+
+    #[test]
     fn idle_frame_budget_includes_retained_defer_capacity() {
-        let mut memory = GuestMemory::default();
+        let memory = GuestMemory::default();
         let storage = GuestFrameAccounting {
             deferred: ((8 << 20) - 128) / 16,
             ..GuestFrameAccounting::default()

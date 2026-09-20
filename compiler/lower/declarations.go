@@ -328,7 +328,6 @@ func (l *lowerer) lowerFuncDecl(decl ast.Decl, overrideID string) (ir.Function, 
 		ID:            id,
 		Name:          name,
 		RevisionLocal: strings.TrimSpace(overrideID) != "",
-		NoSwitch:      decl.Func.NoSwitch,
 		Declaration:   hirLocationPtr(decl.Span),
 		Signature:     l.hirSignature(l.signatureOf(decl.Func), funcDeclVariadic(decl.Func)),
 	}

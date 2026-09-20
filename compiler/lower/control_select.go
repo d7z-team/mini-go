@@ -12,10 +12,8 @@ import (
 func (l *lowerer) lowerSelectWithLabel(stmt ast.Statement, scope *funcScope, userLabel string) ([]ir.Statement, bool) {
 	endLabel := l.newLabel("select.end")
 	if len(stmt.Cases) == 0 {
-		waitSet := ir.Expression{Kind: ir.ExprMakeWaitSet}
-		park := ir.Expression{Kind: ir.ExprWaitSetPark, WaitSet: &waitSet}
 		return []ir.Statement{
-			{Kind: ir.StmtExpr, Expr: park},
+			{Kind: ir.StmtSelect, Local: l.newSyntheticLocal(scope, "select.index", "Int")},
 			{Kind: ir.StmtLabel, Label: endLabel},
 		}, true
 	}
@@ -60,8 +58,8 @@ func (l *lowerer) lowerSelectCommunication(stmt ast.Statement, defaultIndex int,
 		caseScopes[i] = l.childScope(scope)
 	}
 	var out []ir.Statement
-	waitSetLocal := l.newSyntheticLocal(scope, "select.waitset", "WaitSet")
-	waitSetRef := ir.Expression{Kind: ir.ExprLocal, Local: waitSetLocal}
+	selectedLocal := l.newSyntheticLocal(scope, "select.index", "Int")
+	selection := ir.Statement{Kind: ir.StmtSelect, Local: selectedLocal, SelectDefault: defaultIndex >= 0}
 	commCaseIndexes := make([]int, 0, len(stmt.Cases))
 	bindings := make([]selectCommBinding, len(stmt.Cases))
 	for i, clause := range stmt.Cases {
@@ -71,14 +69,13 @@ func (l *lowerer) lowerSelectCommunication(stmt ast.Statement, defaultIndex int,
 		if !l.declareSelectShortReceiveTargets(*clause.Comm, caseScopes[i]) {
 			return nil, false
 		}
-		binding, bindingStmts, ok := l.lowerSelectCommBinding(*clause.Comm, caseScopes[i], scope)
+		binding, bindingStmts, ok := l.lowerSelectCommBinding(*clause.Comm, scope)
 		if !ok {
 			return nil, false
 		}
 		bindings[i] = binding
 		out = append(out, bindingStmts...)
 	}
-	out = append(out, ir.Statement{Kind: ir.StmtStoreLocal, Local: waitSetLocal, Expr: ir.Expression{Kind: ir.ExprMakeWaitSet}})
 	for i, clause := range stmt.Cases {
 		if i == defaultIndex {
 			continue
@@ -87,25 +84,25 @@ func (l *lowerer) lowerSelectCommunication(stmt ast.Statement, defaultIndex int,
 			l.add("hirgen.select.comm.missing", "select communication clause is missing communication statement", clause.Span)
 			return nil, false
 		}
-		tokenLocal := l.newSyntheticLocal(scope, "select.token", "WaitToken")
-		tokenRef := ir.Expression{Kind: ir.ExprLocal, Local: tokenLocal}
-		add := ir.Expression{Kind: ir.ExprWaitSetAdd, WaitSet: &waitSetRef, Token: &tokenRef}
-		out = append(out,
-			ir.Statement{Kind: ir.StmtStoreLocal, Local: tokenLocal, Expr: ir.Expression{Kind: ir.ExprMakeWaitToken}},
-			ir.Statement{Kind: ir.StmtStoreLocal, Local: waitSetLocal, Expr: add},
-		)
-		out = append(out, l.lowerSelectWaitRegistration(*clause.Comm, bindings[i], tokenRef)...)
+		binding := &bindings[i]
+		selected := ir.SelectCase{Channel: binding.Channel.Local}
+		if binding.SendValue != nil {
+			selected.Send = binding.SendValue.Local
+		} else {
+			recv, _ := selectReceiveExpression(*clause.Comm)
+			valueType := l.channelElementType(l.expressionType(*recv.Operand, scope))
+			selected.Value = l.newSyntheticLocal(scope, "select.value", valueType)
+			selected.OK = l.newSyntheticLocal(scope, "select.ok", "Bool")
+			binding.Value = ir.Expression{Kind: ir.ExprLocal, Local: selected.Value}
+			binding.OK = ir.Expression{Kind: ir.ExprLocal, Local: selected.OK}
+		}
+		selection.SelectCases = append(selection.SelectCases, selected)
 		commCaseIndexes = append(commCaseIndexes, i)
 	}
-	selectedLocal := l.newSyntheticLocal(scope, "select.index", "Int")
 	selectedRef := ir.Expression{Kind: ir.ExprLocal, Local: selectedLocal}
-	selectOperation := ir.ExprWaitSetPark
-	if defaultIndex >= 0 {
-		selectOperation = ir.ExprWaitSetPoll
-	}
-	out = append(out, ir.Statement{Kind: ir.StmtStoreLocal, Local: selectedLocal, Expr: ir.Expression{Kind: selectOperation, WaitSet: &waitSetRef}})
-	for tokenIndex, caseIndex := range commCaseIndexes {
-		index := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(strconv.FormatInt(int64(tokenIndex), 10))}
+	out = append(out, selection)
+	for ordinal, caseIndex := range commCaseIndexes {
+		index := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(strconv.FormatInt(int64(ordinal), 10))}
 		cond := ir.Expression{Kind: ir.ExprBinary, Operator: "==", Left: &selectedRef, Right: &index}
 		out = append(out, ir.Statement{Kind: ir.StmtJumpIf, Expr: cond, Label: caseLabels[caseIndex]})
 	}
@@ -134,7 +131,6 @@ func (l *lowerer) lowerSelectCommunication(stmt ast.Statement, defaultIndex int,
 		out = append(out, ir.Statement{Kind: ir.StmtJump, Label: endLabel})
 	}
 	out = append(out, ir.Statement{Kind: ir.StmtLabel, Label: endLabel})
-	out = append(out, ir.Statement{Kind: ir.StmtWaitSetCancel, Expr: ir.Expression{Kind: ir.ExprLocal, Local: waitSetLocal}})
 	return out, true
 }
 
@@ -197,56 +193,44 @@ func (l *lowerer) declareSelectShortReceiveTargets(comm ast.Statement, scope *fu
 type selectCommBinding struct {
 	Channel   *ir.Expression
 	SendValue *ir.Expression
+	Value     ir.Expression
+	OK        ir.Expression
 }
 
-func (l *lowerer) lowerSelectCommBinding(comm ast.Statement, caseScope, ownerScope *funcScope) (selectCommBinding, []ir.Statement, bool) {
+func (l *lowerer) lowerSelectCommBinding(comm ast.Statement, scope *funcScope) (selectCommBinding, []ir.Statement, bool) {
 	if recv, ok := selectReceiveExpression(comm); ok {
-		channel, ok := l.lowerExpression(*recv.Operand, caseScope)
+		channel, ok := l.lowerExpression(*recv.Operand, scope)
 		if !ok {
 			return selectCommBinding{}, nil, false
 		}
-		channelLocal := l.newSyntheticLocal(ownerScope, "select.chan", l.expressionType(*recv.Operand, caseScope))
+		channelLocal := l.newSyntheticLocal(scope, "select.chan", l.expressionType(*recv.Operand, scope))
 		channelRef := ir.Expression{Kind: ir.ExprLocal, Local: channelLocal}
 		return selectCommBinding{Channel: &channelRef}, []ir.Statement{{Kind: ir.StmtStoreLocal, Local: channelLocal, Expr: channel}}, true
 	}
 	if send, ok := selectSendStatement(comm); ok {
-		valueType, ok := l.sendChannelElementType(send.Left[0], caseScope, "hirgen.select.comm.send.direction")
+		valueType, ok := l.sendChannelElementType(send.Left[0], scope, "hirgen.select.comm.send.direction")
 		if !ok {
 			return selectCommBinding{}, nil, false
 		}
-		channel, ok := l.lowerExpression(send.Left[0], caseScope)
+		channel, ok := l.lowerExpression(send.Left[0], scope)
 		if !ok {
 			return selectCommBinding{}, nil, false
 		}
-		channelLocal := l.newSyntheticLocal(ownerScope, "select.chan", l.expressionType(send.Left[0], caseScope))
+		channelLocal := l.newSyntheticLocal(scope, "select.chan", l.expressionType(send.Left[0], scope))
 		channelRef := ir.Expression{Kind: ir.ExprLocal, Local: channelLocal}
-		value, ok := l.lowerExpressionInType(send.Right[0], valueType, caseScope)
+		value, ok := l.lowerExpressionInType(send.Right[0], valueType, scope)
 		if !ok {
 			return selectCommBinding{}, nil, false
 		}
-		valueLocal := l.newSyntheticLocal(ownerScope, "select.send", firstNonEmpty(valueType, l.expressionType(send.Right[0], caseScope)))
+		valueLocal := l.newSyntheticLocal(scope, "select.send", firstNonEmpty(valueType, l.expressionType(send.Right[0], scope)))
 		valueRef := ir.Expression{Kind: ir.ExprLocal, Local: valueLocal}
 		return selectCommBinding{Channel: &channelRef, SendValue: &valueRef}, []ir.Statement{
 			{Kind: ir.StmtStoreLocal, Local: channelLocal, Expr: channel},
 			{Kind: ir.StmtStoreLocal, Local: valueLocal, Expr: value},
 		}, true
 	}
-	return selectCommBinding{}, nil, true
-}
-
-func (l *lowerer) lowerSelectWaitRegistration(comm ast.Statement, binding selectCommBinding, token ir.Expression) []ir.Statement {
-	if binding.Channel == nil {
-		return nil
-	}
-	if _, ok := selectReceiveExpression(comm); ok {
-		wait := ir.Expression{Kind: ir.ExprChanSubscribeRecv, Operand: binding.Channel, Token: &token}
-		return []ir.Statement{{Kind: ir.StmtExpr, Expr: wait}}
-	}
-	if _, ok := selectSendStatement(comm); ok {
-		wait := ir.Expression{Kind: ir.ExprChanSubscribeSend, Operand: binding.Channel, Token: &token}
-		return []ir.Statement{{Kind: ir.StmtExpr, Expr: wait}}
-	}
-	return nil
+	l.add("hirgen.select.comm.unsupported", "unsupported select communication statement", comm.Span)
+	return selectCommBinding{}, nil, false
 }
 
 func selectReceiveExpression(comm ast.Statement) (*ast.Expression, bool) {
@@ -271,61 +255,18 @@ func selectSendStatement(comm ast.Statement) (*ast.Statement, bool) {
 }
 
 func (l *lowerer) lowerSelectCommit(comm ast.Statement, scope *funcScope, binding selectCommBinding) ([]ir.Statement, bool) {
-	switch comm.Kind {
-	case ast.StmtExpr:
-		if comm.Expr == nil || comm.Expr.Kind != ast.ExprReceive {
-			l.add("hirgen.select.comm.receive", "select expression communication currently requires receive expression", comm.Span)
-			return nil, false
-		}
-		recv, ok := l.lowerReceiveCommitExpression(*comm.Expr, scope, binding, false)
-		if !ok {
-			return nil, false
-		}
-		return []ir.Statement{{Kind: ir.StmtExpr, Expr: recv}}, true
-	case ast.StmtAssign:
-		if len(comm.Right) != 1 || comm.Right[0].Kind != ast.ExprReceive {
-			l.add("hirgen.select.comm.receive", "select assignment communication currently requires receive expression", comm.Span)
-			return nil, false
-		}
-		if len(comm.Left) != 1 && len(comm.Left) != 2 {
-			l.add("hirgen.select.comm.targets", "select receive assignment requires one or two targets", comm.Span)
-			return nil, false
-		}
-		recv, ok := l.lowerReceiveCommitExpression(comm.Right[0], scope, binding, len(comm.Left) == 2)
-		if !ok {
-			return nil, false
-		}
-		return l.lowerSelectReceiveAssignment(comm.Left, recv, scope)
-	case ast.StmtSend:
-		if len(comm.Left) != 1 || len(comm.Right) != 1 {
-			l.add("hirgen.select.comm.send.shape", "select send communication requires channel and value expressions", comm.Span)
-			return nil, false
-		}
-		valueType, ok := l.sendChannelElementType(comm.Left[0], scope, "hirgen.select.comm.send.direction")
-		if !ok {
-			return nil, false
-		}
-		channel := binding.Channel
-		if channel == nil {
-			lowered, ok := l.lowerExpression(comm.Left[0], scope)
-			if !ok {
-				return nil, false
-			}
-			channel = &lowered
-		}
-		value := binding.SendValue
-		if value == nil {
-			lowered, ok := l.lowerExpressionInType(comm.Right[0], valueType, scope)
-			if !ok {
-				return nil, false
-			}
-			value = &lowered
-		}
-		return []ir.Statement{{Kind: ir.StmtChanSend, Object: *channel, Expr: *value}}, true
-	default:
-		l.add("hirgen.select.comm.unsupported", "unsupported select communication statement", comm.Span)
+	if comm.Kind != ast.StmtAssign {
+		return nil, true
+	}
+	if len(comm.Left) != 1 && len(comm.Left) != 2 {
+		l.add("hirgen.select.comm.targets", "select receive assignment requires one or two targets", comm.Span)
 		return nil, false
 	}
+	values := []ir.Expression{binding.Value}
+	if len(comm.Left) == 2 {
+		values = append(values, binding.OK)
+	}
+	return l.lowerSelectReceiveAssignment(comm.Left, ir.Expression{Kind: ir.ExprValues, Elements: values}, scope)
 }
 
 func (l *lowerer) lowerSelectReceiveAssignment(targets []ast.Expression, recv ir.Expression, scope *funcScope) ([]ir.Statement, bool) {
@@ -343,14 +284,4 @@ func (l *lowerer) lowerSelectReceiveAssignment(targets []ast.Expression, recv ir
 		}
 	}
 	return out, true
-}
-
-func (l *lowerer) lowerReceiveCommitExpression(expr ast.Expression, scope *funcScope, binding selectCommBinding, twoValue bool) (ir.Expression, bool) {
-	if binding.Channel != nil {
-		if twoValue {
-			return ir.Expression{Kind: ir.ExprChanRecvOK, Operand: binding.Channel}, true
-		}
-		return ir.Expression{Kind: ir.ExprChanRecv, Operand: binding.Channel}, true
-	}
-	return l.lowerReceiveExpression(expr, scope, twoValue)
 }

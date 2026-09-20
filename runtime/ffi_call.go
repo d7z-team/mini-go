@@ -27,7 +27,7 @@ func ffiPayloadBytes(module *moduleInstance, value vmValue) ([]byte, error) {
 		return nil, nil
 	}
 	if slice.ByteBacked {
-		return append([]byte(nil), slice.ByteBacking[slice.Start:slice.Start+slice.Len]...), nil
+		return slice.bytes(), nil
 	}
 	items, ok := sliceValues(value)
 	if !ok {
@@ -55,9 +55,22 @@ type pendingFFICall struct {
 	cancel        context.CancelFunc
 	result        ffi.Result
 	state         pendingFFIState
+	starting      bool
 	scope         *executionScope
 	relay         *ffiCompletionRelay
 	boundaryBytes int64
+	waitOwner     *taskOwnership
+	waitTicket    *taskWaitTicket
+}
+
+func (call *pendingFFICall) bindWait(owner *taskOwnership, ticket *taskWaitTicket) {
+	call.mu.Lock()
+	call.waitOwner, call.waitTicket = owner, ticket
+	ready := call.state == pendingFFIReady && !call.starting
+	call.mu.Unlock()
+	if ready {
+		owner.notify(ticket)
+	}
 }
 
 type pendingFFIState uint8
@@ -124,20 +137,68 @@ func (call *pendingFFICall) complete(result ffi.Result) {
 	call.result = result
 	call.state = pendingFFIReady
 	machine := call.vm
+	owner, ticket := call.waitOwner, call.waitTicket
+	starting := call.starting
 	call.mu.Unlock()
+	if owner != nil && !starting {
+		owner.notify(ticket)
+	}
 	if result.Err != nil && discard != nil {
 		discard()
 	}
-	if machine != nil {
+	if machine != nil && !starting {
 		machine.signalWake()
 	}
 }
 
-func (vm *vm) startFFICall(route string, payload []byte) (*pendingFFICall, error) {
+// finishStart commits the host handle before publishing an early reply. A
+// failed start owns disposal of that reply even if completion arrived first.
+func (call *pendingFFICall) finishStart(hostCall ffi.Call, startErr error) {
+	call.mu.Lock()
+	call.starting = false
+	if call.state == pendingFFICanceled || call.state == pendingFFIConsumed {
+		call.mu.Unlock()
+		if hostCall != nil {
+			hostCall.Cancel()
+		}
+		return
+	}
+	var discard func()
+	if startErr != nil {
+		discard = call.result.Discard
+		responseBytes := int64(len(call.result.Payload)) * ir.RuntimeByteBytes
+		call.boundaryBytes -= responseBytes
+		if call.vm != nil {
+			call.vm.pendingBoundaryBytes.Add(-responseBytes)
+		}
+		call.result = ffi.Result{Err: startErr}
+		call.state = pendingFFIReady
+	} else {
+		call.call = hostCall
+	}
+	ready := call.state == pendingFFIReady
+	machine, owner, ticket := call.vm, call.waitOwner, call.waitTicket
+	call.mu.Unlock()
+	if startErr != nil && hostCall != nil {
+		hostCall.Cancel()
+	}
+	if discard != nil {
+		discard()
+	}
+	if ready {
+		if owner != nil {
+			owner.notify(ticket)
+		}
+		if machine != nil {
+			machine.signalWake()
+		}
+	}
+}
+
+func (vm *vm) startFFICall(scope *executionScope, route string, payload []byte) (*pendingFFICall, error) {
 	if vm == nil || vm.machine == nil {
 		return nil, errors.New("FFI call requires an active execution")
 	}
-	scope := vm.machine.activeScope()
 	if scope == nil || scope.settled {
 		return nil, errors.New("FFI call requires an active execution scope")
 	}
@@ -158,7 +219,7 @@ func (vm *vm) startFFICall(route string, payload []byte) (*pendingFFICall, error
 	ctx, cancel := context.WithCancel(context.Background())
 	pending := &pendingFFICall{
 		vm: vm, cancel: cancel, scope: scope,
-		boundaryBytes: requestBytes,
+		boundaryBytes: requestBytes, starting: true,
 	}
 	relay := &ffiCompletionRelay{pending: pending}
 	pending.relay = relay
@@ -168,21 +229,11 @@ func (vm *vm) startFFICall(route string, payload []byte) (*pendingFFICall, error
 	vm.ffiCalls[pending] = struct{}{}
 	vm.machine.addScopeFFI(scope)
 	if vm.ffiSession == nil {
-		relay.complete(ffi.Result{Err: ffi.ErrRouteUnavailable})
+		pending.finishStart(nil, ffi.ErrRouteUnavailable)
 		return pending, nil
 	}
 	call, err := vm.ffiSession.Start(ctx, ffi.Request{Route: route, Payload: payload}, relay.complete)
-	if err != nil {
-		relay.complete(ffi.Result{Err: err})
-		return pending, nil
-	}
-	pending.mu.Lock()
-	pending.call = call
-	canceled := pending.state == pendingFFICanceled
-	pending.mu.Unlock()
-	if canceled && call != nil {
-		call.Cancel()
-	}
+	pending.finishStart(call, err)
 	return pending, nil
 }
 
@@ -191,7 +242,7 @@ func (call *pendingFFICall) take() ([]vmValue, bool) {
 		return []vmValue{newByteSliceValue("Slice<Uint8>", ""), newVMValue("String", "FFI call lost continuation"), newVMValue("Int", int64(2))}, true
 	}
 	call.mu.Lock()
-	ready := call.state == pendingFFIReady
+	ready := call.state == pendingFFIReady && !call.starting
 	machine := call.vm
 	payloadBytes := int64(len(call.result.Payload)) * ir.RuntimeByteBytes
 	call.mu.Unlock()
@@ -219,7 +270,7 @@ func (call *pendingFFICall) take() ([]vmValue, bool) {
 		}
 	}
 	return []vmValue{
-		newByteSliceHeaderValue("Slice<Uint8>", result.Payload, 0, len(result.Payload), len(result.Payload)),
+		newByteSliceHeaderValue("Slice<Uint8>", result.Payload, len(result.Payload), len(result.Payload)),
 		newVMValue("String", message),
 		newVMValue("Int", status),
 	}, true
@@ -230,7 +281,7 @@ func (call *pendingFFICall) settle(next pendingFFIState) (ffi.Result, bool) {
 	valid := false
 	switch next {
 	case pendingFFIConsumed:
-		valid = call.state == pendingFFIReady
+		valid = call.state == pendingFFIReady && !call.starting
 	case pendingFFICanceled:
 		valid = call.state != pendingFFIConsumed && call.state != pendingFFICanceled
 	}
@@ -244,6 +295,7 @@ func (call *pendingFFICall) settle(next pendingFFIState) (ffi.Result, bool) {
 	call.result = ffi.Result{}
 	machine, scope, relay, hostCall, boundaryBytes := call.vm, call.scope, call.relay, call.call, call.boundaryBytes
 	call.vm, call.scope, call.relay, call.call = nil, nil, nil, nil
+	call.waitOwner, call.waitTicket = nil, nil
 	call.boundaryBytes = 0
 	call.mu.Unlock()
 	relay.detach()

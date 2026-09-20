@@ -15,6 +15,40 @@ func TestSchedulerRotatesRunnableTasks(t *testing.T) {
 	}
 }
 
+func TestTaskSliceReturnsAtQuantumWithoutReadyPeers(t *testing.T) {
+	artifact := ir.NewArtifact("scheduler/bounded-slice", "main")
+	var instructions []ir.Instruction
+	for range taskInstructionQuantum * 2 {
+		instructions = append(instructions,
+			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
+			ir.Instruction{Op: string(ir.OpPop)},
+		)
+	}
+	instructions = append(instructions, ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})})
+	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function()"), Instructions: instructions}}
+	instance, err := patchTestProgram(t, artifact, "bounded-slice").Instantiate(t.Context(), InstanceOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupTestInstance(t, instance)
+	if _, err := instance.Start("run"); err != nil {
+		t.Fatal(err)
+	}
+	machine := instance.vm.machine
+	task := machine.popRunnable()
+	if !task.ownership.acquire() {
+		t.Fatal("task did not acquire lease")
+	}
+	slice := taskSlice{limit: taskInstructionQuantum * 8}
+	yield, _, err := machine.runTask(task, &slice)
+	task.ownership.relinquish()
+	machine.abortTask(task)
+	machine.finishTask(task, nil)
+	if err != nil || yield.kind != taskYieldCooperate || slice.executed != taskInstructionQuantum {
+		t.Fatalf("unbounded worker slice: yield=%s executed=%d err=%v", yield.kind, slice.executed, err)
+	}
+}
+
 func testSchedulerRotation(t *testing.T, budgets []int) {
 	t.Helper()
 	artifact := ir.NewArtifact("scheduler/fairness", "main")
@@ -64,60 +98,13 @@ func testSchedulerRotation(t *testing.T, budgets []int) {
 	}
 }
 
-func TestSchedulerDoesNotRotateInsideNoSwitchFunction(t *testing.T) {
-	artifact := ir.NewArtifact("scheduler/no-switch", "main")
-	artifact.Constants = []ir.Constant{
-		{ID: "const.one", Type: testType("Int64"), Value: json.RawMessage(`1`)},
-		{ID: "const.two", Type: testType("Int64"), Value: json.RawMessage(`2`)},
-	}
-	artifact.Globals = []ir.Global{
-		{ID: "global.phase", Type: testType("Int64")},
-		{ID: "global.observed", Type: testType("Int64")},
-	}
-	worker := []ir.Instruction{
-		{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.one"})},
-		{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.phase"})},
-	}
-	for range taskInstructionQuantum * 2 {
-		worker = append(worker,
-			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			ir.Instruction{Op: string(ir.OpPop)},
-		)
-	}
-	worker = append(worker,
-		ir.Instruction{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.two"})},
-		ir.Instruction{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.phase"})},
-		ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	)
-	artifact.Functions = []ir.Function{{
-		ID: "fn.main", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.worker"})},
-			{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-			{Op: string(ir.OpLoadGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.phase"})},
-			{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.observed"})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		},
-	}, {
-		ID: "fn.worker", RevisionLocal: true, NoSwitch: true,
-		Signature: testSignature("function() Void"), Instructions: worker,
-	}}
-	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
-	vm := pollSchedulerArtifact(t, artifact, []int{1, 7, 31})
-	observed := vm.rootModule().state.globals["global.observed"].load()
-	value, valueErr := asInt64(observed)
-	if valueErr != nil || value != 2 {
-		t.Fatalf("task observed phase = %#v, want 2", observed)
-	}
-}
-
 func pollSchedulerArtifact(t *testing.T, artifact ir.Artifact, budgets []int) *vm {
 	t.Helper()
 	vm, err := loadTestEngine(artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance := &Instance{vm: vm, done: make(chan struct{}), supervisor: make(chan struct{}, 1)}
+	instance := &Instance{vm: vm, done: make(chan struct{})}
 	t.Cleanup(vm.closeRevisions)
 	execution, err := instance.start(context.Background(), false, func(*instanceRevision) (int64, error) {
 		return vm.prepareFunction("fn.main", nil)

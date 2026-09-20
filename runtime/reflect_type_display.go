@@ -153,8 +153,6 @@ func reflectPrimitiveSourceName(kind types.PrimitiveKind) string {
 		return "error"
 	case types.PrimitiveFunction:
 		return "func"
-	case types.PrimitiveWaitToken, types.PrimitiveWaitSet:
-		return name
 	default:
 		return strings.ToLower(name)
 	}

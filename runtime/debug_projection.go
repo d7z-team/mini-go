@@ -308,10 +308,11 @@ func projectDebugValue(value vmValue) Value {
 		for _, item := range items {
 			out.Items = append(out.Items, projectDebugValue(item))
 		}
-	case []vmValue:
+	case *vmArray:
+		values := data.values()
 		out.Kind = ValueArray
-		out.Items = make([]Value, 0, len(data))
-		for _, item := range data {
+		out.Items = make([]Value, 0, len(values))
+		for _, item := range values {
 			out.Items = append(out.Items, projectDebugValue(item))
 		}
 	case *vmStruct:
@@ -322,8 +323,8 @@ func projectDebugValue(value vmValue) Value {
 		out.Fields = make([]Binding, 0, len(data.schema.fields))
 		for index, field := range data.schema.fields {
 			value := zeroVMValue(field.RuntimeType.String())
-			if index < len(data.values) && data.values[index].Type.Valid() {
-				value = data.values[index]
+			if stored, ok := data.fieldAt(index); ok {
+				value = stored
 			}
 			out.Fields = append(out.Fields, Binding{
 				ID:    field.Name,
@@ -334,10 +335,11 @@ func projectDebugValue(value vmValue) Value {
 		}
 	case *vmMap:
 		out.Kind = ValueMap
-		keys := sortedVMMapKeys(data)
+		snapshot := data.snapshot()
+		keys := sortedVMMapKeys(snapshot)
 		out.Entries = make([]MapEntry, 0, len(keys))
 		for _, key := range keys {
-			entry := data.Entries[key]
+			entry := snapshot[key]
 			out.Entries = append(out.Entries, MapEntry{
 				Key:   projectDebugValue(entry.Key),
 				Value: projectDebugValue(entry.Value),
@@ -373,8 +375,8 @@ func debugValueText(value vmValue) string {
 			return fmt.Sprintf("%s(len=0)", value.Type)
 		}
 		return fmt.Sprintf("%s(len=%d)", value.Type, data.Len)
-	case []vmValue:
-		return fmt.Sprintf("%s(len=%d)", value.Type, len(data))
+	case *vmArray:
+		return fmt.Sprintf("%s(len=%d)", value.Type, data.Len)
 	case *vmStruct:
 		if data == nil || data.schema == nil {
 			return fmt.Sprintf("%s(fields=0)", value.Type)
@@ -384,7 +386,7 @@ func debugValueText(value vmValue) string {
 		if data == nil {
 			return fmt.Sprintf("%s(len=0)", value.Type)
 		}
-		return fmt.Sprintf("%s(len=%d)", value.Type, len(data.Entries))
+		return fmt.Sprintf("%s(len=%d)", value.Type, data.length())
 	default:
 		if !value.Type.Valid() {
 			return fmt.Sprintf("%T", data)

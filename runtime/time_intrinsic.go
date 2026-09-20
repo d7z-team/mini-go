@@ -1,9 +1,14 @@
 package runtime
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 func timeNow(ctx intrinsicContext, _ []vmValue) ([]vmValue, error) {
+	ctx.vm.hostMu.Lock()
 	now := ctx.vm.clock.Now()
+	ctx.vm.hostMu.Unlock()
 	return []vmValue{
 		newVMValue("Int64", now.Unix()),
 		newVMValue("Int64", int64(now.Nanosecond())),
@@ -11,6 +16,9 @@ func timeNow(ctx intrinsicContext, _ []vmValue) ([]vmValue, error) {
 }
 
 func timeTimerStart(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
+	if ctx.task == nil {
+		return nil, errors.New("timer requires an active execution task")
+	}
 	delay, err := asInt64(args[1])
 	if err != nil {
 		return nil, err
@@ -19,7 +27,7 @@ func timeTimerStart(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ctx.vm.startTimer(ctx.module, args[0], time.Duration(delay), time.Duration(period)); err != nil {
+	if err := ctx.vm.startTimer(ctx.task.scope, ctx.module, args[0], time.Duration(delay), time.Duration(period)); err != nil {
 		return nil, err
 	}
 	return nil, nil

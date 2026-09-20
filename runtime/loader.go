@@ -72,6 +72,9 @@ func (l *loader) load(artifact ir.Artifact) (*executable, error) {
 }
 
 func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
+	if err := artifact.TypeTable.Reindex(); err != nil {
+		return nil, err
+	}
 	hash, err := ir.HashValidated(&artifact)
 	if err != nil {
 		return nil, err
@@ -179,7 +182,7 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 	for _, export := range artifact.Exports {
 		exports[export.Name] = export
 	}
-	return &executable{
+	loaded := &executable{
 		Artifact:  artifact,
 		Hash:      hash,
 		Types:     typeIndex,
@@ -187,7 +190,13 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 		Exports:   exports,
 		Constants: constantIndexes,
 		Globals:   globalIndexes,
-	}, nil
+	}
+	// TypeTable indexes belong to its address. Prepare the final copy before
+	// publishing the executable to instances and concurrent tasks.
+	if err := loaded.Artifact.TypeTable.Reindex(); err != nil {
+		return nil, err
+	}
+	return loaded, nil
 }
 
 func (inst *preparedInstruction) bindTypes(table *types.TypeTable, modulePath string) {

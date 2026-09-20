@@ -179,7 +179,7 @@ func globalFieldSpecs() []FieldSpec {
 }
 
 func functionFieldSpecs() []FieldSpec {
-	return []FieldSpec{{Name: "id", Type: "string", Required: true}, {Name: "revision_local", Type: "bool"}, {Name: "no_switch", Type: "bool", Rule: "function is a verified non-suspending scheduling region"}, {Name: "signature", Type: "FunctionSignature", Required: true}, {Name: "locals", Type: "[]Local"}, {Name: "result_locals", Type: "[]local-id", Rule: "must match named result order"}, {Name: "upvalues", Type: "[]Upvalue"}, {Name: "max_stack", Type: "int"}, {Name: "instructions", Type: "[]Instruction"}}
+	return []FieldSpec{{Name: "id", Type: "string", Required: true}, {Name: "revision_local", Type: "bool"}, {Name: "signature", Type: "FunctionSignature", Required: true}, {Name: "locals", Type: "[]Local"}, {Name: "result_locals", Type: "[]local-id", Rule: "must match named result order"}, {Name: "upvalues", Type: "[]Upvalue"}, {Name: "max_stack", Type: "int"}, {Name: "instructions", Type: "[]Instruction"}}
 }
 
 func localFieldSpecs() []FieldSpec {

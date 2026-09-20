@@ -50,7 +50,6 @@ type Function struct {
 	ID            string
 	Name          string
 	RevisionLocal bool
-	NoSwitch      bool
 	Generated     bool
 	Declaration   *Location
 	Signature     types.FunctionSignature
@@ -99,30 +98,28 @@ type Requirement struct {
 type StatementKind string
 
 const (
-	StmtExpr            StatementKind = "expr"
-	StmtMapIterInit     StatementKind = "map_iter_init"
-	StmtMapIterClose    StatementKind = "map_iter_close"
-	StmtReturn          StatementKind = "return"
-	StmtTailCallDirect  StatementKind = "tail_call_direct"
-	StmtStoreLocal      StatementKind = "store_local"
-	StmtStoreUpvalue    StatementKind = "store_upvalue"
-	StmtStoreGlobal     StatementKind = "store_global"
-	StmtStoreResults    StatementKind = "store_results"
-	StmtStoreValues     StatementKind = "store_values"
-	StmtStoreIndex      StatementKind = "store_index"
-	StmtStoreField      StatementKind = "store_field"
-	StmtStoreIndirect   StatementKind = "store_indirect"
-	StmtChanSend        StatementKind = "chan_send"
-	StmtWaitTokenSignal StatementKind = "wait_token_signal"
-	StmtWaitTokenCancel StatementKind = "wait_token_cancel"
-	StmtWaitSetCancel   StatementKind = "wait_set_cancel"
-	StmtSpawn           StatementKind = "spawn"
-	StmtInitModule      StatementKind = "init_module"
-	StmtPanic           StatementKind = "panic"
-	StmtDefer           StatementKind = "defer"
-	StmtLabel           StatementKind = "label"
-	StmtJump            StatementKind = "jump"
-	StmtJumpIf          StatementKind = "jump_if"
+	StmtExpr           StatementKind = "expr"
+	StmtMapIterInit    StatementKind = "map_iter_init"
+	StmtMapIterClose   StatementKind = "map_iter_close"
+	StmtReturn         StatementKind = "return"
+	StmtTailCallDirect StatementKind = "tail_call_direct"
+	StmtStoreLocal     StatementKind = "store_local"
+	StmtStoreUpvalue   StatementKind = "store_upvalue"
+	StmtStoreGlobal    StatementKind = "store_global"
+	StmtStoreResults   StatementKind = "store_results"
+	StmtStoreValues    StatementKind = "store_values"
+	StmtStoreIndex     StatementKind = "store_index"
+	StmtStoreField     StatementKind = "store_field"
+	StmtStoreIndirect  StatementKind = "store_indirect"
+	StmtChanSend       StatementKind = "chan_send"
+	StmtSelect         StatementKind = "select"
+	StmtSpawn          StatementKind = "spawn"
+	StmtInitModule     StatementKind = "init_module"
+	StmtPanic          StatementKind = "panic"
+	StmtDefer          StatementKind = "defer"
+	StmtLabel          StatementKind = "label"
+	StmtJump           StatementKind = "jump"
+	StmtJumpIf         StatementKind = "jump_if"
 )
 
 type Statement struct {
@@ -146,6 +143,17 @@ type Statement struct {
 	// Zero means the current frame.
 	DeferOwnerDepth int
 	Targets         []StoreTarget
+	SelectCases     []SelectCase
+	SelectDefault   bool
+}
+
+// SelectCase refers to already evaluated local operands. Receive destinations
+// are private temporaries; source assignment targets run after selection.
+type SelectCase struct {
+	Channel string
+	Send    string
+	Value   string
+	OK      string
 }
 
 type ExpressionKind string
@@ -198,15 +206,8 @@ const (
 	ExprChanCanRecv         ExpressionKind = "chan_can_recv"
 	ExprChanTryRecv         ExpressionKind = "chan_try_recv"
 	ExprChanTrySend         ExpressionKind = "chan_try_send"
-	ExprChanSubscribeRecv   ExpressionKind = "chan_subscribe_recv"
-	ExprChanSubscribeSend   ExpressionKind = "chan_subscribe_send"
 	ExprChanCanSend         ExpressionKind = "chan_can_send"
 	ExprChanClose           ExpressionKind = "chan_close"
-	ExprMakeWaitToken       ExpressionKind = "make_wait_token"
-	ExprMakeWaitSet         ExpressionKind = "make_wait_set"
-	ExprWaitSetAdd          ExpressionKind = "wait_set_add"
-	ExprWaitSetPoll         ExpressionKind = "wait_set_poll"
-	ExprWaitSetPark         ExpressionKind = "wait_set_park"
 	ExprRecover             ExpressionKind = "recover"
 )
 
@@ -244,8 +245,6 @@ type Expression struct {
 	Max         *Expression
 	Field       string
 	Path        []AddressSegment
-	Token       *Expression
-	WaitSet     *Expression
 }
 
 type AddressSegment struct {

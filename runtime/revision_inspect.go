@@ -210,129 +210,118 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 				if !step() {
 					break
 				}
-				if cell.initialized {
-					inspect(RevisionRoot{Path: "global " + path + "." + name, Module: path}, cell.value)
+				if value, initialized := cell.snapshot(); initialized {
+					inspect(RevisionRoot{Path: "global " + path + "." + name, Module: path}, value)
 				}
 			}
 		}
 	}
 	if machine := vm.machine; machine != nil {
-		seen := make(map[*executionTask]bool)
-		for _, tasks := range [][]*executionTask{{machine.running, machine.paused}, machine.runnableTasks(), machine.blocked} {
-			for _, task := range tasks {
+		for _, task := range machine.tasks {
+			if !step() {
+				break
+			}
+			root := RevisionRoot{TaskID: task.id}
+			if task.scope != nil {
+				root.ScopeID = task.scope.id
+			}
+			for index, active := range task.retainedFrames {
 				if !step() {
 					break
 				}
-				if task == nil || seen[task] {
+				if active == nil || active.frame == nil {
 					continue
 				}
-				seen[task] = true
-				root := RevisionRoot{TaskID: task.id}
-				if task.scope != nil {
-					root.ScopeID = task.scope.id
+				frame := active.frame
+				root.Path = fmt.Sprintf("task %d/frame %d", task.id, index)
+				root.Function = frame.function.Decl.ID
+				root.Module = frame.module.modulePath()
+				root.Location = Location{}
+				if location := runtimeLocation(frame, root.Function, max(0, frame.pc-1)); location != nil {
+					root.Location = Location{File: location.File, Line: location.Line, Column: location.Column}
 				}
-				for index, active := range task.frames {
-					if !step() {
+				add(frame.revision, root)
+				for _, group := range []struct {
+					name  string
+					cells []*slot
+				}{{"local", frame.localCells}, {"capture", frame.upvalueCells}} {
+					for n, cell := range group.cells {
+						if !step() {
+							break
+						}
+						value, initialized := cell.snapshot()
+						if !initialized {
+							continue
+						}
+						ref := root
+						ref.Path += fmt.Sprintf("/%s %d", group.name, n)
+						inspect(ref, value)
+					}
+				}
+				for _, group := range []struct {
+					name   string
+					values []vmValue
+				}{{"stack", frame.stack}, {"popped", frame.popValues}, {"return", frame.returnValues}} {
+					for n, value := range group.values {
+						if stopped {
+							break
+						}
+						ref := root
+						ref.Path += fmt.Sprintf("/%s %d", group.name, n)
+						inspect(ref, value)
+					}
+				}
+				for n, deferred := range frame.defers {
+					if stopped {
 						break
 					}
-					if active == nil || active.frame == nil {
-						continue
+					ref := root
+					ref.Path += fmt.Sprintf("/defer %d", n)
+					inspect(ref, newVMValue("Function", deferred.ref))
+				}
+				for name, iterator := range frame.mapIterators {
+					if stopped {
+						break
 					}
-					frame := active.frame
-					root.Path = fmt.Sprintf("task %d/frame %d", task.id, index)
-					root.Function = frame.function.Decl.ID
-					root.Module = frame.module.modulePath()
-					root.Location = Location{}
-					if location := runtimeLocation(frame, root.Function, max(0, frame.pc-1)); location != nil {
-						root.Location = Location{File: location.File, Line: location.Line, Column: location.Column}
-					}
-					add(frame.revision, root)
-					for _, group := range []struct {
-						name  string
-						cells []*slot
-					}{{"local", frame.localCells}, {"capture", frame.upvalueCells}} {
-						for n, cell := range group.cells {
-							if !step() {
-								break
-							}
-							if cell == nil || !cell.initialized {
-								continue
-							}
-							ref := root
-							ref.Path += fmt.Sprintf("/%s %d", group.name, n)
-							inspect(ref, cell.value)
-						}
-					}
-					for _, group := range []struct {
-						name   string
-						values []vmValue
-					}{{"stack", frame.stack}, {"popped", frame.popValues}, {"return", frame.returnValues}} {
-						for n, value := range group.values {
-							if stopped {
-								break
-							}
-							ref := root
-							ref.Path += fmt.Sprintf("/%s %d", group.name, n)
-							inspect(ref, value)
-						}
-					}
-					for n, deferred := range frame.defers {
+					ref := root
+					ref.Path += "/iterator " + name
+					inspect(ref, iterator.object)
+				}
+				if active.completion != nil {
+					ref := root
+					ref.Path += "/completion"
+					for _, value := range active.completion.returnValues {
 						if stopped {
 							break
 						}
-						ref := root
-						ref.Path += fmt.Sprintf("/defer %d", n)
-						inspect(ref, newVMValue("Function", deferred.ref))
+						inspect(ref, value)
 					}
-					for name, iterator := range frame.mapIterators {
-						if stopped {
-							break
-						}
-						ref := root
-						ref.Path += "/iterator " + name
-						inspect(ref, iterator.object)
-					}
-					if active.completion != nil {
-						ref := root
-						ref.Path += "/completion"
-						for _, value := range active.completion.returnValues {
-							if stopped {
-								break
-							}
-							inspect(ref, value)
-						}
-						if active.completion.panic != nil {
-							inspect(ref, active.completion.panic.err.Value)
-						}
-					}
-					if active.recoveredPanic != nil {
-						ref := root
-						ref.Path += "/recovered"
-						inspect(ref, active.recoveredPanic.err.Value)
+					if active.completion.panic != nil {
+						inspect(ref, active.completion.panic.err.Value)
 					}
 				}
-				if task.blocked != nil {
-					root.Path = fmt.Sprintf("task %d/blocked %s", task.id, task.blocked.kind)
-					root.Function = ""
-					root.Module = ""
-					root.Location = Location{}
-					for _, value := range []vmValue{task.blocked.waitable, task.blocked.waitSet, task.blocked.recvToken} {
-						inspect(root, value)
-					}
-					if task.blocked.resource != nil {
-						inspect(root, newVMValue(task.blocked.resource.Type, task.blocked.resource))
-					}
-					if request := task.blocked.reflectSelect; request != nil {
-						for index, selected := range request.cases {
-							if stopped {
-								break
-							}
-							ref := root
-							ref.Path += fmt.Sprintf("/reflect select/case %d/channel", index)
-							inspect(ref, selected.channel)
-							ref.Path = root.Path + fmt.Sprintf("/reflect select/case %d/send", index)
-							inspect(ref, selected.send)
+				if active.recoveredPanic != nil {
+					ref := root
+					ref.Path += "/recovered"
+					inspect(ref, active.recoveredPanic.err.Value)
+				}
+			}
+			if task.blocked != nil {
+				root.Path = fmt.Sprintf("task %d/blocked %s", task.id, task.blocked.kind)
+				root.Function = ""
+				root.Module = ""
+				root.Location = Location{}
+				if selection := task.blocked.selection; selection != nil {
+					inspect(root, selection.value)
+					for index, selected := range selection.cases {
+						if stopped {
+							break
 						}
+						ref := root
+						ref.Path += fmt.Sprintf("/select/case %d/channel", index)
+						inspect(ref, selected.channel)
+						ref.Path = root.Path + fmt.Sprintf("/select/case %d/value", index)
+						inspect(ref, selected.value)
 					}
 				}
 			}
@@ -349,13 +338,13 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 		add(timer.pinnedRevision, root)
 		inspect(root, timer.signal)
 	}
-	for _, value := range vm.reflectTypeValues {
+	for _, value := range vm.reflectTypeValues.snapshot() {
 		if stopped {
 			break
 		}
 		inspect(RevisionRoot{Path: "reflection"}, value)
 	}
-	for _, value := range vm.allocationRoots {
+	for _, value := range vm.controlRoots {
 		if stopped {
 			break
 		}

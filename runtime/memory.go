@@ -13,7 +13,7 @@ func (vm *vm) refreshLiveGuestBytes() int64 {
 		return 0
 	}
 	sizer := newRuntimeValueSizer()
-	for _, value := range vm.allocationRoots {
+	for _, value := range vm.controlRoots {
 		sizer.value(value)
 	}
 	sizer.add(vm.dynamicTypeBytes)
@@ -28,21 +28,16 @@ func (vm *vm) refreshLiveGuestBytes() int64 {
 		}
 	}
 	if machine := vm.machine; machine != nil {
-		sizer.task(machine.running)
-		for _, task := range machine.runnableTasks() {
+		for _, task := range machine.tasks {
 			sizer.task(task)
 		}
-		for _, task := range machine.blocked {
-			sizer.task(task)
-		}
-		sizer.task(machine.paused)
 	}
 	for _, timer := range vm.timers {
 		if timer != nil {
 			sizer.value(timer.signal)
 		}
 	}
-	for _, value := range vm.reflectTypeValues {
+	for _, value := range vm.reflectTypeValues.snapshot() {
 		sizer.value(value)
 	}
 	vm.liveGuestBytes.Store(sizer.bytes)
@@ -52,20 +47,19 @@ func (vm *vm) refreshLiveGuestBytes() int64 {
 }
 
 type runtimeValueSizer struct {
-	bytes         int64
-	seenPointers  map[*vmPointer]bool
-	seenSlices    map[*vmSlice]bool
-	seenStorage   map[*vmSliceStorage]bool
-	seenMaps      map[*vmMap]bool
-	seenStructs   map[*vmStruct]bool
-	seenSlots     map[*slot]bool
-	seenCells     map[*vmValue]bool
-	seenWaitables map[*waitableResource]bool
-	seenTokens    map[*waitTokenState]bool
-	seenWaitSets  map[*waitSetState]bool
-	seenTasks     map[*executionTask]bool
-	pendingValues []vmValue
-	walking       bool
+	bytes          int64
+	seenPointers   map[*vmPointer]bool
+	seenSlices     map[*vmSlice]bool
+	seenStorage    map[*vmSliceStorage]bool
+	seenMaps       map[*vmMap]bool
+	seenStructs    map[*vmStruct]bool
+	seenSlots      map[*slot]bool
+	seenCells      map[*slot]bool
+	seenWaitables  map[*waitableResource]bool
+	seenMutexes    map[*mutexResource]bool
+	seenSelections map[*channelSelection]bool
+	pendingValues  []vmValue
+	walking        bool
 }
 
 func newRuntimeValueSizer() *runtimeValueSizer {
@@ -74,9 +68,9 @@ func newRuntimeValueSizer() *runtimeValueSizer {
 		seenStorage: make(map[*vmSliceStorage]bool),
 		seenMaps:    make(map[*vmMap]bool), seenStructs: make(map[*vmStruct]bool),
 		seenSlots: make(map[*slot]bool), seenWaitables: make(map[*waitableResource]bool),
-		seenTokens: make(map[*waitTokenState]bool), seenWaitSets: make(map[*waitSetState]bool),
-		seenTasks: make(map[*executionTask]bool),
-		seenCells: make(map[*vmValue]bool),
+		seenCells:      make(map[*slot]bool),
+		seenMutexes:    make(map[*mutexResource]bool),
+		seenSelections: make(map[*channelSelection]bool),
 	}
 }
 
@@ -96,8 +90,8 @@ func (sizer *runtimeValueSizer) slot(cell *slot) {
 		return
 	}
 	sizer.seenSlots[cell] = true
-	if cell.initialized {
-		sizer.value(cell.value)
+	if value, initialized := cell.snapshot(); initialized {
+		sizer.value(value)
 	}
 }
 
@@ -153,7 +147,8 @@ func (sizer *runtimeValueSizer) visitValue(value vmValue) {
 		}
 		if data.cell != nil && !sizer.seenCells[data.cell] {
 			sizer.seenCells[data.cell] = true
-			sizer.value(*data.cell)
+			value, _ := data.cell.snapshot()
+			sizer.value(value)
 		}
 		if data.parent.Type.Valid() {
 			sizer.value(data.parent)
@@ -167,18 +162,18 @@ func (sizer *runtimeValueSizer) visitValue(value vmValue) {
 		}
 		sizer.seenSlices[data] = true
 		sizer.add(artifact.RuntimeNodeBytes)
-		if data.storage != nil && sizer.seenStorage[data.storage] {
+		if data.vmSliceStorage != nil && sizer.seenStorage[data.vmSliceStorage] {
 			return
 		}
-		if data.storage != nil {
-			sizer.seenStorage[data.storage] = true
+		if data.vmSliceStorage != nil {
+			sizer.seenStorage[data.vmSliceStorage] = true
 		}
 		if data.ByteBacked {
 			sizer.add(int64(cap(data.ByteBacking)) * artifact.RuntimeByteBytes)
 			return
 		}
 		sizer.add(int64(cap(data.Backing)) * artifact.RuntimeSlotBytes)
-		for _, item := range data.Backing {
+		for _, item := range data.valuesSnapshot() {
 			sizer.value(item)
 		}
 	case *vmMap:
@@ -186,78 +181,76 @@ func (sizer *runtimeValueSizer) visitValue(value vmValue) {
 			return
 		}
 		sizer.seenMaps[data] = true
-		sizer.add(artifact.RuntimeNodeBytes + int64(len(data.Entries))*artifact.RuntimeMapEntryBytes)
-		for _, entry := range data.Entries {
+		entries := data.snapshot()
+		sizer.add(artifact.RuntimeNodeBytes + int64(len(entries))*artifact.RuntimeMapEntryBytes)
+		for _, entry := range entries {
 			sizer.value(entry.Key)
 			sizer.value(entry.Value)
 		}
-	case []vmValue:
-		sizer.add(artifact.RuntimeNodeBytes + int64(cap(data))*artifact.RuntimeSlotBytes)
-		for _, item := range data {
-			sizer.value(item)
-		}
+	case *vmArray:
+		sizer.value(newVMValue(value.Type, &data.vmSlice))
 	case *vmStruct:
 		if data == nil || sizer.seenStructs[data] {
 			return
 		}
 		sizer.seenStructs[data] = true
-		sizer.add(artifact.RuntimeNodeBytes + int64(cap(data.values))*artifact.RuntimeSlotBytes)
-		for _, field := range data.values {
+		values, _ := data.snapshot()
+		sizer.add(artifact.RuntimeNodeBytes + int64(cap(values))*artifact.RuntimeSlotBytes)
+		for _, field := range values {
 			if field.Type.Valid() {
 				sizer.value(field)
 			}
+		}
+	case *channelSelection:
+		if data == nil || sizer.seenSelections[data] {
+			return
+		}
+		sizer.seenSelections[data] = true
+		if data.allocated {
+			sizer.add(artifact.RuntimeNodeBytes + int64(len(data.cases))*(artifact.RuntimeNodeBytes+3*artifact.RuntimeSlotBytes))
+		}
+		sizer.value(data.value)
+		for _, selected := range data.cases {
+			sizer.value(selected.channel)
+			sizer.value(selected.value)
+			sizer.value(selected.zero)
+		}
+	case *mutexResource:
+		if data == nil || sizer.seenMutexes[data] {
+			return
+		}
+		sizer.seenMutexes[data] = true
+		sizer.add(artifact.RuntimeNodeBytes)
+		if data.grant != nil {
+			sizer.add(artifact.RuntimeNodeBytes + artifact.RuntimeSlotBytes)
+		}
+		for waiter := data.head; waiter != nil; waiter = waiter.next {
+			sizer.add(artifact.RuntimeNodeBytes + artifact.RuntimeSlotBytes)
 		}
 	case *waitableResource:
 		if data == nil || sizer.seenWaitables[data] {
 			return
 		}
 		sizer.seenWaitables[data] = true
-		sizer.add(artifact.RuntimeNodeBytes + int64(cap(data.Buffer)+cap(data.Pending)+cap(data.RecvWaiters)+cap(data.SendWaiters))*artifact.RuntimeSlotBytes)
+		for selected := data.selectHead; selected != nil; selected = selected.next {
+			sizer.value(newVMValue("Any", selected.selection))
+		}
+		sizer.add(artifact.RuntimeNodeBytes + int64(cap(data.Buffer))*artifact.RuntimeSlotBytes)
 		for _, item := range data.Buffer[data.bufferHead:] {
 			sizer.value(item)
-		}
-		for _, pending := range data.Pending[data.pendingHead:] {
-			sizer.value(pending.Value)
-		}
-		for _, token := range data.RecvWaiters {
-			sizer.waitToken(token)
-		}
-		for _, token := range data.SendWaiters {
-			sizer.waitToken(token)
-		}
-	case *waitTokenState:
-		sizer.waitToken(data)
-	case *waitSetState:
-		if data == nil || sizer.seenWaitSets[data] {
-			return
-		}
-		sizer.seenWaitSets[data] = true
-		sizer.add(artifact.RuntimeNodeBytes + int64(cap(data.Tokens))*artifact.RuntimeSlotBytes)
-		for _, token := range data.Tokens {
-			sizer.waitToken(token)
-		}
-	}
-}
-
-func (sizer *runtimeValueSizer) waitToken(token *waitTokenState) {
-	if token == nil || sizer.seenTokens[token] {
-		return
-	}
-	sizer.seenTokens[token] = true
-	sizer.add(artifact.RuntimeNodeBytes + int64(len(token.registrations))*artifact.RuntimeSlotBytes)
-	for registration := range token.registrations {
-		if resource, ok := registration.target.(*waitableResource); ok {
-			sizer.value(newVMValue(resource.Type, resource))
 		}
 	}
 }
 
 func (sizer *runtimeValueSizer) task(task *executionTask) {
-	if task == nil || sizer.seenTasks[task] {
+	if task == nil {
 		return
 	}
-	sizer.seenTasks[task] = true
-	for _, active := range task.frames {
+	sizer.value(newVMValue("Any", task.preparingSelection))
+	for _, value := range task.sliceValues {
+		sizer.value(value)
+	}
+	for _, active := range task.retainedFrames {
 		if active == nil || active.frame == nil {
 			continue
 		}
@@ -298,18 +291,9 @@ func (sizer *runtimeValueSizer) task(task *executionTask) {
 		}
 	}
 	if blocked := task.blocked; blocked != nil {
-		if request := blocked.reflectSelect; request != nil {
-			sizer.add(artifact.RuntimeNodeBytes + int64(cap(request.cases))*(artifact.RuntimeNodeBytes+artifact.RuntimeSlotBytes))
-			for _, selected := range request.cases {
-				sizer.value(selected.channel)
-				sizer.value(selected.send)
-			}
-		}
-		sizer.value(blocked.waitable)
-		sizer.value(blocked.waitSet)
-		sizer.value(blocked.recvToken)
-		if blocked.resource != nil {
-			sizer.value(newVMValue(blocked.resource.Type, blocked.resource))
+		sizer.value(newVMValue("Any", blocked.selection))
+		if blocked.mutex != nil {
+			sizer.value(newVMValue("Waitable<Bool>", blocked.mutex.resource))
 		}
 	}
 }

@@ -12,7 +12,7 @@ import (
 func TestPointerCensusCountsSharedByteStorage(t *testing.T) {
 	module := &moduleInstance{}
 	for _, size := range []int{1024, 65536, 1 << 20} {
-		source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), 0, size, size)
+		source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), size, size)
 		pointer, ok, err := module.convertSliceToArrayPointer(source, runtimeTypeFromText(fmt.Sprintf("Ptr<Array<%d, Uint8>>", size)))
 		if !ok || err != nil {
 			t.Fatalf("convert: %v %v", ok, err)
@@ -52,7 +52,7 @@ func TestPointerInspectionPreservesLazyStateAndFieldSelection(t *testing.T) {
 		"Callback": newVMValue("Function", functionRef{exact: owner}),
 		"Count":    newVMValue("Int", int64(7)),
 	})
-	cell := reflectCellPointer(module, "record", "record", &parent)
+	cell := reflectCellPointer(module, "record", "record", parent)
 	for _, field := range []string{"Callback", "Count"} {
 		pointer := embeddedFieldPointer(module, cell, field, "Any")
 		found := false
@@ -97,7 +97,7 @@ func TestPointerInspectionBoundsNestedAddresses(t *testing.T) {
 }
 
 func TestArrayPointerCensusKeepsBackingOutsideItsView(t *testing.T) {
-	source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 128), 0, 128, 128)
+	source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 128), 128, 128)
 	view := newSliceViewValue("Slice<Uint8>", source.Data.(*vmSlice), 32, 64, 96)
 	module := &moduleInstance{}
 	pointer, ok, err := module.convertSliceToArrayPointer(view, runtimeTypeFromText("Ptr<Array<8, Uint8>>"))
@@ -119,7 +119,7 @@ func BenchmarkByteArrayPointerCensus(b *testing.B) {
 	for _, size := range []int{1024, 65536, 1 << 20} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			module := &moduleInstance{}
-			source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), 0, size, size)
+			source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), size, size)
 			pointer, _, err := module.convertSliceToArrayPointer(source, runtimeTypeFromText(fmt.Sprintf("Ptr<Array<%d, Uint8>>", size)))
 			if err != nil {
 				b.Fatal(err)

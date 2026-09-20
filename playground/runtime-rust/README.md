@@ -9,7 +9,7 @@ Program 可共享，每个实例持有独立状态。浏览器与 Node.js 接入
 
 ## 快速开始
 
-使用 Rust 1.98.1，将仓库中的 crate 作为路径依赖：
+使用 Rust 1.98 或更新版本，将仓库中的 crate 作为路径依赖：
 
 ```toml
 [dependencies]
@@ -44,7 +44,8 @@ GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev runtime-blocks -out /tmp/blocks pa
 | `stdlib-host` | 原生 console、环境与内存文件系统 |
 | `host-conformance` | 通过进程 broker 接入 Go provider 的测试适配器 |
 
-RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执行)和 [RPC 指南](../../RPC.md#rust-api)。
+RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执行)和
+[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#rust-api)。
 
 ## 接入导航
 
@@ -52,22 +53,23 @@ RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执�
 | --- | --- |
 | 调用、限制、取消与 Tokio | [原生使用指南](USAGE.md) |
 | 标准库与自定义宿主 | [宿主能力](USAGE.md#宿主能力) |
-| RPC 生成与服务接入 | [Rust RPC API](../../RPC.md#rust-api) |
+| RPC 生成与服务接入 | [Rust RPC API](https://github.com/d7z-team/mini-go/blob/main/RPC.md#rust-api) |
 | 断点、变量和热更新 | [调试](USAGE.md#断点变量与单步) · [热更新](USAGE.md#热更新) |
-| 内存与性能观测 | [开发指南](../../DEVELOPMENT.md#缓存与性能诊断) |
+| 内存与性能观测 | [开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能) |
 
 ## 编译器与语言工具
 
-工作区中的 `mini-go-tooling` 提供 CompilerSession、LanguageService、
-LSP 和 DebugSession。语言与源码装配规则在预编译的 Go compiler 镜像中执行；
-Go 应用直接使用原生 compiler 包。
+工作区中的 `mini-go-tooling` 提供 CompilerSession、LanguageService、LSP 和 DebugSession。
+它通过预编译 compiler 镜像复用 Go 侧的语言与源码装配规则；Go 应用直接使用原生 compiler 包。
 首次直接构建 tooling 前，在仓库根执行 `make runtime-compiler-image` 准备内嵌镜像。
 
 源码装配、会话与 stdio 接入见[本地源码与编译器工具](USAGE.md#本地源码与编译器工具)。
 
 ## 开发与许可证
 
-构建、生成、一致性验证和基准命令统一见 [开发指南](../../DEVELOPMENT.md#rust-验证)，
-数据入口见 [共享测试数据](../../testdata/README.md)，内部职责见 [架构](../../ARCHITECTURE.md)。
+构建、生成、一致性验证和基准命令统一见
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#rust-验证)，数据入口见
+[共享测试数据](https://github.com/d7z-team/mini-go/blob/main/testdata/README.md)，内部职责见
+[架构](https://github.com/d7z-team/mini-go/blob/main/ARCHITECTURE.md)。
 
 本 crate 使用仓库 MIT 许可证，移植的 Go 算法保留 [Go 许可证](LICENSE-Go)。

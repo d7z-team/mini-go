@@ -18,7 +18,7 @@ RPC 接入见 [RPC.md](RPC.md)，Rust 原生 API 见 [Rust 使用指南](playgro
 | `Test` | 构建并运行全部或指定的 `*_test.mgo` 测试 |
 
 Engine 由创建方关闭。共享缓存可通过 `Config.Cache` 注入，其 backend 由所有者管理。
-分阶段编译与镜像加载见[架构](ARCHITECTURE.md#编译与链接)。
+分阶段编译与镜像加载见[架构](ARCHITECTURE.md#编译链接与派生物)。
 
 ### 完整嵌入示例
 
@@ -82,8 +82,8 @@ func Answer() int { return 42 }
 }
 ```
 
-Engine 自动提供标准库源码。与 CLI 不同，嵌入应用需要显式提供 console、文件系统等宿主能力；
-宿主装配见[系统能力](#系统能力)，执行控制见[运行实例](#运行实例)。
+Engine 自动提供标准库源码。嵌入应用需要显式装配 console、文件系统等宿主能力，见
+[系统能力](#系统能力)；CLI 会按命令装配官方 provider。
 
 
 ## 源码装配
@@ -101,8 +101,7 @@ Engine 自动提供标准库源码。额外源码可通过 `NewStandardLibrary`�
 ## 运行实例
 
 Program 可复用，每个 Instance 持有独立状态。下面在已创建的 Engine 上装配 console 并运行 main；
-`stdlibhost` 指 `github.com/d7z-team/mini-go/stdlib/host`。片段位于返回 `error` 的应用函数内，
-错误交给最外层处理，以保证已注册的清理函数执行：
+`stdlibhost` 指 `github.com/d7z-team/mini-go/stdlib/host`：
 
 ```go
 program, result, err := engine.Compile("example/main")
@@ -154,6 +153,11 @@ return nil
 `PollSteps(maxSteps)` 限制本次推进的指令数，返回状态、实际步数和错误；
 Pending 或暂停时实际步数可以为零；步数预算不等于墙钟 CPU 限速。
 
+`InstanceOptions.Parallelism` 限制同一实例并行执行的 guest task，零值采用 1。task 使用进程级有界
+Executor，不占用固定 goroutine；单 worker 也能推进等待中的程序。需要独立容量时创建
+`runtime.NewExecutor(workers)` 并传入 `InstanceOptions.Executor`。自建 Executor 由宿主关闭，
+其 `Shutdown` 会先关闭仍关联的 Instance；进程级默认 Executor 不可关闭。
+
 `Execution.Ready` 提供事件唤醒。owner 正忙时 Poll 返回 `runtime.ErrBusy`，
 调用方可稍后重试；Wait 会协调等待与 context 取消。
 `Wait` 的 context 取消会请求取消执行；`WaitScope` 的 context 只限制本次等待，
@@ -164,6 +168,10 @@ library scope 超过限制时该 scope 失败，实例仍可继续调用；main 
 后台任务未恢复的 panic 通过 Instance 的 Done、Wait、Err 报告。
 无法推进的内部等待通过 `AllBlockedError` 提供任务和源码位置诊断。
 
+FFI 的 `Open`/`Start`、Clock 和 Entropy 回调必须线程安全、快速返回，且不能同步重入同一
+Instance。阻塞工作应在 provider 自有的有界执行器中运行，通过 FFI Completion 返回；实例关闭时
+provider 仍需响应取消并完成清理。
+
 ### 资源限制与观测
 
 `InstanceOptions.Limits` 的零值采用默认限制，正值覆盖。
@@ -172,17 +180,17 @@ library scope 超过限制时该 scope 失败，实例仍可继续调用；main 
 `Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供一致的状态快照。
 
 guest 内存统计用于逻辑计费，与 Go heap 或进程 RSS 分别观测。
-性能诊断方法见 [DEVELOPMENT.md](DEVELOPMENT.md#缓存与性能诊断)。
+性能诊断方法见[开发指南](DEVELOPMENT.md#缓存与性能)。
 
 ### 长期运行
 
 长期实例宜承载有限业务调用，并在每次调用后等待 scope 结束。默认每个 scope 的步数上限为
-1 亿；`PollSteps` 和热更新都不重置这一预算。持续服务可使用 `UnlimitedSteps`，
-同时保留取消、分片推进与其他资源限制。累计统计达到表示上限后饱和，不影响调度与采样。
+1 亿；`PollSteps` 和热更新都不重置预算。持续服务可使用 `UnlimitedSteps`，同时保留取消、
+分片推进与其他资源限制。累计统计溢出时饱和，不改变调度。
 
 宿主负责持久化业务进度；执行镜像与值快照不是整个 VM 的恢复检查点。
 使用 `compiler/cache.DiskBackend` 时，宿主应定期调用 `Trim` 并在退出时停止维护任务；
-按时间清理不限制磁盘总量，仍需监控容量。观测方法见[开发指南](DEVELOPMENT.md#缓存与性能诊断)。
+按时间清理不限制磁盘总量，仍需监控容量。观测方法见[开发指南](DEVELOPMENT.md#缓存与性能)。
 
 ### 优雅停机
 
@@ -282,9 +290,8 @@ roots, err := instance.RevisionRoots(ctx, generation, runtime.RevisionRootLimits
 })
 ```
 
-结果说明任务、帧、全局变量等如何引用版本。`Complete=false` 表示扫描被截断；零配置采用上述默认值。
-路径仅对本次快照有效，共享对象展示代表性路径，条数不等于 pin 或闭包数量。
-查询不改变 GC 和步骤计费，也不强制释放引用；旧版本在引用解除后自然回收。
+结果说明任务、帧和 global 等如何引用版本。`Complete=false` 表示扫描被截断；零配置采用上述默认值。
+路径只属于本次快照，共享对象显示一条代表性路径。查询不改变 GC 或步骤计费；引用解除后旧版本自然回收。
 
 ## 嵌入资源
 
@@ -331,8 +338,8 @@ run/check 的操作数全部为 `.mgo` 文件时，文件必须位于同一目�
 
 ### 编译选项
 
-`run` 和 `test` 通过 `-O=0|1|2` 选择优化级别，默认 O1。O0 跳过可选优化，适合源码单步；O2 增加保持求值顺序的
-纯函数内变换。`-symbols` 独立生成完整 ProgramSymbols，ExecutionImage 只保存执行代码。
+`run` 和 `test` 通过 `-O=0|1|2` 选择优化级别，默认 O1。O0 适合源码单步，O2 增加保持求值顺序的
+函数内优化。`-symbols` 独立生成 ProgramSymbols，ExecutionImage 只保存执行代码。
 嵌入时通过 `minigo.Config` 或 `compiler.Options` 的 `Optimization`、`Symbols` 选择，零值为 O0、不生成符号。
 
 ### 本地源码装配

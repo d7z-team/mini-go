@@ -257,7 +257,7 @@ func collectExpressionProtectedLocals(expression hir.Expression, protected map[s
 			protected[capture.Local] = struct{}{}
 		}
 	}
-	for _, child := range []*hir.Expression{expression.Left, expression.Right, expression.Operand, expression.Bind, expression.Body, expression.Size, expression.Index, expression.Start, expression.End, expression.Max, expression.Token, expression.WaitSet} {
+	for _, child := range []*hir.Expression{expression.Left, expression.Right, expression.Operand, expression.Bind, expression.Body, expression.Size, expression.Index, expression.Start, expression.End, expression.Max} {
 		if child != nil {
 			collectExpressionProtectedLocals(*child, protected)
 		}
@@ -286,6 +286,12 @@ func isPureValueExpression(expression hir.Expression) bool {
 }
 
 func collectStatementLocalReads(statement hir.Statement, used map[string]struct{}) {
+	for _, selected := range statement.SelectCases {
+		used[selected.Channel] = struct{}{}
+		if selected.Send != "" {
+			used[selected.Send] = struct{}{}
+		}
+	}
 	collectExpressionLocalReads(statement.Expr, used)
 	collectExpressionLocalReads(statement.Object, used)
 	collectExpressionLocalReads(statement.Index, used)
@@ -320,7 +326,7 @@ func collectExpressionLocalReads(expression hir.Expression, used map[string]stru
 			used[segment.Local] = struct{}{}
 		}
 	}
-	for _, child := range []*hir.Expression{expression.Left, expression.Right, expression.Operand, expression.Bind, expression.Body, expression.Size, expression.Index, expression.Start, expression.End, expression.Max, expression.Token, expression.WaitSet} {
+	for _, child := range []*hir.Expression{expression.Left, expression.Right, expression.Operand, expression.Bind, expression.Body, expression.Size, expression.Index, expression.Start, expression.End, expression.Max} {
 		if child != nil {
 			collectExpressionLocalReads(*child, used)
 		}

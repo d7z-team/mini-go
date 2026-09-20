@@ -3,8 +3,6 @@ package runtime
 import (
 	"errors"
 	"fmt"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 const (
@@ -69,102 +67,48 @@ func reflectSelect(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		cases = append(cases, state)
 	}
 
-	readyCases := make([]int, 0, len(cases))
-	for i := range cases {
-		ready, err := reflectSelectReady(module, cases[i])
-		if err != nil {
-			return reflectSelectError(err.Error()), nil
-		}
-		if ready {
-			readyCases = append(readyCases, i)
-		}
+	operands := make([]channelSelectCase, len(cases))
+	indexes := make([]int, len(cases))
+	for index, selected := range cases {
+		operands[index] = channelSelectCase{channel: selected.channel, send: selected.dir == reflectSelectSend, value: selected.send}
+		indexes[index] = selected.index
 	}
-	if selected := ctx.vm.chooseReadyIndex(readyCases); selected >= 0 {
-		return reflectCompleteSelect(ctx, cases[selected])
+	selection, err := ctx.vm.prepareChannelSelection(ctx.task, module, operands)
+	if err != nil {
+		var limit ResourceLimitError
+		if errors.As(err, &limit) {
+			return nil, err
+		}
+		return reflectSelectError(err.Error()), nil
+	}
+	request := &reflectSelectRequest{ctx: ctx, selection: selection, indexes: indexes}
+	if selection.tryCommit() {
+		return request.complete()
 	}
 	if defaultIndex >= 0 {
 		return reflectSelectResult(defaultIndex, zeroReflectValueValue(), false), nil
 	}
-
-	if _, _, err := ctx.vm.checkCollectionSize(int64(len(cases)), int64(len(cases))); err != nil {
-		return nil, err
-	}
-	if err := ctx.vm.chargeAllocationBytes((int64(len(cases))+1)*ir.RuntimeNodeBytes + int64(len(cases))*ir.RuntimeSlotBytes); err != nil {
-		return nil, err
-	}
-	waitState := &waitSetState{Tokens: make([]*waitTokenState, 0, len(cases))}
-	waitSet := newVMValue("WaitSet", waitState)
-	selectedCases := make([]reflectSelectCaseState, 0, len(cases))
-	for _, selected := range cases {
-		token := ctx.vm.newWaitTokenValue()
-		var err error
-		if selected.dir == reflectSelectRecv {
-			err = waitableWaitRecvValue(module, selected.channel, token)
-		} else {
-			err = waitableWaitSendValue(module, selected.channel, token)
-		}
-		if err != nil {
-			_ = cancelWaitSet(waitSet)
-			return reflectSelectError(err.Error()), nil
-		}
-		waitState.Tokens = append(waitState.Tokens, token.Data.(*waitTokenState))
-		selectedCases = append(selectedCases, selected)
-	}
-	return nil, &reflectSelectRequest{waitSet: waitSet, ctx: ctx, cases: selectedCases}
+	selection.register()
+	return nil, request
 }
 
-func (request *reflectSelectRequest) complete(index int) ([]vmValue, error) {
-	if index < 0 || index >= len(request.cases) {
-		return nil, fmt.Errorf("reflect.Select: selected case index %d is invalid", index)
+func (request *reflectSelectRequest) complete() ([]vmValue, error) {
+	selection := request.selection
+	if selection.err != nil {
+		return reflectSelectError(selection.err.Error()), nil
 	}
-	selected := request.cases[index]
-	if err := cancelWaitSet(request.waitSet); err != nil {
-		return nil, err
+	index := selection.index
+	if index < 0 || index >= len(request.indexes) {
+		return nil, fmt.Errorf("reflect.Select: invalid selected index %d", index)
 	}
-	return reflectCompleteSelect(request.ctx, selected)
-}
-
-func reflectSelectReady(module *moduleInstance, selected reflectSelectCaseState) (bool, error) {
-	resource, err := waitableValueData(module, selected.channel)
-	if err != nil {
-		return false, err
+	if selection.cases[index].send {
+		return reflectSelectResult(request.indexes[index], zeroReflectValueValue(), false), nil
 	}
-	if selected.dir == reflectSelectRecv {
-		if !module.waitableCanRecv(selected.channel.Type) {
-			return false, fmt.Errorf("cannot receive from send-only channel %s", selected.channel.Type)
-		}
-		return waitableRecvReady(resource), nil
-	}
-	if !module.waitableCanSend(selected.channel.Type) {
-		return false, fmt.Errorf("cannot send on receive-only channel %s", selected.channel.Type)
-	}
-	return waitableSendReady(resource), nil
-}
-
-func reflectCompleteSelect(ctx intrinsicContext, selected reflectSelectCaseState) ([]vmValue, error) {
-	module := reflectRelationModule(ctx)
-	if selected.dir == reflectSelectSend {
-		ready, err := waitableTrySendValue(module, selected.channel, selected.send)
-		if err != nil {
-			return reflectSelectError(err.Error()), nil
-		}
-		if !ready {
-			return nil, errors.New("reflect.Select: selected send is no longer ready")
-		}
-		return reflectSelectResult(selected.index, zeroReflectValueValue(), false), nil
-	}
-	value, received, closed, err := waitableTryRecvValue(module, selected.channel)
+	snapshot, err := reflectValueSnapshot(request.ctx, selection.value)
 	if err != nil {
 		return reflectSelectError(err.Error()), nil
 	}
-	if !received && !closed {
-		return nil, errors.New("reflect.Select: selected receive is no longer ready")
-	}
-	snapshot, err := reflectValueSnapshot(ctx, value)
-	if err != nil {
-		return reflectSelectError(err.Error()), nil
-	}
-	return reflectSelectResult(selected.index, snapshot, received), nil
+	return reflectSelectResult(request.indexes[index], snapshot, selection.ok), nil
 }
 
 func reflectSelectResult(index int, value vmValue, received bool) []vmValue {

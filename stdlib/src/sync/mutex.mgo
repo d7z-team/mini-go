@@ -26,28 +26,14 @@ type Locker interface {
 //
 // [the Go memory model]: https://go.dev/ref/mem
 type Mutex struct {
-	locked bool
-	waiters []chan struct{}
-}
-
-//minigo:noswitch
-func (mutex *Mutex) enqueue() chan struct{} {
-	if !mutex.locked {
-		mutex.locked = true
-		return nil
-	}
-	waiter := make(chan struct{})
-	mutex.waiters = append(mutex.waiters, waiter)
-	return waiter
+	state chan bool
 }
 
 // Lock locks m.
 // If the lock is already in use, the calling goroutine
 // blocks until the mutex is available.
 func (mutex *Mutex) Lock() {
-	if waiter := mutex.enqueue(); waiter != nil {
-		<-waiter
-	}
+	runtimeMutexLock(&mutex.state)
 }
 
 // TryLock tries to lock m and reports whether it succeeded.
@@ -55,13 +41,8 @@ func (mutex *Mutex) Lock() {
 // Note that while correct uses of TryLock do exist, they are rare,
 // and use of TryLock is often a sign of a deeper problem
 // in a particular use of mutexes.
-//minigo:noswitch
 func (mutex *Mutex) TryLock() bool {
-	if mutex.locked {
-		return false
-	}
-	mutex.locked = true
-	return true
+	return runtimeMutexTryLock(&mutex.state)
 }
 
 // Unlock unlocks m.
@@ -70,20 +51,8 @@ func (mutex *Mutex) TryLock() bool {
 // A locked [Mutex] is not associated with a particular goroutine.
 // It is allowed for one goroutine to lock a Mutex and then
 // arrange for another goroutine to unlock it.
-//minigo:noswitch
 func (mutex *Mutex) Unlock() {
-	if !mutex.locked {
-		panic("sync: unlock of unlocked mutex")
-	}
-	if len(mutex.waiters) == 0 {
-		mutex.locked = false
-		return
-	}
-	waiter := mutex.waiters[0]
-	copy(mutex.waiters, mutex.waiters[1:])
-	mutex.waiters[len(mutex.waiters) - 1] = nil
-	mutex.waiters = mutex.waiters[:len(mutex.waiters) - 1]
-	close(waiter)
+	runtimeMutexUnlock(&mutex.state)
 }
 
 // A RWMutex is a reader/writer mutual exclusion lock.

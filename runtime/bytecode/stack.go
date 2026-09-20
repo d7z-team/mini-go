@@ -132,16 +132,14 @@ func instructionStackEffect(inst Instruction) (required, delta int, terminal boo
 	case string(OpMapIterClose):
 		return 0, 0, false, nil
 	case string(OpConst), string(OpZero), string(OpLoadLocal), string(OpLoadUpvalue), string(OpLoadGlobal), string(OpMakeClosure),
-		string(OpAddressOf), string(OpMakeWaitToken), string(OpMakeWaitSet), string(OpRecover):
+		string(OpAddressOf), string(OpRecover):
 		return 0, 1, false, nil
-	case string(OpPop), string(OpStoreLocal), string(OpStoreUpvalue), string(OpStoreGlobal), string(OpWaitTokenSignal),
-		string(OpWaitTokenCancel), string(OpWaitSetCancel), string(OpDeferPush), string(OpWaitableClose):
+	case string(OpPop), string(OpStoreLocal), string(OpStoreUpvalue), string(OpStoreGlobal),
+		string(OpDeferPush), string(OpWaitableClose):
 		return 1, -1, false, nil
 	case string(OpStoreIndirect):
 		return 2, -2, false, nil
 	case string(OpWaitableSend):
-		return 2, -2, false, nil
-	case string(OpWaitableSubscribeRecv), string(OpWaitableSubscribeSend):
 		return 2, -2, false, nil
 	case string(OpWaitableTrySend):
 		return 2, -1, false, nil
@@ -226,11 +224,7 @@ func instructionStackEffect(inst Instruction) (required, delta int, terminal boo
 		return 1, 0, false, nil
 	case string(OpJumpIf):
 		return 1, -1, false, nil
-	case string(OpWaitSetAdd):
-		return 2, -1, false, nil
-	case string(OpWaitSetPoll), string(OpWaitSetPark):
-		return 1, 0, false, nil
-	case string(OpLabel), string(OpJump), string(OpInitModule):
+	case string(OpLabel), string(OpJump), string(OpInitModule), string(OpSelect):
 		return 0, 0, inst.Op == string(OpJump), nil
 	case string(OpPanic):
 		return 1, -1, true, nil

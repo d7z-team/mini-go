@@ -10,13 +10,14 @@ import (
 type intrinsicContext struct {
 	vm     *vm
 	module *moduleInstance
+	task   *executionTask
 }
 
 func (ctx intrinsicContext) cancellationError() error {
-	if ctx.vm == nil || ctx.vm.machine == nil || ctx.vm.machine.running == nil {
+	if ctx.task == nil {
 		return nil
 	}
-	execution := ctx.vm.machine.running.execution
+	execution := ctx.task.execution
 	if execution != nil && execution.cancelRequested.Load() {
 		return context.Canceled
 	}
@@ -26,6 +27,9 @@ func (ctx intrinsicContext) cancellationError() error {
 type intrinsicFunc func(intrinsicContext, []vmValue) ([]vmValue, error)
 
 var intrinsicImplementations = map[ir.IntrinsicID]intrinsicFunc{
+	"sync.mutex_lock":     mutexLock,
+	"sync.mutex_try_lock": mutexTryLock,
+	"sync.mutex_unlock":   mutexUnlock,
 	"crypto.rand.read":    cryptoRandRead,
 	"crypto.sha256.block": sha256Block,
 	"math.float64_bits":   mathFloat64bits, "math.float64_from_bits": mathFloat64frombits,
@@ -63,7 +67,10 @@ var intrinsicImplementations = map[ir.IntrinsicID]intrinsicFunc{
 	"time.timer_stop":  timeTimerStop,
 }
 
-func invokeIntrinsic(vm *vm, module *moduleInstance, id ir.IntrinsicID, args []vmValue) ([]vmValue, error) {
+func invokeIntrinsic(ctx intrinsicContext, id ir.IntrinsicID, args []vmValue) ([]vmValue, error) {
+	if ctx.task != nil {
+		defer func() { ctx.task.preparingSelection = nil }()
+	}
 	descriptor, ok := ir.Intrinsic(id)
 	if !ok || len(args) != descriptor.ArgCount {
 		return nil, fmt.Errorf("invalid intrinsic call %q", id)
@@ -72,5 +79,5 @@ func invokeIntrinsic(vm *vm, module *moduleInstance, id ir.IntrinsicID, args []v
 	if implementation == nil {
 		return nil, fmt.Errorf("intrinsic %q is not implemented", id)
 	}
-	return implementation(intrinsicContext{vm: vm, module: module}, args)
+	return implementation(ctx, args)
 }

@@ -1,7 +1,7 @@
 # RPC 使用指南
 
-MRPC 用一份 `.mrpc` 文件声明接口，生成 Go、Mini-Go 和 Rust 的类型、客户端与服务端适配代码。你只需实现业务 handler，
-再将服务接入宿主或远程连接。单次调用返回一组结果或错误；本地调用无需启动 Gateway。
+MRPC 从一份 `.mrpc` 声明生成 Go、Mini-Go 和 Rust 的类型、客户端与服务端适配代码。实现业务 handler
+后，可在进程内绑定，也可通过 Gateway 跨进程连接。
 
 | 使用场景 | 接入方式 |
 | --- | --- |
@@ -65,10 +65,8 @@ mini-go rpc generate \
   api/greeter.mrpc
 ```
 
-生成结果包含 `Request`、`Response`、`GreeterHandler`、客户端和 Provider。
-`-mgo-package` 在此指定 Mini-Go 文件中的 package 名。修改声明后重新执行生成命令；
-生成的源码需要一同提供给调用方和服务端，接口双方使用匹配的声明。
-Mini-Go 编译器读取生成的 `.mgo`，Go 宿主编译器读取 `.go`；两类 binding 可以存放在同一目录。
+生成结果包含消息、handler、客户端和 Provider。`-mgo-package` 指定 Mini-Go package 名。
+接口修改后重新生成并分发两端 binding；契约不匹配会在绑定时失败。
 
 ### 3. 编写脚本
 
@@ -195,8 +193,8 @@ slice、map 及 optional；二进制数据使用 `[]uint8`。
 | resource | 属于创建它的绑定；复制句柄共享关闭状态，结果可与业务 fault 一起返回空资源 |
 | 浮点与复数 | 保留对应类型的宽度、负零和可表示的特殊值 |
 
-通信双方使用匹配的 schema 生成绑定，绑定时校验契约身份。生成客户端在全部结果解码成功后
-接收资源，失败则回收本次尚未交付的资源。
+通信双方使用匹配的 schema 生成 binding，绑定时校验契约身份。结果解码失败时，生成客户端会回收
+本次尚未交付的资源。
 
 共享声明可以独立分发，并通过显式 alias 引用：
 
@@ -204,8 +202,7 @@ slice、map 及 optional；二进制数据使用 `[]uint8`。
 import model "example/model.mrpc";
 ```
 
-各语言的 package 配置决定源码位置，与接口命名空间分开。
-导入的声明也需生成对应语言的代码，接口变更后由开发者重新生成并分发绑定。
+各语言的 package 配置只决定源码位置，与接口 namespace 分开；导入的声明也需生成对应语言的代码。
 
 ## Go 客户端与 Mini-Go 服务端
 
@@ -293,12 +290,9 @@ Go 的零值选择默认值，Rust 使用 `EndpointOptions::default()`；显式�
 失去租约授权后返回 `unavailable`，恢复连接时需要重新绑定。
 同进程原生调用不使用网络租约。
 
-生成客户端负责结果解码与资源确认；迟到且未交付的结果会回收本次新资源。
-关闭或确认一旦开始，取消只停止当前等待，清理仍继续执行。
-传输停滞或取消部分发送的请求可能使连接失败。
-
-使用底层 `RouteSet.Call` 时需显式对 `Result` 执行 `Accept(ctx)` 或 `Discard(ctx)`；
-首次决定不可反转。生成客户端已负责此流程。
+生成客户端负责结果解码和资源确认；迟到且未交付的结果会回收本次新资源。关闭或确认开始后，
+取消只停止当前等待，清理仍继续。直接使用 `RouteSet.Call` 时，调用方必须对 `Result` 执行一次
+`Accept(ctx)` 或 `Discard(ctx)`；生成客户端已封装这一步。
 
 超时或断线不证明服务端没有执行操作。框架不会自动重试可能有副作用的调用，业务重试应自行保证幂等性。
 Go handler 的普通 error 和 panic 会转成内部错误；需要调用方区分的业务失败应返回明确状态码。
@@ -314,17 +308,15 @@ Go 服务客户端 Close 停止新的服务调用，已经取得的资源仍应�
 因此应在资源使用完成后关闭客户端。关闭 Instance 回收该会话中仍存活的资源；共享 Host 和应用 backend 由创建者单独关闭。
 宿主已经创建资源但结果因取消或 VM 内存限额未交付时，会自动回收本次新建资源。
 
-资源开始关闭后不能再用于业务调用。底层关闭失败时保留清理责任，可以显式再次 Close；
-并发关闭共享同一次尝试，等待取消不会遗失正在执行的清理。资源实现的 Close 应允许重复清理。
-已经进入 handler 的调用持有 receiver 和资源参数的借用，关闭会等待这些调用实际退出；
-同一调用同步关闭自己正在借用的资源会返回 `failed_precondition`，应在调用退出后关闭。
-Shutdown 会处理仍未释放的资源，并报告最终清理错误；不会无限重试永久失败的业务关闭操作。
-远端释放结果未知时，绑定或连接失效，不能继续使用旧资源或假定它尚未关闭。
+资源开始关闭后不能再用于业务调用。关闭失败时仍由原 owner 负责，调用方可以再次 Close；并发 Close
+共享同一次尝试。已经进入 handler 的调用持有相关资源借用，Close 会等待调用退出；调用内同步关闭
+自己正在借用的资源会返回 `failed_precondition`。Shutdown 会回收遗留资源并报告最终错误。
+远端释放结果未知时，旧绑定与资源均不可继续使用。
 
 较大的 bytes、字符串和复合值由连接透明分片，无需业务手动处理网络帧。默认单条逻辑消息上限为 64 MiB，
 单连接在途 payload 上限为 128 MiB，可通过 `rpc.EndpointOptions.Limits` 配置。
 VM 与 Host 也有各自的限制；例如 `runtime.Limits.MaxBoundaryBytes` 约束 VM 调用边界，调大网络限额不会自动调大它。
-Host 和 Gateway 分别限制会话与连接数，关闭或断开后仍在清理的对象继续占用额度。
+Host 和 Gateway 分别限制会话与连接数；尚未清理完成的对象继续占用额度。
 
 持续流或超出单条消息上限的数据，使用 resource 的 `Read`/`Write` 一类分块业务方法。
 
@@ -364,9 +356,8 @@ Program 热更新保持 FFI 会话和现有客户端连接。它更新脚本代�
 3. 等待旧 publication 的实际关闭完成后，释放其业务 backend。
 
 保存在脚本 global 中的客户端由应用显式关闭或替换；已有资源继续属于原 provider。
-代码提交、路由替换成功和旧服务排空是不同事件。`Drain` 停止新绑定，已有服务绑定仍可调用；
-需要撤销已有绑定时显式使用 `ForceClose` / `ForceShutdown`，并等待清理终态。
-Router 的关闭覆盖已替换但尚未结束的旧注册。
+代码提交、路由替换和旧服务清理是不同事件。`Drain` 停止新绑定，已有绑定仍可调用；
+`ForceClose` / `ForceShutdown` 撤销已有绑定并等待清理。Router 也负责关闭已替换但仍存活的旧注册。
 新接口需在调用方与服务端重新生成代码，热更新方案见[使用指南](./USAGE.md#运行时热更新)。
 
 建议关闭顺序为：停止新请求，关闭 Instance，再关闭所持有的 Host、客户端和连接，最后释放业务 backend。
@@ -381,8 +372,8 @@ Host 可供多个 Instance 共享，关闭单个 Instance 不影响其他会话�
 | Endpoint `Wait(ctx)` | 仅等待既有清理，返回清理错误，不发起关闭或报告断连原因 |
 | Endpoint `Shutdown(ctx)` | 发起关闭，报告传输与清理错误 |
 
-Gateway 在清理完成后释放连接名额。业务停机时保留旧绑定的退出通知、续租和资源关闭通道；
-脚本退出与共享宿主的关闭流程见[优雅停机](USAGE.md#优雅停机)，执行预算见[长期运行](USAGE.md#长期运行)。
+Gateway 在清理完成后释放连接名额。脚本和共享宿主的关闭流程见
+[优雅停机](USAGE.md#优雅停机)，执行预算见[长期运行](USAGE.md#长期运行)。
 
 ## Rust API
 
@@ -459,9 +450,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 运行 `cargo run`，输出 `Hello, Rust!`。此例不创建 VM；脚本调用相同服务时，
 将 provider 放入 `HostOptions.providers`，再把创建的 Host 注入 `InstanceOptions.bridge`。
 
-在异步应用中用有容量限制的 VmExecutor 执行同步 VM，并在关闭 Tokio runtime 前等待
-Host、Endpoint 和 Router 的 shutdown。begin_shutdown 发起关闭；Router 的 shutdown
-等待已有 lease 结束，force_shutdown 取消后等待清理。
+异步应用使用有界 `VmExecutor` 执行同步 VM，并在关闭 Tokio runtime 前等待 Host、Endpoint 和
+Router 的 shutdown。`begin_shutdown` 发起关闭，`force_shutdown` 取消存量工作后等待清理。
 
 发布与替换服务的完整装配见 [Rust Gateway 示例测试](playground/runtime-rust/tests/rpc_gateway.rs)。
 

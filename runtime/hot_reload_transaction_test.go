@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	goruntime "runtime"
 	"testing"
 )
 
@@ -44,16 +45,28 @@ func TestPatchRejectsIncompatibleAndReusedPlansWithoutMutation(t *testing.T) {
 	if err := instance.vm.enterOwnerContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := instance.ApplyPatch(plan); patchErrorCode(err) != "busy" {
+	applied := make(chan error, 1)
+	go func() {
+		_, err := instance.ApplyPatch(plan)
+		applied <- err
+	}()
+	for instance.vm.controlWaiters.Load() == 0 {
+		select {
+		case err := <-applied:
+			instance.vm.leaveOwner()
+			t.Fatalf("patch crossed active owner boundary: %v", err)
+		default:
+			goruntime.Gosched()
+		}
+	}
+	select {
+	case err := <-applied:
 		instance.vm.leaveOwner()
-		t.Fatalf("busy error = %v", err)
+		t.Fatalf("patch completed before owner release: %v", err)
+	default:
 	}
 	instance.vm.leaveOwner()
-	plan, err = instance.PreparePatch(context.Background(), compatible)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := instance.ApplyPatch(plan); err != nil {
+	if err := <-applied; err != nil {
 		t.Fatal(err)
 	}
 	plan.mu.Lock()

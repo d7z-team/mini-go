@@ -394,10 +394,6 @@ func primitiveByName(name string) PrimitiveKind {
 		return PrimitiveError
 	case "Function":
 		return PrimitiveFunction
-	case "WaitToken":
-		return PrimitiveWaitToken
-	case "WaitSet":
-		return PrimitiveWaitSet
 	default:
 		return PrimitiveInvalid
 	}

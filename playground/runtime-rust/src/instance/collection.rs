@@ -8,9 +8,9 @@ impl Instance {
         local: &str,
         object: Value,
     ) -> Result<(), RuntimeError> {
-        let count = match &object.data {
+        let entries = match &object.data {
             Data::Map(root) => match &self.heap.get(*root)?.data {
-                Data::MapEntries(entries) => entries.len(),
+                Data::MapEntries(entries) => entries.entry_ids().to_vec(),
                 _ => {
                     return Err(RuntimeError::new(
                         "invalid_map",
@@ -25,30 +25,32 @@ impl Instance {
                     .node(&object.typ)?
                     .is_some_and(|(_, node)| node.kind == wire::Map) =>
             {
-                0
+                Vec::new()
             }
             _ => {
                 return Err(RuntimeError::new("type_error", "iterator", "expected map"));
             }
         };
-        self.frames.last_mut().unwrap().map_iterators.remove(local);
-        self.charge_guest(128 + count as u64 * 32)?;
-        let entries = if let Data::Map(root) = &object.data {
-            let Data::MapEntries(entries) = &self.heap.get(*root)?.data else {
-                unreachable!()
-            };
-            entries.entry_ids().to_vec()
-        } else {
-            Vec::new()
-        };
-        self.frames.last_mut().unwrap().map_iterators.insert(
-            local.to_owned(),
-            frame::MapIterator {
-                object,
-                entries,
-                position: 0,
-            },
-        );
+        self.running
+            .frames
+            .last_mut()
+            .unwrap()
+            .map_iterators
+            .remove(local);
+        self.charge_guest(128 + entries.len() as u64 * 32)?;
+        self.running
+            .frames
+            .last_mut()
+            .unwrap()
+            .map_iterators
+            .insert(
+                local.to_owned(),
+                frame::MapIterator {
+                    object,
+                    entries,
+                    position: 0,
+                },
+            );
         Ok(())
     }
 
@@ -57,6 +59,7 @@ impl Instance {
         local: &str,
     ) -> Result<(Value, Value, bool), RuntimeError> {
         let iterator = self
+            .running
             .frames
             .last_mut()
             .unwrap()
@@ -201,32 +204,9 @@ impl Instance {
     }
 
     pub(super) fn delete_key(&mut self, object: Value, key: Value) -> Result<(), RuntimeError> {
-        let key = self.map_key(&object.typ, key)?;
-        if let Data::Map(root) = object.data {
-            let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
-                return Err(RuntimeError::new(
-                    "invalid_map",
-                    "delete",
-                    "invalid backing",
-                ));
-            };
-            if let Some(index) = entries.find(&key, &self.types)? {
-                let (key, value) = &entries[index];
-                let bytes = self.heap.allocation_bytes(root)?
-                    - key.logical_bytes()?
-                    - value.logical_bytes()?;
-                let mut edges_unchanged = true;
-                key.trace(&mut |_| edges_unchanged = false);
-                value.trace(&mut |_| edges_unchanged = false);
-                return self.heap.update(root, bytes, edges_unchanged, |backing| {
-                    let Data::MapEntries(entries) = &mut backing.data else {
-                        unreachable!()
-                    };
-                    entries.remove(index);
-                });
-            }
-        } else if !matches!(object.data, Data::Nil) {
-            return Err(RuntimeError::new("type_error", "delete", "expected map"));
+        if let Some(mut write) = self.prepare_delete(object, key)? {
+            let mut collection = mutation::WriteCollection::IMMEDIATE;
+            while !self.attempt_write(&mut write, &mut collection)? {}
         }
         Ok(())
     }
@@ -290,7 +270,7 @@ impl Instance {
         {
             let compact = match &object.data {
                 Data::Slice(slice) => {
-                    matches!(self.borrow_address(&slice.storage)?.data, Data::Bytes(_))
+                    matches!(self.snapshot_address(&slice.storage)?.data, Data::Bytes(_))
                 }
                 _ => false,
             };
@@ -330,15 +310,22 @@ impl Instance {
         {
             let source = self.slice_bytes(&source)?;
             let copied = slice.length.min(source.len());
-            let bytes = self.heap.allocation_bytes(slice.storage.root)?;
-            self.heap
-                .update(slice.storage.root, bytes, true, |backing| {
-                    let Data::Bytes(bytes) = &mut backing.data else {
-                        unreachable!()
-                    };
-                    bytes[slice.start..slice.start + copied].copy_from_slice(&source[..copied]);
-                })?;
-            return Ok(copied);
+            loop {
+                let (snapshot, bytes) = self.heap.read_mutation_base(slice.storage.root)?;
+                let expected = Arc::downgrade(&snapshot);
+                drop(snapshot);
+                if self
+                    .heap
+                    .update(slice.storage.root, &expected, bytes, true, |backing| {
+                        let Data::Bytes(bytes) = &mut backing.data else {
+                            unreachable!()
+                        };
+                        bytes[slice.start..slice.start + copied].copy_from_slice(&source[..copied]);
+                    })?
+                {
+                    return Ok(copied);
+                }
+            }
         }
         // Snapshot first so overlapping views implement memmove semantics.
         let source = self.slice_values(&source)?;

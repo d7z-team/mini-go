@@ -11,17 +11,29 @@ const maxBlockedContexts = 64
 func (machine *executionMachine) blockTask(task *executionTask, current *executionFrame, pc int, inst *preparedInstruction, operation *blockedOperation) {
 	blocked := WaitBlockedError{Message: "execution blocked"}
 	switch operation.kind {
-	case "send":
-		blocked.Message = "waitable send blocked"
-	case "recv":
-		blocked.Message = "waitable receive blocked"
-	case "waitset":
-		blocked.Message = "waitset has no ready token"
+	case "mutex":
+		blocked.Message = "mutex lock is pending"
+	case "select":
+		blocked.Message = "channel selection is pending"
 	case "ffi":
 		blocked.Message = "FFI call is pending"
+	case "module":
+		blocked.Message = "module initialization is pending"
 	}
 	operation.error = machine.vm.runtimeInstructionError(current.frame, current.frame.function.Decl.ID, pc, inst, blocked)
+	if operation.ticket == nil {
+		operation.ticket = task.ownership.beginWait()
+	}
 	task.blocked = operation
+	if operation.selection != nil {
+		operation.selection.owner, operation.selection.ticket = &task.ownership, operation.ticket
+		if operation.selection.done {
+			task.ownership.notify(operation.ticket)
+		}
+	}
+	if operation.ffi != nil {
+		operation.ffi.bindWait(&task.ownership, operation.ticket)
+	}
 }
 
 func (machine *executionMachine) allBlockedError() Error {
@@ -95,6 +107,9 @@ func (machine *executionMachine) wakeBlocked() error {
 				i++
 				continue
 			}
+			if !task.ownership.resume(op.ticket) {
+				return errors.New("blocked task resumed before ownership handoff")
+			}
 			task.blocked = nil
 			copy(machine.blocked[i:], machine.blocked[i+1:])
 			machine.blocked[len(machine.blocked)-1] = nil
@@ -114,83 +129,72 @@ func (machine *executionMachine) resumeBlocked(task *executionTask, op *blockedO
 	}
 	callFrame := task.frames[len(task.frames)-1].frame
 	switch op.kind {
-	case "send":
-		if op.resource == nil {
+	case "select":
+		if !op.selection.tryCommit() {
 			return false, nil
 		}
-		if op.resource.takeCompletedSend(task.id) {
-			if op.reflectSend {
-				for _, value := range []vmValue{newVMValue("String", ""), newVMValue("Bool", true)} {
-					callFrame.push(value)
-				}
-			}
-			return true, nil
-		}
-		if op.resource.Closed {
-			current := task.frames[len(task.frames)-1]
-			machine.startPanic(task, current, current.frame.pc-1, newVMValue("String", "send on closed waitable"))
-			return true, nil
-		}
-		return false, nil
-	case "recv":
-		value, ok, closed, err := waitableTryRecvValue(callFrame.module, op.waitable)
-		if err != nil {
-			return false, err
-		}
-		if !ok && !closed {
-			return false, nil
-		}
-		if op.recvToken.Data != nil {
-			if err := cancelWaitToken(op.recvToken); err != nil {
-				return false, err
-			}
-		}
-		if op.reflectRecv != nil {
-			values, err := op.reflectRecv.complete(value, ok)
+		if op.reflectSelect != nil {
+			values, err := op.reflectSelect.complete()
 			if err != nil {
 				return false, err
 			}
 			for _, value := range values {
 				callFrame.push(value)
 			}
-		} else {
-			callFrame.push(value)
-			if op.withOK {
-				callFrame.push(newVMValue("Bool", ok))
+			return true, nil
+		}
+		if op.reflectSend && op.selection.err == nil {
+			callFrame.push(newVMValue("String", ""))
+			callFrame.push(newVMValue("Bool", true))
+			return true, nil
+		}
+		if op.reflectRecv != nil && op.selection.err == nil {
+			values, err := op.reflectRecv.complete(op.selection.value, op.selection.ok)
+			if err != nil {
+				return false, err
 			}
+			for _, value := range values {
+				callFrame.push(value)
+			}
+			return true, nil
+		}
+		if err := op.selection.deliver(callFrame, op.selectPayload, op.withOK); err != nil {
+			var fault *guestPanic
+			if !errors.As(err, &fault) {
+				return false, err
+			}
+			current := task.frames[len(task.frames)-1]
+			machine.startPanic(task, current, current.frame.pc-1, fault.value)
+		}
+		return true, nil
+	case "mutex":
+		resource := op.mutex.resource
+		if resource.grant != op.mutex.waiter {
+			return false, nil
+		}
+		resource.grant = nil
+		resource.locked = true
+		return true, nil
+	case "module":
+		if op.module.state.initState == moduleInitializing {
+			return false, nil
+		}
+		if op.module.state.initState == moduleFailed {
+			task.pendingErr = op.module.state.initErr
+		} else if op.moduleReady != nil {
+			task.pendingErr = op.moduleReady(task, task.frames[len(task.frames)-1])
 		}
 		return true, nil
 	case "ffi":
+		if !task.ownership.notified(op.ticket) {
+			return false, nil
+		}
 		values, ready := op.ffi.take()
 		if !ready {
 			return false, nil
 		}
 		for _, value := range values {
 			callFrame.push(value)
-		}
-		return true, nil
-	case "waitset":
-		index, err := parkWaitSet(machine.vm, op.waitSet)
-		if err != nil {
-			var blocked WaitBlockedError
-			if errors.As(err, &blocked) {
-				return false, nil
-			}
-			return false, err
-		}
-		if op.reflectSelect != nil {
-			selected, _ := asInt64(index)
-			values, err := op.reflectSelect.complete(int(selected))
-			if err != nil {
-				current := task.frames[len(task.frames)-1]
-				machine.startPanic(task, current, current.frame.pc-1, newVMValue("String", err.Error()))
-				return true, nil
-			}
-			for _, value := range values {
-				callFrame.push(value)
-			}
-		} else {
-			callFrame.push(index)
 		}
 		return true, nil
 	default:

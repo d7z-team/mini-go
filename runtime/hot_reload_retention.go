@@ -122,11 +122,9 @@ func (vm *vm) closeRevisions() {
 	for _, revision := range retired {
 		revision.close()
 	}
-	vm.callStack = nil
-	vm.debugParents = nil
 	vm.paused = nil
-	vm.reflectTypes = nil
-	vm.reflectTypeValues = nil
+	vm.reflectTypes.clear()
+	vm.reflectTypeValues.clear()
 	vm.dynamicTypeCount = 0
 	vm.dynamicTypeBytes = 0
 	vm.timers = nil

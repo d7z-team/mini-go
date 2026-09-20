@@ -117,7 +117,7 @@ func TestValidateArtifactRejectsUnknownOpcode(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 		Instructions: []Instruction{{
-			Op: "select",
+			Op: "invalid_opcode",
 		}},
 	}}
 

@@ -87,12 +87,7 @@ impl PreparedConstant {
                 TypeIdentity::Any
                     | TypeIdentity::Pointer(_)
                     | TypeIdentity::Slice(_)
-                    | TypeIdentity::Primitive(
-                        wire::PrimitiveError
-                            | wire::PrimitiveFunction
-                            | wire::PrimitiveWaitToken
-                            | wire::PrimitiveWaitSet
-                    )
+                    | TypeIdentity::Primitive(wire::PrimitiveError | wire::PrimitiveFunction)
             ) || registry.node(&typ)?.is_some_and(|(_, node)| {
                 matches!(
                     node.kind,

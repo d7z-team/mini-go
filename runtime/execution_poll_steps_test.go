@@ -12,7 +12,7 @@ import (
 func TestExecutionPollStepsUsesExactSliceBudget(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/poll-steps", "main")
 	artifact.Functions = []ir.Function{{
-		ID: "fn.entry", NoSwitch: true, Signature: testSignature("function() Void"),
+		ID: "fn.entry", Signature: testSignature("function() Void"),
 		Instructions: []ir.Instruction{
 			{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
 			{Op: string(ir.OpPop)},

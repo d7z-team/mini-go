@@ -32,7 +32,6 @@ const (
 	ValidationTypeMethodDuplicate        = "ir.type.method.duplicate"
 	ValidationStackUnderflow             = "ir.stack.underflow"
 	ValidationStackUnbalanced            = "ir.stack.unbalanced"
-	ValidationNoSwitchInvalid            = "ir.function.no_switch.invalid"
 	ValidationFailed                     = "ir.validation.failed"
 )
 

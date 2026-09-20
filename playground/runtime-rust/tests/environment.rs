@@ -1,8 +1,11 @@
 mod support;
 
 use mini_go::{
-    environment::{Clock, Entropy, SystemEntropy},
+    Executor, InstanceOptions,
+    environment::{Clock, Entropy},
     error::RuntimeError,
+    execution::ExecutionState,
+    ffi::Cancellation,
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
@@ -52,20 +55,52 @@ fn timer_event_resumes_a_blocked_task_only_after_deadline() {
         ]}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
-    let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    let clock = Arc::new(ManualClock::default());
-    instance
-        .set_environment(clock.clone(), Arc::new(SystemEntropy))
-        .unwrap();
-    instance.start("default", Vec::new()).unwrap();
-    assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Pending);
-    clock.0.store(9, Ordering::SeqCst);
-    assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Pending);
-    clock.0.store(10, Ordering::SeqCst);
-    assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
-    instance.collect_garbage().unwrap();
-    assert_eq!(instance.heap_stats().live_objects, 0);
+    for workers in [1, 2] {
+        let clock = Arc::new(ManualClock::default());
+        let executor = Executor::new(workers).unwrap();
+        let instance = program
+            .clone()
+            .instantiate(InstanceOptions {
+                clock: clock.clone(),
+                parallelism: workers,
+                executor: Some(executor.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        let execution = instance.start("default", Vec::new()).unwrap();
+        drive_until_state(&execution, ExecutionState::Pending);
+        clock.0.store(9, Ordering::SeqCst);
+        drive_until_state(&execution, ExecutionState::Pending);
+        clock.0.store(10, Ordering::SeqCst);
+        let result = execution.wait(&Cancellation::default()).unwrap();
+        assert!(matches!(
+            result.roots[0].data,
+            mini_go::snapshot::HostData::Integer(42)
+        ));
+        execution.wait_scope(&Cancellation::default()).unwrap();
+        instance.collect_garbage().unwrap();
+        assert_eq!(instance.heap_stats().live_objects, 0);
+        instance.shutdown(&Cancellation::default()).unwrap();
+        executor.shutdown(&Cancellation::default()).unwrap();
+    }
+}
+
+fn drive_until_state(execution: &mini_go::Execution, expected: ExecutionState) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match execution.poll_steps(100) {
+            Ok((state, _)) if state == expected => return,
+            Ok((ExecutionState::Running, _)) => {}
+            Err(RuntimeError { code: "busy", .. }) => {}
+            Ok((state, _)) => panic!("execution reached {state:?}, expected {expected:?}"),
+            Err(error) => panic!("{error}"),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "execution did not reach {expected:?}"
+        );
+        std::thread::yield_now();
+    }
 }
 
 #[test]

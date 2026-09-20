@@ -1,4 +1,6 @@
 use mini_go::{
+    Executor, InstanceOptions,
+    ffi::Cancellation,
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
@@ -137,6 +139,43 @@ fn reflection_calls_and_callbacks_resume_without_reentering_the_vm() {
 #[test]
 fn reflection_methods_preserve_receiver_and_call_signature() {
     execute_vectors(|vector| vector.name == "stdlib_reflect_method");
+}
+
+#[test]
+fn reflection_callbacks_run_through_the_public_parallel_runtime() {
+    let vectors: Vec<Vector> = execution_vectors::load();
+    for vector in vectors.iter().filter(|vector| {
+        vector.optimization == 2
+            && matches!(
+                vector.name.as_str(),
+                "stdlib_reflect_select" | "stdlib_reflect_callback_recover"
+            )
+    }) {
+        let program =
+            Arc::new(Program::load(vector.image.get().as_bytes(), LoadLimits::default()).unwrap());
+        for workers in [1, 2] {
+            let executor = Executor::new(workers).unwrap();
+            let instance = program
+                .clone()
+                .instantiate(InstanceOptions {
+                    parallelism: workers,
+                    executor: Some(executor.clone()),
+                    ..Default::default()
+                })
+                .unwrap();
+            let execution = instance
+                .start(&program.image().entries[0].name, Vec::new())
+                .unwrap();
+            let result = execution.wait(&Cancellation::default()).unwrap();
+            let mini_go::snapshot::HostData::Integer(value) = result.roots[0].data else {
+                panic!("{} returned a non-integer result", vector.name);
+            };
+            assert_eq!(value.to_string(), vector.result_integer, "{}", vector.name);
+            execution.wait_scope(&Cancellation::default()).unwrap();
+            instance.shutdown(&Cancellation::default()).unwrap();
+            executor.shutdown(&Cancellation::default()).unwrap();
+        }
+    }
 }
 
 fn execute_vectors(select: impl Fn(&Vector) -> bool) {

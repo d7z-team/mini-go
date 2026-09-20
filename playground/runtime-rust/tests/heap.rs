@@ -18,8 +18,8 @@ impl Trace for Node {
 }
 
 #[test]
-fn mutable_borrows_and_replacements_update_cached_reachability() {
-    let mut heap = Heap::new(4, 512).unwrap();
+fn replacements_update_cached_reachability_and_preserve_read_snapshots() {
+    let heap = Heap::new(4, 512).unwrap();
     let first = heap
         .allocate(
             Node {
@@ -48,7 +48,17 @@ fn mutable_borrows_and_replacements_update_cached_reachability() {
             128,
         )
         .unwrap();
-    heap.get_mut(root).unwrap().edges = vec![second];
+    let before = heap.get(root).unwrap();
+    heap.replace(
+        root,
+        Node {
+            value: before.value,
+            edges: vec![second],
+        },
+        128,
+    )
+    .unwrap();
+    assert_eq!(before.edges, vec![first]);
     heap.collect([root]).unwrap();
     assert!(heap.get(first).is_err());
     assert_eq!(heap.get(second).unwrap().value, 2);
@@ -77,7 +87,7 @@ fn interior_mutable_graphs_are_retraced_without_mutable_heap_access() {
             }
         }
     }
-    let mut heap = Heap::new(3, 384).unwrap();
+    let heap = Heap::new(3, 384).unwrap();
     let root = heap
         .allocate(Dynamic(std::cell::RefCell::new(Vec::new())), 128)
         .unwrap();
@@ -95,7 +105,7 @@ fn interior_mutable_graphs_are_retraced_without_mutable_heap_access() {
 
 #[test]
 fn replacement_quota_failure_preserves_object_and_accounting() {
-    let mut heap = Heap::new(2, 256).unwrap();
+    let heap = Heap::new(2, 256).unwrap();
     let handle = heap
         .allocate(
             Node {
@@ -128,7 +138,7 @@ fn replacement_quota_failure_preserves_object_and_accounting() {
 
 #[test]
 fn cycles_are_retained_by_roots_and_reclaimed_without_roots() {
-    let mut heap = Heap::new(4, 512).unwrap();
+    let heap = Heap::new(4, 512).unwrap();
     let a = heap
         .allocate(
             Node {
@@ -147,7 +157,15 @@ fn cycles_are_retained_by_roots_and_reclaimed_without_roots() {
             128,
         )
         .unwrap();
-    heap.get_mut(a).unwrap().edges.push(b);
+    heap.replace(
+        a,
+        Node {
+            value: 1,
+            edges: vec![b],
+        },
+        128,
+    )
+    .unwrap();
     assert_eq!(heap.collect([a, a]).unwrap(), 0);
     assert_eq!(heap.stats().live_bytes, 256);
     assert_eq!(heap.collect([]).unwrap(), 2);
@@ -168,7 +186,7 @@ fn cycles_are_retained_by_roots_and_reclaimed_without_roots() {
 
 #[test]
 fn failed_allocation_preserves_input_and_existing_graph() {
-    let mut heap = Heap::new(3, 128).unwrap();
+    let heap = Heap::new(3, 128).unwrap();
     let root = heap
         .allocate(
             Node {
@@ -196,7 +214,7 @@ fn failed_allocation_preserves_input_and_existing_graph() {
 
 #[test]
 fn failed_mark_does_not_partially_collect_live_objects() {
-    let mut heap = Heap::new(4, 512).unwrap();
+    let heap = Heap::new(4, 512).unwrap();
     let stale = heap
         .allocate(
             Node {
@@ -224,8 +242,8 @@ fn failed_mark_does_not_partially_collect_live_objects() {
 
 #[test]
 fn handles_are_scoped_to_their_heap() {
-    let mut left = Heap::new(2, 256).unwrap();
-    let mut right = Heap::new(2, 256).unwrap();
+    let left = Heap::new(2, 256).unwrap();
+    let right = Heap::new(2, 256).unwrap();
     let a = left
         .allocate(
             Node {

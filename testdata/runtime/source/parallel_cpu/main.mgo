@@ -1,0 +1,23 @@
+package main
+
+func work(seed int) int {
+	value := seed
+	for i := 0; i < 20000; i++ {
+		value = (value*1664525 + 1013904223) % 1000003
+	}
+	return value
+}
+
+func Main() int {
+	done := make(chan int, 4)
+	for seed := 1; seed <= 4; seed++ {
+		go func(value int) {
+			done <- work(value)
+		}(seed)
+	}
+	total := 0
+	for i := 0; i < 4; i++ {
+		total += <-done
+	}
+	return total
+}

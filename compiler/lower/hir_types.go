@@ -86,7 +86,7 @@ func collectExpressionTypes(expr *ir.Expression, roots *[]types.TypeRef) {
 	if expr.Type.Valid() {
 		*roots = append(*roots, expr.Type)
 	}
-	for _, child := range []*ir.Expression{expr.Left, expr.Right, expr.Operand, expr.Bind, expr.Body, expr.Size, expr.Index, expr.Start, expr.End, expr.Max, expr.Token, expr.WaitSet} {
+	for _, child := range []*ir.Expression{expr.Left, expr.Right, expr.Operand, expr.Bind, expr.Body, expr.Size, expr.Index, expr.Start, expr.End, expr.Max} {
 		if child != nil {
 			collectExpressionTypes(child, roots)
 		}

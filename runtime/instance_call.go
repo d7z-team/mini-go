@@ -113,7 +113,7 @@ func (i *Instance) start(ctx context.Context, program bool, prepare func(*instan
 	if !i.isOpen() {
 		return nil, i.unavailableError()
 	}
-	if i.active != nil || i.vm.machine != nil && i.vm.machine.foreground != nil {
+	if i.active.Load() != nil || i.vm.machine != nil && i.vm.machine.foreground != nil {
 		return nil, errors.New("instance already has an active execution")
 	}
 	revision := i.vm.revision.Load()
@@ -141,7 +141,7 @@ func (i *Instance) start(ctx context.Context, program bool, prepare func(*instan
 		i.vm.machine.foreground.execution = execution
 		i.vm.machine.attachExecution(scopeID, execution)
 	}
-	i.active = execution
+	i.active.Store(execution)
 	return execution, nil
 }
 

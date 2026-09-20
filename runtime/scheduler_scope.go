@@ -9,7 +9,7 @@ func (machine *executionMachine) newScope(id, rootID int64, program bool, revisi
 		machine.scopes = make(map[int64]*executionScope)
 	}
 	scope := &executionScope{
-		id: id, rootID: rootID, program: program, budget: &executionBudget{},
+		id: id, rootID: rootID, program: program, budget: &executionBudget{wake: machine.vm.signalWake},
 		rootState: ExecutionRunning, done: make(chan struct{}),
 	}
 	if revision != nil && revision.code != nil {
@@ -26,35 +26,32 @@ func (machine *executionMachine) scope(id int64) *executionScope {
 	return machine.scopes[id]
 }
 
-func (machine *executionMachine) activeScope() *executionScope {
-	if machine == nil || machine.vm == nil {
-		return nil
-	}
-	return machine.scope(machine.vm.activeRunID)
-}
-
 func (machine *executionMachine) addTask(task *executionTask) {
-	if task == nil || task.scope == nil || task.scope.settled || task.finished {
+	if task == nil || task.ownership.terminal() || (task.scope != nil && task.scope.settled) {
 		return
 	}
-	task.scope.tasks++
+	if machine.tasks == nil {
+		machine.tasks = make(map[int64]*executionTask)
+	}
+	if previous := machine.tasks[task.id]; previous != nil {
+		panic("task identity already registered")
+	}
+	machine.tasks[task.id] = task
+	if task.scope != nil {
+		task.scope.tasks++
+	}
 }
 
-func (machine *executionMachine) finishTask(task *executionTask, values []vmValue, err error) {
-	if task == nil || task.finished {
+func (machine *executionMachine) finishTask(task *executionTask, err error) {
+	if task == nil || !task.ownership.terminate() {
 		return
 	}
-	task.finished = true
+	delete(machine.tasks, task.id)
 	if task.scope != nil && !task.scope.settled && task.scope.tasks > 0 {
 		task.scope.tasks--
 	}
 	if task.scope != nil && !task.scope.settled && err != nil && task.scope.err == nil {
 		task.scope.err = err
-	}
-	if task.terminal != nil {
-		terminal := task.terminal
-		task.terminal = nil
-		terminal(values, err)
 	}
 	machine.settleScope(task.scope)
 }
@@ -147,32 +144,30 @@ func (machine *executionMachine) cancelScope(scope *executionScope, err error) {
 			scope.rootState = ExecutionFailed
 		}
 	}
-	keepRunnable := machine.runnable[:0]
-	for _, task := range machine.runnableTasks() {
+	for _, task := range machine.tasks {
 		if task.scope == scope {
 			machine.abortTask(task)
-			machine.finishTask(task, nil, taskErr)
-			continue
+			machine.finishTask(task, taskErr)
 		}
-		keepRunnable = append(keepRunnable, task)
+	}
+	keepRunnable := machine.runnable[:0]
+	for _, task := range machine.runnableTasks() {
+		if task.scope != scope {
+			keepRunnable = append(keepRunnable, task)
+		}
 	}
 	clear(machine.runnable[len(keepRunnable):])
 	machine.runnable = keepRunnable
 	machine.runnableHead = 0
 	keepBlocked := machine.blocked[:0]
 	for _, task := range machine.blocked {
-		if task.scope == scope {
-			machine.abortTask(task)
-			machine.finishTask(task, nil, taskErr)
-			continue
+		if task.scope != scope {
+			keepBlocked = append(keepBlocked, task)
 		}
-		keepBlocked = append(keepBlocked, task)
 	}
 	clear(machine.blocked[len(keepBlocked):])
 	machine.blocked = keepBlocked
 	if machine.paused != nil && machine.paused.scope == scope {
-		machine.abortTask(machine.paused)
-		machine.finishTask(machine.paused, nil, taskErr)
 		machine.paused = nil
 		if scope.execution != nil && scope.execution.instance != nil {
 			scope.execution.instance.discardBackgroundPause()
@@ -227,6 +222,6 @@ func (scope *executionScope) snapshot() ScopeStats {
 	return ScopeStats{
 		ID: scope.id, Started: scope.started, RootState: scope.rootState,
 		Tasks: scope.tasks, Timers: scope.timers, FFICalls: scope.ffiCalls,
-		Steps: scope.budget.steps, Done: scope.settled, Err: scope.err,
+		Steps: scope.budget.steps.Load(), Done: scope.settled, Err: scope.err,
 	}
 }

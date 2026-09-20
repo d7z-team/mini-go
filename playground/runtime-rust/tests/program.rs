@@ -58,10 +58,6 @@ fn rejects_invalid_control_flow_and_captures_before_instantiation() {
             "invalid_jump",
         ),
         (
-            json!({"id": "fn.Main", "no_switch": true, "instructions": [{"op": "call_direct", "payload": {"function": "fn.Main", "arg_count": 0}}]}),
-            "invalid_no_switch",
-        ),
-        (
             json!({"id": "fn.Main", "result_locals": ["missing"], "signature": {"results": [{"kind": 3, "primitive": 3}]}}),
             "invalid_result_local",
         ),

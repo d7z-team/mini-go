@@ -140,7 +140,7 @@ impl Instance {
             }
             let data = match value.data {
                 Data::Slice(slice) if slice.length >= length => {
-                    let capacity = match &self.borrow_address(&slice.storage)?.data {
+                    let capacity = match &self.snapshot_address(&slice.storage)?.data {
                         Data::Bytes(_) => length,
                         Data::Array(values) => values.len() - slice.start,
                         _ => unreachable!("validated slice backing"),

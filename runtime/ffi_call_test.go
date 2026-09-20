@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,6 +55,110 @@ func TestFFICallStatusAndSettlement(t *testing.T) {
 	}
 }
 
+func TestFFIStartFailureDiscardsSynchronousCompletion(t *testing.T) {
+	var discarded atomic.Int32
+	program := patchTestProgram(t, patchFFIArtifact(), "ffi-start-failure")
+	instance, err := program.Instantiate(t.Context(), InstanceOptions{FFI: ffi.CallFunc(func(_ context.Context, _ ffi.Request, done ffi.Completion) (ffi.Call, error) {
+		done(ffi.Result{Payload: []byte("uncommitted"), Discard: func() { discarded.Add(1) }})
+		return nil, errors.New("start failed")
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupTestInstance(t, instance)
+	result, err := instance.Call(t.Context(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := result.Values[2].Int64()
+	if !ok || status != 2 || discarded.Load() != 1 {
+		t.Fatalf("failed start published reply: status=%d discarded=%d", status, discarded.Load())
+	}
+	if instance.vm.pendingBoundaryBytes.Load() != 0 || instance.vm.pendingEvents.Load() != 0 {
+		t.Fatal("failed start retained boundary reservations")
+	}
+}
+
+func TestFFIStartHandoffKeepsReplyAndHandleOwnership(t *testing.T) {
+	for _, outcome := range []string{"success", "failure", "cancel"} {
+		t.Run(outcome, func(t *testing.T) {
+			machine := &vm{limits: normalizeLimits(Limits{}), ffiCalls: make(map[*pendingFFICall]struct{})}
+			_, cancel := context.WithCancel(t.Context())
+			pending := &pendingFFICall{vm: machine, cancel: cancel, starting: true}
+			pending.relay = &ffiCompletionRelay{pending: pending}
+			machine.ffiCalls[pending] = struct{}{}
+			machine.pendingEvents.Store(1)
+			var ownership taskOwnership
+			ownership.enqueue()
+			ownership.acquire()
+			ticket := ownership.beginWait()
+			pending.bindWait(&ownership, ticket)
+			ownership.relinquish()
+			var discarded, canceled atomic.Int32
+			pending.complete(ffi.Result{Payload: []byte("early"), Discard: func() { discarded.Add(1) }})
+			if _, ready := pending.take(); ready || ownership.notified(ticket) {
+				t.Fatal("reply delivered before Start returned")
+			}
+			var startErr error
+			if outcome == "failure" {
+				startErr = errors.New("start failed")
+			}
+			if outcome == "cancel" {
+				pending.stop()
+				ownership.terminate()
+			}
+			pending.finishStart(ffi.CancelFunc(func() { canceled.Add(1) }), startErr)
+			values, ready := pending.take()
+			if outcome == "cancel" {
+				if ready || ownership.notified(ticket) {
+					t.Fatal("cancelled start delivered a late reply")
+				}
+			} else if !ready || !ownership.notified(ticket) {
+				t.Fatal("Start handoff did not publish completion")
+			} else if status, _ := asInt64(values[2]); status != map[string]int64{"success": 0, "failure": 2}[outcome] {
+				t.Fatalf("completion status=%d", status)
+			}
+			wantCleanup := int32(0)
+			if outcome != "success" {
+				wantCleanup = 1
+			}
+			if discarded.Load() != wantCleanup || canceled.Load() != wantCleanup {
+				t.Fatalf("reply/handle ownership: discard=%d cancel=%d", discarded.Load(), canceled.Load())
+			}
+			if machine.pendingBoundaryBytes.Load() != 0 || machine.pendingEvents.Load() != 0 {
+				t.Fatal("Start handoff retained reservations")
+			}
+		})
+	}
+}
+
+func TestFFIStartCancellationAndCompletionRaceReleasesEachOwner(t *testing.T) {
+	for range 300 {
+		machine := &vm{limits: normalizeLimits(Limits{}), ffiCalls: make(map[*pendingFFICall]struct{})}
+		_, cancel := context.WithCancel(t.Context())
+		pending := &pendingFFICall{vm: machine, cancel: cancel, starting: true}
+		pending.relay = &ffiCompletionRelay{pending: pending}
+		machine.ffiCalls[pending] = struct{}{}
+		machine.pendingEvents.Store(1)
+		var discarded, canceled atomic.Int32
+		var group sync.WaitGroup
+		group.Go(func() {
+			pending.complete(ffi.Result{Payload: []byte("reply"), Discard: func() { discarded.Add(1) }})
+		})
+		group.Go(func() {
+			pending.finishStart(ffi.CancelFunc(func() { canceled.Add(1) }), nil)
+		})
+		group.Go(func() { pending.stop() })
+		group.Wait()
+		if discarded.Load() != 1 || canceled.Load() != 1 {
+			t.Fatalf("handoff lost terminal ownership: discarded=%d canceled=%d", discarded.Load(), canceled.Load())
+		}
+		if machine.pendingEvents.Load() != 0 || machine.pendingBoundaryBytes.Load() != 0 {
+			t.Fatal("handoff retained reservations")
+		}
+	}
+}
+
 func TestFFIPayloadBytesRequiresStructuredByteSliceType(t *testing.T) {
 	table := &types.TypeTable{}
 	ref, err := types.NewParser("ffi-test", table).Parse("Slice<Uint8>")
@@ -68,8 +173,8 @@ func TestFFIPayloadBytesRequiresStructuredByteSliceType(t *testing.T) {
 		want  string
 	}{
 		{name: "nil", value: newVMValue(byteSliceType, (*vmSlice)(nil))},
-		{name: "empty", value: newByteSliceHeaderValue(byteSliceType, []byte{}, 0, 0, 0)},
-		{name: "bytes", value: newByteSliceHeaderValue(byteSliceType, []byte("mini"), 0, 4, 4), want: "mini"},
+		{name: "empty", value: newByteSliceHeaderValue(byteSliceType, []byte{}, 0, 0)},
+		{name: "bytes", value: newByteSliceHeaderValue(byteSliceType, []byte("mini"), 4, 4), want: "mini"},
 		{name: "values", value: newSliceValue(byteSliceType, []vmValue{newVMValue("Uint8", uint64('g')), newVMValue("Uint8", uint64('o'))}), want: "go"},
 	}
 	for _, test := range tests {
@@ -176,12 +281,12 @@ func TestPendingFFICallTransfersBoundaryPayloadToGuest(t *testing.T) {
 }
 
 func TestStartFFICallRejectsOversizedRequest(t *testing.T) {
-	machine := &vm{limits: normalizeLimits(Limits{MaxBoundaryBytes: 4}), activeRunID: 1}
+	machine := &vm{limits: normalizeLimits(Limits{MaxBoundaryBytes: 4})}
 	scheduler := &executionMachine{vm: machine, scopes: map[int64]*executionScope{
 		1: {id: 1, done: make(chan struct{}), budget: &executionBudget{}},
 	}}
 	machine.machine = scheduler
-	if _, err := machine.startFFICall("example", []byte("large")); err == nil {
+	if _, err := machine.startFFICall(machine.machine.scope(1), "example", []byte("large")); err == nil {
 		t.Fatal("oversized FFI request was accepted")
 	}
 	if machine.pendingEvents.Load() != 0 || len(machine.ffiCalls) != 0 {

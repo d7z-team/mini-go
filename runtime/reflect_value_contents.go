@@ -16,10 +16,11 @@ func reflectValueMapEntries(ctx intrinsicContext, module *moduleInstance, value 
 	var entries []vmMapEntry
 	switch data := value.Data.(type) {
 	case *vmMap:
-		keys := sortedVMMapKeys(data)
+		snapshot := data.snapshot()
+		keys := sortedVMMapKeys(snapshot)
 		entries = make([]vmMapEntry, 0, len(keys))
 		for _, encodedKey := range keys {
-			entries = append(entries, data.Entries[encodedKey])
+			entries = append(entries, snapshot[encodedKey])
 		}
 	case nil:
 		return nil, nil
@@ -53,8 +54,8 @@ func reflectValueLen(module *moduleInstance, value vmValue) int64 {
 			return 0
 		}
 		return int64(data.Len)
-	case []vmValue:
-		return int64(len(data))
+	case *vmArray:
+		return int64(data.Len)
 	case *vmStruct:
 		if module != nil {
 			if strings.TrimSpace(reflectTypeInfoForValue(module, value).Kind) == "struct" {
@@ -65,7 +66,7 @@ func reflectValueLen(module *moduleInstance, value vmValue) int64 {
 		if data == nil {
 			return 0
 		}
-		return int64(len(data.Entries))
+		return int64(data.length())
 	}
 	return 0
 }
@@ -77,9 +78,9 @@ func reflectValueCap(module *moduleInstance, value vmValue) int64 {
 			return 0
 		}
 		return int64(data.Cap)
-	case []vmValue:
+	case *vmArray:
 		if module != nil && module.isArrayType(value.Type) && !module.isSliceType(value.Type) {
-			return int64(len(data))
+			return int64(data.Len)
 		}
 	}
 	return 0

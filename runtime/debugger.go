@@ -88,7 +88,7 @@ type debugPauseState struct {
 }
 
 type debugResumePoint struct {
-	RunID      int64
+	TaskID     int64
 	Generation uint64
 	ModulePath string
 	FunctionID string
@@ -97,7 +97,7 @@ type debugResumePoint struct {
 }
 
 type debugStepState struct {
-	RunID      int64
+	TaskID     int64
 	Mode       debugStepMode
 	StartDepth int
 	Active     bool

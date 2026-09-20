@@ -41,14 +41,7 @@ type reflectValueFields struct {
 }
 
 func (fields reflectValueFields) lookup(name string) (vmValue, bool) {
-	if fields.value == nil || fields.value.schema == nil {
-		return vmValue{}, false
-	}
-	index, _, ok := fields.value.schema.field(name)
-	if !ok || index >= len(fields.value.values) || !fields.value.values[index].Type.Valid() {
-		return vmValue{}, false
-	}
-	return fields.value.values[index], true
+	return structValueField(fields.value, name)
 }
 
 func (fields reflectValueFields) get(name string) vmValue {
@@ -310,12 +303,31 @@ func reflectIndexPointer(module *moduleInstance, parentPtr vmValue, index int64)
 	if _, err := indexValue(module, parent, indexArg); err != nil {
 		return vmValue{}, err
 	}
+	if _, ok := parent.Data.(*vmArray); ok {
+		// A zero array field may still be implicit in its enclosing struct.
+		// Attach it before capturing a stable element address.
+		if err := commitPointerMutation(parentPtr, parent); err != nil {
+			return vmValue{}, err
+		}
+		parent, err = derefPointer(parentPtr)
+		if err != nil {
+			return vmValue{}, err
+		}
+	}
 	identity := fmt.Sprintf("reflect-index:%d", index)
 	if pointer, err := pointerValue(parentPtr); err == nil && strings.TrimSpace(pointer.Identity) != "" {
 		identity = fmt.Sprintf("%s.index:%d", pointer.Identity, index)
 	}
-	if slice, ok := parent.Data.(*vmSlice); ok && slice != nil {
-		identity = fmt.Sprintf("slice:%p.index:%d", slice.storage, int64(slice.Start)+index)
+	var slice *vmSlice
+	switch data := parent.Data.(type) {
+	case *vmSlice:
+		slice = data
+	case *vmArray:
+		slice = &data.vmSlice
+	}
+	if slice != nil {
+		identity = fmt.Sprintf("slice:%p.index:%d", slice.vmSliceStorage, int64(slice.Start)+index)
+		parentPtr = parent
 	}
 	return newTargetPointer(&vmPointer{Type: coerceRuntimeType(elemType), Identity: identity, target: pointerIndex, module: module, parent: parentPtr, index: index}), nil
 }

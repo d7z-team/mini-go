@@ -1,0 +1,14 @@
+package sync
+
+// The runtime owns the private state reference and its wait registrations.
+func runtimeMutexLock(state *chan bool) {
+	panic("runtime intrinsic")
+}
+
+func runtimeMutexTryLock(state *chan bool) bool {
+	panic("runtime intrinsic")
+}
+
+func runtimeMutexUnlock(state *chan bool) {
+	panic("runtime intrinsic")
+}

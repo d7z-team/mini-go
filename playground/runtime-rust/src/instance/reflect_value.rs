@@ -68,8 +68,8 @@ impl Instance {
                     if left.length != right.length {
                         return Ok(false);
                     }
-                    let left_backing = self.borrow_address(&left.storage)?;
-                    let right_backing = self.borrow_address(&right.storage)?;
+                    let left_backing = self.snapshot_address(&left.storage)?;
+                    let right_backing = self.snapshot_address(&right.storage)?;
                     if let (Data::Bytes(a), Data::Bytes(b)) =
                         (&left_backing.data, &right_backing.data)
                     {
@@ -681,7 +681,10 @@ impl Instance {
                         self.charge_guest((new_capacity - capacity) as u64 * 16)?;
                         let compact = match &current.data {
                             Data::Slice(slice) => {
-                                matches!(self.borrow_address(&slice.storage)?.data, Data::Bytes(_))
+                                matches!(
+                                    self.snapshot_address(&slice.storage)?.data,
+                                    Data::Bytes(_)
+                                )
                             }
                             _ => false,
                         };

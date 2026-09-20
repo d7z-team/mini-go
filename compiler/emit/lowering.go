@@ -46,7 +46,6 @@ func LowerUnvalidatedWithSymbols(program hir.Program) (ir.Artifact, ir.PackageSy
 		out := ir.Function{
 			ID:            fn.ID,
 			RevisionLocal: fn.RevisionLocal,
-			NoSwitch:      fn.NoSwitch,
 			Signature:     fn.Signature,
 			Locals:        lowerLocals(fn.Locals),
 			ResultLocals:  append([]string(nil), fn.ResultLocals...),

@@ -8,6 +8,7 @@ const (
 )
 
 var payloadSpecs = []PayloadSpec{
+	{Name: "select", Fields: []FieldSpec{{Name: "index", Type: "local-id", Required: true}, {Name: "default", Type: "bool"}, {Name: "cases", Type: "[]select-case", Rule: "evaluated channel local and either send local or receive value/ok locals"}}},
 	{Name: "const", Fields: []FieldSpec{{Name: "constant", Type: "constant-id", Required: true}}},
 	{Name: "local", Fields: []FieldSpec{{Name: "local", Type: "local-id", Required: true}, {Name: "rebind", Type: "bool", Rule: "store_local only: replace the runtime local before a declaration binding is stored"}}},
 	{Name: "upvalue", Fields: []FieldSpec{{Name: "upvalue", Type: "upvalue-id", Required: true}}},
@@ -36,6 +37,7 @@ var payloadSpecs = []PayloadSpec{
 }
 
 var opcodeSpecs = []OpcodeSpec{
+	{Op: "select", Category: "waitable", Payload: "select", Stack: "no change", Notes: "commit exactly one communication, storing index and receive results in locals; may suspend"},
 	{Op: "const", Category: "stack_value", Payload: "const", Stack: "push constant"},
 	{Op: "zero", Category: "stack_value", Payload: "type", Stack: "push zero value"},
 	{Op: "pop", Category: "stack_value", Stack: "pop 1"},
@@ -94,21 +96,11 @@ var opcodeSpecs = []OpcodeSpec{
 	{Op: "waitable_can_recv", Category: "waitable", Stack: "pop waitable, push ready", Notes: "receive readiness probe"},
 	{Op: "waitable_try_recv", Category: "waitable", Stack: "pop waitable, push value/ready", Notes: "non-blocking receive attempt"},
 	{Op: "waitable_try_send", Category: "waitable", Stack: "pop waitable/value, push ready", Notes: "non-blocking send attempt"},
-	{Op: "waitable_subscribe_recv", Category: "waitable", Stack: "pop waitable/token", Notes: "register receive wait token"},
-	{Op: "waitable_subscribe_send", Category: "waitable", Stack: "pop waitable/token", Notes: "register send wait token"},
 	{Op: "waitable_can_send", Category: "waitable", Stack: "pop waitable, push ready", Notes: "send readiness probe"},
 	{Op: "waitable_close", Category: "waitable", Stack: "pop waitable", Notes: "compiler-defined resource close operation"},
 	{Op: "init_module", Category: "module", Payload: "init_module", Stack: "no change"},
 	{Op: "load_export", Category: "module", Payload: "export", Stack: "push module export"},
 	{Op: "spawn", Category: "scheduler", Payload: "call", Stack: "pop callee and args"},
-	{Op: "make_wait_token", Category: "scheduler", Stack: "push wait token"},
-	{Op: "wait_token_signal", Category: "scheduler", Stack: "pop wait token"},
-	{Op: "wait_token_cancel", Category: "scheduler", Stack: "pop wait token"},
-	{Op: "make_wait_set", Category: "scheduler", Stack: "push wait set"},
-	{Op: "wait_set_add", Category: "scheduler", Stack: "pop wait set/token, push wait set"},
-	{Op: "wait_set_poll", Category: "scheduler", Stack: "pop wait set, push selected index"},
-	{Op: "wait_set_park", Category: "scheduler", Stack: "pop wait set, push selected index"},
-	{Op: "wait_set_cancel", Category: "scheduler", Stack: "pop wait set"},
 	{Op: "call_ffi", Category: "host", Payload: "call_ffi", Stack: "pop route/payload, push payload/message/status", Notes: "opaque asynchronous host boundary; status: 0 success, 1 route unavailable, 2 failure"},
 	{Op: "call_intrinsic", Category: "runtime", Payload: "call_intrinsic", Stack: "pop args, push results"},
 }

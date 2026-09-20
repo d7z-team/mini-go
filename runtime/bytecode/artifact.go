@@ -8,8 +8,8 @@ import (
 
 const (
 	Format         = "mini-go-ir"
-	CurrentVersion = 21
-	OpcodeSet      = "minigo.ir.v9"
+	CurrentVersion = 22
+	OpcodeSet      = "minigo.ir.v10"
 )
 
 type Artifact struct {
@@ -45,7 +45,6 @@ type Global struct {
 type Function struct {
 	ID            string                  `json:"id"`
 	RevisionLocal bool                    `json:"revision_local,omitempty"`
-	NoSwitch      bool                    `json:"no_switch,omitempty"`
 	Signature     types.FunctionSignature `json:"signature"`
 	Locals        []Local                 `json:"locals,omitempty"`
 	ResultLocals  []string                `json:"result_locals,omitempty"`

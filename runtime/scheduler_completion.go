@@ -36,7 +36,6 @@ func newGuestPanic(err error) error {
 
 func (machine *executionMachine) startPanic(task *executionTask, current *executionFrame, pc int, value vmValue) {
 	value = normalizePanicValue(value)
-	machine.syncCallStack(task)
 	panicState := &machinePanic{
 		err: panicError{
 			Value:       value,
@@ -48,7 +47,7 @@ func (machine *executionMachine) startPanic(task *executionTask, current *execut
 			Loc:         runtimeLocation(current.frame, current.frame.function.Decl.ID, pc),
 		},
 	}
-	if event, ok := machine.vm.debugPanicEvent(current.frame, current.frame.function.Decl.ID, pc, value); ok {
+	if event, ok := machine.vm.debugPanicEvent(task, current.frame, current.frame.function.Decl.ID, pc, value); ok {
 		panicState.debugEvent = &event
 	}
 	panicState.runtimeErr = Error{
@@ -102,6 +101,7 @@ func (machine *executionMachine) panicStack(task *executionTask, current *execut
 }
 
 func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmValue, bool, error) {
+	defer task.releaseCompletingFrame()
 	for {
 		if len(task.frames) == 0 {
 			return nil, false, errors.New("completion has no frame")
@@ -138,9 +138,7 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 		lastFrame := len(task.frames) - 1
 		task.frames[lastFrame] = nil
 		task.frames = task.frames[:lastFrame]
-		if current.frame.function.Decl.NoSwitch {
-			machine.blockedWakePending = true
-		}
+		task.completingFrame = current
 		if current.deferred {
 			if len(task.frames) == 0 {
 				return nil, false, errors.New("deferred call has no owner frame")
@@ -160,24 +158,24 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 					owner.completion = &frameCompletion{returnValues: values}
 				}
 			}
-			current.frame.recycle()
+			task.releaseCompletingFrame()
 			continue
 		}
 		if current.completion.panic != nil {
 			if current.abort != nil {
 				current.abort()
+				current.abort = nil
 			}
 			if len(task.frames) != 0 {
 				owner := task.frames[len(task.frames)-1]
 				owner.completion = &frameCompletion{panic: current.completion.panic}
-				current.frame.recycle()
+				task.releaseCompletingFrame()
 				continue
 			}
 			panicState := current.completion.panic
 			if panicState.debugEvent != nil {
 				machine.vm.appendDebugEvent(*panicState.debugEvent)
 			}
-			current.frame.recycle()
 			return nil, false, panicState.runtimeErr
 		}
 		values := current.completion.returnValues
@@ -194,11 +192,9 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 			}
 			if current.resume != nil {
 				if err := current.resume(task, nil, values); err != nil {
-					current.frame.recycle()
 					return nil, false, err
 				}
 			}
-			current.frame.recycle()
 			return values, true, nil
 		}
 		if len(values) != current.expectedResults {
@@ -207,15 +203,26 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 		caller := task.frames[len(task.frames)-1]
 		if current.resume != nil {
 			err := current.resume(task, caller, values)
-			current.frame.recycle()
 			return nil, false, err
 		}
 		for _, value := range values {
 			caller.frame.push(value)
 		}
-		current.frame.recycle()
 		return nil, false, nil
 	}
+}
+
+func (task *executionTask) releaseCompletingFrame() {
+	current := task.completingFrame
+	if current == nil {
+		return
+	}
+	if current.abort != nil {
+		current.abort()
+		current.abort = nil
+	}
+	task.completingFrame = nil
+	current.frame.recycle()
 }
 
 func (machine *executionMachine) abortTask(task *executionTask) {
@@ -223,6 +230,8 @@ func (machine *executionMachine) abortTask(task *executionTask) {
 		return
 	}
 	machine.cancelBlockedOperation(task)
+	task.releaseStepGrant()
+	task.releaseCompletingFrame()
 	for _, active := range task.frames {
 		if active.abort != nil {
 			active.abort()
@@ -240,16 +249,11 @@ func (machine *executionMachine) cancelBlockedOperation(task *executionTask) {
 	operation := task.blocked
 	task.blocked = nil
 	switch operation.kind {
-	case "send":
-		operation.resource.cancelSend(task.id)
-	case "recv":
-		if operation.recvToken.Data != nil {
-			_ = cancelWaitToken(operation.recvToken)
-		}
-	case "waitset":
-		if operation.waitSet.Data != nil {
-			_ = cancelWaitSet(operation.waitSet)
-		}
+	case "select":
+		operation.selection.unregister()
+		operation.selection.owner, operation.selection.ticket = nil, nil
+	case "mutex":
+		operation.mutex.resource.cancel(operation.mutex.waiter)
 	case "ffi":
 		if operation.ffi != nil {
 			operation.ffi.stop()
@@ -257,23 +261,14 @@ func (machine *executionMachine) cancelBlockedOperation(task *executionTask) {
 	}
 }
 
-func (machine *executionMachine) abortQueuedTasks(err error) {
-	for _, task := range machine.runnableTasks() {
+func (machine *executionMachine) abortTasks(err error) {
+	for _, task := range machine.tasks {
 		machine.abortTask(task)
-		machine.finishTask(task, nil, err)
-	}
-	for _, task := range machine.blocked {
-		machine.abortTask(task)
-		machine.finishTask(task, nil, err)
-	}
-	if machine.paused != nil {
-		machine.abortTask(machine.paused)
-		machine.finishTask(machine.paused, nil, err)
+		machine.finishTask(task, err)
 	}
 	machine.runnable = nil
 	machine.runnableHead = 0
 	machine.blocked = nil
-	machine.running = nil
 	machine.paused = nil
 }
 

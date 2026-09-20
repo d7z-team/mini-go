@@ -10,4 +10,4 @@
 修改所属模型后，在仓库根运行 `make generate` 更新描述与派生物。
 契约身份和版本由所属实现维护。
 
-职责与依赖见 [架构](../ARCHITECTURE.md)，更新流程见 [开发指南](../DEVELOPMENT.md#生成与文档)。
+职责与依赖见[架构](../ARCHITECTURE.md)，更新流程见[开发指南](../DEVELOPMENT.md#生成与派生物)。

@@ -281,8 +281,6 @@ impl Instance {
                 wire::PrimitiveComplex128 => "complex128",
                 wire::PrimitiveError => "error",
                 wire::PrimitiveFunction => "func()",
-                wire::PrimitiveWaitToken => "waittoken",
-                wire::PrimitiveWaitSet => "waitset",
                 _ => "invalid",
             }
             .to_owned(),

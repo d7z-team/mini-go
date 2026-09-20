@@ -149,9 +149,6 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		if !ok || leftData == nil || rightData == nil {
 			return ok && leftData == nil && rightData == nil, nil
 		}
-		if len(leftData.Entries) != len(rightData.Entries) {
-			return false, nil
-		}
 		if leftData == rightData {
 			return true, nil
 		}
@@ -160,8 +157,12 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 			return true, nil
 		}
 		visited.maps[pair] = true
-		for key, leftEntry := range leftData.Entries {
-			rightEntry, ok := rightData.Entries[key]
+		leftEntries, rightEntries := leftData.snapshot(), rightData.snapshot()
+		if len(leftEntries) != len(rightEntries) {
+			return false, nil
+		}
+		for key, leftEntry := range leftEntries {
+			rightEntry, ok := rightEntries[key]
 			if !ok {
 				return false, nil
 			}
@@ -171,13 +172,14 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 			}
 		}
 		return true, nil
-	case []vmValue:
-		rightData, ok := right.Data.([]vmValue)
-		if !ok || len(leftData) != len(rightData) {
+	case *vmArray:
+		rightArray, ok := right.Data.(*vmArray)
+		if !ok || leftData.Len != rightArray.Len {
 			return false, nil
 		}
-		for i := range leftData {
-			equal, err := reflectDeepValues(module, leftData[i], rightData[i], visited)
+		leftItems, rightItems := leftData.values(), rightArray.values()
+		for i := range leftItems {
+			equal, err := reflectDeepValues(module, leftItems[i], rightItems[i], visited)
 			if err != nil || !equal {
 				return equal, err
 			}
@@ -204,6 +206,9 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 			}
 		}
 		return true, nil
+	case *mutexResource:
+		rightData, ok := right.Data.(*mutexResource)
+		return ok && leftData == rightData, nil
 	case *waitableResource:
 		rightData, ok := right.Data.(*waitableResource)
 		return ok && leftData == rightData, nil

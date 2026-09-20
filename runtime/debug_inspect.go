@@ -316,7 +316,7 @@ func (e *Execution) DebugVariables(reference, start, count int) ([]DebugVariable
 				}
 			}
 			variable.VariablesReference = childReference
-			if _, indexed := binding.Value.Data.([]vmValue); indexed {
+			if _, indexed := binding.Value.Data.(*vmArray); indexed {
 				variable.IndexedVariables = len(children)
 			} else if _, indexed := binding.Value.Data.(*vmSlice); indexed {
 				variable.IndexedVariables = len(children)
@@ -357,8 +357,9 @@ func debugValueChildren(value vmValue) []debugLocal {
 		for index, item := range items {
 			result = append(result, debugLocal{ID: strconv.Itoa(index), Name: fmt.Sprintf("[%d]", index), Type: item.Type.String(), Value: item})
 		}
-	case []vmValue:
-		for index, item := range data {
+	case *vmArray:
+		values := data.values()
+		for index, item := range values {
 			result = append(result, debugLocal{ID: strconv.Itoa(index), Name: fmt.Sprintf("[%d]", index), Type: item.Type.String(), Value: item})
 		}
 	case *vmStruct:
@@ -367,8 +368,8 @@ func debugValueChildren(value vmValue) []debugLocal {
 		}
 		for index, field := range data.schema.fields {
 			value := zeroVMValue(field.RuntimeType.String())
-			if index < len(data.values) && data.values[index].Type.Valid() {
-				value = data.values[index]
+			if stored, ok := data.fieldAt(index); ok {
+				value = stored
 			}
 			result = append(result, debugLocal{ID: field.Name, Name: field.Name, Type: value.Type.String(), Value: value})
 		}
@@ -376,8 +377,9 @@ func debugValueChildren(value vmValue) []debugLocal {
 		if data == nil {
 			return nil
 		}
-		for _, key := range sortedVMMapKeys(data) {
-			entry := data.Entries[key]
+		snapshot := data.snapshot()
+		for _, key := range sortedVMMapKeys(snapshot) {
+			entry := snapshot[key]
 			result = append(result, debugLocal{ID: key.Text, Name: "[" + debugValueText(entry.Key) + "]", Type: entry.Value.Type.String(), Value: entry.Value})
 		}
 	}

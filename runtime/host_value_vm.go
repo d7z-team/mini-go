@@ -65,7 +65,7 @@ func hostValueToVM(ctx context.Context, module *moduleInstance, expected string,
 		out = newVMValue(expected, value.text)
 	case HostBytesKind:
 		bytes := append([]byte(nil), value.bytes...)
-		out = newByteSliceHeaderValue(expected, bytes, 0, len(bytes), cap(bytes))
+		out = newByteSliceHeaderValue(expected, bytes, len(bytes), cap(bytes))
 	case HostArrayKind, HostSliceKind:
 		items := make([]vmValue, len(value.items))
 		elementType := module.arrayElemType(expected)
@@ -275,15 +275,16 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 			return HostValue{}, err
 		}
 		out = HostValue{typ: "Any", kind: HostAnyKind, dynamic: &inner}
-	case []vmValue:
-		items := make([]HostValue, len(data))
-		for i := range data {
+	case *vmArray:
+		values := data.values()
+		items := make([]HostValue, len(values))
+		for i := range values {
 			if i&255 == 0 {
 				if err := ctx.Err(); err != nil {
 					return HostValue{}, err
 				}
 			}
-			item, err := vmValueToHost(ctx, data[i], limits, depth+1)
+			item, err := vmValueToHost(ctx, values[i], limits, depth+1)
 			if err != nil {
 				return HostValue{}, fmt.Errorf("host array item %d: %w", i, err)
 			}
@@ -301,7 +302,7 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 		}
 		if typ == "Slice<Uint8>" {
 			if data.ByteBacked {
-				out = HostValue{typ: "Slice<Uint8>", kind: HostBytesKind, bytes: append([]byte(nil), data.ByteBacking[data.Start:data.Start+data.Len]...)}
+				out = HostValue{typ: "Slice<Uint8>", kind: HostBytesKind, bytes: data.bytes()}
 				break
 			}
 			bytes := make([]byte, len(items))
@@ -335,7 +336,8 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 		}
 		out = HostValue{typ: typ, kind: HostSliceKind, items: values}
 	case *vmMap:
-		keys := sortedVMMapKeys(data)
+		snapshot := data.snapshot()
+		keys := sortedVMMapKeys(snapshot)
 		entries := make([]HostMapEntry, 0, len(keys))
 		for index, key := range keys {
 			if index&255 == 0 {
@@ -343,7 +345,7 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 					return HostValue{}, err
 				}
 			}
-			entry := data.Entries[key]
+			entry := snapshot[key]
 			hostKey, err := vmValueToHost(ctx, entry.Key, limits, depth+1)
 			if err != nil {
 				return HostValue{}, err
@@ -367,8 +369,8 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 				}
 			}
 			field := zeroVMValue(info.RuntimeType.String())
-			if index < len(data.values) && data.values[index].Type.Valid() {
-				field = data.values[index]
+			if stored, ok := data.fieldAt(index); ok {
+				field = stored
 			}
 			hostField, err := vmValueToHost(ctx, field, limits, depth+1)
 			if err != nil {

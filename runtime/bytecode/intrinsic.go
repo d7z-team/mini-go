@@ -8,7 +8,7 @@ type IntrinsicID string
 
 // IntrinsicSchema identifies the descriptor and execution semantics used by
 // call_intrinsic instructions.
-const IntrinsicSchema = "minigo.intrinsic.v4"
+const IntrinsicSchema = "minigo.intrinsic.v5"
 
 // IntrinsicEffect describes how an intrinsic interacts with VM state.
 type IntrinsicEffect uint8
@@ -37,6 +37,9 @@ type IntrinsicDescriptor struct {
 var reflectRuntimeType = types.TypeKey{ModulePath: "reflect", DeclID: "runtimeType"}
 
 var intrinsicDescriptors = []IntrinsicDescriptor{
+	{ID: "sync.mutex_lock", SourceModule: "sync", SourceFunction: "runtimeMutexLock", Signature: "function(Ptr<Waitable<Bool>>)", ArgCount: 1, Effect: IntrinsicMayBlock},
+	{ID: "sync.mutex_try_lock", SourceModule: "sync", SourceFunction: "runtimeMutexTryLock", Signature: "function(Ptr<Waitable<Bool>>) Bool", ArgCount: 1, ResultCount: 1, Effect: IntrinsicMutatesVM},
+	{ID: "sync.mutex_unlock", SourceModule: "sync", SourceFunction: "runtimeMutexUnlock", Signature: "function(Ptr<Waitable<Bool>>)", ArgCount: 1, Effect: IntrinsicMutatesVM},
 	{ID: "crypto.rand.read", SourceModule: "crypto/rand", SourceFunction: "runtimeRead", Signature: "function(Slice<Uint8>) tuple(Int, String, Bool)", ArgCount: 1, ResultCount: 3, Effect: IntrinsicMutatesVM},
 	{ID: "crypto.sha256.block", SourceModule: "crypto/sha256", SourceFunction: "runtimeBlock", Signature: "function(Array<8, Uint32>, Slice<Uint8>) Array<8, Uint32>", ArgCount: 2, ResultCount: 1, Effect: IntrinsicPure},
 	{ID: "ffi.call", SourceModule: "ffi", SourceFunction: "runtimeCall", Signature: "function(String, Slice<Uint8>) tuple(Slice<Uint8>, String, Int)", ArgCount: 2, ResultCount: 3, Effect: IntrinsicMayBlock},

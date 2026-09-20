@@ -1,4 +1,4 @@
-//! Address resolution, borrowed projections and writes with allocation accounting.
+//! Address resolution, payload snapshots and writes with allocation accounting.
 
 use super::*;
 
@@ -8,24 +8,22 @@ impl Instance {
             return self.load_slot(address.root);
         }
         if matches!(self.heap.get(address.root)?.data, Data::Uninitialized) {
-            let value = self.zero(&self.heap.get(address.root)?.typ, 0)?;
-            self.write_address(
-                &Address {
-                    root: address.root,
-                    path: Vec::new(),
-                    identity: address.identity.clone(),
-                },
-                value,
-            )?;
+            self.load_slot(address.root)?;
         }
-        Ok(self.borrow_address(address)?.into_owned())
+        Ok(self.snapshot_address(address)?.into_owned())
     }
 
-    pub(super) fn borrow_address(
+    pub(super) fn snapshot_address(
         &self,
         address: &Address,
-    ) -> Result<std::borrow::Cow<'_, Value>, RuntimeError> {
-        self.project_address(self.heap.get(address.root)?, &address.path)
+    ) -> Result<crate::value::ValueRead<'static>, RuntimeError> {
+        let value = self.heap.get(address.root)?;
+        if address.path.is_empty() && !matches!(value.data, Data::Uninitialized) {
+            return Ok(crate::value::ValueRead::Shared(value));
+        }
+        Ok(crate::value::ValueRead::Owned(
+            self.project_address(&value, &address.path)?.into_owned(),
+        ))
     }
 
     fn project_address<'a>(
@@ -131,37 +129,25 @@ impl Instance {
     }
 
     pub(super) fn load_slot(&mut self, root: Handle) -> Result<Value, RuntimeError> {
-        if matches!(self.heap.get(root)?.data, Data::Uninitialized) {
-            let value = self.zero(&self.heap.get(root)?.typ, 0)?;
-            self.store_slot(root, value)?;
+        loop {
+            let snapshot = self.heap.get(root)?;
+            if !matches!(snapshot.data, Data::Uninitialized) {
+                return Ok(Arc::unwrap_or_clone(snapshot));
+            }
+            let value = self.zero(&snapshot.typ, 0)?;
+            let bytes = value.logical_bytes()?.checked_add(128).ok_or_else(|| {
+                RuntimeError::new("allocation_limit", "slot", "slot size overflow")
+            })?;
+            value.trace(&mut |handle| self.running.transient_roots.push(handle));
+            self.prepare_heap_replacements(&[(root, bytes)])?;
+            if let Some(mutation) = self.heap.prepare_mutation(root, &snapshot, value, bytes)? {
+                drop(snapshot);
+                mutation.commit();
+            }
         }
-        Ok(self.heap.get(root)?.clone())
     }
 
     pub(super) fn store_slot(&mut self, root: Handle, value: Value) -> Result<(), RuntimeError> {
-        let previous = self.heap.get(root)?;
-        if previous.typ == value.typ
-            && matches!(
-                value.data,
-                Data::Bool(_)
-                    | Data::Integer(_)
-                    | Data::Unsigned(_)
-                    | Data::Float(_)
-                    | Data::Complex { .. }
-            )
-            && matches!(
-                previous.data,
-                Data::Uninitialized
-                    | Data::Bool(_)
-                    | Data::Integer(_)
-                    | Data::Unsigned(_)
-                    | Data::Float(_)
-                    | Data::Complex { .. }
-            )
-        {
-            let bytes = self.heap.allocation_bytes(root)?;
-            return self.heap.update(root, bytes, true, |slot| *slot = value);
-        }
         self.write_storage(root, &[], value)
     }
 
@@ -183,26 +169,72 @@ impl Instance {
         path: &[PathElement],
         value: Value,
     ) -> Result<(), RuntimeError> {
-        if path.is_empty() && matches!(self.heap.get(root)?.data, Data::Uninitialized) {
-            let typ = self.heap.get(root)?.typ.clone();
-            let value = self.coerce(value, &typ)?;
+        let roots = self.running.transient_roots.len();
+        let mut collection = mutation::WriteCollection::IMMEDIATE;
+        while !self.attempt_storage_write(root, path, value.clone(), &mut collection)? {
+            self.running.transient_roots.truncate(roots);
+        }
+        Ok(())
+    }
+
+    pub(super) fn attempt_storage_write(
+        &mut self,
+        root: Handle,
+        path: &[PathElement],
+        value: Value,
+        collection: &mut mutation::WriteCollection,
+    ) -> Result<bool, RuntimeError> {
+        let (snapshot, stored_bytes) = self.heap.read_mutation_base(root)?;
+        let expected = Arc::downgrade(&snapshot);
+        if path.is_empty()
+            && snapshot.typ == value.typ
+            && matches!(
+                value.data,
+                Data::Bool(_)
+                    | Data::Integer(_)
+                    | Data::Unsigned(_)
+                    | Data::Float(_)
+                    | Data::Complex { .. }
+            )
+            && matches!(
+                snapshot.data,
+                Data::Uninitialized
+                    | Data::Bool(_)
+                    | Data::Integer(_)
+                    | Data::Unsigned(_)
+                    | Data::Float(_)
+                    | Data::Complex { .. }
+            )
+        {
+            drop(snapshot);
+            return self
+                .heap
+                .update(root, &expected, stored_bytes, true, |slot| *slot = value);
+        }
+        if path.is_empty() && matches!(snapshot.data, Data::Uninitialized) {
+            let value = self.coerce(value.clone(), &snapshot.typ)?;
             let bytes = value.logical_bytes()?.checked_add(128).ok_or_else(|| {
                 RuntimeError::new("allocation_limit", "slot", "slot size overflow")
             })?;
-            value.trace(&mut |handle| self.transient_roots.push(handle));
-            self.prepare_heap_replacements(&[(root, bytes)])?;
-            return self
-                .heap
-                .replace(root, value, bytes)
-                .map_err(|(error, _)| error);
+            value.trace(&mut |handle| self.running.transient_roots.push(handle));
+            if !self.prepare_write_replacements(&[(root, bytes)], collection)? {
+                return Ok(false);
+            }
+            if let Some(mutation) = self.heap.prepare_mutation(root, &snapshot, value, bytes)? {
+                drop(snapshot);
+                if mutation.commit() {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
-        let materialized = if matches!(self.heap.get(root)?.data, Data::Uninitialized) {
-            Some(self.zero(&self.heap.get(root)?.typ, 0)?)
+        let materialized = if matches!(snapshot.data, Data::Uninitialized) {
+            Some(self.zero(&snapshot.typ, 0)?)
         } else {
             None
         };
-        let previous = self.project_address(self.heap.get(root)?, path)?;
-        let mut value = self.coerce(value, &previous.typ)?;
+        let previous = self.project_address(&snapshot, path)?;
+        let mut value = self.coerce(value.clone(), &previous.typ)?;
         let storage_path = if path
             .iter()
             .any(|segment| matches!(segment, PathElement::TypeView(_)))
@@ -217,13 +249,13 @@ impl Instance {
             std::borrow::Cow::Borrowed(path)
         };
         let previous = if matches!(storage_path, std::borrow::Cow::Owned(_)) {
-            let storage = self.project_address(self.heap.get(root)?, &storage_path)?;
+            let storage = self.project_address(&snapshot, &storage_path)?;
             value = self.retype_value(value, &storage.typ, 0)?;
             storage
         } else {
             previous
         };
-        if matches!(self.heap.get(root)?.data, Data::Bytes(_)) {
+        if matches!(snapshot.data, Data::Bytes(_)) {
             let replacement = match &value.data {
                 Data::Unsigned(byte) => vec![*byte as u8],
                 Data::Array(values) => values
@@ -253,13 +285,20 @@ impl Instance {
                     _ => {}
                 }
             }
-            let bytes = self.heap.allocation_bytes(root)?;
-            return self.heap.update(root, bytes, true, |object| {
-                let Data::Bytes(bytes) = &mut object.data else {
-                    unreachable!()
-                };
-                bytes[start..start + replacement.len()].copy_from_slice(&replacement);
-            });
+            drop(previous);
+            drop(snapshot);
+            if self
+                .heap
+                .update(root, &expected, stored_bytes, true, |object| {
+                    let Data::Bytes(bytes) = &mut object.data else {
+                        unreachable!()
+                    };
+                    bytes[start..start + replacement.len()].copy_from_slice(&replacement);
+                })?
+            {
+                return Ok(true);
+            }
+            return Ok(false);
         }
         let mut old_edges = Vec::new();
         let mut new_edges = Vec::new();
@@ -268,7 +307,7 @@ impl Instance {
         let replacement_bytes = value.logical_bytes()?;
         let base_bytes = match &materialized {
             Some(value) => value.logical_bytes()?.saturating_add(128),
-            None => self.heap.allocation_bytes(root)?,
+            None => stored_bytes,
         };
         let bytes = base_bytes
             .checked_sub(previous.logical_bytes()?)
@@ -276,10 +315,17 @@ impl Instance {
             .ok_or_else(|| {
                 RuntimeError::new("allocation_limit", "value", "logical size overflow")
             })?;
-        self.transient_roots.extend(new_edges.iter().copied());
-        self.prepare_heap_replacements(&[(root, bytes)])?;
-        self.heap
-            .update(root, bytes, old_edges == new_edges, |object| {
+        drop(previous);
+        drop(snapshot);
+        self.running
+            .transient_roots
+            .extend(new_edges.iter().copied());
+        if !self.prepare_write_replacements(&[(root, bytes)], collection)? {
+            return Ok(false);
+        }
+        if self
+            .heap
+            .update(root, &expected, bytes, old_edges == new_edges, |object| {
                 if let Some(value) = materialized {
                     *object = value;
                 }
@@ -312,24 +358,23 @@ impl Instance {
                 } else {
                     *destination = value;
                 }
-            })?;
-        Ok(())
+            })?
+        {
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     pub(super) fn resolve_address(
         &mut self,
         payload: &wire::AddressPayload,
     ) -> Result<Address, RuntimeError> {
-        if payload.kind == "local" {
-            let frame = self.frames.last_mut().unwrap();
-            frame.escaped[frame.prepared.locals[&payload.local]] = true;
-        }
-        let frame = self.frames.last().unwrap();
+        let frame = self.running.frames.last().unwrap();
         let function = &frame.prepared;
         let mut address = match payload.kind.as_str() {
             "local" => Address {
                 identity: std::sync::Arc::default(),
-                root: frame.locals[function.locals[&payload.local]],
+                root: frame.locals[function.locals[&payload.local]].address()?,
                 path: Vec::new(),
             },
             "upvalue" => frame.upvalues[function.upvalues[&payload.upvalue]].clone(),
@@ -368,9 +413,7 @@ impl Instance {
         let index_slots: Vec<_> = payload
             .path
             .iter()
-            .map(|segment| {
-                (segment.kind == "index").then(|| frame.locals[function.locals[&segment.local]])
-            })
+            .map(|segment| (segment.kind == "index").then(|| function.locals[&segment.local]))
             .collect();
         for (segment, index_slot) in payload.path.iter().zip(index_slots) {
             let value = self.read_address(&address)?;
@@ -398,13 +441,7 @@ impl Instance {
             match segment.kind.as_str() {
                 "field" => address.path.push(PathElement::Field(segment.field.clone())),
                 "index" => {
-                    let index = self
-                        .read_address(&Address {
-                            root: index_slot.unwrap(),
-                            path: Vec::new(),
-                            identity: Arc::default(),
-                        })?
-                        .integer()?;
+                    let index = self.load_local(index_slot.unwrap())?.integer()?;
                     let index = usize::try_from(index)
                         .map_err(|_| RuntimeError::new("panic", "pointer", "negative index"))?;
                     if let Data::Slice(slice) = self.read_address(&address)?.data {
@@ -432,7 +469,7 @@ impl Instance {
             }
         }
         if !address.path.is_empty() {
-            self.borrow_address(&address)?;
+            self.snapshot_address(&address)?;
         }
         if !payload.path.is_empty() {
             address.identity = Arc::new(crate::value::PointerIdentity {

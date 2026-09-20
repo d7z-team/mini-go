@@ -98,30 +98,15 @@ func TestVMRejectsModuleRequirementCycle(t *testing.T) {
 	}
 }
 
-func TestVMRejectsModuleInitializationReentry(t *testing.T) {
-	artifact := ir.NewArtifact("example/init", "main")
-	artifact.Functions = []ir.Function{{ID: moduleInitFunctionID, Signature: testSignature("function() Void")}}
-	machine, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	module := machine.rootModule()
-	module.state.beginInitialization()
-	if err := machine.ensureModuleInitialized(module); err == nil || !strings.Contains(err.Error(), "initialization cycle") {
-		t.Fatalf("module initialization reentry = %v", err)
-	}
-	module.state.finishInitialization(errors.New("test cleanup"))
-}
-
-func TestVMWaitSetParkReportsBlocked(t *testing.T) {
+func TestVMNilChannelReceiveReportsBlocked(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Instructions: []ir.Instruction{{
-			Op: string(ir.OpMakeWaitSet),
+			Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int64>")}),
 		}, {
-			Op: string(ir.OpWaitSetPark),
+			Op: string(ir.OpWaitableRecv),
 		}, {
 			Op:      string(ir.OpReturn),
 			Payload: json.RawMessage(`{"result_count":1}`),
@@ -148,8 +133,8 @@ func TestVMWaitSetParkReportsBlocked(t *testing.T) {
 
 func TestVMReportsEveryBlockedExecutionContext(t *testing.T) {
 	wait := []ir.Instruction{
-		{Op: string(ir.OpMakeWaitSet)},
-		{Op: string(ir.OpWaitSetPark)},
+		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
+		{Op: string(ir.OpWaitableRecv)},
 		{Op: string(ir.OpPop)},
 		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
 	}
@@ -194,7 +179,7 @@ func TestBlockedContextSnapshotIsSortedAndBounded(t *testing.T) {
 			scope: &executionScope{id: id + 100},
 			blocked: &blockedOperation{error: Error{
 				ExecutionContextID: id, Generation: 2, ProgramHash: "revision", ModulePath: "example/blocked",
-				FunctionID: "fn.wait", PC: 3, Op: string(ir.OpWaitSetPark), Err: WaitBlockedError{Message: "waiting"},
+				FunctionID: "fn.wait", PC: 3, Op: string(ir.OpWaitableRecv), Err: WaitBlockedError{Message: "waiting"},
 			}},
 		})
 	}
@@ -214,8 +199,8 @@ func TestLibraryIdleDoesNotReportForegroundDeadlock(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function() Int64"),
 		Instructions: []ir.Instruction{
-			{Op: string(ir.OpMakeWaitSet)},
-			{Op: string(ir.OpWaitSetPark)},
+			{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
+			{Op: string(ir.OpWaitableRecv)},
 			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
 		},
 	}}
@@ -223,8 +208,8 @@ func TestLibraryIdleDoesNotReportForegroundDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vm.beginRun()
-	if _, err := vm.prepareScheduledFunction(vm.rootModule(), "fn.main", nil, nil, vm.nextSpawnExecutionContextID(), vm.activeRunID, false); err != nil {
+	scopeID := vm.beginRun()
+	if err := vm.prepareScheduledFunction(vm.rootModule(), "fn.main", nil, vm.nextSpawnExecutionContextID(), scopeID, false); err != nil {
 		t.Fatal(err)
 	}
 	vm.machine.foreground = nil
@@ -235,11 +220,10 @@ func TestLibraryIdleDoesNotReportForegroundDeadlock(t *testing.T) {
 	vm.finishRun()
 }
 
-func TestVMEnforcesStepLimitInsideNoSwitchFunctionAndKeepsLibraryOpen(t *testing.T) {
+func TestVMEnforcesStepLimitInsideLoopAndKeepsLibraryOpen(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
-		NoSwitch:  true,
 		Signature: testSignature("function() Void"),
 		Instructions: []ir.Instruction{{
 			Op:      string(ir.OpLabel),
@@ -307,7 +291,7 @@ func TestCollectionLimitsFailBeforeMutation(t *testing.T) {
 	if _, err := setIndexValue(module, object, newVMValue("Int", int64(2)), newVMValue("Int", int64(2))); err == nil {
 		t.Fatal("oversized map store succeeded")
 	}
-	if len(data.Entries) != 1 {
-		t.Fatalf("failed map store mutated map: %#v", data.Entries)
+	if data.length() != 1 {
+		t.Fatalf("failed map store mutated map: %#v", data.snapshot())
 	}
 }

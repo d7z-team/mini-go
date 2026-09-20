@@ -69,6 +69,13 @@ func addScopeRange(symbols *ir.FunctionSymbols, scopeID, start, end int) {
 
 func lowerStatementBody(artifact *ir.Artifact, fn *ir.Function, stmt hir.Statement) error {
 	switch stmt.Kind {
+	case hir.StmtSelect:
+		payload := ir.SelectPayload{Index: stmt.Local, Default: stmt.SelectDefault}
+		for _, selected := range stmt.SelectCases {
+			payload.Cases = append(payload.Cases, ir.SelectCase{Channel: selected.Channel, Send: selected.Send, Value: selected.Value, OK: selected.OK})
+		}
+		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpSelect), Payload: instructionPayload(payload)})
+		return nil
 	case hir.StmtMapIterInit, hir.StmtMapIterClose:
 		op := ir.OpMapIterClose
 		if stmt.Kind == hir.StmtMapIterInit {
@@ -205,21 +212,6 @@ func lowerStatementBody(artifact *ir.Artifact, fn *ir.Function, stmt hir.Stateme
 			return err
 		}
 		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitableSend)})
-	case hir.StmtWaitTokenSignal:
-		if err := lowerExpression(artifact, fn, stmt.Expr); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitTokenSignal)})
-	case hir.StmtWaitTokenCancel:
-		if err := lowerExpression(artifact, fn, stmt.Expr); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitTokenCancel)})
-	case hir.StmtWaitSetCancel:
-		if err := lowerExpression(artifact, fn, stmt.Expr); err != nil {
-			return err
-		}
-		fn.Instructions = append(fn.Instructions, ir.Instruction{Op: string(ir.OpWaitSetCancel)})
 	case hir.StmtSpawn:
 		if err := lowerExpression(artifact, fn, stmt.Expr); err != nil {
 			return err

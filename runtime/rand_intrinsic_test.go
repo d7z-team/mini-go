@@ -20,7 +20,7 @@ func (reader invalidEntropyReader) Read([]byte) (int, error) {
 
 func TestCryptoRandReadUsesInjectedEntropy(t *testing.T) {
 	machine := &vm{entropy: bytes.NewReader([]byte{1, 2, 3, 4})}
-	data := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 4), 0, 4, 4)
+	data := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 4), 4, 4)
 	result, err := cryptoRandRead(intrinsicContext{vm: machine}, []vmValue{data})
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestCryptoRandReadRejectsInvalidReaderResults(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			machine := &vm{entropy: test.reader}
-			data := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 4), 0, 4, 4)
+			data := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 4), 4, 4)
 			result, err := cryptoRandRead(intrinsicContext{vm: machine}, []vmValue{data})
 			if err != nil {
 				t.Fatal(err)
@@ -60,7 +60,7 @@ func TestCryptoRandReadRejectsInvalidReaderResults(t *testing.T) {
 
 func TestCryptoRandReadPreservesPartialReadError(t *testing.T) {
 	machine := &vm{entropy: io.MultiReader(bytes.NewReader([]byte{7, 8}), errorReader{})}
-	data := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 4), 0, 4, 4)
+	data := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 4), 4, 4)
 	first, err := cryptoRandRead(intrinsicContext{vm: machine}, []vmValue{data})
 	if err != nil || first[0].materializedData() != int64(2) || first[2].Data != true {
 		t.Fatalf("first result = %#v, %v", first, err)

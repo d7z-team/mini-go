@@ -36,11 +36,10 @@ func (timer *runtimeTimer) markReady() {
 	}
 }
 
-func (vm *vm) startTimer(module *moduleInstance, signal vmValue, delay, period time.Duration) error {
-	if vm == nil || module == nil || vm.machine == nil || vm.activeRunID == 0 {
+func (vm *vm) startTimer(scope *executionScope, module *moduleInstance, signal vmValue, delay, period time.Duration) error {
+	if vm == nil || module == nil || vm.machine == nil {
 		return errors.New("timer requires an active execution")
 	}
-	scope := vm.machine.activeScope()
 	if scope == nil || scope.settled {
 		return errors.New("timer requires an active execution scope")
 	}

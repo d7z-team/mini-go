@@ -47,8 +47,6 @@ const (
 	PrimitiveComplex128
 	PrimitiveError
 	PrimitiveFunction
-	PrimitiveWaitToken
-	PrimitiveWaitSet
 )
 
 type ChannelDir uint8

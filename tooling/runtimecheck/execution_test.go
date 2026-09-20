@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/d7z-team/mini-go/runtime"
@@ -79,18 +80,27 @@ func TestDistributedExecutionImagesMatchIndependentResults(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			instance, err := program.Instantiate(context.Background(), runtime.InstanceOptions{})
-			if err != nil {
-				t.Fatal(err)
+			parallelism := []int{1}
+			if strings.HasPrefix(vector.Name, "parallel_") || vector.Name == "select_transaction" {
+				parallelism = []int{1, 2, 4}
 			}
-			defer instance.Close()
-			result, err := instance.Call(context.Background(), "default")
-			if err != nil {
-				t.Fatal(err)
-			}
-			value, ok := result.Values[0].Int64()
-			if !ok || strconv.FormatInt(value, 10) != want {
-				t.Fatalf("result %v, want %s", result.Values, want)
+			for _, workers := range parallelism {
+				instance, err := program.Instantiate(context.Background(), runtime.InstanceOptions{Parallelism: workers})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, callErr := instance.Call(context.Background(), "default")
+				closeErr := instance.Close()
+				if callErr != nil {
+					t.Fatal(callErr)
+				}
+				if closeErr != nil {
+					t.Fatal(closeErr)
+				}
+				value, ok := result.Values[0].Int64()
+				if !ok || strconv.FormatInt(value, 10) != want {
+					t.Fatalf("parallelism %d: result %v, want %s", workers, result.Values, want)
+				}
 			}
 		})
 	}

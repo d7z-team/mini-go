@@ -61,3 +61,43 @@ func TestDebuggerSchemaSpawnedContext(t *testing.T) {
 	}
 	requireValues(t, result.Values, newVMValue("Int64", int64(42)))
 }
+
+func TestStepAfterSpawnStaysWithTheSelectedTask(t *testing.T) {
+	artifact := ir.NewArtifact("example/module", "main")
+	artifact.Functions = []ir.Function{
+		{ID: "fn.main", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
+			{Op: string(ir.OpMakeClosure), Payload: json.RawMessage(`{"function":"fn.child"}`)},
+			{Op: string(ir.OpSpawn), Payload: json.RawMessage(`{"arg_count":0}`)},
+			{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":0}`)},
+		}},
+		{ID: "fn.child", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
+			{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":0}`)},
+		}},
+	}
+	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
+	setTestInstructionLocations(t, &artifact,
+		testInstructionLocation{function: "fn.main", pc: 1, line: 4, column: 1},
+		testInstructionLocation{function: "fn.main", pc: 2, line: 5, column: 1},
+		testInstructionLocation{function: "fn.child", pc: 0, line: 8, column: 1},
+	)
+	machine, err := loadTestEngineWithOptions(artifact, InstanceOptions{Debugger: NewDebugger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTestBreakpoints(t, machine, "example/module", "main.mgo", 4)
+	execution, err := startTestExecution(machine, "Main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stepIntoTestExecution(execution); err != nil {
+		t.Fatal(err)
+	}
+	event, ok := execution.PauseEvent()
+	if !ok {
+		t.Fatal("selected task did not stop after spawn")
+	}
+	requireDebugEventWithContext(t, event, EventStep, "fn.main", 2, 5, 1)
+	if _, err := continueTestExecution(execution); err != nil {
+		t.Fatal(err)
+	}
+}

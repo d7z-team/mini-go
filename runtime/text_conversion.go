@@ -52,7 +52,7 @@ func (m *moduleInstance) convertByteSliceToString(value vmValue) (vmValue, bool,
 		return vmValue{}, true, fmt.Errorf("invalid %s value", value.Type)
 	}
 	if slice != nil && slice.ByteBacked {
-		text := string(slice.ByteBacking[slice.Start : slice.Start+slice.Len])
+		text := string(slice.bytes())
 		if m.vm != nil {
 			if err := m.vm.chargeAllocationBytes(int64(len(text))); err != nil {
 				return vmValue{}, true, err

@@ -1,6 +1,7 @@
 mod support;
 
 use mini_go::{
+    Executor, InstanceOptions,
     error::RuntimeError,
     ffi::{Bridge, Call, Cancellation, Completion, Reply, Request, Session},
     instance::{ExecutionLimits, Instance, PollStatus},
@@ -81,6 +82,48 @@ fn program() -> Arc<Program> {
         ]}]
     }));
     Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap())
+}
+
+#[test]
+fn public_parallel_runtime_delivers_async_ffi_and_releases_its_scope() {
+    for workers in [1, 2] {
+        let host = Host::default();
+        let executor = Executor::new(workers).unwrap();
+        let instance = program()
+            .instantiate(InstanceOptions {
+                bridge: Some(Arc::new(host.clone())),
+                parallelism: workers,
+                executor: Some(executor.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        let execution = instance.start("default", Vec::new()).unwrap();
+        let result = std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| execution.wait(&Cancellation::default()));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let completion = loop {
+                if let Some(completion) = host.completion.lock().unwrap().take() {
+                    break completion;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "public execution did not publish its FFI request"
+                );
+                std::thread::yield_now();
+            };
+            completion.complete(Reply::new(vec![1, 2, 3], None, None));
+            waiting.join().unwrap().unwrap()
+        });
+        assert!(matches!(
+            result.roots[0].data,
+            mini_go::snapshot::HostData::Integer(3)
+        ));
+        execution.wait_scope(&Cancellation::default()).unwrap();
+        assert_eq!(host.canceled.load(Ordering::SeqCst), 0);
+        instance.shutdown(&Cancellation::default()).unwrap();
+        assert_eq!(host.shutdown.load(Ordering::SeqCst), 1);
+        executor.shutdown(&Cancellation::default()).unwrap();
+    }
 }
 
 #[test]

@@ -171,7 +171,7 @@ func (v TypeView) Nilable() bool {
 	}
 	if primitive, ok := v.Primitive(); ok {
 		switch primitive {
-		case PrimitiveFunction, PrimitiveWaitToken, PrimitiveWaitSet:
+		case PrimitiveFunction:
 			return true
 		default:
 			return false

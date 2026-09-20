@@ -62,9 +62,9 @@ impl Instance {
                 .filter(|work| work.tasks != 0 || work.timers != 0)
                 .count(),
             runnable_tasks: self.runnable.len()
-                + usize::from(!self.frames.is_empty() && !self.debug.paused),
+                + usize::from(!self.running.frames.is_empty() && !self.debug.paused),
             blocked_tasks: self.blocked.len(),
-            paused_tasks: usize::from(self.debug.paused && !self.frames.is_empty()),
+            paused_tasks: usize::from(self.debug.paused && !self.running.frames.is_empty()),
             pending_ffi_calls: self.ffi_calls.pending_count(),
             pending_boundary_bytes: self.ffi_calls.reserved_bytes(),
             timers: self.timers.len(),
@@ -78,13 +78,16 @@ impl Instance {
             dynamic_types: self.types.dynamic_stats().0,
             dynamic_type_bytes: self.types.dynamic_stats().1,
             heap: self.heap.stats(),
-            memory: self.memory.stats,
+            memory: self.memory.stats(),
         }
     }
 
     pub(crate) fn scope_work(&self, scope: u64) -> ScopeWork {
         let mut work = self.scope_work.get(&scope).copied().unwrap_or_default();
-        work.steps = self.scope_steps.get(&scope).copied().unwrap_or_default();
+        work.steps = self
+            .scope_steps
+            .get(&scope)
+            .map_or(0, |budget| budget.executed());
         work
     }
 }

@@ -125,11 +125,6 @@ func validateFunctionBody(path string, fn Function, refs artifactRefs, table *ty
 			}
 		}
 	}
-	if fn.NoSwitch {
-		if err := validateNoSwitchFunction(path, fn); err != nil {
-			return FunctionAnalysis{}, err
-		}
-	}
 	analysis, err := AnalyzeFunction(fn)
 	if err != nil {
 		if validationErr, ok := err.(ValidationError); ok {
@@ -138,22 +133,6 @@ func validateFunctionBody(path string, fn Function, refs artifactRefs, table *ty
 		return FunctionAnalysis{}, newValidationError(path+".instructions", err)
 	}
 	return analysis, nil
-}
-
-func validateNoSwitchFunction(path string, fn Function) error {
-	for index, inst := range fn.Instructions {
-		switch Opcode(inst.Op) {
-		case OpCallDirect, OpTailCallDirect, OpCallValue, OpCallInterface, OpCallFFI, OpCallIntrinsic,
-			OpSpawn, OpDeferPush, OpInitModule, OpLoadExport,
-			OpWaitableSend, OpWaitableRecv, OpWaitableRecvOK, OpWaitSetPark:
-			return newCodedValidationError(
-				ValidationNoSwitchInvalid,
-				fmt.Sprintf("%s.instructions[%d]", path, index),
-				fmt.Errorf("no-switch function %q contains scheduling operation %q", fn.ID, inst.Op),
-			)
-		}
-	}
-	return nil
 }
 
 func validateResultLocals(path string, fn Function, locals map[string]struct{}) error {
@@ -192,6 +171,25 @@ func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, l
 		}
 		if refs.untypedConstants[payload.Constant] {
 			return newValidationError(path+".payload.constant", fmt.Errorf("untyped constant %q cannot be used by runtime instructions", payload.Constant))
+		}
+	case string(OpSelect):
+		var payload SelectPayload
+		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+			return err
+		}
+		used := []string{payload.Index}
+		for _, selected := range payload.Cases {
+			used = append(used, selected.Channel)
+			if selected.Send != "" {
+				used = append(used, selected.Send)
+			} else {
+				used = append(used, selected.Value, selected.OK)
+			}
+		}
+		for _, local := range used {
+			if _, ok := locals[local]; !ok {
+				return unknownValidationError(path+".payload", fmt.Errorf("unknown select local %q", local))
+			}
 		}
 	case string(OpLoadLocal), string(OpStoreLocal), string(OpMapIterInit), string(OpMapIterNext), string(OpMapIterClose):
 		var payload LocalPayload

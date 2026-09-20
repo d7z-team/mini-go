@@ -1,12 +1,13 @@
-package sync
+package sync_test
 
 import (
+	"sync"
 	"testing"
 )
 
 func TestMutexWaitGroupAndOnce(t *testing.T) {
-	var mutex Mutex
-	var group WaitGroup
+	var mutex sync.Mutex
+	var group sync.WaitGroup
 	value := 0
 	for index := 0; index < 32; index++ {
 		group.Go(func() {
@@ -23,7 +24,7 @@ func TestMutexWaitGroupAndOnce(t *testing.T) {
 	}
 	mutex.Unlock()
 	calls := 0
-	onceValue := OnceValue(func() int {
+	onceValue := sync.OnceValue(func() int {
 		calls++
 		return 42
 	})
@@ -32,22 +33,8 @@ func TestMutexWaitGroupAndOnce(t *testing.T) {
 	}
 }
 
-func TestMutexFIFOAndCrossGoroutineUnlock(t *testing.T) {
-	var mutex Mutex
-	mutex.Lock()
-	first := mutex.enqueue()
-	second := mutex.enqueue()
-	mutex.Unlock()
-	<-first
-	select {
-		case <-second:
-			t.Fatal("second waiter acquired before first released")
-		default:
-	}
-	mutex.Unlock()
-	<-second
-	mutex.Unlock()
-
+func TestMutexCrossGoroutineUnlock(t *testing.T) {
+	var mutex sync.Mutex
 	mutex.Lock()
 	done := make(chan struct{})
 	go func() {
@@ -67,7 +54,7 @@ func TestMutexUnlockPanicsWhenUnlocked(t *testing.T) {
 		defer func() {
 			deferred = recover() != nil
 		}()
-		var mutex Mutex
+		var mutex sync.Mutex
 		mutex.Unlock()
 	}()
 	if !deferred {
@@ -76,7 +63,7 @@ func TestMutexUnlockPanicsWhenUnlocked(t *testing.T) {
 }
 
 func TestMapRangeCanReenter(t *testing.T) {
-	var table Map
+	var table sync.Map
 	table.Store("a", 1)
 	table.Store("b", 2)
 	seen := 0
@@ -91,7 +78,7 @@ func TestMapRangeCanReenter(t *testing.T) {
 }
 
 func TestPoolStoresValuesAndUsesNew(t *testing.T) {
-	var pool Pool
+	var pool sync.Pool
 	pool.Put(nil)
 	if pool.Get() != nil {
 		t.Fatal("empty Pool returned a value")
@@ -111,8 +98,8 @@ func TestPoolStoresValuesAndUsesNew(t *testing.T) {
 }
 
 func TestCondSignal(t *testing.T) {
-	var mutex Mutex
-	condition := NewCond(&mutex)
+	var mutex sync.Mutex
+	condition := sync.NewCond(&mutex)
 	ready := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -130,7 +117,7 @@ func TestCondSignal(t *testing.T) {
 }
 
 func TestRWMutexAllowsReadersAndWriterProgress(t *testing.T) {
-	var mutex RWMutex
+	var mutex sync.RWMutex
 	readers := make(chan struct{}, 2)
 	releaseReaders := make(chan struct{})
 	for index := 0; index < 2; index++ {

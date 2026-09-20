@@ -33,7 +33,7 @@ func (m *moduleInstance) qualifiedTypeModule(typ string) (*moduleInstance, strin
 	if m.registry != nil {
 		revision = m.registry.revision
 	}
-	if cached, ok := m.qualifiedTypeCache[typ]; ok && cached.revision == revision {
+	if cached, ok := m.qualifiedTypeCache.load(typ); ok && cached.revision == revision {
 		return cached.module, cached.name, cached.found
 	}
 	if m.executable != nil {
@@ -43,10 +43,7 @@ func (m *moduleInstance) qualifiedTypeModule(typ string) (*moduleInstance, strin
 			name := strings.TrimSpace(typ[len(prefix):])
 			if name != "" && !strings.Contains(name, ".") {
 				if _, ok := m.executable.Types[name]; ok {
-					if m.qualifiedTypeCache == nil {
-						m.qualifiedTypeCache = make(map[string]qualifiedTypeResolution)
-					}
-					m.qualifiedTypeCache[typ] = qualifiedTypeResolution{module: m, name: name, revision: revision, found: true}
+					m.qualifiedTypeCache.store(typ, qualifiedTypeResolution{module: m, name: name, revision: revision, found: true})
 					return m, name, true
 				}
 			}
@@ -87,10 +84,7 @@ func (m *moduleInstance) qualifiedTypeModule(typ string) (*moduleInstance, strin
 }
 
 func (m *moduleInstance) cacheQualifiedTypeResolution(typ string, resolution qualifiedTypeResolution) {
-	if m.qualifiedTypeCache == nil {
-		m.qualifiedTypeCache = make(map[string]qualifiedTypeResolution)
-	}
-	m.qualifiedTypeCache[typ] = resolution
+	m.qualifiedTypeCache.store(typ, resolution)
 }
 
 func (m *moduleInstance) localizeType(typ string) string {
@@ -99,10 +93,8 @@ func (m *moduleInstance) localizeType(typ string) string {
 		return ""
 	}
 	if m != nil {
-		if m.localizeTypeCache != nil {
-			if cached, ok := m.localizeTypeCache[typ]; ok {
-				return cached
-			}
+		if cached, ok := m.localizeTypeCache.load(typ); ok {
+			return cached
 		}
 	}
 	modulePath := ""
@@ -117,18 +109,12 @@ func (m *moduleInstance) localizeType(typ string) string {
 	})
 	if ok {
 		if m != nil {
-			if m.localizeTypeCache == nil {
-				m.localizeTypeCache = make(map[string]string)
-			}
-			m.localizeTypeCache[typ] = localized
+			m.localizeTypeCache.store(typ, localized)
 		}
 		return localized
 	}
 	if m != nil {
-		if m.localizeTypeCache == nil {
-			m.localizeTypeCache = make(map[string]string)
-		}
-		m.localizeTypeCache[typ] = typ
+		m.localizeTypeCache.store(typ, typ)
 	}
 	return typ
 }
@@ -138,11 +124,11 @@ func (m *moduleInstance) qualifyLocalType(typ string) string {
 	if typ == "" || m == nil || m.executable == nil {
 		return typ
 	}
-	if m.qualifyTypeCache != nil {
-		if cached, ok := m.qualifyTypeCache[typ]; ok {
-			return cached
-		}
+
+	if cached, ok := m.qualifyTypeCache.load(typ); ok {
+		return cached
 	}
+
 	modulePath := strings.TrimSpace(m.executable.Artifact.Module.Path)
 	if modulePath == "" {
 		return typ
@@ -163,15 +149,10 @@ func (m *moduleInstance) qualifyLocalType(typ string) string {
 		return ref
 	})
 	if ok {
-		if m.qualifyTypeCache == nil {
-			m.qualifyTypeCache = make(map[string]string)
-		}
-		m.qualifyTypeCache[typ] = qualified
+		m.qualifyTypeCache.store(typ, qualified)
 		return qualified
 	}
-	if m.qualifyTypeCache == nil {
-		m.qualifyTypeCache = make(map[string]string)
-	}
-	m.qualifyTypeCache[typ] = typ
+
+	m.qualifyTypeCache.store(typ, typ)
 	return typ
 }

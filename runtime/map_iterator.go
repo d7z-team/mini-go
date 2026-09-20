@@ -22,20 +22,12 @@ func (f *frame) initMapIterator(local string, object vmValue) error {
 	if !ok && object.Data != nil {
 		return fmt.Errorf("invalid map backing for %s", object.Type)
 	}
-	count := 0
-	if data != nil {
-		count = len(data.Entries)
-	}
+	identities := data.entryIdentities()
 	delete(f.mapIterators, local)
-	if err := f.module.vm.chargeRuntimeObject(count*2, 0); err != nil {
+	if err := f.module.vm.chargeRuntimeObject(len(identities)*2, 0); err != nil {
 		return err
 	}
-	iterator := &mapIterator{object: object, entries: make([]uint64, 0, count)}
-	if data != nil {
-		for _, entry := range data.Entries {
-			iterator.entries = append(iterator.entries, entry.identity)
-		}
-	}
+	iterator := &mapIterator{object: object, entries: identities}
 	if f.mapIterators == nil {
 		f.mapIterators = make(map[string]*mapIterator)
 	}
@@ -52,11 +44,10 @@ func (f *frame) nextMapIterator(local string) error {
 	for iterator.position < len(iterator.entries) {
 		candidate := iterator.entries[iterator.position]
 		iterator.position++
-		key, exists := data.entryKeys[candidate]
+		entry, exists := data.loadIdentity(candidate)
 		if !exists {
 			continue
 		}
-		entry := data.Entries[key]
 		f.push(f.module.cloneValueForStore(entry.Key))
 		f.push(f.module.cloneValueForStore(entry.Value))
 		f.push(newBoolValue(true))

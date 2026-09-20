@@ -15,7 +15,10 @@ import (
 )
 
 type vm struct {
+	leaseMu                sync.Mutex
+	activeSlices           int
 	owner                  atomic.Bool
+	controlWaiters         atomic.Int64
 	instance               *Instance
 	revision               atomic.Pointer[instanceRevision]
 	limits                 Limits
@@ -23,20 +26,17 @@ type vm struct {
 	breakpointsActive      atomic.Bool
 	maxSteps               int64
 	nextRunID              int64
-	activeRunID            int64
 	nextExecutionContextID int64
-	callStack              []*frame
-	allocationRoots        []vmValue
-	debugParents           []debugFrame
+	controlRoots           []vmValue // Temporary values owned by a resource control transaction.
 	paused                 *debugPauseState
 	wake                   chan struct{}
 	ownerWake              chan struct{}
 	skipDebugPause         debugResumePoint
 	debugStep              debugStepState
+	debugStepActive        atomic.Bool
 	hostPauseRequested     atomic.Bool
 	interruptRequested     atomic.Bool
 	pendingEvents          atomic.Int64
-	nextWaitTokenID        int64
 	selectState            uint64
 	machine                *executionMachine
 	liveGuestBytes         atomic.Int64
@@ -50,14 +50,16 @@ type vm struct {
 	ffiCalls               map[*pendingFFICall]struct{}
 	retiredMu              sync.Mutex
 	retiredRevisions       []*instanceRevision
-	reflectTypes           map[string]TypeInfo
-	reflectTypeValues      map[string]vmValue
+	reflectTypes           metadataCache[string, TypeInfo]
+	reflectTypeValues      metadataCache[string, vmValue]
 	dynamicTypeCount       int
 	dynamicTypeBytes       int64
+	hostMu                 sync.Mutex
 	clock                  Clock
 	entropy                io.Reader
 	timers                 map[*waitableResource]*runtimeTimer
 	profileOptions         GuestProfileOptions
+	taskObserver           func(int64, bool, []int64)
 }
 
 const (
@@ -193,12 +195,18 @@ var errNilFunctionCall = errors.New("nil function call")
 
 // InstanceOptions configures one isolated runtime instance.
 type InstanceOptions struct {
-	FFI          ffi.Bridge
-	Clock        Clock
-	Entropy      io.Reader
-	Limits       Limits
+	FFI     ffi.Bridge
+	Clock   Clock
+	Entropy io.Reader
+	Limits  Limits
+	// Parallelism bounds simultaneously running guest tasks in this instance.
+	// Zero selects one worker. Tasks share the process-wide bounded executor;
+	// the instance never creates a goroutine per guest task.
+	Parallelism  int
+	Executor     *Executor
 	Debugger     *Debugger
 	GuestProfile GuestProfileOptions
+	taskObserver func(int64, bool, []int64)
 	modules      *moduleRegistry
 	ffiSession   ffi.Session
 }
@@ -238,6 +246,9 @@ func newVMWithOptions(executable *executable, options InstanceOptions) (*vm, err
 	if options.GuestProfile.MaxEntries < 0 {
 		return nil, errors.New("guest profile entry limit cannot be negative")
 	}
+	if options.Parallelism < 0 {
+		return nil, errors.New("instance parallelism cannot be negative")
+	}
 	modules := options.modules.clone()
 	root := newModuleInstance(executable)
 	rootPath := strings.TrimSpace(executable.Artifact.Module.Path)
@@ -267,18 +278,17 @@ func newVMWithOptions(executable *executable, options InstanceOptions) (*vm, err
 		entropy = cryptorand.Reader
 	}
 	machine := &vm{
-		limits:            limits,
-		profileOptions:    options.GuestProfile,
-		debugger:          options.Debugger,
-		ffiSession:        options.ffiSession,
-		maxSteps:          limits.MaxSteps,
-		wake:              make(chan struct{}, 1),
-		ownerWake:         make(chan struct{}, 1),
-		reflectTypes:      make(map[string]TypeInfo),
-		reflectTypeValues: make(map[string]vmValue),
-		clock:             clock,
-		entropy:           entropy,
-		timers:            make(map[*waitableResource]*runtimeTimer),
+		limits:         limits,
+		profileOptions: options.GuestProfile,
+		taskObserver:   options.taskObserver,
+		debugger:       options.Debugger,
+		ffiSession:     options.ffiSession,
+		maxSteps:       limits.MaxSteps,
+		wake:           make(chan struct{}, 1),
+		ownerWake:      make(chan struct{}, 1),
+		clock:          clock,
+		entropy:        entropy,
+		timers:         make(map[*waitableResource]*runtimeTimer),
 	}
 	if machine.debugger == nil {
 		machine.debugger = NewDebugger()
@@ -322,49 +332,23 @@ func (vm *vm) moduleRegistry() *moduleRegistry {
 	return revision.modules
 }
 
-func (vm *vm) enterOwner() error {
-	if vm == nil {
-		return errors.New("nil VM")
-	}
-	if !vm.owner.CompareAndSwap(false, true) {
-		return ErrBusy
-	}
-	return nil
-}
-
-func (vm *vm) enterOwnerContext(ctx context.Context) error {
-	for {
-		if vm.owner.CompareAndSwap(false, true) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-vm.ownerWake:
-		}
-	}
-}
-
-func (vm *vm) leaveOwner() {
-	if vm != nil {
-		vm.owner.Store(false)
-		select {
-		case vm.ownerWake <- struct{}{}:
-		default:
-		}
-	}
-}
-
 func (vm *vm) signalWake() {
+	if vm == nil || vm.wake == nil {
+		return
+	}
+	vm.signalPollWake()
+	if vm.instance != nil {
+		vm.instance.signalSupervisor()
+	}
+}
+
+func (vm *vm) signalPollWake() {
 	if vm == nil || vm.wake == nil {
 		return
 	}
 	select {
 	case vm.wake <- struct{}{}:
 	default:
-	}
-	if vm.instance != nil {
-		vm.instance.signalSupervisor()
 	}
 }
 
@@ -384,7 +368,7 @@ func (vm *vm) prepareFunction(functionID string, args []vmValue) (int64, error) 
 	}
 	scopeID := vm.beginRun()
 	vm.interruptRequested.Store(false)
-	if _, err := vm.prepareScheduledFunction(root, functionID, args, nil, vm.nextSpawnExecutionContextID(), scopeID, false); err != nil {
+	if err := vm.prepareScheduledFunction(root, functionID, args, vm.nextSpawnExecutionContextID(), scopeID, false); err != nil {
 		vm.finishForeground()
 		return 0, err
 	}
@@ -415,7 +399,7 @@ func (vm *vm) prepareProgramEntry() (int64, error) {
 	}
 	scopeID := vm.beginRun()
 	vm.interruptRequested.Store(false)
-	if _, err := vm.prepareScheduledFunction(root, programEntryFunctionID, nil, nil, vm.nextSpawnExecutionContextID(), scopeID, true); err != nil {
+	if err := vm.prepareScheduledFunction(root, programEntryFunctionID, nil, vm.nextSpawnExecutionContextID(), scopeID, true); err != nil {
 		vm.finishForeground()
 		return 0, err
 	}
@@ -428,6 +412,15 @@ func (vm *vm) runPrepared(instructionBudget int) runOutcome {
 	}
 	program := vm.machine.foreground != nil && vm.machine.foreground.program
 	outcome := vm.machine.run(instructionBudget)
+	return vm.finishPreparedOutcomeForProgram(outcome, program)
+}
+
+func (vm *vm) finishPreparedOutcome(outcome runOutcome) runOutcome {
+	program := vm != nil && vm.machine != nil && vm.machine.foreground != nil && vm.machine.foreground.program
+	return vm.finishPreparedOutcomeForProgram(outcome, program)
+}
+
+func (vm *vm) finishPreparedOutcomeForProgram(outcome runOutcome, program bool) runOutcome {
 	if outcome.suspended() {
 		return outcome
 	}
@@ -441,7 +434,7 @@ func (vm *vm) runPrepared(instructionBudget int) runOutcome {
 		} else if errors.Is(err, context.Canceled) || !program && isScopePolicyError(err) {
 			vm.finishForeground()
 		} else {
-			vm.machine.abortQueuedTasks(err)
+			vm.machine.abortTasks(err)
 			vm.finishRun()
 		}
 		return outcome

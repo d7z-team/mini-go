@@ -25,6 +25,10 @@ func newVMValue(typ, data any) vmValue {
 		runtimeType = coerceRuntimeType(typ)
 	}
 	switch data := data.(type) {
+	case []vmValue:
+		return vmValue{Type: runtimeType, Data: &vmArray{vmSlice: vmSlice{
+			vmSliceStorage: &vmSliceStorage{Backing: data}, Len: len(data), Cap: len(data),
+		}}}
 	case int:
 		return newSignedVMValue(runtimeType, int64(data))
 	case int8:

@@ -5,13 +5,20 @@ import (
 	"fmt"
 )
 
-func (vm *vm) executeInstruction(frame *frame, inst *preparedInstruction) error {
-	defer frame.releasePopValues()
+func (vm *vm) executeInstruction(task *executionTask, frame *frame, inst *preparedInstruction) error {
+	err := vm.executeInstructionBody(task, frame, inst)
+	if _, census := findGuestCensusRequest(err); !census {
+		frame.releasePopValues()
+	}
+	return err
+}
+
+func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *preparedInstruction) error {
 	switch inst.op {
-	case preparedPanic, preparedDeferPush, preparedRecover,
+	case preparedPanic, preparedDeferPush, preparedRecover, preparedLoadExport, preparedInitModule,
 		preparedCallDirect, preparedTailCallDirect, preparedCallValue, preparedCallInterface, preparedSpawn,
 		preparedWaitableSend, preparedWaitableRecv, preparedWaitableRecvOK,
-		preparedWaitSetPark, preparedCallFFI, preparedReturn:
+		preparedCallFFI, preparedReturn:
 		return fmt.Errorf("control opcode %q reached non-scheduler instruction path", inst.opcodeText())
 	case preparedConst:
 		value, err := frame.module.constantValueAt(inst.constantIndex)
@@ -344,12 +351,9 @@ func (vm *vm) executeInstruction(frame *frame, inst *preparedInstruction) error 
 		if err != nil {
 			return err
 		}
-		updated, err := setIndexValue(frame.module, values[0], values[1], values[2])
+		_, err = setIndexValue(frame.module, values[0], values[1], values[2])
 		if err != nil {
 			return err
-		}
-		if original, ok := values[0].Data.([]vmValue); ok {
-			copy(original, updated.Data.([]vmValue))
 		}
 	case preparedLoadField:
 		payload := inst.field
@@ -368,19 +372,9 @@ func (vm *vm) executeInstruction(frame *frame, inst *preparedInstruction) error 
 		if err != nil {
 			return err
 		}
-		updated, err := storeFieldValue(frame.module, object, payload.Field, value)
+		_, err = storeFieldValue(frame.module, object, payload.Field, value)
 		if err != nil {
 			return err
-		}
-		if updated.Data != object.Data {
-			original, originalOK := object.Data.(*vmStruct)
-			detached, detachedOK := updated.Data.(*vmStruct)
-			if !originalOK || !detachedOK || original == nil || detached == nil {
-				return fmt.Errorf("cannot store detached field on %s", object.Type)
-			}
-			original.values = detached.values
-			original.shared = false
-			original.sparse = detached.sparse
 		}
 	case preparedAddressOf:
 		payload := inst.address
@@ -441,18 +435,6 @@ func (vm *vm) executeInstruction(frame *frame, inst *preparedInstruction) error 
 			return err
 		}
 		frame.push(newVMValue("Bool", ok))
-	case preparedWaitableSubscribeRecv:
-		waitable, token, err := frame.pop2()
-		if err != nil {
-			return err
-		}
-		return waitableWaitRecvValue(frame.module, waitable, token)
-	case preparedWaitableSubscribeSend:
-		waitable, token, err := frame.pop2()
-		if err != nil {
-			return err
-		}
-		return waitableWaitSendValue(frame.module, waitable, token)
 	case preparedWaitableCanSend:
 		value, err := frame.pop()
 		if err != nil {
@@ -469,54 +451,6 @@ func (vm *vm) executeInstruction(frame *frame, inst *preparedInstruction) error 
 			return err
 		}
 		return waitableCloseValue(frame.module, value)
-	case preparedMakeWaitToken:
-		if err := vm.chargeAllocation(); err != nil {
-			return err
-		}
-		frame.push(vm.newWaitTokenValue())
-	case preparedWaitTokenSignal:
-		value, err := frame.pop()
-		if err != nil {
-			return err
-		}
-		return signalWaitToken(value)
-	case preparedWaitTokenCancel:
-		value, err := frame.pop()
-		if err != nil {
-			return err
-		}
-		return cancelWaitToken(value)
-	case preparedMakeWaitSet:
-		if err := vm.chargeAllocation(); err != nil {
-			return err
-		}
-		frame.push(newWaitSetValue())
-	case preparedWaitSetAdd:
-		values, err := frame.popN(2)
-		if err != nil {
-			return err
-		}
-		out, err := vm.addWaitSetToken(values[0], values[1])
-		if err != nil {
-			return err
-		}
-		frame.push(out)
-	case preparedWaitSetPoll:
-		value, err := frame.pop()
-		if err != nil {
-			return err
-		}
-		out, err := pollWaitSet(vm, value)
-		if err != nil {
-			return err
-		}
-		frame.push(out)
-	case preparedWaitSetCancel:
-		value, err := frame.pop()
-		if err != nil {
-			return err
-		}
-		return cancelWaitSet(value)
 	case preparedLoadLocal:
 		payload := inst.local
 		if inst.localIndex < 0 || inst.localIndex >= len(frame.localCells) {
@@ -637,25 +571,13 @@ func (vm *vm) executeInstruction(frame *frame, inst *preparedInstruction) error 
 			exact:      exact,
 			upvalues:   upvalues,
 		}))
-	case preparedLoadExport:
-		payload := inst.export
-		value, err := vm.loadExport(payload.ModulePath, payload.Export)
-		if err != nil {
-			return err
-		}
-		frame.push(value)
-	case preparedInitModule:
-		payload := inst.initModule
-		if _, err := vm.loadModule(payload.ModulePath); err != nil {
-			return err
-		}
 	case preparedCallIntrinsic:
 		payload := inst.callIntrinsic
 		args, err := frame.popN(payload.ArgCount)
 		if err != nil {
 			return err
 		}
-		values, err := invokeIntrinsic(vm, frame.module, payload.ID, args)
+		values, err := invokeIntrinsic(intrinsicContext{vm: vm, module: frame.module, task: task}, payload.ID, args)
 		if err != nil {
 			var request *artifactCallbackRequest
 			if errors.As(err, &request) {

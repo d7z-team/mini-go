@@ -10,7 +10,7 @@
 
 ## 安装与 Node.js 接入
 
-安装 `make runtime-wasm-pack` 产出的 tarball，也可从项目制品服务获取：
+安装 `make runtime-wasm-pack` 产出的 tarball：
 
 ```sh
 npm install ./d7z-team-mini-go-0.1.0.tgz
@@ -34,7 +34,8 @@ try {
 ```
 
 在 Go 宿主上通过 `mini-go-dev runtime-blocks` 编译镜像，步骤见
-[Rust 快速开始](../README.md#快速开始)。镜像与 runtime 应来自同一工具链。
+[Rust 快速开始](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/README.md#快速开始)。
+镜像与 runtime 应来自同一工具链。
 JSON 或 gzip 镜像按原始字节传入，以保留 64 位整数精度。
 
 ## 浏览器部署
@@ -78,8 +79,8 @@ CSP 应允许脚本、Worker、WASM 编译及所需网络连接。runtime 资源
 | `settled` | 该 scope 的后台工作全部结束 |
 | `cancel()` | 取消执行 |
 
-调用通过有界队列进入，每次只有一个前台入口。`timeoutMs` 包含排队时间，
-`signal` 可取消构造或执行。协作式调度与浏览器节流会影响响应延迟。
+调用通过有界队列进入，每次只有一个前台入口。`timeoutMs` 包含排队时间，`signal` 可取消构造或执行。
+每个 WASM 实例在自己的 Worker 中单线程协作推进；需要并行隔离时创建多个实例，由应用划分状态与请求。
 
 `timeoutMs` 接受 0 到 `Number.MAX_SAFE_INTEGER` 的有限毫秒数（允许小数），缺省不设期限。
 0 异步请求取消；入口返回后，期限仍覆盖后台 scope，直到 `settled`。
@@ -155,7 +156,8 @@ RPC 续租由 Worker 内的 Rust Endpoint 负责。暂停脚本不会暂停网�
 整个 Worker 被冻结或同步加载、补丁阻塞事件循环超过租期时，远端可以撤销授权。
 恢复后旧资源不能重新生效，应建立新会话；SDK 不重放业务调用。
 `rpcOptions` 可设置 `leaseTtlMs`、`admissionTimeoutMs` 和 `maxCallDurationMs`，单位为正整数毫秒；
-不传时使用 [Endpoint 默认配置](../../../RPC.md#错误与超时)。租期由接收方授予，客户端与服务端分别配置自己的授权窗口。
+不传时使用 [Endpoint 默认配置](https://github.com/d7z-team/mini-go/blob/main/RPC.md#错误与超时)。
+租期由接收方授予，客户端与服务端分别配置自己的授权窗口。
 
 ## 值与资源限制
 
@@ -221,7 +223,7 @@ URI 可选，用于编辑器显示位置。每个树声明导入前缀，宿主�
 
 请求支持 AbortSignal。正常取消保留会话；Worker 故障后重建已确认输入，旧快照句柄失效。
 `upgrade(image, signal)` 准备新编译器并恢复输入后切换，失败保留当前会话。
-默认只允许编辑根工作区，`Editable` 可指定额外根或只读包。
+默认只允许编辑根工作区；`Editable` 可授权额外源码根。
 
 ### 调试会话
 
@@ -262,4 +264,4 @@ dispose 结束调试后仍需由调用方关闭 vm。使用 `DebugSession.fromBu
 
 从 Git checkout 运行 `make runtime-wasm-pack` 生成可安装 tarball。
 构建工具链、浏览器依赖、无 RPC 构建与验证命令统一见
-[开发指南](../../../DEVELOPMENT.md#wasm-与-typescript)。
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#wasm-与-typescript)。

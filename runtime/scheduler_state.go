@@ -1,6 +1,13 @@
 package runtime
 
-import "math"
+import (
+	"errors"
+	"math"
+	"sync"
+	"sync/atomic"
+
+	ir "github.com/d7z-team/mini-go/runtime/bytecode"
+)
 
 type deferredCall struct {
 	caller *moduleInstance
@@ -8,18 +15,26 @@ type deferredCall struct {
 }
 
 type executionMachine struct {
-	vm                 *vm
-	foreground         *executionScope
-	scopes             map[int64]*executionScope
-	runnable           []*executionTask
-	runnableHead       int
-	blocked            []*executionTask
-	running            *executionTask
-	paused             *executionTask
-	pollBudget         int
-	pollAttempts       int
-	pollExecuted       int
-	blockedWakePending bool
+	// controlMu protects the small shared scheduler/resource transitions that
+	// may be requested by concurrently running task slices. Full owner actions
+	// run only after all slices have returned and do not take this lock.
+	controlMu    sync.Mutex
+	vm           *vm
+	foreground   *executionScope
+	scopes       map[int64]*executionScope
+	tasks        map[int64]*executionTask
+	runnable     []*executionTask
+	runnableHead int
+	blocked      []*executionTask
+	paused       *executionTask
+}
+
+// taskSlice is owned by one dispatch. The driver merges its counters only
+// after the execution lease has returned.
+type taskSlice struct {
+	limit     int
+	attempted int
+	executed  int
 }
 
 func (machine *executionMachine) runnableCount() int {
@@ -51,10 +66,17 @@ func (machine *executionMachine) pushRunnable(tasks ...*executionTask) {
 		machine.runnable = machine.runnable[:active]
 		machine.runnableHead = 0
 	}
-	machine.runnable = append(machine.runnable, tasks...)
+	for _, task := range tasks {
+		if task.ownership.enqueue() {
+			machine.runnable = append(machine.runnable, task)
+		}
+	}
 }
 
 func (machine *executionMachine) pushRunnableFront(task *executionTask) {
+	if !task.ownership.enqueue() {
+		return
+	}
 	if machine.runnableHead > 0 {
 		machine.runnableHead--
 		machine.runnable[machine.runnableHead] = task
@@ -97,18 +119,38 @@ type executionScope struct {
 }
 
 type executionTask struct {
+	ownership taskOwnership
 	// Poll suspension preserves the current scheduling quantum.
-	quantumSteps int
-	id           int64
-	scope        *executionScope
-	execution    *Execution
-	budget       *executionBudget
-	frames       []*executionFrame
-	debugParents []debugFrame
-	blocked      *blockedOperation
-	pendingErr   error
-	terminal     func([]vmValue, error)
-	finished     bool
+	quantumSteps       int
+	profilePhase       uint64
+	id                 int64
+	scope              *executionScope
+	execution          *Execution
+	budget             *executionBudget
+	stepGrant          int64
+	stepsLeft          int64
+	frames             []*executionFrame
+	completingFrame    *executionFrame
+	preparingSelection *channelSelection
+	retryInstruction   bool
+	pendingCensus      int64
+	debugParents       []debugFrame
+	blocked            *blockedOperation
+	pendingErr         error
+	// sliceValues roots a completed task's values between publication of the
+	// task continuation and owner-side result processing.
+	sliceValues []vmValue
+}
+
+func (task *executionTask) retainedFrames(yield func(int, *executionFrame) bool) {
+	for index, frame := range task.frames {
+		if !yield(index, frame) {
+			return
+		}
+	}
+	if task.completingFrame != nil {
+		yield(len(task.frames), task.completingFrame)
+	}
 }
 
 func (machine *executionMachine) attachExecution(scopeID int64, execution *Execution) {
@@ -123,50 +165,79 @@ func (machine *executionMachine) attachExecution(scopeID int64, execution *Execu
 	execution.mu.Lock()
 	execution.scopeDone = scope.done
 	execution.mu.Unlock()
-	for _, task := range machine.runnableTasks() {
+	for _, task := range machine.tasks {
 		if task.scope == scope {
 			task.execution = execution
 		}
 	}
-	for _, task := range machine.blocked {
-		if task.scope == scope {
-			task.execution = execution
-		}
-	}
-	if machine.paused != nil && machine.paused.scope == scope {
-		machine.paused.execution = execution
-	}
-}
-
-func (task *executionTask) inNoSwitchRegion() bool {
-	if task == nil {
-		return false
-	}
-	for index := len(task.frames) - 1; index >= 0; index-- {
-		active := task.frames[index]
-		if active != nil && active.frame != nil && active.frame.function.Decl.NoSwitch {
-			return true
-		}
-	}
-	return false
 }
 
 type executionBudget struct {
-	steps        int64
-	profilePhase uint64
+	steps        atomic.Int64
+	profilePhase atomic.Uint64
+	mu           sync.Mutex
+	committed    int64
+	reserved     int64
+	waiting      bool
+	wake         func()
+}
+
+var errStepBudgetReserved = errors.New("instruction allowance is held by another task")
+
+func (task *executionTask) releaseStepGrant() {
+	if task.stepGrant == 0 {
+		return
+	}
+	budget := task.budget
+	budget.mu.Lock()
+	budget.reserved -= task.stepGrant
+	used := task.stepGrant - task.stepsLeft
+	budget.committed += min(used, math.MaxInt64-budget.committed)
+	waiting := budget.waiting
+	budget.waiting = false
+	budget.mu.Unlock()
+	task.stepGrant, task.stepsLeft = 0, 0
+	if waiting && budget.wake != nil {
+		budget.wake()
+	}
 }
 
 func (task *executionTask) consumeStep(limit int64) error {
 	if task.budget == nil {
 		task.budget = &executionBudget{}
 	}
-	if limit > 0 && task.budget.steps >= limit {
-		return StepLimitError{MaxSteps: limit}
+	if task.stepsLeft == 0 {
+		task.releaseStepGrant()
+		budget := task.budget
+		budget.mu.Lock()
+		if budget.reserved == 0 {
+			budget.committed = budget.steps.Load()
+		}
+		grant := int64(taskInstructionQuantum)
+		if limit > 0 {
+			if budget.committed >= limit {
+				budget.mu.Unlock()
+				return StepLimitError{MaxSteps: limit}
+			}
+			grant = min(grant, limit-budget.committed-budget.reserved)
+			if grant <= 0 {
+				budget.waiting = true
+				budget.mu.Unlock()
+				return errStepBudgetReserved
+			}
+		}
+		budget.reserved += grant
+		budget.mu.Unlock()
+		task.stepGrant, task.stepsLeft = grant, grant
 	}
-	if task.budget.steps < math.MaxInt64 {
-		task.budget.steps++
+	task.stepsLeft--
+	for {
+		steps := task.budget.steps.Load()
+		if steps == math.MaxInt64 || task.budget.steps.CompareAndSwap(steps, steps+1) {
+			break
+		}
 	}
-	task.budget.profilePhase++
+	task.profilePhase = task.budget.profilePhase.Add(1)
 	return nil
 }
 
@@ -193,20 +264,20 @@ type artifactCallbackRequest struct {
 }
 
 type reflectRecvRequest struct {
-	ctx      intrinsicContext
 	waitable vmValue
+	ctx      intrinsicContext
 }
 
 type reflectSendRequest struct {
-	ctx      intrinsicContext
 	waitable vmValue
+	ctx      intrinsicContext
 	value    vmValue
 }
 
 type reflectSelectRequest struct {
-	waitSet vmValue
-	ctx     intrinsicContext
-	cases   []reflectSelectCaseState
+	ctx       intrinsicContext
+	selection *channelSelection
+	indexes   []int
 }
 
 func (request *reflectRecvRequest) Error() string {
@@ -241,14 +312,16 @@ type machinePanic struct {
 }
 
 type blockedOperation struct {
+	selection     *channelSelection
+	selectPayload *ir.SelectPayload
+	mutex         *mutexLockRequest
+	ticket        *taskWaitTicket
 	kind          string
-	resource      *waitableResource
-	waitable      vmValue
-	waitSet       vmValue
+	module        *moduleInstance
+	moduleReady   func(*executionTask, *executionFrame) error
 	ffi           *pendingFFICall
 	withOK        bool
 	reflectRecv   *reflectRecvRequest
-	recvToken     vmValue
 	reflectSend   bool
 	reflectSelect *reflectSelectRequest
 	error         Error

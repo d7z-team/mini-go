@@ -274,7 +274,7 @@ func TestParseCanonicalRejectsUnknownNamedType(t *testing.T) {
 }
 
 func TestBuiltinTypeNames(t *testing.T) {
-	for _, name := range []string{"Void", "Any", "Int", "Function", "WaitToken"} {
+	for _, name := range []string{"Void", "Any", "Int", "Function"} {
 		if !IsBuiltinTypeName(name) {
 			t.Fatalf("expected %q to be a builtin type name", name)
 		}

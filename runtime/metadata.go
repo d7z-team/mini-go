@@ -95,11 +95,8 @@ func (m *moduleInstance) findType(name string) (TypeInfo, bool) {
 
 func (m *moduleInstance) typeInfo(decl types.TypeNode) TypeInfo {
 	if m != nil {
-		if cached, ok := m.typeInfoCache[decl.ID]; ok {
+		if cached, ok := m.typeInfoCache.load(decl.ID); ok {
 			return cached
-		}
-		if m.typeInfoCache == nil {
-			m.typeInfoCache = make(map[types.TypeID]TypeInfo)
 		}
 	}
 	modulePath := ""
@@ -146,7 +143,7 @@ func (m *moduleInstance) typeInfo(decl types.TypeNode) TypeInfo {
 		info.Methods = exported
 	}
 	if m != nil {
-		m.typeInfoCache[decl.ID] = info
+		m.typeInfoCache.store(decl.ID, info)
 	}
 	return info
 }
@@ -197,14 +194,12 @@ func (m *moduleInstance) moduleStructFieldInfo(typ any) ([]TypeFieldInfo, bool) 
 	if typeText == "" {
 		return nil, false
 	}
-	if cached, ok := m.structFieldsCache[typeText]; ok {
+	if cached, ok := m.structFieldsCache.load(typeText); ok {
 		return cached.fields, cached.found
 	}
-	if m.structFieldsCache == nil {
-		m.structFieldsCache = make(map[string]structFieldsResolution)
-	}
+
 	resolve := func(fields []TypeFieldInfo, found bool) ([]TypeFieldInfo, bool) {
-		m.structFieldsCache[typeText] = structFieldsResolution{fields: fields, found: found}
+		m.structFieldsCache.store(typeText, structFieldsResolution{fields: fields, found: found})
 		return fields, found
 	}
 	if canonicalTypeKind(typeText) == "struct" {

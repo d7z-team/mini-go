@@ -369,6 +369,8 @@ pub struct Wake {
     #[cfg(not(target_arch = "wasm32"))]
     changed: Condvar,
     waiter: Mutex<Option<Waker>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    supervisor: Mutex<Option<Waker>>,
 }
 
 impl Wake {
@@ -385,6 +387,17 @@ impl Wake {
         if let Some(waiter) = waiter {
             waiter.wake();
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let supervisor = self.supervisor.lock().unwrap().clone();
+            if let Some(supervisor) = supervisor {
+                supervisor.wake();
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_supervisor(&self, waker: Waker) {
+        *self.supervisor.lock().unwrap() = Some(waker);
     }
     /// Register the owner's async driver without losing a concurrent signal.
     pub fn poll_changed(&self, observed: u64, cx: &Context<'_>) -> Poll<()> {
@@ -520,6 +533,17 @@ impl PendingCalls {
                         ));
                     }
                     pending.call = Some(call);
+                    // Completion can precede Start's return and its first
+                    // notification may already have been drained by control.
+                    let delivery = pending.slot.delivery.lock().unwrap();
+                    let ready = delivery.reply.is_some();
+                    if ready {
+                        pending.slot.ready.insert(id);
+                    }
+                    drop(delivery);
+                    if ready {
+                        self.wake.signal();
+                    }
                     Ok(())
                 } else {
                     call.cancel();
@@ -597,6 +621,27 @@ impl Drop for PendingCalls {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+
+    #[test]
+    fn start_republishes_completion_drained_during_host_handoff() {
+        struct HostCall;
+        impl Call for HostCall {
+            fn cancel(&self) {}
+        }
+        let wake = Arc::new(Wake::default());
+        let mut pending = PendingCalls::new(1, 64, wake.clone());
+        let (id, _, complete) = pending.reserve(0, 64).unwrap();
+        complete.complete(Reply::new(vec![1, 2], None, None));
+        assert_eq!(pending.take_ready_ids(), BTreeSet::from([id]));
+        assert!(pending.take(id).is_none());
+        let before_start = wake.epoch();
+        pending.started(id, Ok(Box::new(HostCall))).unwrap();
+        assert_ne!(wake.epoch(), before_start);
+        assert_eq!(pending.take_ready_ids(), BTreeSet::from([id]));
+        assert_eq!(pending.take(id).unwrap().consume().unwrap(), [1, 2]);
+        assert_eq!(pending.reserved_bytes(), 0);
+        assert!(pending.take_ready_ids().is_empty());
+    }
 
     #[test]
     fn draining_while_publishing_preserves_each_ready_identity() {

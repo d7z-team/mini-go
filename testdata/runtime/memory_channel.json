@@ -1,1 +1,27 @@
-{"type_table": {"nodes": [{"id": "channel", "kind": 9, "direction": 1, "elem": {"kind": 3, "primitive": 3}}]}, "constants": [{"id": "answer", "type": {"kind": 3, "primitive": 3}, "value": 42}], "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}, {"kind": 3, "primitive": 3}, {"kind": 3, "primitive": 1}]}, "locals": [{"id": "channel", "type": {"kind": 9, "node": "channel"}}, {"id": "token", "type": {"kind": 3, "primitive": 20}}, {"id": "sent", "type": {"kind": 3, "primitive": 1}}], "instructions": [{"op": "zero", "payload": {"type": {"kind": 3, "primitive": 3}}}, {"op": "make_waitable", "payload": {"type": {"kind": 9, "node": "channel"}}}, {"op": "store_local", "payload": {"local": "channel"}}, {"op": "make_wait_token"}, {"op": "store_local", "payload": {"local": "token"}}, {"op": "load_local", "payload": {"local": "channel"}}, {"op": "load_local", "payload": {"local": "token"}}, {"op": "waitable_subscribe_recv"}, {"op": "load_local", "payload": {"local": "channel"}}, {"op": "const", "payload": {"constant": "answer"}}, {"op": "waitable_try_send"}, {"op": "store_local", "payload": {"local": "sent"}}, {"op": "load_local", "payload": {"local": "channel"}}, {"op": "len"}, {"op": "load_local", "payload": {"local": "channel"}}, {"op": "waitable_recv"}, {"op": "load_local", "payload": {"local": "sent"}}, {"op": "return", "payload": {"result_count": 3}}]}], "module": {"path": "test", "package": "main"}}
+{
+  "module": {"path": "test", "package": "main"},
+  "type_table": {"nodes": [{"id": "channel", "kind": 9, "direction": 1, "elem": {"kind": 3, "primitive": 3}}]},
+  "constants": [{"id": "capacity", "type": {"kind": 3, "primitive": 3}, "value": 1}, {"id": "answer", "type": {"kind": 3, "primitive": 3}, "value": 42}],
+  "functions": [{
+    "id": "fn.Main",
+    "signature": {"results": [{"kind": 3, "primitive": 3}, {"kind": 3, "primitive": 1}]},
+    "locals": [
+      {"id": "channel", "type": {"kind": 9, "node": "channel"}},
+      {"id": "index", "type": {"kind": 3, "primitive": 3}},
+      {"id": "value", "type": {"kind": 3, "primitive": 3}},
+      {"id": "ok", "type": {"kind": 3, "primitive": 1}}
+    ],
+    "instructions": [
+      {"op": "const", "payload": {"constant": "capacity"}},
+      {"op": "make_waitable", "payload": {"type": {"kind": 9, "node": "channel"}}},
+      {"op": "store_local", "payload": {"local": "channel"}},
+      {"op": "load_local", "payload": {"local": "channel"}},
+      {"op": "const", "payload": {"constant": "answer"}},
+      {"op": "waitable_send"},
+      {"op": "select", "payload": {"index": "index", "cases": [{"channel": "channel", "value": "value", "ok": "ok"}]}},
+      {"op": "load_local", "payload": {"local": "value"}},
+      {"op": "load_local", "payload": {"local": "ok"}},
+      {"op": "return", "payload": {"result_count": 2}}
+    ]
+  }]
+}

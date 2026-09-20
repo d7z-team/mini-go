@@ -355,9 +355,9 @@ impl Instance {
             .insert(self.revision.generation, Arc::downgrade(&self.revision));
         allocations.commit();
         self.revision = next;
-        self.frame_pool = frame::FramePool::default();
+        self.frame_pool.clear();
         self.types = plan.types;
-        self.interface_assignments.get_mut().clear();
+        self.interface_assignments.get_mut().unwrap().clear();
         self.globals = globals;
         let modules = self.revision.program.decoded.artifacts();
         self.initialized

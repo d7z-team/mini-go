@@ -50,7 +50,7 @@ func decodeConstantAs(module *moduleInstance, runtimeType vmType, raw json.RawMe
 			if err != nil {
 				return vmValue{}, err
 			}
-			return newByteSliceHeaderValue(runtimeType, data, 0, len(data), len(data)), nil
+			return newByteSliceHeaderValue(runtimeType, data, len(data), len(data)), nil
 		}
 		if out, ok, err := decodeNumericConstant(kind, raw); ok || err != nil {
 			if err != nil {

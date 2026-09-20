@@ -136,10 +136,11 @@ func (m *moduleInstance) mapKeyWire(value vmValue, seen map[string]struct{}) (ma
 		return wire, nil
 	}
 	if _, _, ok := m.arrayType(value.Type); ok {
-		items, ok := value.Data.([]vmValue)
+		array, ok := value.Data.(*vmArray)
 		if !ok {
 			return mapKeyWire{}, fmt.Errorf("invalid array map key %s", value.Type)
 		}
+		items := array.values()
 		wire.Array = make([]mapKeyWire, 0, len(items))
 		for i, item := range items {
 			itemWire, err := m.mapKeyWire(item, seen)

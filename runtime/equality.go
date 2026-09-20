@@ -164,11 +164,12 @@ func (m *moduleInstance) equalConcreteValues(left, right vmValue, depth int) (bo
 		return equalNumericValues(left, right)
 	}
 	if _, _, ok := m.arrayType(left.Type); ok {
-		leftItems, lok := left.Data.([]vmValue)
-		rightItems, rok := right.Data.([]vmValue)
+		leftArray, lok := left.Data.(*vmArray)
+		rightArray, rok := right.Data.(*vmArray)
 		if !lok || !rok {
 			return false, fmt.Errorf("invalid array operands for %s", left.Type)
 		}
+		leftItems, rightItems := leftArray.values(), rightArray.values()
 		if len(leftItems) != len(rightItems) {
 			return false, nil
 		}
@@ -352,10 +353,6 @@ func isNilRuntimeValue(value vmValue) bool {
 		return data == nil
 	case *waitableResource:
 		return data == nil
-	case *waitTokenState:
-		return data == nil
-	case *waitSetState:
-		return data == nil
 	default:
 		return false
 	}
@@ -384,6 +381,11 @@ func referenceComparableIdentity(data any) any {
 
 func referenceComparableMapKeyIdentity(data any) (string, error) {
 	switch value := data.(type) {
+	case *mutexResource:
+		if value == nil {
+			return "nil", nil
+		}
+		return fmt.Sprintf("mutex:%p", value), nil
 	case nil:
 		return "nil", nil
 	case *vmPointer:

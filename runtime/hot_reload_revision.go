@@ -97,7 +97,11 @@ func (revision *instanceRevision) close() {
 
 func (revision *instanceRevision) releasePayloadLocked() {
 	for _, module := range revision.moduleOrder {
-		if module != nil && module.framePoolPhysicalBytes != 0 {
+		if module == nil {
+			continue
+		}
+		module.framePoolMu.Lock()
+		if module.framePoolPhysicalBytes != 0 {
 			if module.vm != nil {
 				module.vm.idleFrameBytes.Add(-module.framePoolPhysicalBytes)
 			}
@@ -105,6 +109,7 @@ func (revision *instanceRevision) releasePayloadLocked() {
 			module.framePoolBytes = 0
 			module.framePools = nil
 		}
+		module.framePoolMu.Unlock()
 	}
 	revision.code = nil
 	revision.symbols = nil

@@ -24,7 +24,7 @@ func FuzzExecutionScopeLifecycle(f *testing.F) {
 				tasks = append(tasks, task)
 			case 1:
 				if len(tasks) != 0 {
-					machine.finishTask(tasks[int(operation)%len(tasks)], nil, nil)
+					machine.finishTask(tasks[int(operation)%len(tasks)], nil)
 				}
 			case 2:
 				machine.addScopeTimer(scope)
@@ -43,7 +43,7 @@ func FuzzExecutionScopeLifecycle(f *testing.F) {
 		}
 		machine.publishScopeRoot(scope.id, ExecutionCompleted, nil)
 		for _, task := range tasks {
-			machine.finishTask(task, nil, nil)
+			machine.finishTask(task, nil)
 		}
 		for scope.timers > 0 {
 			machine.releaseScopeTimer(scope)

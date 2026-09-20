@@ -9,7 +9,7 @@ func (vm *vm) appendDebugEvent(event debugEvent) {
 	vm.debugger.appendEvent(event)
 }
 
-func (vm *vm) checkDebugPause(frame *frame, functionID string, pc int) (debugPauseError, bool) {
+func (vm *vm) checkDebugPause(task *executionTask, frame *frame, functionID string, pc int) (debugPauseError, bool) {
 	if vm == nil || frame == nil || frame.module == nil || frame.module.executable == nil {
 		return debugPauseError{}, false
 	}
@@ -18,7 +18,7 @@ func (vm *vm) checkDebugPause(frame *frame, functionID string, pc int) (debugPau
 		if !ok {
 			loc = ir.Location{}
 		}
-		event := vm.debugPauseEvent(debugEventPause, frame, functionID, pc, loc)
+		event := vm.debugPauseEvent(task, debugEventPause, frame, functionID, pc, loc)
 		vm.appendDebugEvent(event)
 		return debugPauseError{Event: event}, true
 	}
@@ -27,9 +27,10 @@ func (vm *vm) checkDebugPause(frame *frame, functionID string, pc int) (debugPau
 	}
 	locations := frame.revision.symbols.locations(frame.module.modulePath(), functionID, pc)
 	if len(locations) == 0 {
-		if frame.revision.symbols == nil && vm.shouldPauseForStep() {
+		if frame.revision.symbols == nil && vm.shouldPauseForStep(task) {
 			vm.debugStep = debugStepState{}
-			event := vm.debugPauseEvent(debugEventStep, frame, functionID, pc, ir.Location{})
+			vm.debugStepActive.Store(false)
+			event := vm.debugPauseEvent(task, debugEventStep, frame, functionID, pc, ir.Location{})
 			vm.appendDebugEvent(event)
 			return debugPauseError{Event: event}, true
 		}
@@ -38,7 +39,7 @@ func (vm *vm) checkDebugPause(frame *frame, functionID string, pc int) (debugPau
 	loc := locations[0]
 	modulePath := frame.module.executable.Artifact.Module.Path
 	if vm.skipDebugPause.Active &&
-		vm.skipDebugPause.RunID == vm.activeRunID &&
+		vm.skipDebugPause.TaskID == task.id &&
 		vm.skipDebugPause.Generation == frame.revisionGeneration() &&
 		vm.skipDebugPause.ModulePath == modulePath &&
 		vm.skipDebugPause.FunctionID == functionID &&
@@ -46,9 +47,10 @@ func (vm *vm) checkDebugPause(frame *frame, functionID string, pc int) (debugPau
 		vm.skipDebugPause = debugResumePoint{}
 		return debugPauseError{}, false
 	}
-	if vm.shouldPauseForStep() {
+	if vm.shouldPauseForStep(task) {
 		vm.debugStep = debugStepState{}
-		event := vm.debugPauseEvent(debugEventStep, frame, functionID, pc, loc)
+		vm.debugStepActive.Store(false)
+		event := vm.debugPauseEvent(task, debugEventStep, frame, functionID, pc, loc)
 		vm.appendDebugEvent(event)
 		return debugPauseError{Event: event}, true
 	}
@@ -66,16 +68,16 @@ func (vm *vm) checkDebugPause(frame *frame, functionID string, pc int) (debugPau
 	if !matched {
 		return debugPauseError{}, false
 	}
-	event := vm.debugPauseEvent(debugEventBreakpoint, frame, functionID, pc, loc)
+	event := vm.debugPauseEvent(task, debugEventBreakpoint, frame, functionID, pc, loc)
 	vm.appendDebugEvent(event)
 	return debugPauseError{Event: event}, true
 }
 
-func (vm *vm) debugPauseEvent(kind debugEventKind, frame *frame, functionID string, pc int, loc ir.Location) debugEvent {
-	stack := vm.debugStack(frame, functionID, pc, loc)
+func (vm *vm) debugPauseEvent(task *executionTask, kind debugEventKind, frame *frame, functionID string, pc int, loc ir.Location) debugEvent {
+	stack := task.debugStack(frame, functionID, pc, loc)
 	event := debugEvent{
 		Kind:               kind,
-		RunID:              vm.activeRunID,
+		RunID:              task.scope.id,
 		Generation:         frame.revisionGeneration(),
 		ProgramHash:        frame.revisionHash(),
 		ExecutionContextID: frame.executionContextID,
@@ -87,15 +89,15 @@ func (vm *vm) debugPauseEvent(kind debugEventKind, frame *frame, functionID stri
 	return event
 }
 
-func (vm *vm) debugPanicEvent(frame *frame, functionID string, pc int, value vmValue) (debugEvent, bool) {
+func (vm *vm) debugPanicEvent(task *executionTask, frame *frame, functionID string, pc int, value vmValue) (debugEvent, bool) {
 	if vm == nil || vm.debugger == nil || frame == nil || frame.module == nil || frame.module.executable == nil {
 		return debugEvent{}, false
 	}
 	loc, _ := frame.revision.symbols.nearestLocation(frame.module.modulePath(), functionID, pc)
-	stack := vm.debugStack(frame, functionID, pc, loc)
+	stack := task.debugStack(frame, functionID, pc, loc)
 	event := debugEvent{
 		Kind:               debugEventPanic,
-		RunID:              vm.activeRunID,
+		RunID:              task.scope.id,
 		Generation:         frame.revisionGeneration(),
 		ProgramHash:        frame.revisionHash(),
 		ExecutionContextID: frame.executionContextID,
@@ -108,17 +110,17 @@ func (vm *vm) debugPanicEvent(frame *frame, functionID string, pc int, value vmV
 	return event, true
 }
 
-func (vm *vm) debugStack(current *frame, functionID string, pc int, loc ir.Location) []debugFrame {
+func (task *executionTask) debugStack(current *frame, functionID string, pc int, loc ir.Location) []debugFrame {
 	var scopeID int64
-	if vm != nil {
-		scopeID = vm.activeRunID
+	if task != nil && task.scope != nil {
+		scopeID = task.scope.id
 	}
-	if vm == nil || len(vm.callStack) == 0 {
+	if task == nil || len(task.frames) == 0 {
 		return []debugFrame{current.debugFrame(functionID, pc, loc, scopeID)}
 	}
-	out := make([]debugFrame, 0, len(vm.debugParents)+len(vm.callStack))
-	for i := len(vm.callStack) - 1; i >= 0; i-- {
-		frame := vm.callStack[i]
+	out := make([]debugFrame, 0, len(task.debugParents)+len(task.frames))
+	for i := len(task.frames) - 1; i >= 0; i-- {
+		frame := task.frames[i].frame
 		if frame == nil {
 			continue
 		}
@@ -140,8 +142,8 @@ func (vm *vm) debugStack(current *frame, functionID string, pc int, loc ir.Locat
 		}
 		out = append(out, frame.debugFrame(frameFunctionID, framePC, frameLoc, scopeID))
 	}
-	for i := len(vm.debugParents) - 1; i >= 0; i-- {
-		out = append(out, vm.debugParents[i])
+	for i := len(task.debugParents) - 1; i >= 0; i-- {
+		out = append(out, task.debugParents[i])
 	}
 	if len(out) == 0 {
 		return []debugFrame{current.debugFrame(functionID, pc, loc, scopeID)}

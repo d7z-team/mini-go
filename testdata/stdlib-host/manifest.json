@@ -8,11 +8,11 @@
   },
   "files": {
     "images/call.json.gz": {
-      "sha256": "f3ddf3ed76aef79eb3be2a73ee0232048b5de603905467a35c1beba076b1b46b",
+      "sha256": "5785f44c5c1115bbec1e5436bccbccfb1f5bbacafc4bff4f654ba91d9250fef6",
       "kind": "image",
       "source": "source/call",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "5202006ab8645543c7861a2e69b309605109b6c872f97735f7fbc92c4b8749a2"
+      "compiler_id": "0b9eaab8bb4a16bb01477ea6d200d0862f9064d1ab127f6a054ab3168c6d6261"
     },
     "scenarios.json": {
       "sha256": "b5caeceaf7a7b09315e1f498ae36347199479068360335c20b01d20f117384fd",
@@ -317,11 +317,12 @@
     "stdlib/src/strings/strings_test.mgo": "96dc157b980369476c31eddccd87d2954f56a1935df3a3528fd8fb17a709ff2a",
     "stdlib/src/strings/trim.mgo": "5f9288192b73bb0c0c32625092705da011a9e3b32f43a4a184795a5fe7c456d5",
     "stdlib/src/sync/cond.mgo": "8138efcab1d224f7f7df30c82bb3d043301dc98d3166f53c4d10e8b5e9472e6f",
+    "stdlib/src/sync/intrinsic.mgo": "ce0683e3cc697bf7846bc2dd4febfa1c4cbb88bfd733eb48d4037bfbc29cdfa3",
     "stdlib/src/sync/map.mgo": "b9b27c17c3365e7f5f46294188b89c2b0e9ce812edde3fc2d3dd70d5666d2e7f",
-    "stdlib/src/sync/mutex.mgo": "b4954fa72e7d21a7a284c61b425d4a6c7dcec90738e643c7e49b79e548040eea",
+    "stdlib/src/sync/mutex.mgo": "c045643d545954b13977c89e23fed336310b540b0573d9cb734672c49d63ac87",
     "stdlib/src/sync/once.mgo": "bf173fb17ebe4ebb225936c00c9ba377f741ef093203f877a08835ef17366578",
     "stdlib/src/sync/pool.mgo": "009a0c22da3d88035a534000585fe35809d32ec8e3434276b575e4240ca80a94",
-    "stdlib/src/sync/sync_test.mgo": "1e1a6359dc08be93842c742701f5f959f5181fc585cb671094eacb5ed8f43284",
+    "stdlib/src/sync/sync_test.mgo": "ad4fca726c75d5009cdd7db79ce928989ec12b3d68fe518fba4aa905349c8b24",
     "stdlib/src/sync/waitgroup.mgo": "94c49edd16f6d17823cb20fcfece65a1e101238c93b759259618c0ab22e597e5",
     "stdlib/src/testing/fstest/mapfs.mgo": "e2440645b3830d83ec05bc975343cc2e7ac8dc827e54bd9e035e83e72cd81430",
     "stdlib/src/testing/fstest/mapfs_test.mgo": "a172375e571d673e98346542936a051f4b49e74d913c90c57ea751aa9383171d",

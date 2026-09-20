@@ -3,109 +3,64 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"sync"
 
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
 type vmSlice struct {
-	storage     *vmSliceStorage
+	*vmSliceStorage
+	Start int
+	Len   int
+	Cap   int
+}
+
+type vmSliceStorage struct {
+	mu          sync.Mutex
 	Backing     []vmValue
 	ByteBacking []byte
 	ByteBacked  bool
-	Start       int
-	Len         int
-	Cap         int
 }
 
-type vmSliceStorage struct{ _ byte }
-
-type vmMap struct {
-	Entries            map[vmMapKey]vmMapEntry
-	nextNonReflexiveID uint64
-	nextEntryID        uint64
-	entryKeys          map[uint64]vmMapKey
+type vmArray struct {
+	vmSlice
 }
 
-type vmMapKey struct {
-	Kind         uint8
-	TypeIdentity string
-	Bool         bool
-	Int64        int64
-	Uint64       uint64
-	Text         string
-	NonReflexive bool
-	Sequence     uint64
-}
-
-const (
-	vmMapKeyGeneric uint8 = iota
-	vmMapKeyBool
-	vmMapKeyString
-	vmMapKeyInt
-	vmMapKeyUint
-)
-
-func (key vmMapKey) String() string {
-	if key.NonReflexive {
-		return fmt.Sprintf("%s:nonreflexive:%d", key.Text, key.Sequence)
-	}
-	switch key.Kind {
-	case vmMapKeyBool:
-		return fmt.Sprintf("%s:bool:%t", key.TypeIdentity, key.Bool)
-	case vmMapKeyString:
-		return fmt.Sprintf("%s:string:%s", key.TypeIdentity, key.Text)
-	case vmMapKeyInt:
-		return fmt.Sprintf("%s:int:%d", key.TypeIdentity, key.Int64)
-	case vmMapKeyUint:
-		return fmt.Sprintf("%s:uint:%d", key.TypeIdentity, key.Uint64)
-	default:
-		return key.Text
-	}
-}
-
-type vmMapEntry struct {
-	identity uint64
-	Key      vmValue
-	Value    vmValue
-}
-
-func (data *vmMap) storeEntry(key vmMapKey, entry vmMapEntry) {
-	entry.identity = data.Entries[key].identity
-	if entry.identity == 0 {
-		data.nextEntryID++
-		entry.identity = data.nextEntryID
-		if data.entryKeys == nil {
-			data.entryKeys = make(map[uint64]vmMapKey)
+func (s *vmSlice) values() []vmValue {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ByteBacked {
+		values := make([]vmValue, s.Len)
+		for index := range values {
+			values[index] = newVMValue("Uint8", uint64(s.ByteBacking[s.Start+index]))
 		}
-		data.entryKeys[entry.identity] = key
+		return values
 	}
-	data.Entries[key] = entry
+	return append([]vmValue(nil), s.Backing[s.Start:s.Start+s.Len]...)
 }
 
-func newVMMap(size int) *vmMap {
-	return &vmMap{Entries: make(map[vmMapKey]vmMapEntry, size)}
+func (s *vmSlice) bytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.ByteBacking[s.Start:s.Start+s.Len]...)
 }
 
-func (data *vmMap) keyForStore(key vmMapKey) vmMapKey {
-	if data == nil || !key.NonReflexive {
-		return key
+func (s *vmSlice) writeBytes(offset int, values []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ByteBacked {
+		copy(s.ByteBacking[s.Start+offset:], values)
+		return
 	}
-	data.nextNonReflexiveID++
-	key.Sequence = data.nextNonReflexiveID
-	return key
+	for index, value := range values {
+		s.Backing[s.Start+offset+index] = newVMValue("Uint8", uint64(value))
+	}
 }
 
-func sortedVMMapKeys(data *vmMap) []vmMapKey {
-	if data == nil || len(data.Entries) == 0 {
-		return nil
-	}
-	keys := make([]vmMapKey, 0, len(data.Entries))
-	for key := range data.Entries {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
-	return keys
+func (storage *vmSliceStorage) valuesSnapshot() []vmValue {
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	return append([]vmValue(nil), storage.Backing...)
 }
 
 func newSliceValue(typ any, values []vmValue) vmValue {
@@ -120,24 +75,23 @@ func newOwnedSliceValue(typ any, backing []vmValue) vmValue {
 
 func newByteSliceValue(typ any, text string) vmValue {
 	backing := []byte(text)
-	return newByteSliceHeaderValue(typ, backing, 0, len(backing), cap(backing))
+	return newByteSliceHeaderValue(typ, backing, len(backing), cap(backing))
 }
 
-func newByteSliceHeaderValue(typ any, backing []byte, start, length, capacity int) vmValue {
-	if required := start + capacity; required > len(backing) && required <= cap(backing) {
-		backing = backing[:required]
+func newByteSliceHeaderValue(typ any, backing []byte, length, capacity int) vmValue {
+	if capacity > len(backing) && capacity <= cap(backing) {
+		backing = backing[:capacity]
 	}
 	return newVMValue(typ, &vmSlice{
-		storage:     &vmSliceStorage{},
-		ByteBacking: backing,
-		ByteBacked:  true,
-		Start:       start,
-		Len:         length,
-		Cap:         capacity,
+		vmSliceStorage: &vmSliceStorage{ByteBacking: backing, ByteBacked: true},
+		Len:            length,
+		Cap:            capacity,
 	})
 }
 
 func (s *vmSlice) valueAt(index int) vmValue {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.ByteBacked {
 		return newVMValue("Uint8", uint64(s.ByteBacking[s.Start+index]))
 	}
@@ -150,10 +104,14 @@ func (s *vmSlice) setValueAt(index int, value vmValue) error {
 		if err != nil {
 			return err
 		}
+		s.mu.Lock()
 		s.ByteBacking[s.Start+index] = byte(n)
+		s.mu.Unlock()
 		return nil
 	}
+	s.mu.Lock()
 	s.Backing[s.Start+index] = value
+	s.mu.Unlock()
 	return nil
 }
 
@@ -165,11 +123,10 @@ func newSliceHeaderValue(typ any, backing []vmValue, start, length, capacity int
 		backing = backing[:required]
 	}
 	return newVMValue(typ, &vmSlice{
-		storage: &vmSliceStorage{},
-		Backing: backing,
-		Start:   start,
-		Len:     length,
-		Cap:     capacity,
+		vmSliceStorage: &vmSliceStorage{Backing: backing},
+		Start:          start,
+		Len:            length,
+		Cap:            capacity,
 	})
 }
 
@@ -178,8 +135,8 @@ func newSliceViewValue(typ any, source *vmSlice, start, length, capacity int) vm
 		return newSliceHeaderValue(typ, nil, start, length, capacity)
 	}
 	return newVMValue(typ, &vmSlice{
-		storage: source.storage, Backing: source.Backing, ByteBacking: source.ByteBacking,
-		ByteBacked: source.ByteBacked, Start: start, Len: length, Cap: capacity,
+		vmSliceStorage: source.vmSliceStorage,
+		Start:          start, Len: length, Cap: capacity,
 	})
 }
 
@@ -192,14 +149,7 @@ func sliceValues(value vmValue) ([]vmValue, bool) {
 		if data.Len == 0 {
 			return []vmValue{}, true
 		}
-		if data.ByteBacked {
-			values := make([]vmValue, data.Len)
-			for i := range values {
-				values[i] = data.valueAt(i)
-			}
-			return values, true
-		}
-		return data.Backing[data.Start : data.Start+data.Len], true
+		return data.values(), true
 	default:
 		return nil, false
 	}
@@ -258,7 +208,7 @@ func newSequenceValue(module *moduleInstance, typ any, values []vmValue) (vmValu
 				}
 				bytes[i] = byte(n)
 			}
-			return newByteSliceHeaderValue(runtimeType, bytes, 0, len(bytes), cap(bytes)), nil
+			return newByteSliceHeaderValue(runtimeType, bytes, len(bytes), cap(bytes)), nil
 		}
 		return newSliceValue(runtimeType, out), nil
 	}
@@ -359,7 +309,13 @@ func newStructValueWithSchema(module *moduleInstance, runtimeType vmType, schema
 }
 
 func (m *moduleInstance) cloneValueForStore(value vmValue) vmValue {
-	if !value.Type.Valid() || value.Type.Ref.Kind == types.Any {
+	if !value.Type.Valid() {
+		return value
+	}
+	if value.Type.Ref.Kind == types.Any || value.Type.ShapeKind() == types.Interface {
+		if inner, ok := value.Data.(vmValue); ok {
+			value.Data = m.cloneValueForStore(inner)
+		}
 		return value
 	}
 	switch value.Type.Ref.Kind {
@@ -370,59 +326,78 @@ func (m *moduleInstance) cloneValueForStore(value vmValue) vmValue {
 	case types.Slice:
 		return value
 	case types.Array:
-		items, ok := value.Data.([]vmValue)
+		array, ok := value.Data.(*vmArray)
 		if !ok {
 			return value
 		}
+		items := array.values()
 		out := make([]vmValue, len(items))
 		for i, item := range items {
 			out[i] = m.cloneValueForStore(item)
 		}
-		value.Data = out
-		return value
+		return newVMValue(value.Type, out)
 	case types.Struct:
 		data, ok := value.Data.(*vmStruct)
 		if !ok || data == nil {
 			return value
 		}
-		if data.shared {
-			return value
+		values, sparse := data.snapshot()
+		for index, field := range values {
+			values[index] = m.cloneValueForStore(field)
 		}
-		var values []vmValue
-		for index, field := range data.values {
-			if !field.Type.Valid() {
-				continue
-			}
-			cloned := m.cloneValueForStore(field)
-			shape := field.Type.ShapeKind()
-			changed := shape == types.Array
-			if shape == types.Struct {
-				clonedStruct, _ := cloned.Data.(*vmStruct)
-				originalStruct, _ := field.Data.(*vmStruct)
-				changed = clonedStruct != originalStruct
-			}
-			if changed {
-				if values == nil {
-					values = append([]vmValue(nil), data.values...)
-				}
-				values[index] = cloned
-			}
-		}
-		data.shared = true
-		if values != nil {
-			value.Data = &vmStruct{schema: data.schema, values: values, sparse: data.sparse}
-		}
+		value.Data = &vmStruct{schema: data.schema, values: values, sparse: sparse}
 		return value
 	}
 	return value
 }
 
-func (m *moduleInstance) cloneValueForResult(value vmValue) vmValue {
-	if value.Type.ShapeKind() == types.Interface {
-		if inner, ok := value.Data.(vmValue); ok {
-			value.Data = m.cloneValueForResult(inner)
-			return value
-		}
+// assignPreparedValue installs an already copied value into addressable storage.
+// Arrays keep their backing so existing element pointers and slices continue to
+// refer to the variable, including arrays nested inside other aggregate values.
+func (m *moduleInstance) assignPreparedValue(current, prepared vmValue) vmValue {
+	if !current.Type.Equal(prepared.Type) {
+		return prepared
 	}
+	switch destination := current.Data.(type) {
+	case *vmArray:
+		source, ok := prepared.Data.(*vmArray)
+		if !ok || destination == nil || source == nil || destination.Len != source.Len {
+			return prepared
+		}
+		for i, value := range source.values() {
+			if !destination.ByteBacked {
+				value = m.assignPreparedValue(destination.valueAt(i), value)
+			}
+			_ = destination.setValueAt(i, value)
+		}
+		return current
+	case *vmStruct:
+		source, ok := prepared.Data.(*vmStruct)
+		if !ok || destination == nil || source == nil {
+			return prepared
+		}
+		values, sparse := source.snapshot()
+		previous, _ := destination.snapshot()
+		if len(values) < len(previous) {
+			values = append(values, make([]vmValue, len(previous)-len(values))...)
+		}
+		for i := range values {
+			if i < len(previous) {
+				if !values[i].Type.Valid() && previous[i].Type.Valid() {
+					values[i] = m.zeroValue(source.schema.fields[i].RuntimeType)
+				}
+				values[i] = m.assignPreparedValue(previous[i], values[i])
+			}
+		}
+		destination.mu.Lock()
+		destination.values = values
+		destination.sparse = sparse
+		destination.mu.Unlock()
+		return current
+	}
+	return prepared
+}
+
+func (m *moduleInstance) cloneValueForResult(value vmValue) vmValue {
 	return m.cloneValueForStore(value)
 }

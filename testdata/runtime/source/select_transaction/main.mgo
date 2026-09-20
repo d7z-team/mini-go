@@ -1,0 +1,61 @@
+package main
+
+func channel(c chan int, order *int, digit int) chan int {
+    *order = *order*10 + digit
+    return c
+}
+
+func value(order *int) int {
+    *order = *order*10 + 2
+    return 42
+}
+
+func Main() int {
+    c := make(chan int, 1)
+    c <- 42
+    select {
+    case c := <-c:
+        if c != 42 { panic("receive binding") }
+    }
+    order := 0
+    var nilChannel chan int
+    select {
+    case channel(nilChannel, &order, 1) <- value(&order):
+        panic("nil send")
+    case <-channel(nilChannel, &order, 3):
+        panic("nil receive")
+    default:
+    }
+    if order != 123 { panic("operand evaluation") }
+    unbuffered := make(chan int)
+    select {
+    case unbuffered <- 1:
+        panic("self send")
+    case <-unbuffered:
+        panic("self receive")
+    default:
+    }
+    for i := 0; i < 16; i++ {
+        left, right := make(chan int), make(chan int)
+        done := make(chan int)
+        go func() {
+            select {
+            case left <- 11:
+                done <- 11
+            case n := <-right:
+                if n != 22 { panic("right value") }
+                done <- 22
+            }
+        }()
+        selected := 0
+        select {
+        case n := <-left:
+            if n != 11 { panic("left value") }
+            selected = 11
+        case right <- 22:
+            selected = 22
+        }
+        if <-done != selected { panic("pair selection") }
+    }
+    return 42
+}

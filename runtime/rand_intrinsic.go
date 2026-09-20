@@ -16,23 +16,16 @@ func cryptoRandRead(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	}
 
 	data := make([]byte, slice.Len)
-	if slice.ByteBacked {
-		data = slice.ByteBacking[slice.Start : slice.Start+slice.Len]
-	}
+	ctx.vm.hostMu.Lock()
 	n, err := ctx.vm.entropy.Read(data)
+	ctx.vm.hostMu.Unlock()
 	if n < 0 || n > len(data) {
 		err = fmt.Errorf("crypto/rand: invalid read count %d", n)
 		n = 0
 	} else if n == 0 && err == nil {
 		err = io.ErrNoProgress
 	}
-	if !slice.ByteBacked {
-		for index := 0; index < n; index++ {
-			if setErr := slice.setValueAt(index, newVMValue("Uint8", uint64(data[index]))); setErr != nil {
-				return nil, setErr
-			}
-		}
-	}
+	slice.writeBytes(0, data[:n])
 	return cryptoRandReadResult(n, err), nil
 }
 

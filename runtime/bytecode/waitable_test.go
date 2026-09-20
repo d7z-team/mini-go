@@ -11,8 +11,6 @@ func TestWaitableOpcodeContract(t *testing.T) {
 		OpWaitableCanRecv,
 		OpWaitableTryRecv,
 		OpWaitableTrySend,
-		OpWaitableSubscribeRecv,
-		OpWaitableSubscribeSend,
 		OpWaitableCanSend,
 		OpWaitableClose,
 	} {

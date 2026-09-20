@@ -79,6 +79,7 @@ pub(crate) enum Instruction {
     InitModule(wire::InitModulePayload),
     Spawn(wire::CallPayload),
     MakeWaitable(wire::MakeWaitablePayload),
+    Select(wire::SelectPayload),
     WaitableSend,
     WaitableRecv,
     WaitableRecvOk,
@@ -87,16 +88,6 @@ pub(crate) enum Instruction {
     WaitableCanRecv,
     WaitableCanSend,
     WaitableClose,
-    WaitableSubscribeRecv,
-    WaitableSubscribeSend,
-    MakeWaitToken,
-    WaitTokenSignal,
-    WaitTokenCancel,
-    MakeWaitSet,
-    WaitSetAdd,
-    WaitSetPoll,
-    WaitSetPark,
-    WaitSetCancel,
 }
 
 #[derive(Clone)]
@@ -106,6 +97,7 @@ pub(crate) struct PreparedFunction {
     pub module: Arc<str>,
     pub name: Arc<str>,
     pub local_types: Vec<crate::types::TypeIdentity>,
+    pub addressable_locals: Vec<bool>,
     pub result_types: Vec<crate::types::TypeIdentity>,
     pub execution: Vec<PreparedInstruction>,
     pub operand_types: Vec<Option<crate::types::TypeIdentity>>,
@@ -182,6 +174,12 @@ impl Program {
                 "initialization canceled",
             ));
         }
+        let parallelism = options.parallelism.max(1);
+        let executor = options.executor.clone();
+        #[cfg(test)]
+        let task_observer = options.task_observer.clone();
+        #[cfg(not(test))]
+        let task_observer = None;
         let mut machine = match options.bridge {
             Some(bridge) => crate::instance::Instance::with_bridge(
                 self.clone(),
@@ -192,7 +190,12 @@ impl Program {
         };
         machine.set_environment(options.clock, options.entropy)?;
         machine.initialize_root(&options.cancellation)?;
-        crate::execution::SharedInstance::from_machine(machine)
+        crate::execution::SharedInstance::from_machine_with_options(
+            machine,
+            parallelism,
+            executor,
+            task_observer,
+        )
     }
     pub fn load(bytes: &[u8], limits: LoadLimits) -> Result<Self, RuntimeError> {
         Self::prepare(DecodedImage::decode(bytes, limits)?)
@@ -246,6 +249,7 @@ impl Program {
                     ));
                 }
                 let mut function = PreparedFunction {
+                    addressable_locals: vec![false; declaration.locals.len()],
                     targets: Vec::new(),
                     execution: Vec::new(),
                     operand_types: Vec::new(),
@@ -291,31 +295,6 @@ impl Program {
                     }
                 }
                 for raw in declaration.instructions.iter() {
-                    if declaration.no_switch
-                        && matches!(
-                            raw.op.as_str(),
-                            "call_direct"
-                                | "tail_call_direct"
-                                | "call_value"
-                                | "call_interface"
-                                | "call_ffi"
-                                | "call_intrinsic"
-                                | "spawn"
-                                | "defer_push"
-                                | "init_module"
-                                | "load_export"
-                                | "waitable_send"
-                                | "waitable_recv"
-                                | "waitable_recv_ok"
-                                | "wait_set_park"
-                        )
-                    {
-                        return Err(RuntimeError::new(
-                            "invalid_no_switch",
-                            &path,
-                            "scheduling instruction in no-switch function",
-                        ));
-                    }
                     let mut encoded = serde_json::to_value(raw)?;
                     if raw.op == "defer_push" && raw.payload.is_none() {
                         encoded["payload"] = serde_json::json!({});
@@ -340,6 +319,20 @@ impl Program {
                         continue;
                     }
                     let valid = match &instruction {
+                        Instruction::Select(payload) => {
+                            function.locals.contains_key(&payload.index)
+                                && payload.cases.iter().all(|case| {
+                                    function.locals.contains_key(&case.channel)
+                                        && if case.send.is_empty() {
+                                            function.locals.contains_key(&case.value)
+                                                && function.locals.contains_key(&case.ok)
+                                        } else {
+                                            case.value.is_empty()
+                                                && case.ok.is_empty()
+                                                && function.locals.contains_key(&case.send)
+                                        }
+                                })
+                        }
                         Instruction::Const(value) => constants
                             .get(&value.constant)
                             .is_some_and(|index| !artifact.constants[*index].untyped),
@@ -421,6 +414,16 @@ impl Program {
                             &path,
                             format!("{:?}", instruction),
                         ));
+                    }
+                    let addresses: &[wire::AddressPayload] = match &instruction {
+                        Instruction::AddressOf(address) => std::slice::from_ref(address),
+                        Instruction::MakeClosure(closure) => &closure.captures,
+                        _ => &[],
+                    };
+                    for address in addresses {
+                        if address.kind == "local" {
+                            function.addressable_locals[function.locals[&address.local]] = true;
+                        }
                     }
                     function.code.push(instruction);
                     function.opcodes.push(raw.op.clone());
@@ -735,8 +738,8 @@ fn verify_stack(function: &PreparedFunction, path: &str) -> Result<usize, Runtim
         use Instruction::*;
         let instruction = &function.code[pc];
         let (pop, push) = match instruction {
-            MakeWaitToken | MakeWaitSet | Const(_) | Zero(_) | LoadLocal(_) | LoadUpvalue(_)
-            | LoadGlobal(_) | AddressOf(_) | MakeClosure(_) | LoadExport(_) | Recover => (0, 1),
+            Const(_) | Zero(_) | LoadLocal(_) | LoadUpvalue(_) | LoadGlobal(_) | AddressOf(_)
+            | MakeClosure(_) | LoadExport(_) | Recover => (0, 1),
             MapIterNext(_) => (0, 3),
             MapIterClose(_) => (0, 0),
             Pop | MapIterInit(_) | StoreLocal(_) | StoreUpvalue(_) | StoreGlobal(_) | JumpIf(_)
@@ -763,17 +766,16 @@ fn verify_stack(function: &PreparedFunction, path: &str) -> Result<usize, Runtim
             CallInterface(value) => (value.arg_count as usize + 1, value.result_count as usize),
             CallIntrinsic(value) => (value.arg_count as usize, value.result_count as usize),
             Spawn(value) => (value.arg_count as usize + 1, 0),
-            MakeWaitable(_) | WaitableRecv | WaitableCanRecv | WaitableCanSend | WaitSetPoll
-            | WaitSetPark => (1, 1),
+            MakeWaitable(_) | WaitableRecv | WaitableCanRecv | WaitableCanSend => (1, 1),
             WaitableRecvOk | WaitableTryRecv => (1, 2),
-            WaitableTrySend | WaitSetAdd => (2, 1),
-            WaitableSend | WaitableSubscribeRecv | WaitableSubscribeSend => (2, 0),
-            WaitableClose | WaitTokenSignal | WaitTokenCancel | WaitSetCancel => (1, 0),
+            WaitableTrySend => (2, 1),
+            WaitableSend => (2, 0),
+            WaitableClose => (1, 0),
             CallDirect(value) => (value.arg_count as usize, value.result_count as usize),
             TailCallDirect(value) => (value.arg_count as usize, 0),
             CallValue(value) => (value.arg_count as usize + 1, value.result_count as usize),
             Return(value) => (value.result_count as usize, 0),
-            Jump(_) | InitModule(_) | Label(_) => (0, 0),
+            Jump(_) | InitModule(_) | Label(_) | Select(_) => (0, 0),
         };
         let next_height = height
             .checked_sub(pop)

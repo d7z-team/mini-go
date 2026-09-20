@@ -15,7 +15,6 @@ func FuzzReflectWaitableLifecycle(f *testing.F) {
 			t.Fatal(err)
 		}
 		resource := channel.Data.(*waitableResource)
-		var nextToken int64
 		for index, operation := range operations {
 			switch operation % 5 {
 			case 0:
@@ -23,22 +22,16 @@ func FuzzReflectWaitableLifecycle(f *testing.F) {
 			case 1:
 				_, _, _, _ = waitableTryRecvValue(module, channel)
 			case 2, 3:
-				nextToken++
-				token := &waitTokenState{ID: nextToken}
-				tokenValue := newVMValue("WaitToken", token)
-				if operation%5 == 2 {
-					err = waitableWaitRecvValue(module, channel, tokenValue)
-				} else {
-					err = waitableWaitSendValue(module, channel, tokenValue)
-				}
+				selection, err := (*vm)(nil).prepareChannelSelection(nil, module, []channelSelectCase{{channel: channel, send: operation%5 == 3, value: newVMValue("Int", int64(index))}})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err = cancelWaitToken(tokenValue); err != nil {
-					t.Fatal(err)
+				if !selection.tryCommit() {
+					selection.register()
 				}
-				if len(token.registrations) != 0 {
-					t.Fatal("canceled reflect wait token retained registrations")
+				selection.unregister()
+				if resource.selectHead != nil || resource.selectTail != nil {
+					t.Fatal("canceled selection retained registrations")
 				}
 			case 4:
 				_ = waitableCloseValue(module, channel)
@@ -46,9 +39,6 @@ func FuzzReflectWaitableLifecycle(f *testing.F) {
 			if len(resource.Buffer) > resource.Capacity {
 				t.Fatalf("buffer length %d exceeds capacity %d", len(resource.Buffer), resource.Capacity)
 			}
-		}
-		if len(resource.RecvWaiters) != 0 || len(resource.SendWaiters) != 0 {
-			t.Fatalf("reflect waitable retained canceled waiters: recv=%d send=%d", len(resource.RecvWaiters), len(resource.SendWaiters))
 		}
 	})
 }

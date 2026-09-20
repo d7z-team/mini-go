@@ -35,7 +35,7 @@ func TestReflectTypePayloadRequiresCanonicalKey(t *testing.T) {
 }
 
 func TestReflectMethodPayloadUsesStructuredTypes(t *testing.T) {
-	machine := &vm{reflectTypes: make(map[string]TypeInfo)}
+	machine := &vm{}
 	module := &moduleInstance{executable: &executable{Artifact: ir.Artifact{Module: ir.Module{Path: "example/main"}}}}
 	ctx := intrinsicContext{vm: machine, module: module}
 	method := TypeMethodInfo{

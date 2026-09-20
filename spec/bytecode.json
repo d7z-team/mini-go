@@ -1,7 +1,7 @@
 {
   "format": "mini-go-ir",
-  "version": 21,
-  "opcode_set": "minigo.ir.v9",
+  "version": 22,
+  "opcode_set": "minigo.ir.v10",
   "symbols_format": "mini-go-program-symbols",
   "symbols_version": 1,
   "symbols_contract": "minigo.symbols.v1",
@@ -22,7 +22,7 @@
       "name": "opcode_set",
       "type": "string",
       "required": true,
-      "rule": "must be \"minigo.ir.v9\""
+      "rule": "must be \"minigo.ir.v10\""
     },
     {
       "name": "module",
@@ -239,11 +239,6 @@
     {
       "name": "revision_local",
       "type": "bool"
-    },
-    {
-      "name": "no_switch",
-      "type": "bool",
-      "rule": "function is a verified non-suspending scheduling region"
     },
     {
       "name": "signature",
@@ -640,6 +635,25 @@
   ],
   "payloads": [
     {
+      "name": "select",
+      "fields": [
+        {
+          "name": "index",
+          "type": "local-id",
+          "required": true
+        },
+        {
+          "name": "default",
+          "type": "bool"
+        },
+        {
+          "name": "cases",
+          "type": "[]select-case",
+          "rule": "evaluated channel local and either send local or receive value/ok locals"
+        }
+      ]
+    },
+    {
       "name": "const",
       "fields": [
         {
@@ -1023,6 +1037,13 @@
   ],
   "opcodes": [
     {
+      "op": "select",
+      "category": "waitable",
+      "payload": "select",
+      "stack": "no change",
+      "notes": "commit exactly one communication, storing index and receive results in locals; may suspend"
+    },
+    {
       "op": "const",
       "category": "stack_value",
       "payload": "const",
@@ -1362,18 +1383,6 @@
       "notes": "non-blocking send attempt"
     },
     {
-      "op": "waitable_subscribe_recv",
-      "category": "waitable",
-      "stack": "pop waitable/token",
-      "notes": "register receive wait token"
-    },
-    {
-      "op": "waitable_subscribe_send",
-      "category": "waitable",
-      "stack": "pop waitable/token",
-      "notes": "register send wait token"
-    },
-    {
       "op": "waitable_can_send",
       "category": "waitable",
       "stack": "pop waitable, push ready",
@@ -1402,46 +1411,6 @@
       "category": "scheduler",
       "payload": "call",
       "stack": "pop callee and args"
-    },
-    {
-      "op": "make_wait_token",
-      "category": "scheduler",
-      "stack": "push wait token"
-    },
-    {
-      "op": "wait_token_signal",
-      "category": "scheduler",
-      "stack": "pop wait token"
-    },
-    {
-      "op": "wait_token_cancel",
-      "category": "scheduler",
-      "stack": "pop wait token"
-    },
-    {
-      "op": "make_wait_set",
-      "category": "scheduler",
-      "stack": "push wait set"
-    },
-    {
-      "op": "wait_set_add",
-      "category": "scheduler",
-      "stack": "pop wait set/token, push wait set"
-    },
-    {
-      "op": "wait_set_poll",
-      "category": "scheduler",
-      "stack": "pop wait set, push selected index"
-    },
-    {
-      "op": "wait_set_park",
-      "category": "scheduler",
-      "stack": "pop wait set, push selected index"
-    },
-    {
-      "op": "wait_set_cancel",
-      "category": "scheduler",
-      "stack": "pop wait set"
     },
     {
       "op": "call_ffi",
