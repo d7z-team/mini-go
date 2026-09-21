@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.bindings.json",
+  "compilerOptions": {
+    "declaration": false,
+    "noEmit": false,
+    "outDir": ".build/test-bindings",
+    "rootDir": "../../../testdata/rpc/generated/typescript",
+    "paths": {
+      "@d7z-team/mini-go/rpc": [".build/dist/browser-rpc.d.ts", "dist/browser-rpc.d.ts"]
+    }
+  }
+}

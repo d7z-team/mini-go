@@ -14,6 +14,11 @@
   ],
   "types": "./dist/browser.d.ts",
   "exports": {
+    "./rpc": {
+      "types": "./dist/browser-rpc.d.ts",
+      "node": "./dist/node-rpc.js",
+      "default": "./dist/browser-rpc.js"
+    },
     "./tools": {
       "types": "./dist/browser-tools.d.ts",
       "node": "./dist/node-tools.js",
@@ -33,14 +38,18 @@
       "default": "./dist/node.js"
     },
     "./worker": "./dist/browser-worker.js",
+    "./rpc-worker": {
+      "node": "./dist/node-rpc-worker.js",
+      "default": "./dist/browser-rpc-worker.js"
+    },
     "./wasm": "./dist/wasm/mini_go_wasm_bg.wasm",
     "./package.json": "./package.json"
   },
   "scripts": {
     "build": "node scripts/build.ts",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.tools.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tools.json && tsc -p tsconfig.bindings.json",
     "format": "prettier --write sdk scripts tests *.json",
-    "lint": "npm run typecheck && prettier --check sdk scripts tests *.json",
+    "lint": "npm run typecheck && prettier --check sdk scripts tests *.json && prettier --debug-check ../../../testdata/rpc/generated/typescript/*.ts",
     "prepack": "npm run build",
     "test": "node --test --test-concurrency=1 tests/*.test.js",
     "test:node": "node --test tests/node.test.js",
@@ -55,13 +64,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/d7z-team/mini-go",
+    "url": "https://github.com/d7z-team/go-mini",
     "directory": "playground/runtime-rust/runtime-wasm"
   },
   "bugs": {
-    "url": "https://github.com/d7z-team/mini-go/issues"
+    "url": "https://github.com/d7z-team/go-mini/issues"
   },
-  "homepage": "https://github.com/d7z-team/mini-go/tree/main/playground/runtime-rust/runtime-wasm",
+  "homepage": "https://github.com/d7z-team/go-mini/tree/main/playground/runtime-rust/runtime-wasm",
   "publishConfig": {
     "access": "public"
   }

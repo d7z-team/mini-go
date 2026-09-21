@@ -413,10 +413,12 @@ dependencies = [
  "mini-go-tooling",
  "serde",
  "serde-wasm-bindgen",
+ "serde_bytes",
  "serde_json",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]

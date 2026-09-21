@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ```bash
-cargo run -- /path/to/mini-go/playground/runtime-rust/examples/blocks/arithmetic.json
+cargo run -- /path/to/go-mini/playground/runtime-rust/examples/blocks/arithmetic.json
 ```
 
 使用 `Limits { ..Default::default() }` 覆盖需要的限制。`LoadOptions` 约束加载，
@@ -59,9 +59,8 @@ cargo run -- /path/to/mini-go/playground/runtime-rust/examples/blocks/arithmetic
 
 ### 原生执行器与并行度
 
-`InstanceOptions.parallelism` 限制同一实例同时执行的 guest task，零值采用 1。原生 runtime
-使用进程级有界执行器，task 只占用一个有限 quantum，不对应固定系统线程；即使执行器只有
-一个 worker，spawn、等待和多个实例也能继续推进。
+`InstanceOptions.parallelism` 限制同一实例同时执行的 guest task，零值采用 1。原生 runtime 使用
+有界执行器调度可恢复 task；一个 worker 也能推进 spawn、等待和多个实例。
 
 需要独立控制容量时可创建 `Executor::new(workers)`，克隆后传入多个实例：
 
@@ -80,9 +79,7 @@ executor.shutdown(&Cancellation::default())?;
 # Ok::<(), mini_go::RuntimeError>(())
 ```
 
-自建 Executor 的 `shutdown` 会请求关闭仍关联的实例并等待其清理，然后停止 worker；开始关闭后
-不再接受新实例。进程级默认 Executor 不可关闭。不要从 VM 宿主回调中同步关闭执行器或调用
-同一实例，这类重入返回 `busy`。
+自建 Executor 的 `shutdown` 会先关闭关联实例，再停止 worker；进程级默认 Executor 不可关闭。
 
 ## 等待、取消与关闭
 
@@ -106,9 +103,7 @@ executor.shutdown(&Cancellation::default())?;
 
 正常停机由宿主停止提交新入口与补丁，通知长循环通过业务控制通道返回，
 等待相关执行的 `wait` 和 `wait_scope`，再 `shutdown`。超期时直接关闭可取消剩余工作。
-调试暂停需显式恢复；外部 driver 持续 `drive`，底层 `instance::Instance` 由调用方持续 poll，
-直到相关工作结束或关闭清理完成。
-正常返回执行 defer；取消不会补跑 guest defer，也不证明宿主 I/O 已停止。
+调试暂停需显式恢复。正常返回执行 defer；取消不会补跑 guest defer，也不证明宿主 I/O 已停止。
 
 自建事件循环可调用 `Execution::poll_steps`；它返回状态及本次实际步数。
 `Pending` 时通过 `instance.wake()` 等待事件，`Paused` 时由调试器恢复，
@@ -122,55 +117,13 @@ Tokio blocking pool，并限制并发作业。复用 executor，容量满时处�
 
 ```toml
 [dependencies]
-mini-go = { path = "/path/to/mini-go/playground/runtime-rust", features = ["rpc"] }
+mini-go = { path = "/path/to/go-mini/playground/runtime-rust", features = ["rpc"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 ```
 
-以下完整程序等待算术调用，超过两秒则请求取消，然后仍等待 blocking 作业完成清理：
-
-```rust
-use mini_go::{
-    HostValue, InstanceOptions, LoadOptions, Program, RuntimeError,
-    ffi::Cancellation, rpc::VmExecutor,
-};
-use std::{sync::Arc, time::Duration};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path = std::env::args().nth(1).ok_or("expected image path")?;
-    let image = std::fs::read(path)?;
-    let executor = VmExecutor::new(tokio::runtime::Handle::current(), 2)?;
-    let cancellation = Cancellation::default();
-    let worker_cancel = cancellation.clone();
-    let work = executor.run(move || {
-        let program = Arc::new(Program::load(&image, LoadOptions::default())?);
-        let instance = program.instantiate(InstanceOptions {
-            cancellation: worker_cancel.clone(), ..Default::default()
-        })?;
-        let outcome = (|| {
-            let call = instance.start_host("default", &[HostValue::int(10)])?;
-            call.wait(&worker_cancel)
-        })();
-        let closed = instance.shutdown(&Cancellation::default());
-        let result = outcome?;
-        closed?;
-        Ok::<_, RuntimeError>(result)
-    });
-    tokio::pin!(work);
-    let outcome = tokio::select! {
-        result = &mut work => result,
-        _ = tokio::time::sleep(Duration::from_secs(2)) => {
-            cancellation.cancel();
-            work.await
-        }
-    };
-    println!("{:?}", outcome??.roots);
-    Ok(())
-}
-```
-
-丢弃 `run` 的 Future 不会停止已启动的 blocking 工作；应用必须传递取消并等待清理。
-时限是协作式的，宿主调用不响应取消时清理可能超过两秒。关闭 Tokio runtime 前等待 VM 和宿主服务关闭。
+`run` 接收同步闭包并返回 Future。应用将 `Cancellation` 的克隆传入闭包；异步期限到达时取消原令牌，
+然后继续等待 Future，让闭包完成实例关闭。丢弃 Future 不会停止已经启动的工作，关闭 Tokio runtime 前
+必须等待 VM 与宿主服务清理完成。
 
 ## 宿主能力
 
@@ -191,52 +144,10 @@ Completion 异步交付；关闭时等待该工作结束。`stdlib-host` 的 blo
 `Symbols: true` 或 Rust tooling 的 build/prepare 获取镜像及符号，再调用 `Program::with_symbols`。
 普通 `runtime-blocks` 示例仅用于执行；源码断点需要另外提供符号。
 
-以下函数接收加载后的 Program、符号 JSON 和一个源码断点，打印暂停帧的变量，再继续执行。
-需额外依赖 `serde_json = "1"`。`module`、`file` 必须与符号内路径一致，`line` 从 1 开始。
-
-```rust
-use mini_go::{
-    HostValue, InstanceOptions, Program, SnapshotLimits, ffi::Cancellation,
-    instance::debug::StepMode,
-};
-use std::sync::Arc;
-
-fn debug_call(
-    program: Program, symbols: &[u8], entry: &str, arguments: &[HostValue],
-    module: &str, file: &str, line: i64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let program = Arc::new(program.with_symbols(serde_json::from_slice(symbols)?)?);
-    let instance = program.instantiate(InstanceOptions::default())?;
-    let outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let debugger = instance.debugger();
-        if debugger.set_breakpoints(module, file, &[line])?.is_empty() {
-            return Err("no executable breakpoint at this location".into());
-        }
-        let call = instance.start_host(entry, arguments)?;
-        loop {
-            match call.wait(&Cancellation::default()) {
-                Ok(result) => { println!("{:?}", result.roots); break; }
-                Err(error) if error.code == "paused" => {
-                    for frame in debugger.stack()? {
-                        println!("{:?}", debugger.bindings(&frame.reference, SnapshotLimits::default())?);
-                    }
-                    debugger.set_breakpoints(module, file, &[])?;
-                    debugger.resume(StepMode::Continue)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(())
-    })();
-    let closed = instance.shutdown(&Cancellation::default());
-    outcome?;
-    closed?;
-    Ok(())
-}
-```
-
-将 Continue 换为 Into、Over、Out 或 Instruction 可执行相应单步；`pause()` 请求暂停。
-恢复执行后帧与变量引用失效，需要重新获取。完整 DAP 服务见 [语言工具](#本地源码与编译器工具)。
+给 Program 附加符号后，通过 `instance.debugger()` 设置源码断点、读取栈和 bindings，并用
+`StepMode::{Continue, Into, Over, Out, Instruction}` 恢复执行；`pause()` 请求暂停。module、file 必须与
+符号路径一致，源码行从 1 开始。恢复执行后帧与变量引用失效。完整 DAP 服务见
+[语言工具](#本地源码与编译器工具)。
 
 ## 热更新
 
@@ -267,14 +178,7 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 正数设置有限预算，其他负数无效。推进批次和热更新不重置预算；无限模式仍保留取消、内存及任务限制。
 业务进度由宿主持久化；内存与版本存活的观测方法见[开发指南](../../DEVELOPMENT.md#缓存与性能)。
 
-[有限宿主循环示例](examples/long_running.rs)接收两个兼容的算术镜像，交替调用和更新，
-演示无限步数配置下的有限调用、scope 等待、热更新与关闭。
-两个镜像的 `default` 入口均接收一个整数，镜像内容应不同：
-
-```bash
-cargo run --manifest-path playground/runtime-rust/Cargo.toml --example long_running -- \
-  /path/to/arithmetic-v1.json /path/to/arithmetic-v2.json 10
-```
+[有限宿主循环示例](examples/long_running.rs)演示无限步数配置下的有限调用、scope 等待、热更新与关闭。
 
 ## 本地源码与编译器工具
 
@@ -305,16 +209,6 @@ compiler 按 import 选择参与编译的包。
 `CompilerSession::bundled().await` 使用分发镜像。取消传入编译器 context；会话恢复使用已确认的输入，
 `upgrade` 准备成功后才切换实例。工作区替换保留打开的缓冲区，`Editable` 可授权编辑额外包。
 
-在仓库根目录启动工具：
-
-```bash
-cargo run --release --manifest-path playground/runtime-rust/Cargo.toml \
-  -p mini-go-tooling --bin mini-go-tools -- lsp \
-  playground/runtime-rust/tooling/assets/compiler.json.gz testdata/language/workspace.json
-cargo run --release --manifest-path playground/runtime-rust/Cargo.toml \
-  -p mini-go-tooling --bin mini-go-tools -- dap
-```
-
-LSP 接收准备好的工作区 JSON；DAP launch 接收 `image` 及可选的 `symbols`、`sources`、`entry`，
-也可通过 `workspace` 和 `build` 编译源码。原生应用使用 `server::Server::serve(input, output)`
-接入 Tokio 流，连接结束时由服务关闭会话和 IO 任务。
+`mini-go-tools lsp` 接收 compiler 镜像和准备好的工作区 JSON；`mini-go-tools dap` 接收 DAP launch 请求，
+可加载镜像或从 workspace 构建。原生应用通过 `server::Server::serve(input, output)` 接入 Tokio 流。
+仓库内构建和测试命令见[开发指南](../../DEVELOPMENT.md#rust-验证)。

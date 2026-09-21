@@ -1,14 +1,13 @@
 import {
   copyBytes,
-  deferred,
   toError,
   type Control,
   type ControlResult,
-  type Deferred,
   type Response,
   type WorkerConnection,
   type WorkerFactory,
 } from "./protocol.js";
+import { deferred, type Deferred } from "./deferred.js";
 import type {
   Bindings,
   Execution,

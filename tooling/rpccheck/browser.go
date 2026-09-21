@@ -33,7 +33,8 @@ func (c browserConnection) Write(ctx context.Context, data []byte) error {
 func (c browserConnection) Close() error { return c.socket.CloseNow() }
 
 // RunBrowserPeer serves the shared RPC laboratory and browser test assets on
-// the same origin. /exercise validates calls back into the connected guest.
+// the same origin. /exercise validates calls back into the connected guest;
+// /disconnect lets lifecycle tests terminate the current transport.
 // Returning after a command or input error cancels all owned connections.
 func RunBrowserPeer(ctx context.Context, address string, files fs.FS, input io.Reader, output io.Writer) error {
 	ctx, cancel := context.WithCancel(ctx)
@@ -116,6 +117,17 @@ func RunBrowserPeer(ctx context.Context, address string, files fs.FS, input io.R
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(report)
+	})
+	mux.HandleFunc("/disconnect", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		endpoint := current
+		mu.Unlock()
+		if endpoint == nil {
+			http.Error(w, "peer not connected", http.StatusServiceUnavailable)
+			return
+		}
+		_ = endpoint.Close()
+		w.WriteHeader(http.StatusNoContent)
 	})
 	listener, err := net.Listen("tcp", address)
 	if err != nil {

@@ -1,9 +1,8 @@
 import { WasmVm, type InitOutput } from "./wasm/mini_go_wasm.js";
+import { deferred, type Deferred } from "./deferred.js";
 import {
-  deferred,
   serializeError,
   type Action,
-  type Deferred,
   type Failure,
   type PumpState,
   type Start,
@@ -11,19 +10,19 @@ import {
   type ControlResult,
 } from "./protocol.js";
 import type { HostReply, WorkerProvider } from "./types.js";
-
-const endpointProtocol = "minigo.rpc.endpoint.v12";
+import {
+  attachRPCSocket,
+  connectRPCSocket,
+  flushRPCSocket,
+  type RPCTransportOwner,
+} from "./rpc-network.js";
 
 export function runWorker(
   port: WorkerPort,
   load: (url?: string) => Promise<InitOutput>,
   enqueue?: (callback: () => void) => void,
 ): void {
-  interface RpcTransport {
-    outgoing(): { id: number; payload: number[] }[];
-    sent(id: number): void;
-    receive(frame: Uint8Array): void;
-    disconnect(): void;
+  interface RpcTransport extends RPCTransportOwner {
     close_network(): Promise<unknown>;
   }
   let vm: WasmVm & Partial<RpcTransport>,
@@ -165,19 +164,7 @@ export function runWorker(
 
   const outgoing: { id: number; payload: number[] }[] = [];
   function flushNetwork() {
-    if (!socket) return;
-    outgoing.push(...(vm.outgoing?.() ?? []));
-    if (outgoing.length > 64) throw new Error("WASM send queue exhausted");
-    while (
-      outgoing.length &&
-      socket.readyState === WebSocket.OPEN &&
-      socket.bufferedAmount < 1024 * 1024
-    ) {
-      const frame = outgoing.shift()!;
-      socket.send(Uint8Array.from(frame.payload));
-      vm.sent?.(frame.id);
-    }
-    if (outgoing.length) schedule(10);
+    if (flushRPCSocket(socket, vm, outgoing)) schedule(10);
   }
 
   function drive() {
@@ -274,47 +261,12 @@ export function runWorker(
         wasmMemory = (await load(wasmUrl)).memory;
         if (providerModule) provider = await import(providerModule);
         if (rpcUrl) {
-          const connection = new WebSocket(rpcUrl, endpointProtocol);
-          socket = connection;
-          connection.binaryType = "arraybuffer";
-          await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              connection.close();
-              reject(new Error("WebSocket handshake timed out"));
-            }, 10_000);
-            connection.onopen = () => {
-              clearTimeout(timeout);
-              connection.protocol === endpointProtocol
-                ? resolve()
-                : reject(new Error("WebSocket subprotocol mismatch"));
-            };
-            connection.onerror = connection.onclose = () => {
-              clearTimeout(timeout);
-              reject(new Error("WebSocket connection failed"));
-            };
-          });
+          socket = await connectRPCSocket(rpcUrl);
         }
         vm = new WasmVm(data.image, options);
         if (closing) vm.close();
         if (socket) {
-          socket.onmessage = (event) => {
-            try {
-              if (!(event.data instanceof ArrayBuffer) || event.data.byteLength > 1024 * 1024)
-                throw new Error("invalid or oversized RPC frame");
-              vm.receive?.(new Uint8Array(event.data));
-              schedule();
-            } catch (error) {
-              failWorker(error);
-            }
-          };
-          socket.onclose = () => {
-            vm.disconnect?.();
-            schedule();
-          };
-          socket.onerror = () => {
-            vm.disconnect?.();
-            schedule();
-          };
+          attachRPCSocket(socket, vm as RpcTransport, schedule, failWorker);
         }
       } else if (data.kind === "hostResult") {
         const reply = mainReplies.get(data.id);

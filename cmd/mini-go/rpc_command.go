@@ -16,6 +16,7 @@ import (
 	gogen "github.com/d7z-team/mini-go/tooling/mrpc/gen/go"
 	mgogen "github.com/d7z-team/mini-go/tooling/mrpc/gen/mgo"
 	rustgen "github.com/d7z-team/mini-go/tooling/mrpc/gen/rust"
+	typescriptgen "github.com/d7z-team/mini-go/tooling/mrpc/gen/typescript"
 )
 
 func runRPC(environment commandEnvironment, args []string, stderr io.Writer) error {
@@ -30,13 +31,16 @@ func runRPC(environment commandEnvironment, args []string, stderr io.Writer) err
 	rustModule := flags.String("rust-module", "", "Rust module path; defaults to rust_module option")
 	rustRuntime := flags.String("rust-runtime", "", "Rust runtime crate path; defaults to rust_runtime option")
 	rustPrefix := flags.String("rust-prefix", "", "prefix for generated Rust declarations")
+	typescriptOutput := flags.String("ts-out", "", "generated TypeScript ESM source")
+	typescriptRuntime := flags.String("ts-runtime", "", "TypeScript RPC SDK module; defaults to ts_runtime option")
+	typescriptPrefix := flags.String("ts-prefix", "", "prefix for generated TypeScript declarations")
 	mgoPackage := flags.String("mgo-package", "", "Mini-Go output package; defaults to mgo_package option")
 	goPackage := flags.String("go-package", "", "Go output package; defaults to go_package option")
 	goPrefix := flags.String("go-prefix", "", "prefix for generated Go declarations")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
-	if flags.NArg() == 0 || strings.TrimSpace(*mgoOutput) == "" && strings.TrimSpace(*goOutput) == "" && strings.TrimSpace(*rustOutput) == "" {
+	if flags.NArg() == 0 || strings.TrimSpace(*mgoOutput) == "" && strings.TrimSpace(*goOutput) == "" && strings.TrimSpace(*rustOutput) == "" && strings.TrimSpace(*typescriptOutput) == "" {
 		return errors.New("rpc generate requires contract files and at least one output")
 	}
 	sources := make([]mrpc.Source, 0, flags.NArg())
@@ -91,6 +95,13 @@ func runRPC(environment commandEnvironment, args []string, stderr io.Writer) err
 			return fmt.Errorf("format generated Rust MRPC: %w: %s", err, diagnostic.String())
 		}
 		outputs = append(outputs, atomicFile{path: environment.path(output), data: formatted, mode: 0o644})
+	}
+	if output := strings.TrimSpace(*typescriptOutput); output != "" {
+		generated, err := typescriptgen.Generate(catalog, typescriptgen.Options{Runtime: *typescriptRuntime, Prefix: *typescriptPrefix})
+		if err != nil {
+			return err
+		}
+		outputs = append(outputs, atomicFile{path: environment.path(output), data: generated, mode: 0o644})
 	}
 	return writeFilesAtomically(outputs)
 }

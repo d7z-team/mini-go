@@ -17,8 +17,7 @@ RPC 接入见 [RPC.md](RPC.md)，Rust 原生 API 见 [Rust 使用指南](playgro
 | `Run` | 编译并运行默认入口 |
 | `Test` | 构建并运行全部或指定的 `*_test.mgo` 测试 |
 
-Engine 由创建方关闭。共享缓存可通过 `Config.Cache` 注入，其 backend 由所有者管理。
-分阶段编译与镜像加载见[架构](ARCHITECTURE.md#编译链接与派生物)。
+Engine 由创建方关闭。共享缓存可通过 `Config.Cache` 注入，backend 仍由创建方管理。
 
 ### 完整嵌入示例
 
@@ -95,8 +94,7 @@ Engine 自动提供标准库源码。额外源码可通过 `NewStandardLibrary`�
 也可通过 `NewTreeSourceSet` 提供内存文件，再用 `MergeSourceSets` 合并多个来源。
 宿主提供全部可用源码，compiler 根据 import 选择实际参与编译的包。
 
-`DiscoverIndexedSourceTree` 和 `NewModuleLibrary` 惰性读取源码，其 FS 在使用期间必须保持不变；
-可变文件目录应重新创建快照，再编译或显式热更新。
+惰性源码树要求底层 FS 在使用期间保持稳定；目录内容改变后应创建新快照再编译。
 
 ## 运行实例
 
@@ -153,24 +151,15 @@ return nil
 `PollSteps(maxSteps)` 限制本次推进的指令数，返回状态、实际步数和错误；
 Pending 或暂停时实际步数可以为零；步数预算不等于墙钟 CPU 限速。
 
-`InstanceOptions.Parallelism` 限制同一实例并行执行的 guest task，零值采用 1。task 使用进程级有界
-Executor，不占用固定 goroutine；单 worker 也能推进等待中的程序。需要独立容量时创建
-`runtime.NewExecutor(workers)` 并传入 `InstanceOptions.Executor`。自建 Executor 由宿主关闭，
-其 `Shutdown` 会先关闭仍关联的 Instance；进程级默认 Executor 不可关闭。
+`InstanceOptions.Parallelism` 限制同一实例并行执行的 guest task，零值采用 1。需要独立容量时，
+创建 `runtime.NewExecutor(workers)` 并传入 `InstanceOptions.Executor`；自建 Executor 由宿主关闭。
 
-`Execution.Ready` 提供事件唤醒。owner 正忙时 Poll 返回 `runtime.ErrBusy`，
-调用方可稍后重试；Wait 会协调等待与 context 取消。
-`Wait` 的 context 取消会请求取消执行；`WaitScope` 的 context 只限制本次等待，
-需要终止后台工作时显式调用 `Cancel`，再用新的 context 等待 scope 收敛。
-Cancel 终止对应 scope，已完成的入口结果保持不变。
+`Execution.Ready` 提供事件唤醒；owner 正忙时 Poll 返回 `runtime.ErrBusy`，调用方稍后重试。
+`Wait` 的 context 取消会请求取消执行；`WaitScope` 的 context 只限制本次等待。需要终止后台工作时，
+显式调用 `Cancel`，再用新的 context 等待 scope 收敛。
 
-library scope 超过限制时该 scope 失败，实例仍可继续调用；main scope 超限会结束实例。
-后台任务未恢复的 panic 通过 Instance 的 Done、Wait、Err 报告。
-无法推进的内部等待通过 `AllBlockedError` 提供任务和源码位置诊断。
-
-FFI 的 `Open`/`Start`、Clock 和 Entropy 回调必须线程安全、快速返回，且不能同步重入同一
-Instance。阻塞工作应在 provider 自有的有界执行器中运行，通过 FFI Completion 返回；实例关闭时
-provider 仍需响应取消并完成清理。
+library scope 超过限制时仅该 scope 失败；main scope 超限会结束实例。后台任务未恢复的 panic 和
+无法推进的等待分别通过 Instance 错误与 `AllBlockedError` 报告。
 
 ### 资源限制与观测
 
@@ -179,8 +168,7 @@ provider 仍需响应取消并完成清理。
 限制覆盖步数、任务、内存、调用边界和动态类型等资源。
 `Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供一致的状态快照。
 
-guest 内存统计用于逻辑计费，与 Go heap 或进程 RSS 分别观测。
-性能诊断方法见[开发指南](DEVELOPMENT.md#缓存与性能)。
+guest 内存统计用于逻辑计费，不等同于 Go heap 或进程 RSS。
 
 ### 长期运行
 
@@ -188,9 +176,8 @@ guest 内存统计用于逻辑计费，与 Go heap 或进程 RSS 分别观测。
 1 亿；`PollSteps` 和热更新都不重置预算。持续服务可使用 `UnlimitedSteps`，同时保留取消、
 分片推进与其他资源限制。累计统计溢出时饱和，不改变调度。
 
-宿主负责持久化业务进度；执行镜像与值快照不是整个 VM 的恢复检查点。
-使用 `compiler/cache.DiskBackend` 时，宿主应定期调用 `Trim` 并在退出时停止维护任务；
-按时间清理不限制磁盘总量，仍需监控容量。观测方法见[开发指南](DEVELOPMENT.md#缓存与性能)。
+宿主负责持久化业务进度；执行镜像与值快照不是整个 VM 的恢复检查点。长期运行的观测与缓存维护见
+[开发指南](DEVELOPMENT.md#缓存与性能)。
 
 ### 优雅停机
 
@@ -232,10 +219,7 @@ CLI 的 run/test/DAP 按包闭包装配官方 provider，嵌入应用自行选�
 `Engine.AvailableHostCapabilities` 列出可装配能力，`Program.RequiredHostCapabilities`
 返回强制需求；承载强制需求的 Bridge 需实现 `ffi.CapabilityBridge`。
 
-缺少 console 或文件系统实现时，操作返回可用 `errors.Is(err, errors.ErrUnsupported)`
-判断的错误，文件操作保留 PathError。环境查询失败表现为变量不存在；
-print/println 忽略输出错误。普通 Reader 的阻塞读取需由嵌入方保证能够结束；
-支持 `ReadContext` 的输入可配合执行取消。DAP 默认脚本输入为 EOF。
+没有装配的能力返回 unsupported。可能阻塞的输入应支持取消，或由宿主保证能够结束。
 
 Instance 只拥有自己打开的 FFI Session。先关闭实例，再关闭共享 Host 与所拥有的 backend。
 `Shutdown(ctx)` 等待清理，context 取消只结束本次等待，之后仍可再次等待同一终态；
@@ -273,10 +257,9 @@ globals、导出与命名类型/函数的状态契约；需要改变这些契约
 
 ### 检查补丁与版本引用
 
-提交前用 `runtime.ComparePrograms(currentProgram, candidate)` 查看代码、契约、能力与符号的变化；
-不兼容的候选也可检查。`Compatible` 仅表示结构兼容，实例准入与提交仍由 Prepare/Apply 检查。
-函数表示未变不代表行为不受依赖变化影响。准备成功后可用 `plan.Inspect()` 查看带基准 generation 的报告，
-需在关闭或提交 plan 前读取。
+提交前用 `runtime.ComparePrograms(currentProgram, candidate)` 查看代码、契约、能力与符号变化；
+准备成功后可用 `plan.Inspect()` 查看带基准 generation 的报告。报告只描述差异，最终准入仍由
+`PreparePatch` 与 `ApplyPatch` 决定。
 
 `Instance.RevisionRetention(ctx)` 返回已发布版本的存活摘要，包含 current、显式 pin 数和
 最近一次扫描的全局根保留状态；未提交候选在 `PendingTarget` 中单独返回。`RetainedRevisions` 只列出已发布版本。
@@ -290,8 +273,8 @@ roots, err := instance.RevisionRoots(ctx, generation, runtime.RevisionRootLimits
 })
 ```
 
-结果说明任务、帧和 global 等如何引用版本。`Complete=false` 表示扫描被截断；零配置采用上述默认值。
-路径只属于本次快照，共享对象显示一条代表性路径。查询不改变 GC 或步骤计费；引用解除后旧版本自然回收。
+结果说明任务、帧和 global 等如何引用版本；`Complete=false` 表示扫描被限制截断。查询不改变引用关系，
+引用解除后旧版本自然回收。
 
 ## 嵌入资源
 
@@ -331,6 +314,8 @@ run/check 的操作数全部为 `.mgo` 文件时，文件必须位于同一目�
 
 源码和测试分别使用 `.mgo`、`_test.mgo`；Go 宿主与生成的 Go binding 可放在同一目录。
 `fmt` 的文件输入接受 `.mgo` 和 `.mrpc`。
+`rpc generate` 从 `.mrpc` 原子生成 Go、Mini-Go、Rust 或 TypeScript binding；参数、类型映射与示例见
+[RPC 使用指南](RPC.md#从脚本调用-go)和[TypeScript API](RPC.md#typescript--javascript-api)。
 
 `run -max-steps=0` 使用默认预算，`-max-steps=-1` 不限制 guest 累计步数。
 `run` 与 `gateway` 支持 `-shutdown-timeout=30s`，清理各阶段共用总截止时间。
@@ -362,8 +347,8 @@ mini-go -C ./scripts check -source company/rules=../rules ./...
 | `MINIGO_CACHE` | `<临时目录>/mini-go/cache` | 编译产物和执行镜像缓存 |
 | `MINIGO_DEBUG` | 空 | `cachetrace=1`、`cachehash=1`、`cacheverify=1`，可逗号组合 |
 
-显式缓存路径必须为绝对路径。需要持久缓存时设置 MINIGO_CACHE。
-`mini-go cache clean/verify/inspect` 用于维护缓存；cacheverify 会重新构建并比较命中结果，适合诊断。
+显式缓存路径必须为绝对路径。`mini-go cache clean/verify/inspect` 用于维护和诊断缓存；内部诊断方式见
+[开发指南](DEVELOPMENT.md#缓存与性能)。
 
 ## 编辑器与调试符号
 
@@ -387,14 +372,9 @@ LSP initializationOptions 接受相同的 module、sources、tags，目录相对
 额外库支持诊断与导航，默认只读；DAP 可在注册的外部源码上设置断点。
 DAP 使用 O0 并生成调试符号；普通 run/test 通过 `-symbols` 启用符号。
 
-library 使用 `SetBreakpoints`、`DebugSnapshot`、`DebugScopes` 和 `DebugVariables`。
-变量引用在恢复后失效。无符号 Program 仍可执行、暂停和查看代码位置；
-源码单步和变量检查需要 ProgramSymbols，否则返回 `runtime.ErrDebugSymbolsUnavailable`。
-热更新后断点按新 revision 重新解析。
-
-Go DAP 栈帧显示 generation、实际所属 scope 和程序 hash。源码通过 `sourceReference` 读取，
-按帧的源码 hash 校验；历史源码由宿主保存，可通过 `dap.LaunchTarget.Source` 提供。
-磁盘内容变化时会报告不匹配，源码引用在恢复执行后失效。
+library 调试接口包括 `SetBreakpoints`、`DebugSnapshot`、`DebugScopes` 和 `DebugVariables`。
+源码单步和变量检查需要 `ProgramSymbols`；变量与源码引用在恢复执行后失效。热更新后断点按新 revision
+重新解析，历史帧继续显示其所属 generation 的符号。
 
 Go 应用通过 `compiler/language` 查询语言信息，或使用 `compiler/service.Session`
 管理文档更新、分析与构建；会话使用完毕调用 `Close`。

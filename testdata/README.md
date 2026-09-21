@@ -21,5 +21,5 @@
 manifest 绑定来源、文件 hash 与镜像身份。修改场景时先审阅预期，再运行 `make generate` 更新派生物，
 最后执行受影响测试。
 
-Go、Rust 和 WASM 按各自支持范围独立断言；标准库宿主场景还区分 Go 与 Rust provider。
+Go、Rust 和 TypeScript/WASM 按各自支持范围独立断言；标准库宿主场景还区分 Go 与 Rust provider。
 测试组织与运行命令见[开发指南](../DEVELOPMENT.md#测试组织)，协议和运行时数据格式见对应目录说明。

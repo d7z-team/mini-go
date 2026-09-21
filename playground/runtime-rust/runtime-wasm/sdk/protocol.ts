@@ -25,22 +25,6 @@ export function toError(value: unknown): Error {
   const failure = serializeError(value);
   return Object.assign(new Error(failure.message), failure);
 }
-export interface Deferred<T> {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-}
-export function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void, reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((ok, fail) => {
-    resolve = ok;
-    reject = fail;
-  });
-  // Cancellation can arrive before a caller attaches a handler.
-  void promise.catch(() => {});
-  return { promise, resolve, reject };
-}
-
 export type Configuration = Omit<
   Options,
   "signal" | "provider" | "providerModule" | "workerUrl" | "wasmUrl"

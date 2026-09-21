@@ -52,7 +52,7 @@ CI 在工作流摘要中报告总覆盖率，并将两份报告作为 `go-covera
 
 | 事实源 | 派生物 |
 | --- | --- |
-| `.mrpc` 声明 | Go、Mini-Go、Rust binding |
+| `.mrpc` 声明 | Go、Mini-Go、Rust、TypeScript binding |
 | compiler、bytecode 与标准库源码 | bootstrap bundle 和工具链 identity |
 | bytecode 模型与工具 DTO | [spec](spec/README.md) 契约和 Rust 描述 |
 | 共享源码与行为观察 | 预编译镜像、差分数据和 manifest |
@@ -128,9 +128,9 @@ make runtime-wasm-test
 make runtime-wasm-pack
 ```
 
-`make runtime-wasm-test` 构建 TypeScript、Worker、WASM 和 compiler 分发，然后验证类型、格式、
-浏览器、Node、RPC 与安装包。浏览器 runtime 默认测试 Chromium 和 Firefox；
-`MINIGO_BROWSERS` 可选择引擎，tools 与打包消费测试使用 Chromium。
+`make runtime-wasm-test` 构建 TypeScript、Worker、WASM 和 compiler 分发，严格编译共享 schema 生成的
+TypeScript binding，然后验证 codec、owner 生命周期、浏览器、Node、双向 RPC 与安装包。浏览器 runtime
+默认测试 Chromium 和 Firefox；`MINIGO_BROWSERS` 可选择引擎，tools 与打包消费测试使用 Chromium。
 
 在 `playground/runtime-rust/runtime-wasm` 中可单独运行 `npm ci`、`npm run build` 和 `npm run lint`；
 `npm run build -- --core` 构建不含 RPC 的版本。`WASM_BINDGEN` 可指定绑定工具，
@@ -144,10 +144,11 @@ make runtime-wasm-pack
 
 | 变更 | 核对重点 |
 | --- | --- |
-| MRPC schema / generator | 类型、命名、契约身份、三语言 codec、原子输出 |
+| MRPC schema / generator | 类型、命名、契约身份、四语言 codec、原子输出 |
 | FFI / Result | 接收或丢弃、迟到回复、额度和新资源回收 |
 | Endpoint | wire、操作状态、租约、控制消息、分片和断线终态 |
 | Router / publication | 一致路由快照、原子替换、旧 lease 和关闭责任 |
+| TypeScript RPC SDK | Worker owner、两阶段结果、provider/resource 清理与 Browser/Node 一致性 |
 
 协议测试应覆盖消息顺序、背压和最终清理：请求完整发送后才等待接纳，取消不能越过已接受的工作；
 续租只确认对应批次，失效授权不能恢复；资源关闭失败仍保留 owner 和额度。MRPC、FFI envelope 和

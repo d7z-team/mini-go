@@ -4,7 +4,11 @@
 
 mod mailbox;
 #[cfg(feature = "rpc")]
+mod network;
+#[cfg(feature = "rpc")]
 mod rpc;
+#[cfg(feature = "rpc")]
+mod rpc_api;
 #[cfg(feature = "rpc")]
 mod transport;
 use mini_go::{
@@ -12,6 +16,8 @@ use mini_go::{
     ffi::{Bridge, Cancellation},
     instance::{Instance as Machine, PollStatus},
 };
+#[cfg(feature = "rpc")]
+pub use rpc_api::WasmRpc;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -31,15 +37,19 @@ impl std::task::Wake for DriverWake {
     }
 }
 
-fn error(error: impl std::fmt::Display + 'static) -> JsValue {
+pub(crate) fn error(error: impl std::fmt::Display + 'static) -> JsValue {
     let value = js_sys::Error::new(&error.to_string());
     if let Some(failure) = (&error as &dyn std::any::Any).downcast_ref::<RuntimeError>() {
         let _ = js_sys::Reflect::set(&value, &"code".into(), &failure.code.into());
         let _ = js_sys::Reflect::set(&value, &"path".into(), &failure.path.clone().into());
     }
+    #[cfg(feature = "rpc")]
+    if let Some(failure) = (&error as &dyn std::any::Any).downcast_ref::<runtime::rpc::Status>() {
+        let _ = js_sys::Reflect::set(&value, &"code".into(), &failure.code.clone().into());
+    }
     value.into()
 }
-fn encode(value: &impl Serialize) -> Result<JsValue, JsValue> {
+pub(crate) fn encode(value: &impl Serialize) -> Result<JsValue, JsValue> {
     value
         .serialize(
             &serde_wasm_bindgen::Serializer::new()
@@ -63,10 +73,27 @@ struct Options {
 
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-struct RpcOptions {
+pub(crate) struct RpcOptions {
     lease_ttl_ms: Option<u64>,
     admission_timeout_ms: Option<u64>,
     max_call_duration_ms: Option<u64>,
+}
+
+impl RpcOptions {
+    fn validate(&self) -> Result<(), &'static str> {
+        if [
+            self.lease_ttl_ms,
+            self.admission_timeout_ms,
+            self.max_call_duration_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|duration| duration == 0 || duration > i64::MAX as u64 / 1_000_000)
+        {
+            return Err("invalid RPC duration in milliseconds");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -104,13 +131,9 @@ pub struct WasmVm {
     max_host_result_bytes: usize,
     debug_session: Option<mini_go_tooling::dap::DebugSession>,
     #[cfg(feature = "rpc")]
-    network: Option<Arc<transport::Transport>>,
-    #[cfg(feature = "rpc")]
-    endpoint: Option<Arc<runtime::rpc::Endpoint>>,
+    network: Option<Arc<network::RpcNetwork>>,
     #[cfg(feature = "rpc")]
     host: Option<Arc<runtime::rpc::Host>>,
-    #[cfg(feature = "rpc")]
-    router: Option<Arc<runtime::rpc::router::Router>>,
 }
 
 #[wasm_bindgen]
@@ -118,18 +141,7 @@ impl WasmVm {
     #[wasm_bindgen(constructor)]
     pub fn new(image: &[u8], options: JsValue) -> Result<WasmVm, JsValue> {
         let options: Options = serde_wasm_bindgen::from_value(options).map_err(error)?;
-        for duration in [
-            options.rpc_options.lease_ttl_ms,
-            options.rpc_options.admission_timeout_ms,
-            options.rpc_options.max_call_duration_ms,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if duration == 0 || duration > i64::MAX as u64 / 1_000_000 {
-                return Err(error("invalid RPC duration in milliseconds"));
-            }
-        }
+        options.rpc_options.validate().map_err(error)?;
         let (mut limits, load) = match options.workload {
             Workload::Compiler => (
                 runtime::Limits::compiler(),
@@ -185,51 +197,25 @@ impl WasmVm {
         #[cfg(feature = "rpc")]
         let mut bridge = bridge;
         #[cfg(feature = "rpc")]
-        let (mut network, mut endpoint, mut host, mut router) = (None, None, None, None);
+        let (mut network, mut host) = (None, None);
         if options.rpc {
             #[cfg(not(feature = "rpc"))]
             return Err(error("this WASM build has no RPC feature"));
             #[cfg(feature = "rpc")]
             {
-                let conn = transport::Transport::new();
-                let mut endpoint_options = runtime::rpc::EndpointOptions::default();
-                endpoint_options.limits.max_frame_bytes = 1 << 20;
-                if let Some(milliseconds) = options.rpc_options.lease_ttl_ms {
-                    endpoint_options.lease_ttl = std::time::Duration::from_millis(milliseconds);
-                }
-                if let Some(milliseconds) = options.rpc_options.admission_timeout_ms {
-                    endpoint_options.admission_timeout =
-                        std::time::Duration::from_millis(milliseconds);
-                }
-                endpoint_options.max_call_duration = options
-                    .rpc_options
-                    .max_call_duration_ms
-                    .map(std::time::Duration::from_millis);
-                let routes = Arc::new(runtime::rpc::router::Router::new(
-                    runtime::rpc::platform::Handle,
-                    Default::default(),
-                    None,
-                ));
-                let peer = runtime::rpc::Endpoint::open(
-                    runtime::rpc::platform::Handle,
-                    conn.clone(),
-                    Some(routes.clone()),
-                    endpoint_options,
-                )
-                .map_err(error)?;
+                let rpc_network = network::RpcNetwork::open(&options.rpc_options)?;
                 let mut host_options =
                     runtime::rpc::HostOptions::new(runtime::rpc::platform::Handle);
-                host_options.fallback = Some(peer.clone());
-                host_options.publish_provider = Some(Arc::new(rpc::Publisher(routes.clone())));
+                host_options.fallback = Some(rpc_network.endpoint.clone());
+                host_options.publish_provider =
+                    Some(Arc::new(rpc::Publisher(rpc_network.router.clone())));
                 let remote = Arc::new(runtime::rpc::Host::new(host_options).map_err(error)?);
                 bridge = Arc::new(rpc::Bridge {
                     local: mailbox.clone(),
                     remote: remote.clone(),
                 });
-                network = Some(conn);
-                endpoint = Some(peer);
+                network = Some(rpc_network);
                 host = Some(remote);
-                router = Some(routes);
             }
         }
         let machine = Machine::with_bridge(program, limits, bridge.as_ref()).map_err(error)?;
@@ -247,11 +233,7 @@ impl WasmVm {
             #[cfg(feature = "rpc")]
             network,
             #[cfg(feature = "rpc")]
-            endpoint,
-            #[cfg(feature = "rpc")]
             host,
-            #[cfg(feature = "rpc")]
-            router,
         })
     }
 
@@ -619,8 +601,7 @@ impl WasmVm {
         self.network
             .as_ref()
             .ok_or_else(|| error("RPC unavailable"))?
-            .receive(frame.to_vec())
-            .map_err(error)
+            .receive(frame)
     }
     #[cfg(feature = "rpc")]
     pub fn outgoing(&self) -> Result<JsValue, JsValue> {
@@ -628,7 +609,7 @@ impl WasmVm {
             &self
                 .network
                 .as_ref()
-                .map(|network| network.drain())
+                .map(|network| network.outgoing())
                 .unwrap_or_default(),
         )
     }
@@ -640,26 +621,24 @@ impl WasmVm {
     }
     #[cfg(feature = "rpc")]
     pub fn disconnect(&self) {
-        use runtime::rpc::MessageConn;
         if let Some(network) = &self.network {
-            network.close();
+            network.disconnect();
         }
     }
     #[cfg(feature = "rpc")]
     pub fn close_network(&self) -> js_sys::Promise {
         let host = self.host.clone();
-        let endpoint = self.endpoint.clone();
-        let router = self.router.clone();
+        let network = self.network.clone();
         wasm_bindgen_futures::future_to_promise(async move {
-            if let Some(host) = host {
-                host.shutdown().await.map_err(error)?;
-            }
-            if let Some(endpoint) = endpoint {
-                endpoint.shutdown().await.map_err(error)?;
-            }
-            if let Some(router) = router {
-                router.force_shutdown().await.map_err(error)?;
-            }
+            let host = match host {
+                Some(host) => host.shutdown().await,
+                None => Ok(()),
+            };
+            let network = match network {
+                Some(network) => network.shutdown().await,
+                None => Ok(()),
+            };
+            host.and(network).map_err(error)?;
             Ok(JsValue::UNDEFINED)
         })
     }

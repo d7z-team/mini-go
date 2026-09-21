@@ -374,6 +374,33 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
       }
     },
   );
+
+  test(
+    `${browserName}: generated TypeScript RPC interoperates with Go in both directions`,
+    { timeout: 90_000 },
+    async (t) => {
+      const address = await startPeer(t);
+      let browser;
+      t.signal.addEventListener("abort", () => {
+        void browser?.close();
+      });
+      try {
+        browser = await { chromium, firefox, webkit }[browserName].launch({ headless: true });
+        const page = await browser.newPage();
+        page.on("console", (message) => console.log(browserName, message.text()));
+        await page.goto(`${address}/playground/runtime-rust/runtime-wasm/tests/index.html`);
+        await page.evaluate(async () => {
+          const api = await import("/playground/runtime-rust/runtime-wasm/dist/browser-rpc.js");
+          const { exerciseNativeRPC } = await import(
+            "/playground/runtime-rust/runtime-wasm/tests/native_rpc_scenario.js"
+          );
+          await exerciseNativeRPC(api, location.origin);
+        });
+      } finally {
+        await browser?.close();
+      }
+    },
+  );
 }
 
 // Preserve raw integer tokens while selecting one image from the shared corpus.

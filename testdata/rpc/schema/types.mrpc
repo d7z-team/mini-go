@@ -3,6 +3,7 @@ namespace conformance.types.v1;
 option go_package = "github.com/d7z-team/mini-go/testdata/rpc/generated/go/types;rpctypes";
 option mgo_package = "rpcfixture/generated/mgo/types";
 option rust_module = "crate::rpctypes";
+option ts_module = "./types.js";
 
 enum Mode { Ready = 0; Busy = 1; }
 message Details { label string = 1; mode Mode = 2; }

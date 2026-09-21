@@ -705,85 +705,141 @@ impl EndpointState {
                 );
             }
             let state = self.clone();
-            let waiter = context.clone();
             let kind = frame.kind;
             self.runtime.spawn(async move {
-            let queued_cancellation = Cancellation::default();
-            let mut send_context = context.clone();
-            send_context.cancellation = queued_cancellation.clone();
-            let enqueued = state.enqueue_written(frame, Some(send_context), Some(gate));
-            tokio::pin!(enqueued);
-            let enqueued = tokio::select! {
-                result = &mut enqueued => result,
-                _ = deliver.closed() => { queued_cancellation.cancel(); (&mut enqueued).await },
-                _ = context.cancellation.cancelled() => { queued_cancellation.cancel(); (&mut enqueued).await },
-            };
-            let sent = enqueued.is_ok();
-            let expiration = state.state.lock().unwrap().outbound_operations.get(&id).map(|(_, cancel)| cancel.clone()).unwrap_or_default();
-            let reply = async { enqueued?; response.await.map_err(|_| state.error())? };
-            tokio::pin!(reply);
-            let admission_deadline = Instant::now() + state.options.admission_timeout;
-            let first = tokio::select! {
-                biased;
-                _ = deliver.closed() => None,
-                _ = context.cancellation.cancelled() => None,
-                _ = expiration.cancelled() => None,
-                value = &mut reply => Some(value),
-                changed = accepted_rx.changed() => {
-                    if changed.is_ok() && *accepted_rx.borrow() {
-                        let value = tokio::select! {
-                            biased;
-                            _ = deliver.closed() => None,
-                            _ = context.cancellation.cancelled() => None,
-                            _ = expiration.cancelled() => None,
-                            value = &mut reply => Some(value),
-                            _ = async { if let Some(deadline) = context.deadline { super::platform::sleep_until(deadline).await } else { std::future::pending().await } } => None,
-                        };
-                        value
-                    } else { None }
+                enum CallStopped {
+                    CallerDropped,
+                    Report(Status),
                 }
-                _ = super::platform::sleep_until(admission_deadline) => None,
-                _ = async { if let Some(deadline) = context.deadline { super::platform::sleep_until(deadline).await } else { std::future::pending().await } } => None,
-            };
-            let mut delivery = Some(deliver);
-            let outcome = first;
-            let outcome = match outcome {
-                Some(value) => value,
-                None => {
-                    let _ = delivery.take().unwrap().send(Err(Status::new("unavailable", "RPC operation admission or lease was not confirmed")));
-                    state.state.lock().unwrap().outbound_operations.remove(&id);
-                    let cancel_and_wait = async {
-                        if sent { state.enqueue(Frame { kind: CANCEL, target_id: id, ..Frame::default() }).await?; }
-                        (&mut reply).await
-                    };
-                    match super::platform::timeout(state.options.lease_ttl, cancel_and_wait).await {
-                        Ok(value) => value,
-                        Err(_) => Err(Status::new("unavailable", "RPC operation wait ended")),
+
+                let queued_cancellation = Cancellation::default();
+                let mut send_context = context.clone();
+                send_context.cancellation = queued_cancellation.clone();
+                let enqueued = state.enqueue_written(frame, Some(send_context), Some(gate));
+                tokio::pin!(enqueued);
+                let enqueued = tokio::select! {
+                    result = &mut enqueued => result,
+                    _ = deliver.closed() => { queued_cancellation.cancel(); (&mut enqueued).await },
+                    _ = context.cancellation.cancelled() => { queued_cancellation.cancel(); (&mut enqueued).await },
+                };
+                let sent = enqueued.is_ok();
+                let expiration = state
+                    .state
+                    .lock()
+                    .unwrap()
+                    .outbound_operations
+                    .get(&id)
+                    .map(|(_, cancel)| cancel.clone())
+                    .unwrap_or_default();
+                let reply = async { enqueued?; response.await.map_err(|_| state.error())? };
+                tokio::pin!(reply);
+                let admission_deadline = Instant::now() + state.options.admission_timeout;
+                let wait_outcome = tokio::select! {
+                    biased;
+                    _ = deliver.closed() => Err(CallStopped::CallerDropped),
+                    _ = context.cancellation.cancelled() => Err(CallStopped::Report(Status::new("canceled", "RPC call canceled"))),
+                    _ = expiration.cancelled() => Err(CallStopped::Report(Status::new("unavailable", "RPC operation lease expired"))),
+                    value = &mut reply => Ok(value),
+                    changed = accepted_rx.changed() => {
+                        if changed.is_ok() && *accepted_rx.borrow() {
+                            tokio::select! {
+                                biased;
+                                _ = deliver.closed() => Err(CallStopped::CallerDropped),
+                                _ = context.cancellation.cancelled() => Err(CallStopped::Report(Status::new("canceled", "RPC call canceled"))),
+                                _ = expiration.cancelled() => Err(CallStopped::Report(Status::new("unavailable", "RPC operation lease expired"))),
+                                value = &mut reply => Ok(value),
+                                _ = async { if let Some(deadline) = context.deadline { super::platform::sleep_until(deadline).await } else { std::future::pending().await } } => Err(CallStopped::Report(Status::new("deadline_exceeded", "RPC deadline exceeded"))),
+                            }
+                        } else {
+                            Err(CallStopped::Report(Status::new("unavailable", "RPC operation admission was not confirmed")))
+                        }
                     }
+                    _ = super::platform::sleep_until(admission_deadline) => Err(CallStopped::Report(Status::new("unavailable", "RPC operation admission was not confirmed"))),
+                    _ = async { if let Some(deadline) = context.deadline { super::platform::sleep_until(deadline).await } else { std::future::pending().await } } => Err(CallStopped::Report(Status::new("deadline_exceeded", "RPC deadline exceeded"))),
+                };
+                let mut delivery = Some(deliver);
+                let response_before_cancel = match wait_outcome {
+                    Ok(value) => Some(value),
+                    Err(CallStopped::CallerDropped) => {
+                        delivery.take();
+                        None
+                    }
+                    Err(CallStopped::Report(error)) => {
+                        let _ = delivery.take().unwrap().send(Err(error));
+                        None
+                    }
+                };
+                let outcome = match response_before_cancel {
+                    Some(value) => value,
+                    None => {
+                        state
+                            .state
+                            .lock()
+                            .unwrap()
+                            .outbound_operations
+                            .remove(&id);
+                        let cancel_and_wait = async {
+                            if sent {
+                                state
+                                    .enqueue(Frame {
+                                        kind: CANCEL,
+                                        target_id: id,
+                                        ..Frame::default()
+                                    })
+                                    .await?;
+                            }
+                            (&mut reply).await
+                        };
+                        match super::platform::timeout(state.options.lease_ttl, cancel_and_wait).await {
+                            Ok(value) => value,
+                            Err(_) => Err(Status::new("unavailable", "RPC operation wait ended")),
+                        }
+                    }
+                };
+                state.state.lock().unwrap().pending.remove(&id);
+                if kind != CALL
+                    || !outcome
+                        .as_ref()
+                        .is_ok_and(|frame| frame.kind == OFFER && frame.code.is_empty())
+                {
+                    state
+                        .state
+                        .lock()
+                        .unwrap()
+                        .outbound_operations
+                        .remove(&id);
                 }
-            };
-            state.state.lock().unwrap().pending.remove(&id);
-            if kind != CALL || !outcome.as_ref().is_ok_and(|frame| frame.kind == OFFER && frame.code.is_empty()) {
-                state.state.lock().unwrap().outbound_operations.remove(&id);
-            }
-            let cleanup = outcome.as_ref().ok().filter(|frame| frame.code.is_empty()).and_then(|frame| {
-                match frame.kind {
-                    DONE if frame.binding != 0 && frame.epoch != 0 => Some(Frame { kind: CLOSE, binding: frame.binding, ..Frame::default() }),
-                    OFFER => Some(Frame { kind: DECISION, binding: frame.binding, target_id: frame.target_id, ..Frame::default() }),
-                    _ => None,
+                let cleanup = outcome
+                    .as_ref()
+                    .ok()
+                    .filter(|frame| frame.code.is_empty())
+                    .and_then(|frame| match frame.kind {
+                        DONE if frame.binding != 0 && frame.epoch != 0 => Some(Frame {
+                            kind: CLOSE,
+                            binding: frame.binding,
+                            ..Frame::default()
+                        }),
+                        OFFER => Some(Frame {
+                            kind: DECISION,
+                            binding: frame.binding,
+                            target_id: frame.target_id,
+                            ..Frame::default()
+                        }),
+                        _ => None,
+                    });
+                let handed_off = delivery
+                    .is_some_and(|deliver| deliver.send(outcome).is_ok())
+                    && receipt.await.is_ok();
+                if !handed_off
+                    && let Some(cleanup) = cleanup
+                {
+                    // The retained call reservation owns this cleanup until it completes.
+                    let context = CallContext::default();
+                    let _ = Box::pin(state.request(context, cleanup)).await;
                 }
+                owner_reservation.lock().unwrap().take();
             });
-            let handed_off = delivery.is_some_and(|deliver| deliver.send(outcome).is_ok()) && receipt.await.is_ok();
-            if !handed_off && let Some(cleanup) = cleanup {
-                        // The retained call reservation owns this cleanup until it completes.
-                        let context = CallContext::default();
-                        let _ = Box::pin(state.request(context, cleanup)).await;
-            }
-            owner_reservation.lock().unwrap().take();
-        });
-            let frame = waiter
-                .run(async { delivered.await.map_err(|_| self.error())? })
-                .await?;
+            let frame = delivered.await.map_err(|_| self.error())??;
             // A queued oneshot reply can still be dropped without being polled.
             // Acknowledge only once this future actually receives the frame.
             let _ = received.send(());

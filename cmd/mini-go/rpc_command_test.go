@@ -150,3 +150,41 @@ func TestRPCGenerateDoesNotPartiallyCommitOutputs(t *testing.T) {
 		t.Fatalf("output after failed transaction = %q, %v", data, readErr)
 	}
 }
+
+func TestRPCGenerateTypeScriptSharesAtomicTransaction(t *testing.T) {
+	directory := t.TempDir()
+	contract := `syntax = "mrpc/v2"; namespace example.web.v1; option go_package = "example/web;web"; option ts_module = "./binding.js"; message Request { value int64 = 1; } service Web { Echo(request Request = 1) returns (request Request = 1); }`
+	if err := os.WriteFile(filepath.Join(directory, "service.mrpc"), []byte(contract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goOutput := filepath.Join(directory, "binding.go")
+	typescriptOutput := filepath.Join(directory, "binding.ts")
+	args := []string{"generate", "-go-out", goOutput, "-ts-out", typescriptOutput, "service.mrpc"}
+	if err := runRPC(testCommandEnvironment(t, directory), args, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := os.ReadFile(typescriptOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range [][]byte{[]byte("export interface Request"), []byte("createWebProvider"), []byte("class WebClient")} {
+		if !bytes.Contains(generated, expected) {
+			t.Fatalf("TypeScript output misses %q", expected)
+		}
+	}
+	beforeGo, err := os.ReadFile(goOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeTypeScript := append([]byte(nil), generated...)
+	failed := append([]string(nil), args...)
+	failed = append(failed[:len(failed)-1], "-ts-prefix", "bad-", failed[len(failed)-1])
+	if err := runRPC(testCommandEnvironment(t, directory), failed, io.Discard); err == nil {
+		t.Fatal("invalid TypeScript target accepted")
+	}
+	afterGo, goErr := os.ReadFile(goOutput)
+	afterTypeScript, typescriptErr := os.ReadFile(typescriptOutput)
+	if goErr != nil || typescriptErr != nil || !bytes.Equal(beforeGo, afterGo) || !bytes.Equal(beforeTypeScript, afterTypeScript) {
+		t.Fatalf("failed TypeScript generation partially committed outputs: %v, %v", goErr, typescriptErr)
+	}
+}

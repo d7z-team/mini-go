@@ -3,8 +3,8 @@ package minigo
 //go:generate go run ./cmd/mini-go rpc generate -rust-out playground/runtime-rust/src/stdlib_host/console_generated.rs -rust-module crate::stdlib_host::console_binding -rust-runtime crate -rust-prefix Fmt stdlib/host/console/console.mrpc
 //go:generate go run ./cmd/mini-go rpc generate -rust-out playground/runtime-rust/src/stdlib_host/os_generated.rs -rust-module crate::stdlib_host::os_binding -rust-runtime crate -rust-prefix Os stdlib/host/os/types.mrpc stdlib/host/os/filesystem.mrpc stdlib/host/os/environment.mrpc
 
-//go:generate go run ./cmd/mini-go rpc generate -go-out testdata/rpc/generated/go/types/binding.go -rust-out testdata/rpc/generated/rust/types.rs -mgo-out testdata/rpc/generated/mgo/types/binding.mgo testdata/rpc/schema/types.mrpc
-//go:generate go run ./cmd/mini-go rpc generate -go-out testdata/rpc/generated/go/service/binding.go -rust-out testdata/rpc/generated/rust/service.rs -mgo-out testdata/rpc/generated/mgo/service/binding.mgo testdata/rpc/schema/service.mrpc
+//go:generate go run ./cmd/mini-go rpc generate -go-out testdata/rpc/generated/go/types/binding.go -rust-out testdata/rpc/generated/rust/types.rs -mgo-out testdata/rpc/generated/mgo/types/binding.mgo -ts-out testdata/rpc/generated/typescript/types.ts testdata/rpc/schema/types.mrpc
+//go:generate go run ./cmd/mini-go rpc generate -go-out testdata/rpc/generated/go/service/binding.go -rust-out testdata/rpc/generated/rust/service.rs -mgo-out testdata/rpc/generated/mgo/service/binding.mgo -ts-out testdata/rpc/generated/typescript/service.ts testdata/rpc/schema/service.mrpc
 
 //go:generate go run ./cmd/mini-go-dev vscode-grammar -out vscode-ext/syntaxes/mini-go.tmLanguage.json
 

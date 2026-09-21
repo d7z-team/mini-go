@@ -43,6 +43,18 @@
       "source": "schema/",
       "oracle": "MRPC catalog and generator"
     },
+    "generated/typescript/service.ts": {
+      "sha256": "db968733c506ff5b76d1e11c73cd437d3bbde5bfb2fb4835a3477035ea7abfd4",
+      "kind": "binding",
+      "source": "schema/",
+      "oracle": "MRPC catalog and generator"
+    },
+    "generated/typescript/types.ts": {
+      "sha256": "b8b7d192108fd5693871425a2147979cf10757e71f9a05716c24f7063ac87acb",
+      "kind": "binding",
+      "source": "schema/",
+      "oracle": "MRPC catalog and generator"
+    },
     "images/call.json.gz": {
       "sha256": "0163d69acb37435095a7ce3ca852c05510a360ee033d964569377cf1237c8d2c",
       "kind": "image",
@@ -64,6 +76,12 @@
       "oracle": "independent Go and Rust execution",
       "compiler_id": "0b9eaab8bb4a16bb01477ea6d200d0862f9064d1ab127f6a054ab3168c6d6261"
     },
+    "package.json": {
+      "sha256": "609158e6c5fbc237939fa3ddf7faab80ab690bdc0c8d584414a885130103c4e8",
+      "kind": "golden",
+      "source": "package.json",
+      "oracle": "reviewed protocol contract"
+    },
     "scenarios/close.json": {
       "sha256": "5f7cc97cad4feb7c699d34c28699996e3e92b71505085074a54950edd462085d",
       "kind": "scenario",
@@ -77,13 +95,13 @@
       "oracle": "handwritten observable results"
     },
     "schema/service.mrpc": {
-      "sha256": "8a7b27376565e195310e9f7056884224f8c03ad96d29cf64d8eb2ae84ba39cb4",
+      "sha256": "e5bffb73f2fac07e18fd9d6d0e9b38225891aa4f0265c3ba78074ab95d56d930",
       "kind": "schema",
       "source": "schema/service.mrpc",
       "oracle": "reviewed protocol contract"
     },
     "schema/types.mrpc": {
-      "sha256": "ef67522d870ee8791286278f04a6fc3cc4f544158f0ff4d21516f413fd3d92e4",
+      "sha256": "bdf4109e2beeb2f2b2e837dd8583e24c67a16d62e4ba3b715473ee71b4590bb7",
       "kind": "schema",
       "source": "schema/types.mrpc",
       "oracle": "reviewed protocol contract"

@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "noEmit": true,
+    "rootDir": "../../..",
+    "paths": {
+      "@d7z-team/mini-go/rpc": ["sdk/browser-rpc.ts"]
+    }
+  },
+  "files": [
+    "../../../testdata/rpc/generated/typescript/types.ts",
+    "../../../testdata/rpc/generated/typescript/service.ts"
+  ],
+  "include": []
+}

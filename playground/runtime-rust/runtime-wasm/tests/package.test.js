@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +21,15 @@ test(
     // The test consumes the completed build without racing other tests' assets.
     const packed = await exec(
       "npm",
-      ["pack", "--ignore-scripts", "--json", "--pack-destination", directory],
+      [
+        "pack",
+        "--ignore-scripts",
+        "--json",
+        "--cache",
+        path.join(directory, ".npm-cache"),
+        "--pack-destination",
+        directory,
+      ],
       { cwd: packageRoot },
     );
     const [{ filename, name: packageName }] = Object.values(JSON.parse(packed.stdout));
@@ -31,7 +39,15 @@ test(
     );
     await exec(
       "npm",
-      ["install", "--offline", "--no-audit", "--no-fund", path.join(directory, filename)],
+      [
+        "install",
+        "--offline",
+        "--no-audit",
+        "--no-fund",
+        "--cache",
+        path.join(directory, ".npm-cache"),
+        path.join(directory, filename),
+      ],
       { cwd: directory },
     );
     const installed = path.join(directory, "node_modules", packageName);
@@ -41,8 +57,10 @@ test(
       path.join(directory, "consumer.mjs"),
       `
     import { readFile } from 'node:fs/promises';
-    import { MiniGo } from '${packageName}';
+    import { MiniGo, RPC as RootRPC } from '${packageName}';
+    import { RPC } from '${packageName}/rpc';
     import { createLanguageService } from '${packageName}/tools';
+    if (RPC !== RootRPC || typeof RPC.connect !== 'function') throw new Error('RPC export mismatch');
     const language = await createLanguageService();
     await language.dispose();
     const vm = await MiniGo.create(await readFile(new URL('./image.json', import.meta.url)));
@@ -55,10 +73,21 @@ test(
     );
     // A successful process exit also verifies worker/timer cleanup.
     await exec(process.execPath, ["consumer.mjs"], { cwd: directory, timeout: 15_000 });
+    await mkdir(path.join(directory, "generated"));
+    await cp(
+      path.resolve(packageRoot, "../../../testdata/rpc/generated/typescript/types.ts"),
+      path.join(directory, "generated/types.ts"),
+    );
+    await cp(
+      path.resolve(packageRoot, "../../../testdata/rpc/generated/typescript/service.ts"),
+      path.join(directory, "generated/service.ts"),
+    );
     await writeFile(
       path.join(directory, "consumer.mts"),
       `
-    import { MiniGo, values, type Snapshot, type WorkerProvider } from '${packageName}';
+    import { MiniGo, RPC as RootRPC, values, type Snapshot, type WorkerProvider } from '${packageName}';
+    import { RPC, type RPCConnection } from '${packageName}/rpc';
+    import { LaboratoryClient, createLaboratoryProvider } from './generated/service.js';
     import { MiniGo as BrowserMiniGo } from '${packageName}/browser';
     import { MiniGo as NodeMiniGo } from '${packageName}/node';
     import { createLanguageService, DebugSession, type WorkspaceInput, type SourceTree, type SourcePackages } from '${packageName}/tools';
@@ -74,7 +103,15 @@ test(
       try { const result: SourcePackages = await service.sources(trees); return result.Packages; }
       finally { await service.dispose(); }
     }
-    void [provider, run, BrowserMiniGo, NodeMiniGo, createLanguageService, DebugSession, workspace, sources];
+    async function bind(connection: RPCConnection) { return LaboratoryClient.bind(connection); }
+    const generatedProvider = createLaboratoryProvider({
+      echo: (_context, value) => value,
+      tree: (_context, value) => value,
+      open: () => [null, {label: 'none', mode: 0}],
+      read: () => 0n,
+      wait: () => 0n,
+    });
+    void [provider, run, BrowserMiniGo, NodeMiniGo, RootRPC, RPC, bind, generatedProvider, createLanguageService, DebugSession, workspace, sources];
   `,
     );
     await exec(
@@ -128,7 +165,10 @@ test(
       await page.goto(`http://127.0.0.1:${server.address().port}`);
       assert.equal(
         await page.evaluate(async () => {
-          const { MiniGo } = await import("/dist/browser.js");
+          const { MiniGo, RPC: RootRPC } = await import("/dist/browser.js");
+          const { RPC } = await import("/dist/browser-rpc.js");
+          if (RPC !== RootRPC || typeof RPC.connect !== "function")
+            throw new Error("browser RPC export mismatch");
           const vm = await MiniGo.create(await (await fetch("/image")).arrayBuffer(), {
             workerUrl: new URL("/dist/browser-worker.js", location.href),
             wasmUrl: new URL("/dist/wasm/mini_go_wasm_bg.wasm", location.href),

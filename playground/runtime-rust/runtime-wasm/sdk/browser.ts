@@ -1,6 +1,8 @@
 import { Runtime } from "./runtime.js";
 import type { Options } from "./types.js";
 
+export { RPC } from "./browser-rpc.js";
+export type * from "./rpc-types.js";
 export { values, UNLIMITED_STEPS } from "./runtime.js";
 export type * from "./types.js";
 export type MiniGo = Runtime;

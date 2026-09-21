@@ -139,6 +139,138 @@ async fn handler_waits_for_admission_write_completion() {
     outcome.unwrap();
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn admitted_calls_preserve_caller_deadline_and_cancellation_status() {
+    let runtime = tokio::runtime::Handle::current();
+    let method = Method {
+        id: "fixture.Wait.Call".into(),
+        service: "fixture.Wait".into(),
+        name: "Call".into(),
+        contract_hash: "a".repeat(64),
+        resource_type_hash: String::new(),
+    };
+    let (entered, mut entries) = mpsc::unbounded_channel();
+    let provider = Arc::new(
+        StaticProvider::new(vec![MethodBinding {
+            method: method.clone(),
+            invoke: Some(Arc::new(move |context, _| {
+                let entered = entered.clone();
+                Box::pin(async move {
+                    let _ = entered.send(());
+                    context.cancellation.cancelled().await;
+                    Err(Status::new("canceled", "stopped"))
+                })
+            })),
+        }])
+        .unwrap(),
+    );
+    let binder = Arc::new(
+        LocalBinder::new(runtime.clone(), Limits::default(), vec![provider.clone()]).unwrap(),
+    );
+    let (a, ar) = mpsc::channel(4);
+    let (b, br) = mpsc::channel(4);
+    let closed = Cancellation::default();
+    let options = EndpointOptions {
+        lease_ttl: std::time::Duration::from_millis(200),
+        admission_timeout: std::time::Duration::from_secs(1),
+        ..Default::default()
+    };
+    let left = Endpoint::open(
+        runtime.clone(),
+        Arc::new(Pipe {
+            send: a,
+            receive: Mutex::new(br),
+            closed: closed.clone(),
+        }),
+        None,
+        options.clone(),
+    )
+    .unwrap();
+    let right = Endpoint::open(
+        runtime,
+        Arc::new(Pipe {
+            send: b,
+            receive: Mutex::new(ar),
+            closed,
+        }),
+        Some(binder),
+        options,
+    )
+    .unwrap();
+    let routes = left
+        .bind(
+            CallContext::default(),
+            BindRequest::new(provider.contract()),
+        )
+        .await
+        .unwrap();
+
+    let owner = routes.clone();
+    let deadline_method = method.clone();
+    let deadline = tokio::spawn(async move {
+        owner
+            .invoke(
+                CallContext::with_deadline(
+                    web_time::Instant::now() + std::time::Duration::from_millis(700),
+                ),
+                Call {
+                    method: deadline_method,
+                    receiver: None,
+                    arguments: vec![],
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), entries.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(3), deadline)
+        .await
+        .unwrap()
+        .unwrap();
+    let error = match result {
+        Ok(_) => panic!("deadline call completed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "deadline_exceeded");
+
+    let cancellation = Cancellation::default();
+    let owner = routes.clone();
+    let canceled = cancellation.clone();
+    let canceled_call = tokio::spawn(async move {
+        owner
+            .invoke(
+                CallContext::with_cancellation(canceled),
+                Call {
+                    method,
+                    receiver: None,
+                    arguments: vec![],
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), entries.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    cancellation.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), canceled_call)
+        .await
+        .unwrap()
+        .unwrap();
+    let error = match result {
+        Ok(_) => panic!("canceled call completed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "canceled");
+
+    left.ping(CallContext::default()).await.unwrap();
+    routes.shutdown().await.unwrap();
+    left.shutdown().await.unwrap();
+    right.shutdown().await.unwrap();
+}
+
 impl Resource for SlowCloseResource {
     fn invoke(
         &self,

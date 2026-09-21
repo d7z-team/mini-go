@@ -3,6 +3,7 @@ namespace conformance.service.v1;
 option go_package = "github.com/d7z-team/mini-go/testdata/rpc/generated/go/service;rpcservice";
 option mgo_package = "rpcfixture/generated/mgo/service";
 option rust_module = "crate::rpcservice";
+option ts_module = "./service.js";
 import types "testdata/rpc/schema/types.mrpc";
 
 message Packet {

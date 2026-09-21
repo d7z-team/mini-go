@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { MiniGo, values } from "@d7z-team/mini-go";
+import * as nativeRPC from "@d7z-team/mini-go/rpc";
 import { root, startPeer } from "./test_helpers.js";
+import { exerciseNativeRPC } from "./native_rpc_scenario.js";
 import { exerciseRPC } from "./rpc_scenario.js";
 
 const fixtures = process.env.MINIGO_WASM_FIXTURES;
@@ -226,5 +228,14 @@ test(
       (name) => readFile(path.join(root, `testdata/rpc/images/${name}.json.gz`)),
       address,
     );
+  },
+);
+
+test(
+  "Node generated TypeScript RPC interoperates with Go in both directions",
+  { timeout: 30_000 },
+  async (t) => {
+    const address = await startPeer(t);
+    await exerciseNativeRPC(nativeRPC, address);
   },
 );

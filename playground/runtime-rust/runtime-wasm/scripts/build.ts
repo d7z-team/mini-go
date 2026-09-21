@@ -65,6 +65,11 @@ run(tool, [
 const staging = path.join(root, ".build/dist");
 await rm(staging, { recursive: true, force: true });
 run(process.execPath, [path.join(root, "node_modules/typescript/bin/tsc")]);
+run(process.execPath, [
+  path.join(root, "node_modules/typescript/bin/tsc"),
+  "-p",
+  path.join(root, "tsconfig.bindings-build.json"),
+]);
 await cp(wasm, path.join(staging, "wasm"), { recursive: true });
 await mkdir(path.join(staging, "tools"), { recursive: true });
 await cp(
