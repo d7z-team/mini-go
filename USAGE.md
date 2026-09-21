@@ -84,7 +84,6 @@ func Answer() int { return 42 }
 Engine 自动提供标准库源码。嵌入应用需要显式装配 console、文件系统等宿主能力，见
 [系统能力](#系统能力)；CLI 会按命令装配官方 provider。
 
-
 ## 源码装配
 
 Engine 自动提供标准库源码。额外源码可通过 `NewStandardLibrary`、
@@ -174,7 +173,7 @@ guest 内存统计用于逻辑计费，不等同于 Go heap 或进程 RSS。
 
 长期实例宜承载有限业务调用，并在每次调用后等待 scope 结束。默认每个 scope 的步数上限为
 1 亿；`PollSteps` 和热更新都不重置预算。持续服务可使用 `UnlimitedSteps`，同时保留取消、
-分片推进与其他资源限制。累计统计溢出时饱和，不改变调度。
+分片推进与其他资源限制。
 
 宿主负责持久化业务进度；执行镜像与值快照不是整个 VM 的恢复检查点。长期运行的观测与缓存维护见
 [开发指南](DEVELOPMENT.md#缓存与性能)。
@@ -253,7 +252,7 @@ PreparePatch 失败时保持原状态，未提交的 plan 应 Close。ApplyPatch
 宿主需结束旧循环或 scope，并替换保存的回调，才能释放其引用的旧代码。补丁保持现有
 globals、导出与命名类型/函数的状态契约；需要改变这些契约时创建新实例并由应用迁移业务状态。
 新 Program 的强制能力必须已安装，FFI Session 与宿主连接跨 revision 保持稳定。
-服务替换与资源关闭另见 [RPC.md](RPC.md#热更新与关闭)。
+服务替换与资源关闭另见 [RPC.md](RPC.md#服务替换与关闭)。
 
 ### 检查补丁与版本引用
 
@@ -342,12 +341,8 @@ mini-go -C ./scripts check -source company/rules=../rules ./...
 
 ### 编译缓存
 
-| 环境变量 | 默认值 | 作用 |
-| --- | --- | --- |
-| `MINIGO_CACHE` | `<临时目录>/mini-go/cache` | 编译产物和执行镜像缓存 |
-| `MINIGO_DEBUG` | 空 | `cachetrace=1`、`cachehash=1`、`cacheverify=1`，可逗号组合 |
-
-显式缓存路径必须为绝对路径。`mini-go cache clean/verify/inspect` 用于维护和诊断缓存；内部诊断方式见
+编译产物和执行镜像默认保存在临时目录下的 Mini-Go 缓存；`MINIGO_CACHE` 可指定其他绝对路径。
+`mini-go cache clean/verify/inspect` 用于清理、校验和查看缓存。开发阶段的命中跟踪与一致性诊断见
 [开发指南](DEVELOPMENT.md#缓存与性能)。
 
 ## 编辑器与调试符号

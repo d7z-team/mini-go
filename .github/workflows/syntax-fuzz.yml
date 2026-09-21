@@ -14,4 +14,4 @@ jobs:
         with:
           go-version: '1.26.6'
           cache: true
-      - run: FUZZTIME=3m make fuzz-syntax
+      - run: FUZZTIME=3m FUZZ_PARALLEL=1 make fuzz-syntax

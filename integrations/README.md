@@ -11,7 +11,7 @@
 | RPC 的 VM 调用、服务发布与跨语言通信 | 根 [testdata/rpc](../testdata/rpc/README.md) |
 | Go/Rust 原生标准库宿主与调试 | 根 [共享测试数据](../testdata/README.md) |
 
-共享构造与结果检查放在 `test_helpers_test.go`；测试负责回收实例、连接与子进程。
+测试负责回收实例、连接与子进程。
 
 ## 运行
 

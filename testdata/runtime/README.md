@@ -15,7 +15,7 @@ Go 的 `tooling/runtimecheck`、Rust 与 WASM 测试消费共享语料，验证�
 Go 与 Rust 使用不同并行度独立验证共享场景；`parallel_cpu` 也作为固定工作量的性能基线。
 
 修改源码与手写预期后运行根 `make generate`，更新派生物和 manifest。
-两个 `.json.gz` 镜像由本地生成；首次独立消费语料前执行 `make runtime-artifacts`。
+预编译 `.json.gz` 镜像由本地生成；首次独立消费语料前执行 `make runtime-artifacts`。
 manifest 校验数据来源与完整性。源码场景按行为组织，各后端按覆盖范围验证不同优化级别。
 
 运行与宿主一致性验证命令见[开发指南](../../DEVELOPMENT.md#rust-验证)。

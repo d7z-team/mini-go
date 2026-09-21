@@ -104,7 +104,7 @@ impl LanguageServer {
                             "full": true, "range": true,
                         },
                     },
-                    "serverInfo": {"name": "mini-go-rust", "version": "0.1.0"},
+                    "serverInfo": {"name": "mini-go-rust", "version": env!("CARGO_PKG_VERSION")},
                 }),
                 vec![],
             ));

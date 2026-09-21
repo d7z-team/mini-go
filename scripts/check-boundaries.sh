@@ -4,7 +4,17 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-if rg -q '^mini-go-tooling\s*=' playground/runtime-rust/Cargo.toml; then
+if awk '
+/^\[/ {
+	dependencies = $0 == "[dependencies]" || $0 ~ /^\[target\..*\.dependencies\]$/
+}
+dependencies && /^mini-go-tooling[[:space:]]*=/ {
+	found = 1
+}
+END {
+	exit !found
+}
+' playground/runtime-rust/Cargo.toml; then
 	printf 'Rust runtime imports tooling\n' >&2
 	exit 1
 fi

@@ -373,7 +373,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mini-go"
-version = "0.0.10"
+version = "0.0.0-dev"
 dependencies = [
  "base64",
  "flate2",
@@ -395,8 +395,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mini-go-rpc-peer-rust"
+version = "0.0.0-dev"
+dependencies = [
+ "mini-go",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "mini-go-tooling"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "base64",
  "mini-go",
@@ -406,8 +415,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mini-go-tools"
+version = "0.0.0-dev"
+dependencies = [
+ "mini-go-tooling",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "mini-go-wasm"
-version = "0.1.0"
+version = "0.0.0-dev"
 dependencies = [
  "js-sys",
  "mini-go",

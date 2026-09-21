@@ -9,12 +9,16 @@ Program 可共享，每个实例持有独立状态。浏览器与 Node.js 接入
 
 ## 快速开始
 
-使用 Rust 1.98 或更新版本，将仓库中的 crate 作为路径依赖：
+使用 Rust 1.98 或更新版本。从 [crates.io](https://crates.io/crates/mini-go) 选择一个提交快照，
+以精确版本添加 runtime：
 
 ```toml
 [dependencies]
-mini-go = { path = "/path/to/go-mini/playground/runtime-rust" }
+mini-go = "=<snapshot-version>"
 ```
+
+快照版本格式为 `0.0.<commit-count>-git.g<sha7>`。从源码仓库联调时可改用
+`mini-go = { path = "/path/to/go-mini/playground/runtime-rust" }`。
 
 在仓库根目录运行预编译示例：
 
@@ -59,9 +63,18 @@ RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执�
 
 ## 编译器与语言工具
 
-工作区中的 `mini-go-tooling` 提供 CompilerSession、LanguageService、LSP 和 DebugSession。
+[`mini-go-tooling`](https://crates.io/crates/mini-go-tooling) 提供 CompilerSession、LanguageService、
+LSP 和 DebugSession。它必须与 `mini-go` 使用同一个精确快照版本：
+
+```toml
+[dependencies]
+mini-go = "=<snapshot-version>"
+mini-go-tooling = "=<snapshot-version>"
+```
+
 它通过预编译 compiler 镜像复用 Go 侧的语言与源码装配规则；Go 应用直接使用原生 compiler 包。
-首次直接构建 tooling 前，在仓库根执行 `make runtime-compiler-image` 准备内嵌镜像。
+发布的 crate 已内嵌对应镜像；从源码仓库直接构建 tooling 前，在仓库根执行
+`make runtime-compiler-image` 准备该资源。
 
 源码装配、会话与 stdio 接入见[本地源码与编译器工具](USAGE.md#本地源码与编译器工具)。
 

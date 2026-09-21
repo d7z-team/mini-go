@@ -10,10 +10,10 @@
 
 ## 安装与 Node.js 接入
 
-安装 `make runtime-wasm-pack` 产出的 tarball：
+从 npm 的 `git` 标签安装当前提交快照：
 
 ```sh
-npm install ./d7z-team-mini-go-0.1.0.tgz
+npm install @d7z-team/mini-go@git
 ```
 
 包名为 `@d7z-team/mini-go`，根入口按环境选择 Node 或浏览器实现；
@@ -82,8 +82,7 @@ CSP 应允许脚本、Worker、WASM 编译及所需网络连接。runtime 资源
 调用通过有界队列进入，每次只有一个前台入口。`timeoutMs` 包含排队时间，`signal` 可取消构造或执行。
 每个 WASM 实例在自己的 Worker 中单线程协作推进；需要并行隔离时创建多个实例，由应用划分状态与请求。
 
-`timeoutMs` 是有限的非负毫秒数，包含排队和后台 scope；缺省不设期限。期限使用当前进程的单调时钟，
-跨重启的业务期限由宿主持久化。
+`timeoutMs` 是有限的非负毫秒数，包含排队和后台 scope；缺省不设期限。
 
 例如，在已创建的 `vm` 上限制一次调用的时间，并观察 scope 的最终清理状态：
 
@@ -137,9 +136,8 @@ const vm = await MiniGo.create(image, {
 
 设置 `rpcUrl` 可通过 WebSocket 连接 Mini-Go peer，支持双向调用、契约校验、取消与资源清理。
 断线会使调用和资源失效，SDK 不自动重连或重放；认证遵循浏览器或 Node 的 WebSocket 环境。
-`rpcOptions` 可设置 `leaseTtlMs`、`admissionTimeoutMs` 和 `maxCallDurationMs`，单位为正整数毫秒；
-不传时使用 [Endpoint 默认配置](https://github.com/d7z-team/go-mini/blob/main/RPC.md#错误与超时)。
-租期由接收方授予，客户端与服务端分别配置自己的授权窗口。
+`rpcOptions` 可覆盖 Endpoint 的租期、接纳期限和服务端调用上限；默认值与长期调用语义见
+[RPC 指南](https://github.com/d7z-team/go-mini/blob/main/RPC.md#错误与超时)。
 
 ### 独立 TypeScript RPC
 
@@ -166,7 +164,7 @@ try {
 
 binding 由 `mini-go rpc generate -ts-out generated/service.ts schema/service.mrpc` 生成，同一份源码可在
 Browser 与 Node.js 中使用。直接部署 `dist` 时导入 `browser-rpc.js`，并通过 bundler 或 import map
-解析 `@d7z-team/mini-go/rpc`。自定义部署可传 `workerUrl` 与 `wasmUrl`。
+解析 `@d7z-team/mini-go/rpc`；自定义部署可覆盖 Worker 与 WASM URL。
 
 客户端、Provider、精确类型映射、超时、资源归属和关闭语义统一见
 [RPC 指南](../../../RPC.md#typescript--javascript-api)。
@@ -184,7 +182,7 @@ HostValue 使用显式类型；64 位整数及浮点位模式使用 BigInt，字
 number 必须是安全整数；更大的值使用 bigint，最大为 9223372036854775807n。
 无限模式仍保留分片推进、取消和其他限额。
 
-`stats()` 提供 VM 计费、分配与 WASM 线性内存观测；累计分配与当前驻留内存含义不同。
+`stats()` 提供 VM 计费、分配与 WASM 线性内存观测。
 
 语言查询和源码装配使用下方 tools 入口，由它加载匹配的编译器、选择预算并管理会话。
 直接加载 compiler 镜像时设置 `workload: "compiler"`。
@@ -230,6 +228,7 @@ DebugSession 与原生工具共用 Rust DAP 适配器。`createDebugSession(imag
 
 ## 源码构建
 
-从 Git checkout 运行 `make runtime-wasm-pack` 生成可安装 tarball。
+从 Git checkout 运行 `make runtime-wasm-pack` 生成本地可安装 tarball；完整的 Rust/npm 发布产物使用
+`make release-package release-verify` 在隔离 staging 中构建和验证。
 构建工具链、浏览器依赖、无 RPC 构建与验证命令统一见
 [开发指南](https://github.com/d7z-team/go-mini/blob/main/DEVELOPMENT.md#wasm-与-typescript)。

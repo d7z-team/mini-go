@@ -12,17 +12,26 @@ import (
 	minigoruntime "github.com/d7z-team/mini-go/runtime"
 )
 
-func FuzzCompilerImageMatchesNative(f *testing.F) {
+var generatedCompilerCorpus = []struct {
+	name string
+	data []byte
+}{
+	{name: "generics", data: []byte{0, 3, 5, 8, 'g', 1}},
+	{name: "methods", data: []byte{1, 13, 2, 21, 0, 2}},
+	{name: "closures", data: []byte{2, 7, 11, 1}},
+	{name: "collections", data: []byte{3, 9, 4, 6}},
+	{name: "concurrency", data: []byte{4, 5, 3, 1}},
+	{name: "conversions", data: []byte{5, 8, 2, 13}},
+	{name: "embedding", data: []byte{14, 9, 4, 6, 0, 0xff}},
+	{name: "globals", data: []byte{7, 12, 6, 2}},
+}
+
+func FuzzCompilerImageCheckMatchesNative(f *testing.F) {
+	for _, seed := range generatedCompilerCorpus {
+		f.Add(seed.data)
+	}
 	for _, seed := range [][]byte{
-		{0, 3, 5, 8, 'g', 1},
 		{0, 3, 5, 8, 0, 1, 1},
-		{1, 13, 2, 21, 0, 2},
-		{2, 7, 11, 1},
-		{3, 9, 4, 6},
-		{4, 5, 3, 1},
-		{5, 8, 2, 13},
-		{14, 9, 4, 6, 0, 0xff},
-		{7, 12, 6, 2},
 		{16, 5, 3, 1, 0x80, 0xfe},
 	} {
 		f.Add(seed)
@@ -37,7 +46,8 @@ func FuzzCompilerImageMatchesNative(f *testing.F) {
 		if len(data) > 64 {
 			t.Skip()
 		}
-		request := complexCompilerRequest(data)
+		// Keep each fuzz callback bounded; full Prepare comparisons run in the fixed differential corpus.
+		request := generatedCompilerRequest(data, compilerentry.OperationCheck)
 		native := compilerentry.NewService(cache.TransientConfig{MaxEntries: 32, MaxBytes: 96 << 20})
 		want := native.Execute(request)
 		native.Close()
@@ -60,7 +70,7 @@ func FuzzCompilerImageMatchesNative(f *testing.F) {
 	})
 }
 
-func complexCompilerRequest(data []byte) compilerentry.Request {
+func generatedCompilerRequest(data []byte, operation compilerentry.Operation) compilerentry.Request {
 	byteAt := func(index int) byte {
 		if index >= len(data) {
 			return 0
@@ -290,11 +300,9 @@ func Result() int {
 %s`, a, b, c, invalid)
 	}
 
-	return compilerentry.Request{
+	request := compilerentry.Request{
 		Format: compilerentry.ServiceFormat, Version: compilerentry.ServiceVersion,
-		Operation: compilerentry.OperationPrepare, Root: "fuzz/app", Tags: tags,
-		Optimization: compiler.OptimizationLevel(byteAt(4) % 3),
-		Symbols:      byteAt(5)%2 != 0,
+		Operation: operation, Root: "fuzz/app", Tags: tags,
 		Packages: []compilerentry.Package{
 			{
 				Namespace: "module:fuzz", PackagePath: "library", ModulePath: "fuzz/library",
@@ -311,6 +319,11 @@ func Result() int {
 				Resources: []compilerentry.Resource{{Path: "asset.bin", Data: resource}},
 			},
 		},
-		EntryPoints: []compiler.EntryPoint{{Name: "result", ModulePath: "fuzz/app", Function: "Result"}},
 	}
+	if operation == compilerentry.OperationPrepare {
+		request.Optimization = compiler.OptimizationLevel(byteAt(4) % 3)
+		request.Symbols = byteAt(5)%2 != 0
+		request.EntryPoints = []compiler.EntryPoint{{Name: "result", ModulePath: "fuzz/app", Function: "Result"}}
+	}
+	return request
 }

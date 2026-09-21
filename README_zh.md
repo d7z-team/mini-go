@@ -64,6 +64,17 @@ go get github.com/d7z-team/mini-go
 Program 可复用，实例状态相互独立。[使用指南](USAGE.md)包含完整示例，并说明源码装配、宿主能力、
 执行控制和热更新。
 
+## 其他运行环境
+
+| 环境 | 安装与指南 |
+| --- | --- |
+| Rust 原生 runtime | [`mini-go` crate](https://crates.io/crates/mini-go) · [Rust 指南](./playground/runtime-rust/README.md) |
+| Rust 编译器与语言工具 | [`mini-go-tooling` crate](https://crates.io/crates/mini-go-tooling) · [工具指南](./playground/runtime-rust/USAGE.md#本地源码与编译器工具) |
+| 浏览器与 Node.js | `npm install @d7z-team/mini-go@git` · [TypeScript SDK](./playground/runtime-rust/runtime-wasm/README.md) |
+
+Rust runtime 与 tooling 必须使用同一个精确快照版本。快照版本格式为
+`0.0.<commit-count>-git.g<sha7>`；携带编译器的分发包均包含与版本匹配的编译器资源。
+
 ## 文档
 
 | 文档 | 内容 |

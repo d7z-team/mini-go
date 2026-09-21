@@ -1,12 +1,22 @@
 [package]
 name = "mini-go"
-version = "0.0.10"
-edition = "2024"
-rust-version = "1.98"
-license = "MIT"
-repository = "https://github.com/d7z-team/go-mini"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Rust runtime for the Mini-Go language"
 readme = "README.md"
+publish = ["crates-io"]
+include = [
+    "/src/**",
+    "/examples/**/*.rs",
+    "/examples/blocks/*.json",
+    "/README.md",
+    "/USAGE.md",
+    "/LICENSE",
+    "/LICENSE-Go",
+]
 
 [lib]
 name = "mini_go"
@@ -45,13 +55,24 @@ js-sys = "0.3"
 
 
 [workspace]
-members = ["runtime-wasm", "tooling"]
+members = [
+    "runtime-wasm",
+    "tooling",
+    "../../cmd/mini-go-rpc-peer-rust",
+    "../../cmd/mini-go-tools",
+]
 default-members = ["."]
 
-[[bin]]
-name = "mini-go-rpc-peer-rust"
-path = "../../cmd/mini-go-rpc-peer-rust/main.rs"
-required-features = ["rpc-gateway"]
+[workspace.package]
+version = "0.0.0-dev"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/d7z-team/go-mini"
+
+[workspace.dependencies]
+mini-go = { path = ".", version = "=0.0.0-dev" }
+mini-go-tooling = { path = "tooling", version = "=0.0.0-dev" }
 
 [[bench]]
 name = "runtime"

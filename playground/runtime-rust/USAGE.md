@@ -4,7 +4,8 @@
 浏览器与 Node.js 使用 [TypeScript SDK](runtime-wasm/README.md)。
 
 [调用](#加载调用与限制) · [生命周期](#等待取消与关闭) · [Tokio](#在-tokio-中执行) ·
-[宿主](#宿主能力) · [调试](#断点变量与单步) · [热更新](#热更新) · [语言工具](#本地源码与编译器工具)
+[宿主](#宿主能力) · [调试](#断点变量与单步) · [热更新](#热更新) · [长期运行](#长期运行) ·
+[语言工具](#本地源码与编译器工具)
 
 示例使用 `mini_go` 根路径导出的共享 `Instance`，它可以克隆并跨线程协调执行。
 `instance::Instance` 是需要独占可变访问的底层 VM；只有自建调度器时才直接使用它。
@@ -117,7 +118,7 @@ Tokio blocking pool，并限制并发作业。复用 executor，容量满时处�
 
 ```toml
 [dependencies]
-mini-go = { path = "/path/to/go-mini/playground/runtime-rust", features = ["rpc"] }
+mini-go = { version = "=<snapshot-version>", features = ["rpc"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 ```
 
@@ -169,9 +170,9 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 已有帧、defer 与闭包保留旧 revision，新命名调用使用当前 revision，兼容 globals 保持状态。
 需要改变状态契约时创建新实例并由应用迁移数据。FFI 会话与共享 Host 不随补丁重建。
 宿主应结束旧循环并替换保存的闭包，以释放旧 revision。
-已有 RPC 结果和资源继续属于原会话，服务替换与关闭见 [RPC 指南](../../RPC.md#热更新与关闭)。
+已有 RPC 结果和资源继续属于原会话，服务替换与关闭见 [RPC 指南](../../RPC.md#服务替换与关闭)。
 
-### 长期宿主
+## 长期运行
 
 实例可反复承载有限调用，工作结束后按[生命周期约定](#等待取消与关闭)等待和关闭。
 `Limits::max_steps` 为 i64：0 或默认值表示 1 亿步，`UNLIMITED_STEPS`（-1）不限累计步数，
@@ -182,7 +183,7 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 
 ## 本地源码与编译器工具
 
-额外依赖 workspace 中的 `mini-go-tooling`。通过 `sources::read_directory`
+额外依赖与 runtime 相同精确版本的 `mini-go-tooling`。通过 `sources::read_directory`
 读取本地文件树，或构造 `SourceTree` 提供内存文件；模块身份由 `module_path` 声明。
 应用与库都传给 `LanguageService::sources`，由编译器执行统一的包发现和资源规则：
 

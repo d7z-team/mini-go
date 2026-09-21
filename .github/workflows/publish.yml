@@ -1,0 +1,173 @@
+name: Publish Rust and npm packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: Use one-time registry tokens for packages without trusted publishers
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-packages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify release source
+        run: |
+          test "$GITHUB_REPOSITORY" = d7z-team/go-mini
+          test "$GITHUB_REF" = refs/heads/main
+          git fetch --no-tags origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - run: rustup default 1.98.1
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.18.0"
+          cache: npm
+          cache-dependency-path: playground/runtime-rust/runtime-wasm/package-lock.json
+      - run: npm install --global npm@12.0.2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            playground/runtime-rust/target
+          key: publish-${{ runner.os }}-rust-1.98.1-${{ hashFiles('playground/runtime-rust/Cargo.lock') }}
+      - name: Install WASM and browser tools
+        run: |
+          cargo install wasm-bindgen-cli --version 0.2.128 --locked
+          npm --prefix playground/runtime-rust/runtime-wasm ci
+          npm exec --prefix playground/runtime-rust/runtime-wasm -- playwright install --with-deps chromium firefox
+      - name: Verify generated sources and Go implementation
+        run: |
+          make generate
+          git diff --exit-code
+          make lint test build
+      - name: Verify Rust and cross-language behavior
+        run: |
+          make runtime-rust-lint runtime-rust-test runtime-rust-conformance
+          make runtime-rust-rpc-test test-rpc-conformance
+          make runtime-rust-host-test runtime-rust-host-conformance
+      - name: Verify TypeScript, WASM and compiler tooling
+        run: |
+          cargo clippy --locked --manifest-path playground/runtime-rust/Cargo.toml \
+            --target wasm32-unknown-unknown -p mini-go-wasm --all-features -- -D warnings
+          make runtime-wasm-test runtime-compiler-test
+      - name: Build and verify release artifacts
+        run: make release-package release-verify
+      - name: Authenticate with crates.io
+        if: ${{ !inputs.bootstrap }}
+        id: crates
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
+      - name: Publish packages
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/release/cargo-target
+          CARGO_REGISTRY_TOKEN: ${{ inputs.bootstrap && secrets.CARGO_REGISTRY_TOKEN || steps.crates.outputs.token }}
+          NPM_BOOTSTRAP_TOKEN: ${{ inputs.bootstrap && secrets.NPM_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          test -n "$CARGO_REGISTRY_TOKEN"
+          version=$(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.version)')
+          rust=build/release/source/playground/runtime-rust
+          user_agent='go-mini-publish/1.0 (https://github.com/d7z-team/go-mini)'
+
+          crate_checksum() {
+            curl -A "$user_agent" -fsSL "https://crates.io/api/v1/crates/$1" |
+              node -e 'let text="";process.stdin.on("data",value=>text+=value).on("end",()=>{const [version]=process.argv.slice(1);const item=JSON.parse(text).versions.find(value=>value.num===version);if(!item)process.exit(2);process.stdout.write(item.checksum)})' "$version"
+          }
+          publish_crate() {
+            package=$1
+            local_checksum=$(sha256sum "build/release/$package-$version.crate" | cut -d ' ' -f 1)
+            if remote_checksum=$(crate_checksum "$package" 2>/dev/null); then
+              test "$remote_checksum" = "$local_checksum"
+              echo "$package $version already published with matching checksum"
+              return
+            fi
+            cargo publish --manifest-path "$rust/Cargo.toml" --locked -p "$package" --dry-run
+            cargo publish --manifest-path "$rust/Cargo.toml" --locked -p "$package"
+            for attempt in $(seq 1 30); do
+              if remote_checksum=$(crate_checksum "$package" 2>/dev/null); then
+                test "$remote_checksum" = "$local_checksum"
+                return
+              fi
+              sleep 2
+            done
+            echo "$package $version did not appear in crates.io" >&2
+            exit 1
+          }
+
+          publish_crate mini-go
+          for attempt in $(seq 1 30); do
+            if make release-finalize-tooling; then
+              break
+            fi
+            if [[ "$attempt" == 30 ]]; then
+              echo "mini-go $version did not become resolvable through the Cargo index" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          make release-verify
+          publish_crate mini-go-tooling
+          runtime_checksum=$(crate_checksum mini-go)
+          tooling_checksum=$(crate_checksum mini-go-tooling)
+
+          npm_tarball="build/release/d7z-team-mini-go-$version.tgz"
+          if [[ "$BOOTSTRAP" == true ]]; then
+            test -n "$NPM_BOOTSTRAP_TOKEN"
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_BOOTSTRAP_TOKEN" > "$RUNNER_TEMP/npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc"
+          fi
+          local_integrity=$(node -e 'const value=require("./build/release/npm-pack.json");process.stdout.write(Object.values(value)[0].integrity)')
+          if remote_integrity=$(npm view "@d7z-team/mini-go@$version" dist.integrity --json 2>/dev/null); then
+            remote_integrity=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]))' "$remote_integrity")
+            test "$remote_integrity" = "$local_integrity"
+            echo "@d7z-team/mini-go $version already published with matching integrity"
+          else
+            npm publish "$npm_tarball" --tag git --access public --provenance
+            remote_integrity=$(npm view "@d7z-team/mini-go@$version" dist.integrity --json)
+            remote_integrity=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]))' "$remote_integrity")
+            test "$remote_integrity" = "$local_integrity"
+          fi
+
+          {
+            echo "### Published packages"
+            echo
+            echo "- [mini-go $version](https://crates.io/crates/mini-go/$version): \`$runtime_checksum\`"
+            echo "- [mini-go-tooling $version](https://crates.io/crates/mini-go-tooling/$version): \`$tooling_checksum\`"
+            echo "- [@d7z-team/mini-go@$version](https://www.npmjs.com/package/@d7z-team/mini-go/v/$version) (git tag): \`$remote_integrity\`"
+            echo "- compiler SHA-256: $(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.compilerSHA256)')"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload published artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-packages
+          path: |
+            build/release/*.crate
+            build/release/*.tgz
+            build/release/*.json
+            build/release/*.files
+            build/release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

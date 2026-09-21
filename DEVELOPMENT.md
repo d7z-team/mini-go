@@ -4,7 +4,8 @@
 [RPC 指南](RPC.md)，组件边界和生命周期见[架构](ARCHITECTURE.md)。
 
 [日常工作流](#日常工作流) · [生成](#生成与派生物) · [测试](#测试组织) ·
-[Rust](#rust-验证) · [WASM](#wasm-与-typescript) · [性能](#缓存与性能) · [编辑器](#编辑器扩展)
+[Rust](#rust-验证) · [WASM](#wasm-与-typescript) · [发布](#rust-与-npm-发布) ·
+[性能](#缓存与性能) · [编辑器](#编辑器扩展)
 
 ## 开发环境
 
@@ -28,8 +29,7 @@ make lint test build
 ```
 
 `TEST_FLAGS` 替换默认 Go 测试参数；`-count=1` 只跳过 Go 测试结果缓存，Mini-Go 编译缓存仍可复用。
-`make coverage` 使用相同的包与参数设置，以 atomic 模式生成 `coverage.txt` 和 `coverage.html`；
-CI 在工作流摘要中报告总覆盖率，并将两份报告作为 `go-coverage` 产物保留 14 天。
+`make coverage` 使用相同的包与参数设置，生成 `coverage.txt` 和 `coverage.html`，CI 同时报告总覆盖率。
 同一次 make 调用按依赖顺序执行生成、构建和消费步骤。Go 与 Cargo 内部仍可并行；受限环境可设置
 `GOFLAGS=-p=1`、`GOMAXPROCS`、`CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS`。
 
@@ -76,10 +76,9 @@ make runtime-compiler-image  # 仅 compiler 镜像
 修改生成输入后仍应执行 `make generate`，不能把“文件已存在”当作内容已更新。生成或构建完成后，再启动
 依赖对应产物的测试。
 
-手写文档按读者分工：README.md/README_zh.md 负责英文/中文入门与导航，USAGE/RPC 负责公共接入，
-ARCHITECTURE 负责边界与状态，本文负责维护流程；组件 README 只介绍本组件并指向完整指南，
-testdata README 说明数据归属和更新入口。
-调查、设计、性能原始数据和实施记录保存在 `/tmp`，不进入产品文档。
+手写文档按读者分工：根 README 负责入门与导航，USAGE/RPC 负责公共接入，ARCHITECTURE 负责边界与状态，
+本文负责维护流程；组件 README 说明本组件的接入入口。调查、设计、性能原始数据和实施记录保存在
+`/tmp`，不进入产品文档。
 
 ## 测试组织
 
@@ -137,6 +136,32 @@ TypeScript binding，然后验证 codec、owner 生命周期、浏览器、Node�
 `MINIGO_BUILD_STD=1` 使用 rust-src 和 Cargo build-std。SDK 的接入与部署见
 [runtime-wasm README](playground/runtime-rust/runtime-wasm/README.md)。
 
+## Rust 与 npm 发布
+
+Rust runtime、Rust compiler tooling 与 Browser/Node SDK 使用同一提交快照版本：
+
+```text
+0.0.<git commit count>-git.g<七位 commit ID>
+```
+
+源码 manifest 使用 `0.0.0-dev`；发布脚本从完整 Git 历史派生版本，并只在隔离 staging 中改写 manifest。
+正式发布要求完整历史和干净工作区。
+
+```bash
+make release-script-test
+make release-package
+make release-verify
+```
+
+`release-package` 在 `build/release/` 生成两个 crate 与 npm tarball，不写 registry；`release-verify`
+解包产物、核对 compiler 镜像，并以独立 Rust、Node 和 Chromium consumer 验证。调试未提交内容时可设置
+`RELEASE_FLAGS=--allow-dirty`，生成的 `.dirty` 版本不能发布。
+
+GitHub Actions 的 `Publish Rust and npm packages` 只接受最新 main，按 `mini-go`、`mini-go-tooling`、npm
+的顺序发布。tooling 精确依赖同批次 runtime；runtime 在 registry 可见后，workflow 使用
+`release-finalize-tooling` 生成最终 tooling crate。发布采用 Trusted Publisher；仅首次建立包时使用
+workflow 的 `bootstrap` 输入和一次性 registry token。已存在的同版本产物必须通过完整性比较。
+
 ## RPC 实现维护
 
 公共用法与资源契约见 [RPC 指南](RPC.md)，共享输入见
@@ -185,8 +210,9 @@ make bootstrap-test
 ```
 
 普通测试运行固定 fuzz seeds；持续变异同时验证成功不变量和失败后的状态完整性。语法终止性使用 compiler
-的确定性 limits。Go 自举通过源码适配器比较原生与 VM compiler 的镜像、hash 和诊断；Rust 常规测试
-直接消费预编译镜像。
+的确定性 limits。fuzz 默认使用一个 worker，避免多个完整 VM 或编译器实例争用内存和 CPU；资源充足时可用
+`FUZZ_PARALLEL` 显式增加并行度。Go 自举的持续变异比较原生与 VM compiler 的检查结果，固定差分语料再比较
+完整镜像、hash、符号和诊断；Rust 常规测试直接消费预编译镜像。
 
 ## 编辑器扩展
 

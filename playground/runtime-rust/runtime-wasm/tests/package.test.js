@@ -19,20 +19,28 @@ test(
     const directory = await mkdtemp(path.join(tmpdir(), "mini-go-consumer-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     // The test consumes the completed build without racing other tests' assets.
-    const packed = await exec(
-      "npm",
-      [
-        "pack",
-        "--ignore-scripts",
-        "--json",
-        "--cache",
-        path.join(directory, ".npm-cache"),
-        "--pack-destination",
-        directory,
-      ],
-      { cwd: packageRoot },
-    );
-    const [{ filename, name: packageName }] = Object.values(JSON.parse(packed.stdout));
+    let filename;
+    let packageName;
+    if (process.env.MINIGO_PACKAGE_TARBALL) {
+      filename = path.basename(process.env.MINIGO_PACKAGE_TARBALL);
+      await cp(process.env.MINIGO_PACKAGE_TARBALL, path.join(directory, filename));
+      packageName = "@d7z-team/mini-go";
+    } else {
+      const packed = await exec(
+        "npm",
+        [
+          "pack",
+          "--ignore-scripts",
+          "--json",
+          "--cache",
+          path.join(directory, ".npm-cache"),
+          "--pack-destination",
+          directory,
+        ],
+        { cwd: packageRoot },
+      );
+      [{ filename, name: packageName }] = Object.values(JSON.parse(packed.stdout));
+    }
     await writeFile(
       path.join(directory, "package.json"),
       JSON.stringify({ private: true, type: "module" }),

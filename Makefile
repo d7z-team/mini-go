@@ -11,6 +11,7 @@ COVERAGE_HTML ?= coverage.html
 RACE_PACKAGES ?= ./ffi ./runtime ./rpc/... ./compiler/cache ./compiler/workspace ./compiler/service ./compiler/language ./tooling/lsp ./tooling/dap
 RACE_FLAGS ?= -timeout=10m -p=1
 FUZZTIME ?= 10s
+FUZZ_PARALLEL ?= 1
 
 golangci_lint := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 minigo := go run ./cmd/mini-go
@@ -26,6 +27,9 @@ npm := npm --prefix $(wasm_dir)
 wasm_fixtures := $(CURDIR)/$(rust_dir)/target/wasm-fixtures
 runtime_images := testdata/runtime/execution.json.gz testdata/runtime/stdlib.json.gz
 compiler_image := $(rust_dir)/tooling/assets/compiler.json.gz
+WASM_PACK_OUTPUT ?= $(CURDIR)/$(wasm_dir)
+RELEASE_OUTPUT ?= $(CURDIR)/build/release
+RELEASE_FLAGS ?=
 
 .PHONY: help
 help: ## 显示常用目标与说明
@@ -104,7 +108,7 @@ define run_fuzz_packages
 			case "$$target" in \
 				Fuzz*) \
 					printf 'fuzz %s %s\n' "$$package" "$$target"; \
-					go test "$$package" -run '^$$' -fuzz "^$${target}$$" -fuzztime=$(FUZZTIME);; \
+					go test "$$package" -run '^$$' -fuzz "^$${target}$$" -fuzztime=$(FUZZTIME) -parallel=$(FUZZ_PARALLEL);; \
 			esac; \
 		done; \
 	done
@@ -154,7 +158,7 @@ _rpc-go-peer: _compiler-identity
 	@go build -o bin/mini-go-rpc-peer-go ./cmd/mini-go-rpc-peer-go
 
 test-rpc-conformance: _rpc-go-peer ## Go/Rust Endpoint 与 Gateway 跨进程测试
-	@cargo build $(cargo_flags) --features rpc-gateway --bin mini-go-rpc-peer-rust
+	@cargo build $(cargo_flags) -p mini-go-rpc-peer-rust
 	@MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" MINIGO_RPC_RUST_PEER="$(CURDIR)/$(rust_dir)/target/debug/mini-go-rpc-peer-rust" go test ./integrations -run '^TestRPC(Peer|Gateway)Conformance$$' -count=1 -timeout=3m
 
 # WASM SDK 与编译器工具
@@ -176,7 +180,23 @@ runtime-compiler-test: runtime-wasm-build ## Rust、Node 与 Chromium 编译器/
 	@cd $(wasm_dir) && node --test tests/compiler.test.js tests/tools.test.js tests/tools_fault.test.js
 
 runtime-wasm-pack: _npm-deps ## 通过 prepack 构建 npm tarball
-	@cd $(wasm_dir) && npm pack
+	@mkdir -p "$(WASM_PACK_OUTPUT)"
+	@cd $(wasm_dir) && npm pack --pack-destination "$(WASM_PACK_OUTPUT)"
+
+# Rust / npm 上游发布产物
+.PHONY: release-script-test release-package release-finalize-tooling release-verify
+
+release-script-test: ## 验证 Git 版本派生与 manifest 同步改写
+	@node --test scripts/release.test.mjs
+
+release-package: release-script-test ## 在 RELEASE_OUTPUT 生成两个 crate 与 npm tarball
+	@scripts/release-package.sh --output "$(RELEASE_OUTPUT)" $(RELEASE_FLAGS)
+
+release-finalize-tooling: ## runtime 入库后生成 tooling 的最终 crate
+	@scripts/release-finalize-tooling.sh --output "$(RELEASE_OUTPUT)"
+
+release-verify: ## 解包并验证 RELEASE_OUTPUT 中的可分发产物
+	@scripts/release-verify.sh --output "$(RELEASE_OUTPUT)"
 
 # 本地清理
 .PHONY: cache-clean clean

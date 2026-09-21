@@ -59,12 +59,7 @@ runtime 分别校验依赖、代码身份和指令，完整验证与执行准备
 源码、资源和 `.mrpc` 声明是分发边界。package artifact、执行镜像、生成绑定、缓存和 bootstrap
 bundle 都属于当前工具链的派生物，必须从事实源重新生成。调试符号与执行代码使用独立身份，
 可以在代码不变时随源码位置更新。请求 context、宿主对象和凭据不进入持久缓存。
-
-| 缓存层 | 内容与失效依据 |
-| --- | --- |
-| Package | 工具链、源码/资源、tags、优化级别和依赖导出 |
-| Prepare | 可达 package artifact、入口和宿主能力要求 |
-| Symbols | 代码身份和源码位置 |
+Package、Prepare 和 Symbols 缓存分别绑定源码与依赖导出、可达产物与入口、代码身份与源码位置。
 
 ## 执行模型与状态所有权
 
@@ -131,7 +126,7 @@ Program，以有界快照解释旧代码的保留根，不延长其寿命，也�
 
 FFI Session 与已有 RPC 资源跨代码 revision 存续。VM patch 和服务 publication 分别提交；服务替换先发布
 新 provider，新绑定选择新版本，旧绑定和资源由原 owner 清理。公开语义与诊断 API 见
-[运行时热更新](USAGE.md#运行时热更新)，服务替换见[RPC 指南](RPC.md#热更新与关闭)。
+[运行时热更新](USAGE.md#运行时热更新)，服务替换见[RPC 指南](RPC.md#服务替换与关闭)。
 
 ## 标准库与 RPC
 

@@ -1,0 +1,18 @@
+[package]
+name = "mini-go-rpc-peer-rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+workspace = "../../playground/runtime-rust"
+
+[dependencies]
+mini-go = { workspace = true, features = ["rpc-gateway"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "io-std", "macros", "net", "rt", "sync", "time"] }
+
+[[bin]]
+name = "mini-go-rpc-peer-rust"
+path = "main.rs"

@@ -1,6 +1,6 @@
 {
   "name": "@d7z-team/mini-go",
-  "version": "0.1.0",
+  "version": "0.0.0-dev",
   "description": "Mini-Go WebAssembly runtime for browsers and Node.js",
   "license": "MIT",
   "type": "module",
@@ -10,6 +10,7 @@
   "files": [
     "dist",
     "LICENSE",
+    "LICENSE-Go",
     "README.md"
   ],
   "types": "./dist/browser.d.ts",

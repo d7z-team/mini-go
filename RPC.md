@@ -17,7 +17,7 @@ Go 侧导入 `github.com/d7z-team/mini-go/rpc`，Mini-Go 侧导入标准包 `"rp
 
 按任务查阅：[本地接入](#从脚本调用-go) · [接口类型](#接口与数据类型) ·
 [错误与超时](#错误与超时) · [资源](#资源与大对象) · [远程连接](#远程连接与路由) ·
-[TypeScript](#typescript--javascript-api) · [Rust](#rust-api)。
+[服务替换](#服务替换与关闭) · [TypeScript](#typescript--javascript-api) · [Rust](#rust-api)。
 
 ## 从脚本调用 Go
 
@@ -346,7 +346,7 @@ library 使用 `gateway.Dial(ctx, address, gateway.DialOptions{...})` 得到 End
 生成的 Go 客户端，或设置为 `rpc.HostOptions.Fallback` 供 Mini-Go 调用。Endpoint 由创建方关闭。
 监听 `wss://` 的 CLI Gateway 还需提供 `-tls-cert` 和 `-tls-key`。
 
-## 热更新与关闭
+## 服务替换与关闭
 
 Program 热更新保持 FFI 会话和现有客户端连接。它更新脚本代码，不自动替换 Go handler、重新注册 provider
 或搬移已有 resource。需要更新服务实现时：
@@ -446,18 +446,17 @@ try {
 
 示例中的 `runApplicationUntilShutdown` 代表应用自己的服务生命周期。
 
-Browser 与 Node.js 通过 conditional export 选择各自的 Worker 适配器；生成的 `greeter.ts` 无需环境分支。
-浏览器直接部署 `dist` 时可导入 `browser-rpc.js`，并让生成代码的
-`@d7z-team/mini-go/rpc` specifier 由 bundler 或 import map 指向该入口。`workerUrl` 和 `wasmUrl` 可覆盖
-默认分发位置；独立 Worker 入口由 `@d7z-team/mini-go/rpc-worker` 导出。
+Browser 与 Node.js 通过 conditional export 选择 Worker 适配器；生成的 `greeter.ts` 无需环境分支。
+直接部署浏览器文件、覆盖 Worker/WASM URL 和 import map 的方式见
+[TypeScript SDK](playground/runtime-rust/runtime-wasm/README.md#独立-typescript-rpc)。
 
 TypeScript 映射保留 wire 语义：64 位整数使用 `bigint`，bytes 使用 `Uint8Array | null`，optional 使用
 `undefined`，map 使用 `Map`，复数使用 `{re, im}`。生成的资源客户端只能回传给原 binding，并应显式
 `close()`；Provider 资源在远端丢弃、关闭或连接结束时由 SDK 清理。
 
-调用没有隐式 deadline。`timeoutMs` 是正整数毫秒，也可用 `AbortSignal` 取消等待；省略后由 Endpoint
-租约维持存活。断线会以 `unavailable` 结束待处理操作并使资源失效，应用需要创建新 connection 并重新
-bind/publish。`close()` 等待清理；`terminate()` 直接终止 Worker，不保证异步清理完成。
+前文的 deadline、租约、资源归属和关闭语义同样适用。TypeScript 使用 `timeoutMs` 或 `AbortSignal`
+限制等待；断线后创建新 connection 并重新 bind/publish。`close()` 等待清理，`terminate()` 直接终止
+Worker，不保证异步清理完成。
 
 ## Rust API
 

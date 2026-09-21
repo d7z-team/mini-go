@@ -127,6 +127,12 @@ func Result() int {
 	}
 	cases[0].request.Symbols = false
 	cases[1].request.Symbols = true
+	for _, generated := range generatedCompilerCorpus {
+		cases = append(cases, compilerDifferentialCase{
+			name:    "generated " + generated.name,
+			request: generatedCompilerRequest(generated.data, compilerentry.OperationPrepare),
+		})
+	}
 	return cases
 }
 
