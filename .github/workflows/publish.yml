@@ -163,7 +163,18 @@ jobs:
             echo "@d7z-team/mini-go $version already published with matching integrity"
           else
             npm publish "$npm_tarball" --tag git --access public --provenance
-            remote_integrity=$(npm view "@d7z-team/mini-go@$version" dist.integrity --json)
+            npm_visibility_deadline=$((SECONDS + 1200))
+            npm_view_error="$RUNNER_TEMP/npm-visibility-error.log"
+            until remote_integrity=$(npm view "@d7z-team/mini-go@$version" dist.integrity --json \
+              --prefer-online --fetch-retries=0 --fetch-timeout=10000 2>"$npm_view_error"); do
+              if (( SECONDS >= npm_visibility_deadline )); then
+                cat "$npm_view_error" >&2
+                echo "::error::npm accepted @d7z-team/mini-go@$version, but registry visibility was not confirmed within 20 minutes; check the registry before publishing again" >&2
+                exit 1
+              fi
+              echo "Waiting for @d7z-team/mini-go@$version to become available in npm"
+              sleep 15
+            done
             remote_integrity=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]))' "$remote_integrity")
             test "$remote_integrity" = "$local_integrity"
           fi
