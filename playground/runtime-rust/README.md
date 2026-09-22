@@ -2,7 +2,7 @@
 
 Rust 后端执行 Go 编译器生成的 Mini-Go 字节码，支持异步 FFI、调试、资源限制和热更新。
 Program 可共享，每个实例持有独立状态。浏览器与 Node.js 接入见
-[runtime-wasm](runtime-wasm/README.md)。
+[runtime-wasm](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/runtime-wasm/README.md)。
 
 按任务查阅：[快速开始](#快速开始) · [原生使用指南](USAGE.md) · [功能配置](#功能配置) · [接入导航](#接入导航) ·
 [语言工具](#编译器与语言工具)。
@@ -17,7 +17,7 @@ Program 可共享，每个实例持有独立状态。浏览器与 Node.js 接入
 mini-go = "=<snapshot-version>"
 ```
 
-快照版本格式为 `0.0.<commit-count>-git.g<sha7>`。从源码仓库联调时可改用
+从源码仓库联调时可改用
 `mini-go = { path = "/path/to/go-mini/playground/runtime-rust" }`。
 
 在仓库根目录运行预编译示例：
@@ -43,13 +43,12 @@ GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev runtime-blocks -out /tmp/blocks pa
 | Cargo feature | 提供内容 |
 | --- | --- |
 | 默认 | VM、镜像加载、执行、调试和热更新 |
+| `compiler` | CompilerSession、LanguageService 与源码数据类型；原生 bundled 入口内嵌编译器 |
+| `dap` | 原生与 WASM 共用的 DAP 调试会话 |
+| `language-server` | compiler + dap；原生 LSP 与 Tokio 协议流适配 |
 | `rpc` | Provider、客户端、资源、Router、Endpoint 与 FFI Host |
 | `rpc-gateway` | WebSocket/TLS、Unix socket、认证与服务发布传输 |
 | `stdlib-host` | 原生 console、环境与内存文件系统 |
-| `host-conformance` | 通过进程 broker 接入 Go provider 的测试适配器 |
-
-RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执行)和
-[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#rust-api)。
 
 ## 接入导航
 
@@ -63,20 +62,15 @@ RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执�
 
 ## 编译器与语言工具
 
-[`mini-go-tooling`](https://crates.io/crates/mini-go-tooling) 提供 CompilerSession、LanguageService、
-LSP 和 DebugSession。它必须与 `mini-go` 使用同一个精确快照版本：
+需要从 Rust 编译源码时，启用 `compiler`：
 
 ```toml
 [dependencies]
-mini-go = "=<snapshot-version>"
-mini-go-tooling = "=<snapshot-version>"
+mini-go = { version = "=<snapshot-version>", features = ["compiler"] }
 ```
 
-它通过预编译 compiler 镜像复用 Go 侧的语言与源码装配规则；Go 应用直接使用原生 compiler 包。
-发布的 crate 已内嵌对应镜像；从源码仓库直接构建 tooling 前，在仓库根执行
-`make runtime-compiler-image` 准备该资源。
-
-源码装配、会话与 stdio 接入见[本地源码与编译器工具](USAGE.md#本地源码与编译器工具)。
+发布的 crate 已包含编译器镜像；源码 checkout 先在仓库根执行 `make runtime-compiler-image`。
+编译会话复用 Go 编译器的语言与源码装配规则，调用方式见[本地源码与编译器工具](USAGE.md#本地源码与编译器工具)。
 
 ## 开发与许可证
 

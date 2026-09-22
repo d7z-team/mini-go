@@ -8,11 +8,11 @@
   },
   "files": {
     "images/call.json.gz": {
-      "sha256": "5785f44c5c1115bbec1e5436bccbccfb1f5bbacafc4bff4f654ba91d9250fef6",
+      "sha256": "ffff9c1b44a59780a8b708b92338f1d7658f0732ae110867fb7a3faf04b036c2",
       "kind": "image",
       "source": "source/call",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "0b9eaab8bb4a16bb01477ea6d200d0862f9064d1ab127f6a054ab3168c6d6261"
+      "compiler_id": "eacf326170db67a1353183fd49639dd68bd4a844a8cab6d7b0f0c2f67a2bf5bf"
     },
     "scenarios.json": {
       "sha256": "b5caeceaf7a7b09315e1f498ae36347199479068360335c20b01d20f117384fd",

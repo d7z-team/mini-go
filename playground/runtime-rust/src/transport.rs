@@ -87,3 +87,6 @@ pub async fn write<W: AsyncWrite + Unpin>(
     writer.write_all(&bytes).await?;
     writer.flush().await
 }
+
+#[cfg(test)]
+mod tests;

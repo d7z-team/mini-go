@@ -101,8 +101,8 @@ jobs:
         run: |
           make runtime-compiler-image
           cargo clippy --locked --manifest-path playground/runtime-rust/Cargo.toml \
-            --target wasm32-unknown-unknown -p mini-go-wasm --all-features -- -D warnings
-          make runtime-wasm-test runtime-compiler-test
+            --target wasm32-unknown-unknown -p mini-go -p mini-go-wasm --all-features -- -D warnings
+          make runtime-wasm-test
       - name: Build and verify release artifacts
         run: |
           export GOCACHE="$(go env GOCACHE)"
@@ -148,20 +148,7 @@ jobs:
           }
 
           publish_crate mini-go
-          for attempt in $(seq 1 30); do
-            if make release-finalize-tooling; then
-              break
-            fi
-            if [[ "$attempt" == 30 ]]; then
-              echo "mini-go $version did not become resolvable through the Cargo index" >&2
-              exit 1
-            fi
-            sleep 2
-          done
-          make release-verify
-          publish_crate mini-go-tooling
           runtime_checksum=$(crate_checksum mini-go)
-          tooling_checksum=$(crate_checksum mini-go-tooling)
 
           npm_tarball="build/release/d7z-team-mini-go-$version.tgz"
           if [[ "$BOOTSTRAP" == true ]]; then
@@ -185,7 +172,6 @@ jobs:
             echo "### Published packages"
             echo
             echo "- [mini-go $version](https://crates.io/crates/mini-go/$version): \`$runtime_checksum\`"
-            echo "- [mini-go-tooling $version](https://crates.io/crates/mini-go-tooling/$version): \`$tooling_checksum\`"
             echo "- [@d7z-team/mini-go@$version](https://www.npmjs.com/package/@d7z-team/mini-go/v/$version) (git tag): \`$remote_integrity\`"
             echo "- compiler SHA-256: $(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.compilerSHA256)')"
           } >> "$GITHUB_STEP_SUMMARY"

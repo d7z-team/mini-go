@@ -1,7 +1,6 @@
-import { MiniGo } from "./node.js";
-import { LanguageService } from "./tools.js";
+import { MiniGo, createWorker } from "./node.js";
+import { LanguageService, type CompilerOptions } from "./tools.js";
 import { DebugSession, type DebugOptions } from "./debug.js";
-import type { Options } from "./types.js";
 
 export * from "./tools.js";
 export * from "./debug.js";
@@ -14,7 +13,7 @@ export function createDebugSession(
 }
 export async function createLanguageService(
   image?: Uint8Array | ArrayBuffer,
-  options: Options = {},
+  options: CompilerOptions = {},
 ): Promise<LanguageService> {
   if (!image) {
     const { readFile } = await import("node:fs/promises");
@@ -22,5 +21,5 @@ export async function createLanguageService(
       signal: options.signal,
     });
   }
-  return LanguageService.create(MiniGo.create, image, options);
+  return LanguageService.create(createWorker, image, options);
 }

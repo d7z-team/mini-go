@@ -1,5 +1,5 @@
 use crate::language::LanguageService;
-use mini_go::{error::RuntimeError, ffi::Cancellation};
+use crate::{error::RuntimeError, ffi::Cancellation};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 

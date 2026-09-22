@@ -110,7 +110,7 @@ export async function exerciseTools(tools, workspace, sourceFixture, debugFixtur
       );
       throw new Error("active build cancellation was not observed");
     } catch (error) {
-      if (error.code !== "canceled") throw error;
+      if (error.name !== "AbortError") throw error;
       cancellationMs = performance.now() - canceledAt;
     } finally {
       clearTimeout(cancelTimer);

@@ -9,7 +9,7 @@ publish = false
 workspace = "../../playground/runtime-rust"
 
 [dependencies]
-mini-go-tooling.workspace = true
+mini-go = { workspace = true, features = ["language-server"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "io-std", "macros", "rt"] }
 

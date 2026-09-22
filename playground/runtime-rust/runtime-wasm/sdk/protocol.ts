@@ -58,6 +58,7 @@ export interface Start {
   arguments: HostValue[];
 }
 export type Request =
+  | CompilerCommand
   | Command
   | Start
   | { kind: "create"; image: Uint8Array; options: Configuration }
@@ -65,6 +66,7 @@ export type Request =
   | { kind: "close" }
   | { kind: "hostResult"; id: number; payload: Uint8Array; error?: string };
 export type Response =
+  | CompilerResponse
   | { kind: "ready" | "closed" }
   | { kind: "fatal"; error: Failure }
   | { kind: "result"; id: number; value?: Snapshot; error?: Failure }
@@ -72,6 +74,28 @@ export type Response =
   | { kind: "response"; id: number; value?: ControlResult; error?: Failure }
   | { kind: "host"; id: number; route: string; payload: Uint8Array }
   | { kind: "hostCancel"; id: number };
+
+export type CompilerCommand =
+  | {
+      kind: "compilerCreate";
+      generation: bigint;
+      image: Uint8Array;
+      restore: Uint8Array;
+      wasmUrl?: string;
+    }
+  | { kind: "compilerRequest"; generation: bigint; id: number; input: string; timeout: number }
+  | { kind: "compilerAck" | "compilerCancel"; generation: bigint; id: number }
+  | { kind: "compilerClose" | "compilerStats"; generation: bigint; id: number };
+export type CompilerResponse = {
+  kind: "compilerResponse";
+  reusable?: boolean;
+  generation: bigint;
+  id: number;
+  value?: string;
+  restore?: Uint8Array;
+  stats?: Stats;
+  error?: Failure;
+};
 
 /** The adapters own platform workers; the runtime owns admission and lifetime. */
 export interface WorkerConnection {

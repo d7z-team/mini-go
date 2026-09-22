@@ -1,10 +1,10 @@
 # Mini-Go WebAssembly SDK
 
 使用同一套 TypeScript API，在浏览器和 Node.js 中运行预编译的 Mini-Go 镜像或直接连接 MRPC 服务。
-每个实例拥有一个 Worker。分发包包含 ESM、类型声明、Worker、WASM 及绑定，
+每个实例拥有一个 Worker。分发包包含 ESM、类型声明、Worker、WASM 和匹配的编译器镜像，
 使用者无需安装 Rust 工具链或额外运行时 npm 依赖。
 
-按任务查阅：[Node.js](#安装与-nodejs-接入) · [浏览器部署](#浏览器部署) ·
+本文同时说明安装部署和 SDK 用法。按任务查阅：[Node.js](#安装与-nodejs-接入) · [浏览器部署](#浏览器部署) ·
 [执行与关闭](#执行取消与关闭) · [热更新](#热更新) · [宿主与 RPC](#宿主能力与-rpc) ·
 [值与限制](#值与资源限制) · [语言工具](#编译器与语言工具) · [调试](#调试会话)。
 
@@ -79,10 +79,8 @@ CSP 应允许脚本、Worker、WASM 编译及所需网络连接。runtime 资源
 | `settled` | 该 scope 的后台工作全部结束 |
 | `cancel()` | 取消执行 |
 
-调用通过有界队列进入，每次只有一个前台入口。`timeoutMs` 包含排队时间，`signal` 可取消构造或执行。
-每个 WASM 实例在自己的 Worker 中单线程协作推进；需要并行隔离时创建多个实例，由应用划分状态与请求。
-
-`timeoutMs` 是有限的非负毫秒数，包含排队和后台 scope；缺省不设期限。
+调用通过有界队列进入，每次只有一个前台入口。`timeoutMs` 是有限的非负毫秒数，包含排队和后台 scope，
+缺省不设期限；`signal` 可取消构造或执行。每个 Worker 内单线程协作推进，需要并行时由应用创建多个实例。
 
 例如，在已创建的 `vm` 上限制一次调用的时间，并观察 scope 的最终清理状态：
 
@@ -141,33 +139,13 @@ const vm = await MiniGo.create(image, {
 
 ### 独立 TypeScript RPC
 
-JavaScript/TypeScript 自身调用或提供 MRPC 服务时，从 `/rpc` 入口建立独立连接，无需创建 `MiniGo`
-或加载 Program：
+JavaScript/TypeScript 通过 `@d7z-team/mini-go/rpc` 建立独立连接，直接调用或提供 MRPC 服务。
+binding 由 `mini-go rpc generate -ts-out` 生成，同一份源码可在 Browser 与 Node.js 中使用。
+生成、客户端和 Provider 的完整示例见
+[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#typescript--javascript-api)。
 
-```ts
-import { RPC } from "@d7z-team/mini-go/rpc";
-import { LaboratoryClient } from "./generated/service.js";
-
-const connection = await RPC.connect("wss://example.test/rpc");
-try {
-  const client = await LaboratoryClient.bind(connection);
-  try {
-    const echoed = await client.echo(packet, { timeoutMs: 5_000 });
-    console.log(echoed);
-  } finally {
-    await client.close();
-  }
-} finally {
-  await connection.close();
-}
-```
-
-binding 由 `mini-go rpc generate -ts-out generated/service.ts schema/service.mrpc` 生成，同一份源码可在
-Browser 与 Node.js 中使用。直接部署 `dist` 时导入 `browser-rpc.js`，并通过 bundler 或 import map
-解析 `@d7z-team/mini-go/rpc`；自定义部署可覆盖 Worker 与 WASM URL。
-
-客户端、Provider、精确类型映射、超时、资源归属和关闭语义统一见
-[RPC 指南](../../../RPC.md#typescript--javascript-api)。
+直接部署 `dist` 时导入 `browser-rpc.js`，并通过 bundler 或 import map 解析生成代码中的
+`@d7z-team/mini-go/rpc`。自定义部署可覆盖 Worker 与 WASM URL，资源目录要求与[浏览器部署](#浏览器部署)相同。
 
 ## 值与资源限制
 
@@ -215,9 +193,17 @@ try {
 `update` 按序提交文档编辑，`analyze` 发布快照，`query` 查询该快照，`prepare` 返回镜像、符号和源码。
 文件树可通过 `language.sources(trees, signal)` 装配为 Packages；Data 使用 base64 保存文件字节和二进制资源。
 
-请求支持 AbortSignal。正常取消保留会话；Worker 故障后重建已确认输入，旧快照句柄失效。
-`upgrade(image, signal)` 准备新编译器并恢复输入后切换，失败保留当前会话。
-默认只允许编辑根工作区；`Editable` 可授权额外源码根。
+默认只允许编辑根工作区，`Editable` 可授权额外源码根。请求支持 AbortSignal；取消、Worker 丢失或
+未确认请求失败后，下一次请求从最后成功交付的输入重建，旧 snapshot 失效。
+
+| 限制 | 约定 |
+| --- | --- |
+| 请求期限 | 最多 30 秒，包括排队和恢复；取消最多给予 2 秒清理时间 |
+| 队列 | 最多 128 项，活动与排队输入合计最多 64 MiB |
+| 响应与恢复描述 | 各自最多 64 MiB，另需为镜像、VM 和编解码保留内存 |
+
+`upgrade(image, signal)` 在候选会话恢复并分析成功后切换，失败保留当前会话。
+返回的 `cleanupError` 表示切换后旧 Worker 的清理异常，新会话仍有效。使用结束后调用 `dispose()` 释放 Worker。
 
 ### 调试会话
 

@@ -76,9 +76,7 @@ make runtime-compiler-image  # 仅 compiler 镜像
 修改生成输入后仍应执行 `make generate`，不能把“文件已存在”当作内容已更新。生成或构建完成后，再启动
 依赖对应产物的测试。
 
-手写文档按读者分工：根 README 负责入门与导航，USAGE/RPC 负责公共接入，ARCHITECTURE 负责边界与状态，
-本文负责维护流程；组件 README 说明本组件的接入入口。调查、设计、性能原始数据和实施记录保存在
-`/tmp`，不进入产品文档。
+手写文档职责见 [AGENTS.md](AGENTS.md#文档职责)。调查、设计、性能原始数据和实施记录保存在 `/tmp`。
 
 ## 测试组织
 
@@ -102,7 +100,7 @@ goroutine 和子进程。复杂构造集中在所属 domain 的测试辅助文�
 | 命令 | 范围 |
 | --- | --- |
 | `make runtime-rust-lint` | rustfmt、workspace 全 feature/target 的 Clippy |
-| `make runtime-rust-test` | 默认 VM 测试和 release tooling 测试 |
+| `make runtime-rust-test` | 默认 VM 测试和 release 编译器/LSP/DAP 测试 |
 | `make runtime-rust-rpc-test` | RPC、生成 binding 和 Gateway |
 | `make runtime-rust-host-test` | 原生 Host 与清理生命周期 |
 | `make runtime-rust-host-conformance` | Rust provider 执行标准库镜像 |
@@ -113,7 +111,12 @@ goroutine 和子进程。复杂构造集中在所属 domain 的测试辅助文�
 
 调度、GC、热更新或帧复用变更应同时覆盖步骤计费、不同并行度、单 worker 多实例、共享状态、等待、
 模块初始化、取消、关闭以及 GC/Patch/DAP 停稳。共享工作量见
-[runtime testdata](testdata/runtime/README.md)。tooling 测试使用 release 模式并在请求期限内完成。
+[runtime testdata](testdata/runtime/README.md)。编译会话测试使用 release 模式并在请求期限内完成。
+
+`runtime-rust-lint` 分别检查 `compiler`、`dap`、`language-server` feature；默认 VM 测试不加载编译器。
+`host-conformance` feature 用于经进程 broker 接入 Go provider 的测试，应用接入使用 `stdlib-host`。
+编译器资源统一生成到 `playground/runtime-rust/assets/compiler.json.gz`；crate 包含该文件，
+原生 `compiler` 按需内嵌，WASM 使用 SDK 的 `dist/tools/compiler.json.gz`，二进制不重复内嵌。
 
 ## WASM 与 TypeScript
 
@@ -138,7 +141,7 @@ TypeScript binding，然后验证 codec、owner 生命周期、浏览器、Node�
 
 ## Rust 与 npm 发布
 
-Rust runtime、Rust compiler tooling 与 Browser/Node SDK 使用同一提交快照版本：
+`mini-go` crate 与 `@d7z-team/mini-go` npm 包使用同一提交快照版本：
 
 ```text
 0.0.<git commit count>-git.g<七位 commit ID>
@@ -153,16 +156,14 @@ make release-package
 make release-verify
 ```
 
-`release-package` 在 `build/release/` 生成两个 crate 与 npm tarball，不写 registry；`release-verify`
+`release-package` 在 `build/release/` 生成一个 `mini-go` crate 与 npm tarball，不写 registry；`release-verify`
 解包产物、核对 compiler 镜像，并以独立 Rust、Node 和 Chromium consumer 验证。调试未提交内容时可设置
 `RELEASE_FLAGS=--allow-dirty`，生成的 `.dirty` 版本不能发布。
 
-GitHub Actions 的 `Publish Rust and npm packages` 只接受最新 main，并要求同一提交的 Go、Rust push CI
-已经成功。发布任务复用这些验证结果，执行 WASM/SDK 测试和分发包验证，再按 `mini-go`、`mini-go-tooling`、npm
-的顺序发布。Node 与 npm 使用兼容的固定版本；Cargo 构建缓存在 staging 之外复用。
-tooling 精确依赖同批次 runtime；runtime 在 registry 可见后，workflow 使用
-`release-finalize-tooling` 生成最终 tooling crate。发布采用 Trusted Publisher；仅首次建立包时使用
-workflow 的 `bootstrap` 输入和一次性 registry token。已存在的同版本产物必须通过完整性比较。
+在 GitHub Actions 手动触发 [Publish Rust and npm packages](.github/workflows/publish.yml)。
+它要求最新 main 的同一提交已通过 Go、Rust push CI，随后验证 WASM/SDK 和分发包，再依次发布 crate 与 npm。
+发布使用 Trusted Publisher；首次建立包可选择 `bootstrap`，并配置 `CARGO_REGISTRY_TOKEN` 与 `NPM_TOKEN`。
+已存在的同版本产物须通过完整性比较。
 
 ## RPC 实现维护
 

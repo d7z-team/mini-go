@@ -30,4 +30,4 @@ package minigo
 
 //go:generate go run ./cmd/mini-go-dev runtime-blocks -out playground/runtime-rust/examples/blocks playground/runtime-rust/examples/blocks/arithmetic.mgo playground/runtime-rust/examples/blocks/closure.mgo playground/runtime-rust/examples/blocks/stateful.mgo
 
-//go:generate go run ./cmd/mini-go-dev bootstrap -out playground/runtime-rust/tooling/assets/compiler.json.gz -gzip
+//go:generate go run ./cmd/mini-go-dev bootstrap -out playground/runtime-rust/assets/compiler.json.gz -gzip

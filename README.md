@@ -75,13 +75,11 @@ capabilities, execution control, and hot patching.
 
 | Environment | Package and guide |
 | --- | --- |
-| Native Rust runtime | [`mini-go` crate][crate-runtime] · [Rust guide][rust-runtime] |
-| Rust compiler and language tools | [`mini-go-tooling` crate][crate-tooling] · [tooling guide][rust-tooling] |
+| Native Rust | [`mini-go` crate][crate-runtime] · [Runtime and optional compiler tools][rust-runtime] |
 | Browser and Node.js | `npm install @d7z-team/mini-go@git` · [TypeScript SDK][wasm-sdk] |
 
-Rust runtime and tooling must use the same exact snapshot version. Snapshot versions identify the
-source commit as `0.0.<commit-count>-git.g<sha7>`; each compiler package includes its matching
-compiler resource.
+Rust and npm distributions include matching compiler resources. See the component guides for
+snapshot installation and the [development guide](./DEVELOPMENT.md#rust-与-npm-发布) for versioning and releases.
 
 ## Documentation
 
@@ -101,10 +99,8 @@ The detailed guides linked below are written in Chinese.
 
 [rust-runtime]: ./playground/runtime-rust/README.md
 [rust-usage]: ./playground/runtime-rust/USAGE.md
-[rust-tooling]: ./playground/runtime-rust/USAGE.md#本地源码与编译器工具
 [wasm-sdk]: ./playground/runtime-rust/runtime-wasm/README.md
 [crate-runtime]: https://crates.io/crates/mini-go
-[crate-tooling]: https://crates.io/crates/mini-go-tooling
 [go-ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml/badge.svg
 [go-ci]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml
 

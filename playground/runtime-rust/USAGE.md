@@ -1,7 +1,7 @@
 # Rust 原生使用指南
 
 依赖安装、镜像生成和 feature 选择见 [README](README.md)。本文面向原生 Rust 应用；
-浏览器与 Node.js 使用 [TypeScript SDK](runtime-wasm/README.md)。
+浏览器与 Node.js 使用 [TypeScript SDK](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/runtime-wasm/README.md)。
 
 [调用](#加载调用与限制) · [生命周期](#等待取消与关闭) · [Tokio](#在-tokio-中执行) ·
 [宿主](#宿主能力) · [调试](#断点变量与单步) · [热更新](#热更新) · [长期运行](#长期运行) ·
@@ -77,7 +77,6 @@ let instance = program.instantiate(InstanceOptions {
 // 调用完成后先关闭实例；最后关闭宿主拥有的执行器。
 instance.shutdown(&Cancellation::default())?;
 executor.shutdown(&Cancellation::default())?;
-# Ok::<(), mini_go::RuntimeError>(())
 ```
 
 自建 Executor 的 `shutdown` 会先关闭关联实例，再停止 worker；进程级默认 Executor 不可关闭。
@@ -95,10 +94,7 @@ executor.shutdown(&Cancellation::default())?;
 入口返回后，后台任务可能仍在运行。短任务可先 `wait` 再 `wait_scope`；常驻服务应根据
 业务生命周期保留 scope，在退出时显式取消。执行取消不保证立即打断不配合取消的宿主操作。
 
-取消执行后，调用 `execution.wait_scope(&Cancellation::default())` 等待 scope 收敛，并处理返回的错误。
-
-跨线程停止 `wait` 时，克隆同一个 `Cancellation` 并调用 `cancel()`。
-清理阶段使用新的 Cancellation，避免已取消的令牌让关闭等待立即返回。
+跨线程取消时，克隆同一个 `Cancellation` 并调用 `cancel()`；随后用新的令牌等待 `wait_scope` 并处理错误。
 先关闭实例，再关闭应用拥有的 Host、连接和 backend。最后一个 Instance 被 drop 会发起清理；
 需要确认释放完成时，应显式等待 `shutdown`。
 
@@ -136,13 +132,14 @@ Completion 异步交付；关闭时等待该工作结束。`stdlib-host` 的 blo
 启用 `stdlib-host` 后可通过 `HostBuilder::memory` 装配 console、环境与内存文件系统；
 实例只拥有自身的 FFI 会话，共享 Host 由应用关闭。
 
-自定义 RPC 服务使用 [Rust RPC API](../../RPC.md#rust-api)；
-完整宿主装配见 [RPC VM 示例](tests/rpc_vm.rs)和[标准库宿主示例](tests/stdlib_host.rs)。
+自定义 RPC 服务使用 [Rust RPC API](https://github.com/d7z-team/mini-go/blob/main/RPC.md#rust-api)；完整装配见
+[RPC VM 示例](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/tests/rpc_vm.rs)和
+[标准库宿主示例](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/tests/stdlib_host.rs)。
 
 ## 断点、变量与单步
 
 源码调试需要与执行镜像匹配的独立 `ProgramSymbols`。使用 Go `compiler.Prepare` 的
-`Symbols: true` 或 Rust tooling 的 build/prepare 获取镜像及符号，再调用 `Program::with_symbols`。
+`Symbols: true` 或 `LanguageService::prepare` 获取镜像及符号，再调用 `Program::with_symbols`。
 普通 `runtime-blocks` 示例仅用于执行；源码断点需要另外提供符号。
 
 给 Program 附加符号后，通过 `instance.debugger()` 设置源码断点、读取栈和 bindings，并用
@@ -170,25 +167,27 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 已有帧、defer 与闭包保留旧 revision，新命名调用使用当前 revision，兼容 globals 保持状态。
 需要改变状态契约时创建新实例并由应用迁移数据。FFI 会话与共享 Host 不随补丁重建。
 宿主应结束旧循环并替换保存的闭包，以释放旧 revision。
-已有 RPC 结果和资源继续属于原会话，服务替换与关闭见 [RPC 指南](../../RPC.md#服务替换与关闭)。
+已有 RPC 结果和资源继续属于原会话，服务替换与关闭见
+[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#服务替换与关闭)。
 
 ## 长期运行
 
 实例可反复承载有限调用，工作结束后按[生命周期约定](#等待取消与关闭)等待和关闭。
 `Limits::max_steps` 为 i64：0 或默认值表示 1 亿步，`UNLIMITED_STEPS`（-1）不限累计步数，
 正数设置有限预算，其他负数无效。推进批次和热更新不重置预算；无限模式仍保留取消、内存及任务限制。
-业务进度由宿主持久化；内存与版本存活的观测方法见[开发指南](../../DEVELOPMENT.md#缓存与性能)。
+业务进度由宿主持久化；内存与版本存活的观测方法见
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能)。
 
 [有限宿主循环示例](examples/long_running.rs)演示无限步数配置下的有限调用、scope 等待、热更新与关闭。
 
 ## 本地源码与编译器工具
 
-额外依赖与 runtime 相同精确版本的 `mini-go-tooling`。通过 `sources::read_directory`
+启用 `mini-go` 的 `compiler` feature。通过 `language::read_directory`
 读取本地文件树，或构造 `SourceTree` 提供内存文件；模块身份由 `module_path` 声明。
 应用与库都传给 `LanguageService::sources`，由编译器执行统一的包发现和资源规则：
 
 ```rust
-use mini_go_tooling::{language::LanguageService, session::CompilerSession, sources::read_directory};
+use mini_go::{LanguageService, CompilerSession, language::read_directory};
 use mini_go::{error::RuntimeError, ffi::Cancellation};
 
 async fn open_sources(root: &std::path::Path) -> Result<LanguageService, RuntimeError> {
@@ -205,11 +204,26 @@ async fn open_sources(root: &std::path::Path) -> Result<LanguageService, Runtime
 保留二进制资源；装配错误不会替换当前工作区。额外模块同样作为 SourceTree 提供，
 compiler 按 import 选择参与编译的包。
 
-### 语言服务与 stdio
+### 会话生命周期
 
-`CompilerSession::bundled().await` 使用分发镜像。取消传入编译器 context；会话恢复使用已确认的输入，
-`upgrade` 准备成功后才切换实例。工作区替换保留打开的缓冲区，`Editable` 可授权编辑额外包。
+`CompilerSession::bundled().await` 使用分发镜像，`new(image).await` 使用显式镜像。
+编译会话的原生异步 API 运行在启用时间支持的 Tokio runtime 中。
+调用期限上限为 30 秒，`call_with_timeout` 可缩短期限；恢复和分析共用当前调用的剩余期限。
+取消先通知 guest，最多给予 2 秒清理时间；丢弃调用 future 会丢弃未确认的会话状态。
+恢复仅重建已成功交付的源码输入，恢复后旧 snapshot 过期。`upgrade` 在候选会话中恢复并分析成功后切换。
+成功升级的 `UpgradeResult::cleanup_error` 单独报告旧 owner 的清理错误，此时新会话已经提交。
+工作区替换保留打开的缓冲区，`Editable` 可授权编辑额外包。
+
+自定义事件循环可使用跨平台 `from_image`、`start`、`poll`、`cancel`、`acknowledge`、`close_now`。
+`poll` 返回成功结果后，调用方确认交付再执行 `acknowledge`；未交付结果用 `abandon` 丢弃。
+`RestoreState` 用于重建编译输入；替换 owner 时使用严格递增的 generation。
+原生异步 API 自动完成交付确认。共享状态和平台分工见
+[架构](https://github.com/d7z-team/mini-go/blob/main/ARCHITECTURE.md#语言服务与调试)。
+
+### stdio 服务
 
 `mini-go-tools lsp` 接收 compiler 镜像和准备好的工作区 JSON；`mini-go-tools dap` 接收 DAP launch 请求，
-可加载镜像或从 workspace 构建。原生应用通过 `server::Server::serve(input, output)` 接入 Tokio 流。
-仓库内构建和测试命令见[开发指南](../../DEVELOPMENT.md#rust-验证)。
+可加载镜像或从 workspace 构建。启用 `language-server` 后，原生应用通过
+`LanguageServer::serve(input, output)` 或 `DebugSession::serve(input, output)` 接入 Tokio 流。
+仓库内构建和测试命令见
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#rust-验证)。

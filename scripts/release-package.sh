@@ -44,6 +44,9 @@ export MINIGO_CACHE=${MINIGO_CACHE:-"$scratch/mini-go"}
 export NPM_CONFIG_CACHE=${NPM_CONFIG_CACHE:-"$scratch/npm"}
 if [[ "$allow_dirty" == true ]]; then
 	git -C "$repository" ls-files --cached --others --exclude-standard -z |
+		while IFS= read -r -d '' file; do
+			if [[ -e "$repository/$file" || -L "$repository/$file" ]]; then printf '%s\0' "$file"; fi
+		done |
 		tar -C "$repository" --null --files-from=- -cf - |
 		tar -C "$output/source" -xf -
 else
@@ -65,14 +68,12 @@ if [[ "$identity_before" != "$identity_after" ]]; then
 	exit 1
 fi
 
-compiler="$rust/tooling/assets/compiler.json.gz"
+compiler="$rust/assets/compiler.json.gz"
 compiler_sha256=$(sha256sum "$compiler" | cut -d ' ' -f 1)
 export CARGO_TARGET_DIR="$cargo_target"
 cargo fetch --manifest-path "$rust/Cargo.toml" --locked
 cargo package --manifest-path "$rust/Cargo.toml" --locked --offline -p mini-go
-cargo package --manifest-path "$rust/Cargo.toml" -p mini-go-tooling --no-verify --exclude-lockfile --offline
 cp "$cargo_target/package/mini-go-$version.crate" "$output/"
-cp "$cargo_target/package/mini-go-tooling-$version.crate" "$output/"
 
 npm --prefix "$wasm" ci
 npm --prefix "$wasm" run build
@@ -85,7 +86,6 @@ npm_tarball="$output/d7z-team-mini-go-$version.tgz"
 test -f "$npm_tarball"
 
 tar -tf "$output/mini-go-$version.crate" >"$output/mini-go.files"
-tar -tf "$output/mini-go-tooling-$version.crate" >"$output/mini-go-tooling.files"
 tar -tf "$npm_tarball" >"$output/npm.files"
 
 node - "$output/release.json" "$version" "$commit" "$commit_count" "$short_commit" "$compiler_sha256" <<'NODE'
@@ -97,11 +97,10 @@ writeFileSync(filename, `${JSON.stringify({
   commitCount: Number(count),
   shortCommit,
   compilerSHA256,
-  crates: [`mini-go-${version}.crate`, `mini-go-tooling-${version}.crate`],
+  crates: [`mini-go-${version}.crate`],
   npm: `d7z-team-mini-go-${version}.tgz`,
-  toolingFinalized: false,
 }, null, 2)}\n`);
 NODE
 
-(cd "$output" && sha256sum "mini-go-$version.crate" "mini-go-tooling-$version.crate" "$(basename "$npm_tarball")") >"$output/SHA256SUMS"
+(cd "$output" && sha256sum "mini-go-$version.crate" "$(basename "$npm_tarball")") >"$output/SHA256SUMS"
 echo "Packaged Mini-Go $version in $output"

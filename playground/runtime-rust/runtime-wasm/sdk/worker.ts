@@ -1,4 +1,5 @@
 import { WasmVm, type InitOutput } from "./wasm/mini_go_wasm.js";
+import { compilerWorker } from "./compiler-worker.js";
 import { deferred, type Deferred } from "./deferred.js";
 import {
   serializeError,
@@ -22,6 +23,7 @@ export function runWorker(
   load: (url?: string) => Promise<InitOutput>,
   enqueue?: (callback: () => void) => void,
 ): void {
+  const compiler = compilerWorker(port, load, enqueue);
   interface RpcTransport extends RPCTransportOwner {
     close_network(): Promise<unknown>;
   }
@@ -253,6 +255,10 @@ export function runWorker(
   }
 
   port.listen(async (data) => {
+    if ("generation" in data) {
+      await compiler(data);
+      return;
+    }
     try {
       if (data.kind === "create") {
         if (vm) throw new Error("worker already owns an instance");

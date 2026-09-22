@@ -1,6 +1,6 @@
 import type { Runtime } from "./runtime.js";
 import type { Options } from "./types.js";
-import type { RuntimeFactory, ToolsResponse } from "./tools.js";
+import type { ToolsResponse } from "./tools.js";
 export interface DebugSource {
   module: string;
   path: string;
@@ -95,3 +95,5 @@ export class DebugSession {
     return this.disposed;
   }
 }
+
+type RuntimeFactory = (image: Uint8Array | ArrayBuffer, options: Options) => Promise<Runtime>;

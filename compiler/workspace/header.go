@@ -35,7 +35,6 @@ func ScanPackageHeaderWithLimits(pkg SourcePackage, limits Limits) (PackageHeade
 		return PackageHeader{}, nil, err
 	}
 	packageName := ""
-	imports := map[string]struct{}{}
 	importSpans := map[string]source.Span{}
 	collector := source.NewDiagnosticCollector(limits.MaxDiagnostics)
 	for fileIndex := range pkg.Files {
@@ -45,7 +44,7 @@ func ScanPackageHeaderWithLimits(pkg SourcePackage, limits Limits) (PackageHeade
 			file.Path = file.OriginPath
 		}
 		scanned := scanner.ScanHeaderFileWithLimits(file, limits.parserLimits().Scanner)
-		name, paths, spans, headerDiagnostics := scanFileHeader(scanned)
+		name, spans, headerDiagnostics := scanFileHeader(scanned)
 		collector.AddAll(scanned.Diagnostics...)
 		collector.AddAll(headerDiagnostics...)
 		if packageName == "" {
@@ -53,15 +52,14 @@ func ScanPackageHeaderWithLimits(pkg SourcePackage, limits Limits) (PackageHeade
 		} else if name != "" && name != packageName {
 			collector.Add(workspaceDiagnostic("compiler.package.name.mismatch", fmt.Sprintf("file %q has package %q, want %q", scanned.File.Path, name, packageName)))
 		}
-		for _, modulePath := range paths {
-			imports[modulePath] = struct{}{}
+		for modulePath, span := range spans {
 			if _, exists := importSpans[modulePath]; !exists {
-				importSpans[modulePath] = spans[modulePath]
+				importSpans[modulePath] = span
 			}
 		}
 	}
-	ordered := make([]string, 0, len(imports))
-	for modulePath := range imports {
+	ordered := make([]string, 0, len(importSpans))
+	for modulePath := range importSpans {
 		ordered = append(ordered, modulePath)
 	}
 	sort.Strings(ordered)
@@ -79,13 +77,12 @@ func ScanPackageHeaderWithLimits(pkg SourcePackage, limits Limits) (PackageHeade
 	}, collector.Diagnostics(), nil
 }
 
-func scanFileHeader(scanned scanner.Result) (string, []string, map[string]source.Span, []source.Diagnostic) {
+func scanFileHeader(scanned scanner.Result) (string, map[string]source.Span, []source.Diagnostic) {
 	tokens := scanned.Tokens
 	if len(tokens) < 3 || tokens[0].Kind != token.Package || tokens[1].Kind != token.Ident {
-		return "", nil, nil, []source.Diagnostic{workspaceDiagnostic("parser.package", fmt.Sprintf("file %q must start with a package declaration", scanned.File.Path))}
+		return "", nil, []source.Diagnostic{workspaceDiagnostic("parser.package", fmt.Sprintf("file %q must start with a package declaration", scanned.File.Path))}
 	}
 	packageName := tokens[1].Lexeme
-	imports := map[string]struct{}{}
 	importSpans := map[string]source.Span{}
 	var diagnostics []source.Diagnostic
 	braceDepth := 0
@@ -119,7 +116,6 @@ func scanFileHeader(scanned scanner.Result) (string, []string, map[string]source
 					}
 					if modulePath, err := strconv.Unquote(tokens[index].Lexeme); err == nil && strings.TrimSpace(modulePath) != "" {
 						if alias != "_" || modulePath != "embed" {
-							imports[modulePath] = struct{}{}
 							if _, exists := importSpans[modulePath]; !exists {
 								importSpans[modulePath] = tokens[index].Span
 							}
@@ -142,7 +138,6 @@ func scanFileHeader(scanned scanner.Result) (string, []string, map[string]source
 			}
 			if modulePath, err := strconv.Unquote(tokens[index].Lexeme); err == nil && strings.TrimSpace(modulePath) != "" {
 				if alias != "_" || modulePath != "embed" {
-					imports[modulePath] = struct{}{}
 					if _, exists := importSpans[modulePath]; !exists {
 						importSpans[modulePath] = tokens[index].Span
 					}
@@ -152,10 +147,5 @@ func scanFileHeader(scanned scanner.Result) (string, []string, map[string]source
 			}
 		}
 	}
-	ordered := make([]string, 0, len(imports))
-	for modulePath := range imports {
-		ordered = append(ordered, modulePath)
-	}
-	sort.Strings(ordered)
-	return packageName, ordered, importSpans, diagnostics
+	return packageName, importSpans, diagnostics
 }

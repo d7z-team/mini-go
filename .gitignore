@@ -13,5 +13,5 @@ vscode-ext/node_modules/
 report
 /testdata/runtime/execution.json.gz
 /testdata/runtime/stdlib.json.gz
-/playground/runtime-rust/tooling/assets/compiler.json.gz
+/playground/runtime-rust/assets/compiler.json.gz
 .cache

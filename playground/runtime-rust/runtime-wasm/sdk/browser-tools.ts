@@ -1,7 +1,6 @@
-import { MiniGo } from "./browser.js";
-import { LanguageService } from "./tools.js";
+import { MiniGo, createWorker } from "./browser.js";
+import { LanguageService, type CompilerOptions } from "./tools.js";
 import { DebugSession, type DebugOptions } from "./debug.js";
-import type { Options } from "./types.js";
 
 export * from "./tools.js";
 export * from "./debug.js";
@@ -14,7 +13,7 @@ export function createDebugSession(
 }
 export async function createLanguageService(
   image?: Uint8Array | ArrayBuffer,
-  options: Options = {},
+  options: CompilerOptions = {},
 ): Promise<LanguageService> {
   if (!image) {
     const response = await fetch(new URL("./tools/compiler.json.gz", import.meta.url), {
@@ -23,5 +22,5 @@ export async function createLanguageService(
     if (!response.ok) throw new Error(`compiler image: HTTP ${response.status}`);
     image = await response.arrayBuffer();
   }
-  return LanguageService.create(MiniGo.create, image, options);
+  return LanguageService.create(createWorker, image, options);
 }

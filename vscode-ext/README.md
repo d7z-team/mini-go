@@ -22,8 +22,5 @@ code --install-extension /tmp/mini-go.vsix
 打开 `.mgo` 文件时扩展自动启动语言服务。修改配置会重启服务，也可通过命令面板执行
 `Mini-Go: Restart Language Server` 手动重启。
 
-此扩展注册语言服务；接入 DAP 的编辑器需另行配置 stdio 命令 `mini-go dap`，
-launch 参数见下方使用指南。
-
-项目与编辑器的使用约定见
+接入 DAP 的编辑器另行配置 stdio 命令 `mini-go dap`，launch 参数与工作区约定见
 [使用指南](https://github.com/d7z-team/mini-go/blob/main/USAGE.md#编辑器与调试符号)。

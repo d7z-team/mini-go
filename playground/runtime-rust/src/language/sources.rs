@@ -1,6 +1,9 @@
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{error::RuntimeError, ffi::Cancellation};
+#[cfg(not(target_arch = "wasm32"))]
 use base64::Engine;
-use mini_go::{error::RuntimeError, ffi::Cancellation};
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::AsyncReadExt;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,6 +79,7 @@ pub struct SourcePackages {
 }
 
 /// Reads a bounded local source tree. Dependency policy belongs to the host.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn read_directory(
     module_path: &str,
     root: &std::path::Path,

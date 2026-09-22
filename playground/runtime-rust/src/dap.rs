@@ -1,10 +1,10 @@
-use mini_go::{
+use crate::{
     error::RuntimeError,
     execution::{Execution, ExecutionState, SharedInstance},
     instance::debug::{EventKind, FrameRef, StepMode, VariableRef},
 };
 #[cfg(not(target_arch = "wasm32"))]
-use mini_go::{
+use crate::{
     ffi::Cancellation,
     instance::{ExecutionLimits, Instance},
     loader::LoadLimits,

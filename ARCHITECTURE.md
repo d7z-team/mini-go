@@ -59,7 +59,6 @@ runtime 分别校验依赖、代码身份和指令，完整验证与执行准备
 源码、资源和 `.mrpc` 声明是分发边界。package artifact、执行镜像、生成绑定、缓存和 bootstrap
 bundle 都属于当前工具链的派生物，必须从事实源重新生成。调试符号与执行代码使用独立身份，
 可以在代码不变时随源码位置更新。请求 context、宿主对象和凭据不进入持久缓存。
-Package、Prepare 和 Symbols 缓存分别绑定源码与依赖导出、可达产物与入口、代码身份与源码位置。
 
 ## 执行模型与状态所有权
 
@@ -109,8 +108,12 @@ FFI 的 `Open`、`Start`、Clock 和 Entropy 回调必须快速、线程安全�
 Go LSP 直接调用 compiler 的语言核心。会话分别管理输入 revision 和已发布 analysis snapshot；
 成功分析后才替换快照，取消或失败保留上一份结果。构建固定使用对应版本的源码和符号。
 
-Rust tooling 与 TypeScript `tools` 通过常驻 compiler VM 复用同一语言和工作区规则。每个连接拥有请求队列
-与 I/O 任务，断开时关闭会话。Go 应用仍使用原生 compiler API。
+Rust `compiler` 与 TypeScript `tools` 共用 Rust 编译会话，在常驻 VM 中执行 Go 编译器。
+原生异步驱动与 WASM Worker 均有限步推进；TypeScript 负责有界排队、Worker 监督和结果交付，
+编译协议、恢复语义与 DAP 算法由 Rust 实现。VM 核心不反向依赖这些工具模块。
+
+编译会话只保留宿主已确认的输入；取消或交付丢失后，从该输入重建。恢复描述内部共享不可变数据，
+对外返回独立副本。升级在候选会话恢复、分析并成功交付后切换，失败保留当前会话。
 
 DAP 通过 runtime 调试接口控制独立目标实例。`ProgramSymbols` 绑定精确代码身份，历史帧继续使用其所属
 revision 的符号和源码身份；变量引用只在一次暂停期间有效，恢复执行后失效。
@@ -122,7 +125,7 @@ revision 的符号和源码身份；变量引用只在一次暂停期间有效�
 旧 revision，新的命名调用进入当前 revision，兼容 global 槽保持稳定。
 
 补丁差异只描述候选改变的代码和契约，实例负责准入与原子提交。引用诊断区分已发布 revision 和待提交
-Program，以有界快照解释旧代码的保留根，不延长其寿命，也不提供破坏引用语义的强制卸载。
+Program，以有界快照解释旧代码的保留根，不延长其寿命；引用解除后自然回收。
 
 FFI Session 与已有 RPC 资源跨代码 revision 存续。VM patch 和服务 publication 分别提交；服务替换先发布
 新 provider，新绑定选择新版本，旧绑定和资源由原 owner 清理。公开语义与诊断 API 见

@@ -1,4 +1,4 @@
-use mini_go_tooling::{lsp::LanguageServer, server::Server, transport};
+use crate::{lsp::LanguageServer, server::Server, transport};
 use serde_json::json;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -9,22 +9,23 @@ async fn dap_connection_preserves_response_event_order_and_closes_on_eof() {
     let (input, output) = tokio::io::split(stream);
     let server = tokio::spawn(Server::Debug(Box::default()).serve(input, output));
     let (mut reader, mut writer) = tokio::io::split(client);
-    transport::write(&mut writer, &json!({"seq": 1, "command": "initialize"}))
+    let mut pipeline = Vec::new();
+    transport::write(&mut pipeline, &json!({"seq": 1, "command": "initialize"}))
         .await
         .unwrap();
+    transport::write(&mut pipeline, &json!({"seq": 2, "command": "unknown"}))
+        .await
+        .unwrap();
+    writer.write_all(&pipeline).await.unwrap();
     let response = transport::read(&mut reader).await.unwrap().unwrap();
     assert_eq!(response["request_seq"], 1);
     assert_eq!(response["success"], true);
     let initialized = transport::read(&mut reader).await.unwrap().unwrap();
     assert_eq!(initialized["event"], "initialized");
     assert!(initialized["seq"].as_u64() > response["seq"].as_u64());
-    transport::write(&mut writer, &json!({"seq": 2, "command": "unknown"}))
-        .await
-        .unwrap();
-    assert_eq!(
-        transport::read(&mut reader).await.unwrap().unwrap()["success"],
-        false
-    );
+    let response = transport::read(&mut reader).await.unwrap().unwrap();
+    assert_eq!(response["request_seq"], 2);
+    assert_eq!(response["success"], false);
     writer.shutdown().await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), server)
         .await
@@ -82,7 +83,7 @@ async fn malformed_input_cancels_a_backpressured_writer() {
 async fn lsp_control_reader_cancels_a_request_and_keeps_the_connection_usable() {
     let workspace =
         serde_json::from_str(include_str!("../../../../testdata/language/workspace.json")).unwrap();
-    let language = LanguageServer::new(include_bytes!("../assets/compiler.json.gz"), workspace)
+    let language = LanguageServer::new(include_bytes!("../../assets/compiler.json.gz"), workspace)
         .await
         .unwrap();
     let (client, stream) = tokio::io::duplex(8192);

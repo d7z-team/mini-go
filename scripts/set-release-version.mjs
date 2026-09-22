@@ -17,7 +17,7 @@ if (manifest.split(workspaceVersion).length !== 2) {
 }
 manifest = manifest.replace(workspaceVersion, `version = "${version}"`);
 const dependencyVersion = 'version = "=0.0.0-dev"';
-if (manifest.split(dependencyVersion).length !== 3) {
+if (manifest.split(dependencyVersion).length !== 2) {
   throw new Error("Cargo workspace dependency versions are not canonical");
 }
 manifest = manifest.replaceAll(dependencyVersion, `version = "=${version}"`);
@@ -28,7 +28,6 @@ let lock = await readFile(lockPath, "utf8");
 for (const name of [
   "mini-go",
   "mini-go-rpc-peer-rust",
-  "mini-go-tooling",
   "mini-go-tools",
   "mini-go-wasm",
 ]) {

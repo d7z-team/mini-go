@@ -2,11 +2,31 @@ package workspace
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/target"
 )
+
+func TestScanPackageHeaderKeepsFirstImportLocation(t *testing.T) {
+	text := "package app\nimport \"example/z\"\nimport (\n alias \"example/z\"\n . \"example/a\"\n _ \"embed\"\n)\n"
+	pkg := SourcePackage{ModulePath: "app", Files: []source.File{
+		{Path: "b.mgo", Text: "package app\nimport \"example/z\"\n"},
+		{Path: "a.mgo", OriginPath: "original/a.go", Text: text},
+	}}
+	header, diagnostics, err := ScanPackageHeader(pkg)
+	if err != nil || len(diagnostics) != 0 {
+		t.Fatalf("header: %v, %v", err, diagnostics)
+	}
+	if !reflect.DeepEqual(header.Imports, []string{"example/a", "example/z"}) {
+		t.Fatalf("imports: %v", header.Imports)
+	}
+	span := header.importSpans["example/z"]
+	if span.Start.File != "original/a.go" || span.Start.Offset != strings.Index(text, `"example/z"`) {
+		t.Fatalf("first import location: %+v", span)
+	}
+}
 
 func TestAffectedTestPackagesSeparatesProductionAndTestEdits(t *testing.T) {
 	sources, err := NewMemorySourceSet([]SourcePackage{

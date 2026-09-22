@@ -1,6 +1,27 @@
 //! Mini-Go runtime contracts and execution primitives.
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "compiler")]
+pub mod compiler;
+#[cfg(feature = "dap")]
+pub mod dap;
+#[cfg(feature = "compiler")]
+pub mod language;
+#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+pub mod lsp;
+#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+mod server;
+#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+mod transport;
+#[cfg(feature = "compiler")]
+pub use compiler::CompilerSession;
+#[cfg(feature = "dap")]
+pub use dap::DebugSession;
+#[cfg(feature = "compiler")]
+pub use language::LanguageService;
+#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+pub use lsp::LanguageServer;
+
 pub mod contract;
 #[rustfmt::skip]
 pub mod contract_generated;

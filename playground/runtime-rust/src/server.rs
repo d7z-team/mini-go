@@ -1,6 +1,6 @@
 //! Native LSP/DAP connection ownership and request scheduling.
-use crate::{dap::DebugSession, lsp::LanguageServer, session::CompilerSession, transport};
-use mini_go::ffi::Cancellation;
+use crate::ffi::Cancellation;
+use crate::{compiler::CompilerSession, dap::DebugSession, lsp::LanguageServer, transport};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -15,15 +15,34 @@ use tokio::{
 };
 
 /// One connection owns its language session or debug target.
-pub enum Server {
+pub(crate) enum Server {
     Language(Box<LanguageServer>),
     Debug(Box<DebugSession>),
+}
+
+impl LanguageServer {
+    pub async fn serve<R, W>(self, input: R, output: W) -> io::Result<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        Server::Language(Box::new(self)).serve(input, output).await
+    }
+}
+impl DebugSession {
+    pub async fn serve<R, W>(self, input: R, output: W) -> io::Result<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        Server::Debug(Box::new(self)).serve(input, output).await
+    }
 }
 
 impl Server {
     /// Serve framed messages on caller-supplied streams. Cancellation stays on
     /// the reader task while the owner serially executes protocol requests.
-    pub async fn serve<R, W>(mut self, mut input: R, mut output: W) -> io::Result<()>
+    pub async fn serve<R, W>(mut self, input: R, mut output: W) -> io::Result<()>
     where
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
@@ -33,6 +52,7 @@ impl Server {
         let mut tasks = JoinSet::new();
         let active = cancellations.clone();
         let reader = tasks.spawn(async move {
+            let mut input = tokio::io::BufReader::new(input);
             let result = async {
                 while let Some(message) = transport::read(&mut input).await? {
                     let canceled = if message["method"] == "$/cancelRequest" {
@@ -263,3 +283,6 @@ async fn launch_debug(
     }
     Ok(json!({}))
 }
+
+#[cfg(test)]
+mod tests;

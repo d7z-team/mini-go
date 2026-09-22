@@ -154,14 +154,10 @@ test("release manifest rewrite keeps Cargo and npm versions aligned", async () =
     manifest,
     new RegExp(`version = "${version.replaceAll(".", "\\.")}"`),
   );
-  assert.equal(
-    (
-      lock.match(
-        new RegExp(`version = "${version.replaceAll(".", "\\.")}"`, "g"),
-      ) ?? []
-    ).length,
-    5,
-  );
+  for (const name of ["mini-go", "mini-go-tools", "mini-go-rpc-peer-rust", "mini-go-wasm"]) {
+    assert.ok(lock.includes(`name = "${name}"\nversion = "${version}"`));
+  }
+  assert.ok(manifest.includes(`mini-go = { path = ".", version = "=${version}" }`));
   assert.equal(packageJSON.version, version);
   assert.equal(packageLock.version, version);
   assert.equal(packageLock.packages[""].version, version);

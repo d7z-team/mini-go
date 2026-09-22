@@ -4,23 +4,14 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-if awk '
-/^\[/ {
-	dependencies = $0 == "[dependencies]" || $0 ~ /^\[target\..*\.dependencies\]$/
-}
-dependencies && /^mini-go-tooling[[:space:]]*=/ {
-	found = 1
-}
-END {
-	exit !found
-}
-' playground/runtime-rust/Cargo.toml; then
-	printf 'Rust runtime imports tooling\n' >&2
-	exit 1
-fi
-
-if rg -n '(crate|super)::(rpc|stdlib_host)\b|\b(tokio|futures_util|tokio_rustls|tokio_tungstenite)::' playground/runtime-rust/src --glob '*.rs' --glob '!rpc/**' --glob '!**/rpc/**' --glob '!stdlib_host/**' --glob '!**/stdlib_host/**'; then
-	printf 'the Rust VM core imports RPC or an asynchronous transport dependency\n' >&2
+rust_core=playground/runtime-rust/src
+core_paths=()
+for owner in contract contract_generated environment error execution executor_pool ffi heap instance loader operators operators_complex program snapshot symbols types value; do
+	[[ ! -f "$rust_core/$owner.rs" ]] || core_paths+=("$rust_core/$owner.rs")
+	[[ ! -d "$rust_core/$owner" ]] || core_paths+=("$rust_core/$owner")
+done
+if rg -n '(crate|super)::(rpc|stdlib_host|compiler|language|lsp|dap|server|transport)\b|\b(tokio|futures_util|tokio_rustls|tokio_tungstenite)::' "${core_paths[@]}" --glob '*.rs'; then
+	printf 'the Rust VM core imports compiler, debug, RPC or asynchronous transport code\n' >&2
 	exit 1
 fi
 

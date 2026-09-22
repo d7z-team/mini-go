@@ -26,7 +26,7 @@ wasm_dir := $(rust_dir)/runtime-wasm
 npm := npm --prefix $(wasm_dir)
 wasm_fixtures := $(CURDIR)/$(rust_dir)/target/wasm-fixtures
 runtime_images := testdata/runtime/execution.json.gz testdata/runtime/stdlib.json.gz
-compiler_image := $(rust_dir)/tooling/assets/compiler.json.gz
+compiler_image := $(rust_dir)/assets/compiler.json.gz
 WASM_PACK_OUTPUT ?= $(CURDIR)/$(wasm_dir)
 RELEASE_OUTPUT ?= $(CURDIR)/build/release
 RELEASE_FLAGS ?=
@@ -128,11 +128,12 @@ fuzz-runtime: $(runtime_images) ## VM、协议与宿主 fuzz
 
 runtime-rust-lint: runtime-artifacts ## Rust 格式检查与全 feature/target Clippy
 	@cargo fmt --all --manifest-path $(rust_manifest) --check
+	@for feature in compiler dap language-server; do cargo check $(cargo_flags) -p mini-go --no-default-features --features "$$feature" || exit; done
 	@cargo clippy $(cargo_flags) --workspace --all-features --all-targets -- -D warnings
 
-runtime-rust-test: runtime-artifacts ## Rust VM 测试与 release tooling 测试
+runtime-rust-test: runtime-artifacts ## Rust VM 测试与 release 编译会话和协议测试
 	@cargo test $(cargo_flags)
-	@cargo test $(cargo_flags) --release -p mini-go-tooling
+	@cargo test $(cargo_flags) --release -p mini-go --features language-server --lib --test compiler_session --test compiler_entry --test lsp --test language_sources
 
 runtime-rust-rpc-test: ## Rust RPC、生成绑定与 Gateway 测试
 	@cargo test $(cargo_flags) --features rpc --test 'rpc_*' --test cancellation
@@ -176,7 +177,7 @@ runtime-wasm-test: runtime-wasm-build testdata/runtime/execution.json.gz _rpc-go
 	@MINIGO_WASM_FIXTURES="$(wasm_fixtures)" MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" $(npm) test
 
 runtime-compiler-test: runtime-wasm-build ## Rust、Node 与 Chromium 编译器/语言工具测试
-	@cargo test $(cargo_flags) --release -p mini-go-tooling --test compiler_entry --test compiler
+	@cargo test $(cargo_flags) --release -p mini-go --features compiler,dap --test compiler_entry --test compiler_session
 	@cd $(wasm_dir) && node --test tests/compiler.test.js tests/tools.test.js tests/tools_fault.test.js
 
 runtime-wasm-pack: _npm-deps ## 通过 prepack 构建 npm tarball
@@ -184,16 +185,13 @@ runtime-wasm-pack: _npm-deps ## 通过 prepack 构建 npm tarball
 	@cd $(wasm_dir) && npm pack --pack-destination "$(WASM_PACK_OUTPUT)"
 
 # Rust / npm 上游发布产物
-.PHONY: release-script-test release-package release-finalize-tooling release-verify
+.PHONY: release-script-test release-package release-verify
 
 release-script-test: ## 验证 Git 版本派生与 manifest 同步改写
 	@node --test scripts/release.test.mjs
 
-release-package: release-script-test ## 在 RELEASE_OUTPUT 生成两个 crate 与 npm tarball
+release-package: release-script-test ## 在 RELEASE_OUTPUT 生成 mini-go crate 与 npm tarball
 	@scripts/release-package.sh --output "$(RELEASE_OUTPUT)" $(RELEASE_FLAGS)
-
-release-finalize-tooling: ## runtime 入库后生成 tooling 的最终 crate
-	@scripts/release-finalize-tooling.sh --output "$(RELEASE_OUTPUT)"
 
 release-verify: ## 解包并验证 RELEASE_OUTPUT 中的可分发产物
 	@scripts/release-verify.sh --output "$(RELEASE_OUTPUT)"

@@ -1,11 +1,11 @@
 use mini_go::ffi::Cancellation;
-use mini_go_tooling::lsp::LanguageServer;
+use mini_go::lsp::LanguageServer;
 use serde_json::json;
 
 #[tokio::test]
 async fn initialization_language_requests_and_shutdown_follow_protocol_state() {
     let workspace =
-        serde_json::from_str(include_str!("../../../../testdata/language/workspace.json")).unwrap();
+        serde_json::from_str(include_str!("../../../testdata/language/workspace.json")).unwrap();
     let mut server = LanguageServer::new(include_bytes!("../assets/compiler.json.gz"), workspace)
         .await
         .unwrap();

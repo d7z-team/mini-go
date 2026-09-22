@@ -404,21 +404,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "mini-go-tooling"
-version = "0.0.0-dev"
-dependencies = [
- "base64",
- "mini-go",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "mini-go-tools"
 version = "0.0.0-dev"
 dependencies = [
- "mini-go-tooling",
+ "mini-go",
  "serde_json",
  "tokio",
 ]
@@ -429,7 +418,6 @@ version = "0.0.0-dev"
 dependencies = [
  "js-sys",
  "mini-go",
- "mini-go-tooling",
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",

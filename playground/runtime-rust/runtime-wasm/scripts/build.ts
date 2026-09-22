@@ -73,7 +73,7 @@ run(process.execPath, [
 await cp(wasm, path.join(staging, "wasm"), { recursive: true });
 await mkdir(path.join(staging, "tools"), { recursive: true });
 await cp(
-  path.resolve(root, "../tooling/assets/compiler.json.gz"),
+  path.resolve(root, "../assets/compiler.json.gz"),
   path.join(staging, "tools/compiler.json.gz"),
 );
 await mkdir(path.join(root, ".build"), { recursive: true });

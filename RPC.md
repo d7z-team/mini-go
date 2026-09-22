@@ -21,8 +21,6 @@ Go 侧导入 `github.com/d7z-team/mini-go/rpc`，Mini-Go 侧导入标准包 `"rp
 
 ## 从脚本调用 Go
 
-Rust 宿主的装配与生成见本文末尾的 [Rust API](#rust-api)。
-
 下面的示例实现一个 Go 问候服务，由 Mini-Go 调用，最后在宿主输出 `Hello, Mini-Go!`。
 宿主 Go 项目的 module path 使用 `example.com/app`，并添加依赖：
 
@@ -32,7 +30,6 @@ go get github.com/d7z-team/mini-go
 ```
 
 已有宿主项目可使用自己的 module path，并相应修改后面的 Go import 和 schema package 配置。
-本例由宿主直接装载脚本源码。
 
 ### 1. 声明接口
 
@@ -54,8 +51,8 @@ service Greeter {
 }
 ```
 
-`namespace` 标识接口所属的命名空间；`mgo_package` 和 `go_package` 指定生成代码的目标包。
-`go_package` 分号后的部分是 Go package 名。字段后的数字是字段标识，应在声明范围内保持唯一。
+`namespace` 标识接口命名空间，`mgo_package` 和 `go_package` 指定生成代码的目标包；后者分号后的部分是 Go package 名。
+字段标识应在声明范围内保持唯一。
 
 ### 2. 生成代码
 
@@ -69,8 +66,8 @@ mini-go rpc generate \
   api/greeter.mrpc
 ```
 
-生成结果包含消息、handler、客户端和 Provider。只需要部分语言时可省略其他输出参数；接口修改后应重新
-生成并分发各端 binding，契约不匹配会在绑定时失败。跨 schema 导入和各语言输出选项见下文对应章节。
+生成结果包含消息、handler、客户端和 Provider；省略不需要的语言输出参数即可。
+接口修改后重新生成并分发各端 binding，契约不匹配会在绑定时失败。
 
 ### 3. 编写脚本
 
@@ -261,7 +258,7 @@ Go、Mini-Go 和不同 VM 都可以同时提供服务与发起调用，连接方
 Mini-Go 的 NewGreeterClient 延迟到首次调用时绑定。需要预先选择宿主服务或本地实现时，
 使用生成的 BindGreeterClient：它检查完整契约，不执行业务方法。
 
-使用 `rpc.CodeOf(err)` 检查绑定错误，只有 unimplemented 适合作为缺少服务的回退条件。接口不匹配、权限、超时和
+使用 `rpc.CodeOf(err)` 检查绑定错误，只有 `unimplemented` 适合作为缺少服务的回退条件。接口不匹配、权限、超时和
 断线按错误处理；业务调用不会自动重放。绑定失败可以重试，已关闭的客户端不可重开。
 官方标准库能力的可选装配见 [系统能力](USAGE.md#系统能力)。
 
@@ -387,8 +384,7 @@ mini-go rpc generate -ts-out src/greeter.ts api/greeter.mrpc
 
 `-ts-runtime` 可覆盖生成代码导入的 RPC SDK 模块，缺省为 `@d7z-team/mini-go/rpc`；`-ts-prefix`
 为当前文件的导出声明增加前缀。被导入 schema 必须声明 `ts_module`，路径应使用最终 JavaScript 的
-ESM specifier，例如 `./model.js`。同时指定 `-go-out`、`-mgo-out`、`-rust-out` 和 `-ts-out` 时，所有目标
-在同一事务中写入，任一目标生成失败都不会留下部分更新。
+ESM specifier，例如 `./model.js`。同一次生成的所有语言输出原子写入。
 
 生成的客户端直接接收 `RPCConnection`：
 
@@ -487,9 +483,7 @@ mini-go rpc generate -rust-out src/greeter.rs -rust-module crate::greeter api/gr
 生成方法使用 snake_case，结果为 tuple；集合的 nil 与 optional 缺省通过 Option 表达。
 资源 client 可克隆，别名共享关闭状态，使用结束后显式关闭。
 
-Cargo 依赖启用 `mini-go` 的 `rpc` feature，并由应用提供 Tokio runtime。生成的 handler 返回
-`rpc::BoxFuture`；创建 provider 后可交给 `LocalBinder`，也可放入 `HostOptions.providers` 供 VM 使用。
-关闭 Tokio runtime 前，应等待 Host、Endpoint 和 Router 完成 shutdown。完整装配可参考
+应用提供 Tokio runtime，并在关闭它之前等待 Host、Endpoint 和 Router 完成 shutdown。完整装配可参考
 [Rust Gateway 示例测试](playground/runtime-rust/tests/rpc_gateway.rs)。
 
 共享数据与互操作验证见 [RPC 测试数据](testdata/rpc/README.md)。

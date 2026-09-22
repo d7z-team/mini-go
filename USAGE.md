@@ -81,8 +81,7 @@ func Answer() int { return 42 }
 }
 ```
 
-Engine 自动提供标准库源码。嵌入应用需要显式装配 console、文件系统等宿主能力，见
-[系统能力](#系统能力)；CLI 会按命令装配官方 provider。
+console、文件系统等宿主能力需要显式装配，见[系统能力](#系统能力)。
 
 ## 源码装配
 
@@ -97,41 +96,8 @@ Engine 自动提供标准库源码。额外源码可通过 `NewStandardLibrary`�
 
 ## 运行实例
 
-Program 可复用，每个 Instance 持有独立状态。下面在已创建的 Engine 上装配 console 并运行 main；
-`stdlibhost` 指 `github.com/d7z-team/mini-go/stdlib/host`：
-
-```go
-program, result, err := engine.Compile("example/main")
-if err != nil || !result.OK() {
-    return fmt.Errorf("compile failed: diagnostics=%v err=%v", result.Diagnostics, err)
-}
-host, err := stdlibhost.NewDefault(stdlibhost.DefaultOptions{
-    Capabilities: []string{"console"}, // 显式选择本程序需要的官方 provider
-    Directory:    workspaceRoot,
-    Stdin:        os.Stdin,
-    Stdout:       os.Stdout,
-    Stderr:       os.Stderr,
-})
-if err != nil {
-    return err
-}
-defer host.Close()
-instance, err := program.Instantiate(ctx, runtime.InstanceOptions{FFI: host})
-if err != nil {
-    return err
-}
-defer instance.Shutdown(context.Background())
-
-output, err := instance.CallMain(ctx)
-if err != nil {
-    return err
-}
-fmt.Println(output.Values)
-return nil
-```
-
-输出通过宿主的 `io.Writer` 写入；`RunResult.Values` 只包含入口返回值。
-需要捕获输出或提供确定性输入时，传入自己的 Reader/Writer。
+Program 可复用，每个 Instance 持有独立状态。创建实例后，根据入口类型选择调用方式，
+并分别管理入口结果、后台 scope 和实例的生命周期。
 
 ### 入口与生命周期
 
@@ -162,27 +128,22 @@ library scope 超过限制时仅该 scope 失败；main scope 超限会结束实
 
 ### 资源限制与观测
 
-`InstanceOptions.Limits` 的零值采用默认限制，正值覆盖。
-`MaxSteps` 另支持 `minigo.UnlimitedSteps`（-1）表示不限累计指令数；其他负值无效。
-限制覆盖步数、任务、内存、调用边界和动态类型等资源。
-`Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供一致的状态快照。
-
-guest 内存统计用于逻辑计费，不等同于 Go heap 或进程 RSS。
+`InstanceOptions.Limits` 限制步数、任务、内存、调用边界和动态类型等资源，零值采用默认限制，正值覆盖。
+`Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供一致的状态快照；guest 内存统计用于逻辑计费，
+不等同于 Go heap 或进程 RSS。
 
 ### 长期运行
 
 长期实例宜承载有限业务调用，并在每次调用后等待 scope 结束。默认每个 scope 的步数上限为
-1 亿；`PollSteps` 和热更新都不重置预算。持续服务可使用 `UnlimitedSteps`，同时保留取消、
-分片推进与其他资源限制。
+1 亿；`PollSteps` 和热更新都不重置预算。持续服务可将 `MaxSteps` 设为 `minigo.UnlimitedSteps`（-1），
+同时保留取消、分片推进与其他资源限制。其他负值无效。
 
-宿主负责持久化业务进度；执行镜像与值快照不是整个 VM 的恢复检查点。长期运行的观测与缓存维护见
+宿主负责持久化业务进度。长期运行的观测与缓存维护见
 [开发指南](DEVELOPMENT.md#缓存与性能)。
 
 ### 优雅停机
 
 宿主先停止提交新入口和补丁，通过业务通道通知常驻脚本正常返回，再等待相关执行与 scope。
-`Execution.Wait(ctx)` 推进入口；其 context 取消时也会取消执行。
-入口返回后，`WaitScope(ctx)` 等待派生工作，取消 context 只停止本次等待。
 调试暂停需要显式恢复；仅等待 scope 不会推进尚未返回的前台入口。
 最后调用 `Shutdown` 取消剩余工作并释放实例拥有的资源。共享 Host 和 backend 在实例清理完成后关闭。
 
@@ -220,9 +181,29 @@ CLI 的 run/test/DAP 按包闭包装配官方 provider，嵌入应用自行选�
 
 没有装配的能力返回 unsupported。可能阻塞的输入应支持取消，或由宿主保证能够结束。
 
-Instance 只拥有自己打开的 FFI Session。先关闭实例，再关闭共享 Host 与所拥有的 backend。
-`Shutdown(ctx)` 等待清理，context 取消只结束本次等待，之后仍可再次等待同一终态；
-`Close` 使用 background context。
+例如，导入 `stdlibhost "github.com/d7z-team/mini-go/stdlib/host"` 后装配 console：
+
+```go
+host, err := stdlibhost.NewDefault(stdlibhost.DefaultOptions{
+    Capabilities: []string{"console"},
+    Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+})
+if err != nil {
+    return err
+}
+defer host.Close()
+instance, err := program.Instantiate(ctx, runtime.InstanceOptions{FFI: host})
+if err != nil {
+    return err
+}
+defer instance.Close()
+_, err = instance.CallMain(ctx)
+return err
+```
+
+输出写入宿主的 `io.Writer`，`RunResult.Values` 只包含入口返回值。需要捕获输出时传入自己的 Writer。
+Instance 只拥有自己打开的 FFI Session；先关闭实例，再关闭共享 Host 与 backend。
+`Shutdown(ctx)` 可限制清理等待时间，`Close` 使用 background context；完整顺序见[优雅停机](#优雅停机)。
 
 ## 运行时热更新
 

@@ -31,7 +31,7 @@
 - Go 使用 `gofmt`；Rust 使用 `cargo fmt` 和 Clippy；TypeScript 保持 strict 类型检查并使用项目 Prettier 配置。
 - Rust 核对 Cargo feature 与目标平台，区分根路径的共享 `Instance` 和 `instance::Instance` 底层 VM。
   同步 VM 工作交给有界执行器，异步任务明确传递取消并等待清理；库错误沿用现有 Result/error 类型。
-- TypeScript 共用 SDK 拥有协议与生命周期，browser/node 入口只适配平台。
+- TypeScript 共用 SDK 管理 Worker 通信与生命周期，browser/node 入口只适配平台；编译会话协议与恢复语义归 Rust。
   对外二进制输入保持调用方所有权，保留 BigInt 和图快照语义；修改 SDK 源码后重新构建分发产物。
 
 ## 架构与派生物
@@ -100,7 +100,7 @@
 
 局部测试使用 `make test TEST_PACKAGES='./runtime/...' TEST_FLAGS='-run TestName'`；完整测试使用 `make test`。
 集成测试使用 `make test TEST_PACKAGES='./integrations'`，也由完整测试自动发现。
-Rust compiler tooling 测试使用 release 模式，遵循现有请求期限。
+Rust 编译会话测试使用 release 模式，遵循现有请求期限。
 生成或构建结束后再启动消费对应产物的测试；性能采样和严格超时测试避免与重型构建争用资源。
 失败先确认代码、产物版本和运行条件，修复或复验应保留证据，不通过放宽期限、预算或断言掩盖问题。
 交付前检查 `git diff --check`；报告改动、实际验证及未完成项，只有用户要求时才创建提交。

@@ -2,7 +2,9 @@
 #![forbid(unsafe_code)]
 #![cfg(target_arch = "wasm32")]
 
+mod compiler;
 mod mailbox;
+pub use compiler::WasmCompiler;
 #[cfg(feature = "rpc")]
 mod network;
 #[cfg(feature = "rpc")]
@@ -129,7 +131,7 @@ pub struct WasmVm {
     closing: bool,
     init_error: Option<RuntimeError>,
     max_host_result_bytes: usize,
-    debug_session: Option<mini_go_tooling::dap::DebugSession>,
+    debug_session: Option<runtime::dap::DebugSession>,
     #[cfg(feature = "rpc")]
     network: Option<Arc<network::RpcNetwork>>,
     #[cfg(feature = "rpc")]
@@ -440,7 +442,7 @@ impl WasmVm {
             .as_ref()
             .ok_or_else(|| error("initialization pending"))?
             .clone();
-        let mut session = mini_go_tooling::dap::DebugSession::default();
+        let mut session = runtime::dap::DebugSession::default();
         session.bind(target, false, sources);
         session.set_entry(entry).map_err(error)?;
         self.debug_session = Some(session);
@@ -540,42 +542,7 @@ impl WasmVm {
             .as_ref()
             .ok_or_else(|| error("initialization pending"))?
             .stats();
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Stats {
-            state: String,
-            steps: u64,
-            heap_bytes: u64,
-            heap_objects: usize,
-            heap_peak_bytes: u64,
-            heap_allocated_bytes: u64,
-            memory_bytes: u64,
-            memory_peak_bytes: u64,
-            memory_allocated_bytes: u64,
-            active_scopes: usize,
-            tasks: usize,
-            timers: usize,
-            ffi_calls: usize,
-            ffi_bytes: usize,
-            generation: u64,
-        }
-        encode(&Stats {
-            state: format!("{:?}", stats.state),
-            steps: stats.executed_steps,
-            heap_bytes: stats.heap.live_bytes,
-            heap_objects: stats.heap.live_objects,
-            heap_peak_bytes: stats.heap.peak_bytes,
-            heap_allocated_bytes: stats.heap.total_allocated_bytes,
-            memory_bytes: stats.memory.live_bytes,
-            memory_peak_bytes: stats.memory.peak_bytes,
-            memory_allocated_bytes: stats.memory.total_allocated_bytes,
-            active_scopes: stats.active_scopes,
-            tasks: stats.runnable_tasks + stats.blocked_tasks + stats.paused_tasks,
-            timers: stats.timers,
-            ffi_calls: stats.pending_ffi_calls,
-            ffi_bytes: stats.pending_boundary_bytes,
-            generation: stats.revision.generation,
-        })
+        encode_stats(stats)
     }
     pub fn resume(&self) -> Result<(), JsValue> {
         self.instance
@@ -642,4 +609,43 @@ impl WasmVm {
             Ok(JsValue::UNDEFINED)
         })
     }
+}
+
+pub(crate) fn encode_stats(stats: runtime::instance::stats::Stats) -> Result<JsValue, JsValue> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Stats {
+        state: String,
+        steps: u64,
+        heap_bytes: u64,
+        heap_objects: usize,
+        heap_peak_bytes: u64,
+        heap_allocated_bytes: u64,
+        memory_bytes: u64,
+        memory_peak_bytes: u64,
+        memory_allocated_bytes: u64,
+        active_scopes: usize,
+        tasks: usize,
+        timers: usize,
+        ffi_calls: usize,
+        ffi_bytes: usize,
+        generation: u64,
+    }
+    encode(&Stats {
+        state: format!("{:?}", stats.state),
+        steps: stats.executed_steps,
+        heap_bytes: stats.heap.live_bytes,
+        heap_objects: stats.heap.live_objects,
+        heap_peak_bytes: stats.heap.peak_bytes,
+        heap_allocated_bytes: stats.heap.total_allocated_bytes,
+        memory_bytes: stats.memory.live_bytes,
+        memory_peak_bytes: stats.memory.peak_bytes,
+        memory_allocated_bytes: stats.memory.total_allocated_bytes,
+        active_scopes: stats.active_scopes,
+        tasks: stats.runnable_tasks + stats.blocked_tasks + stats.paused_tasks,
+        timers: stats.timers,
+        ffi_calls: stats.pending_ffi_calls,
+        ffi_bytes: stats.pending_boundary_bytes,
+        generation: stats.revision.generation,
+    })
 }

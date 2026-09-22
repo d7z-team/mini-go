@@ -17,8 +17,7 @@ default = ["rpc"]
 rpc = ["mini-go/rpc", "dep:tokio"]
 
 [dependencies]
-mini-go.workspace = true
-mini-go-tooling.workspace = true
+mini-go = { workspace = true, features = ["compiler", "dap"] }
 wasm-bindgen = "0.2.128"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

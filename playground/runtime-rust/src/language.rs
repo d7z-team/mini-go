@@ -1,10 +1,16 @@
-use crate::session::CompilerSession;
-use mini_go::{error::RuntimeError, ffi::Cancellation};
+use crate::compiler::CompilerSession;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{error::RuntimeError, ffi::Cancellation};
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Value, json};
+
+mod sources;
+pub use sources::*;
 
 pub struct LanguageService {
     pub session: CompilerSession,
 }
+#[cfg(not(target_arch = "wasm32"))]
 impl LanguageService {
     pub async fn new(image: &[u8]) -> Result<Self, RuntimeError> {
         Ok(Self {
@@ -13,9 +19,9 @@ impl LanguageService {
     }
     pub async fn sources(
         &mut self,
-        trees: &[crate::sources::SourceTree],
+        trees: &[SourceTree],
         cancel: &Cancellation,
-    ) -> Result<crate::sources::SourcePackages, RuntimeError> {
+    ) -> Result<SourcePackages, RuntimeError> {
         let mut reply = self
             .session
             .call(
@@ -51,15 +57,39 @@ impl LanguageService {
             .call(json!({"Operation":"workspace/analyze"}), cancel)
             .await
     }
+    pub async fn replace_workspace(
+        &mut self,
+        mut workspace: Value,
+        cancel: &Cancellation,
+    ) -> Result<Value, RuntimeError> {
+        workspace["Operation"] = json!("workspace/update");
+        self.session.call(workspace, cancel).await
+    }
+    pub async fn prepare(
+        &mut self,
+        options: Value,
+        cancel: &Cancellation,
+    ) -> Result<Value, RuntimeError> {
+        self.session
+            .call(
+                json!({"Operation":"build/prepare", "Build":options}),
+                cancel,
+            )
+            .await
+    }
+    pub async fn upgrade(
+        &mut self,
+        image: &[u8],
+        cancel: &Cancellation,
+    ) -> Result<crate::compiler::UpgradeResult, RuntimeError> {
+        self.session.upgrade(image, cancel).await
+    }
     pub async fn query(
         &mut self,
         operation: &str,
-        mut parameters: Value,
+        parameters: Value,
         cancel: &Cancellation,
     ) -> Result<Value, RuntimeError> {
-        if parameters.get("Snapshot").is_none() {
-            parameters["Snapshot"] = json!(self.session.snapshot());
-        }
         Ok(self
             .session
             .call(

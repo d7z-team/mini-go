@@ -1,5 +1,5 @@
 use mini_go::ffi::Cancellation;
-use mini_go_tooling::sources::read_directory;
+use mini_go::language::read_directory;
 
 struct Directory(std::path::PathBuf);
 impl Drop for Directory {
