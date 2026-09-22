@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   id-token: write
 
 concurrency:
@@ -22,6 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: release
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/release-target
+      MINIGO_CACHE: /tmp/mini-go/cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +49,20 @@ jobs:
             echo "::error::Publish requires a clean working tree"
             exit 1
           fi
+      - name: Check CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release-check-ci.sh
+      - name: Check bootstrap credentials
+        if: ${{ inputs.bootstrap }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -z "$CARGO_REGISTRY_TOKEN" || -z "$NPM_TOKEN" ]]; then
+            echo "::error::Bootstrap requires CARGO_REGISTRY_TOKEN and NPM_TOKEN in the release environment or repository secrets"
+            exit 1
+          fi
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.6"
@@ -54,7 +72,7 @@ jobs:
       - run: rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.18.0"
+          node-version: "22.22.2"
           cache: npm
           cache-dependency-path: playground/runtime-rust/runtime-wasm/package-lock.json
       - run: npm install --global npm@12.0.2
@@ -63,30 +81,28 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            playground/runtime-rust/target
+            build/release-target
           key: publish-${{ runner.os }}-rust-1.98.1-${{ hashFiles('playground/runtime-rust/Cargo.lock') }}
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/mini-go/cache
+          key: mini-go-oracle-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'compiler/**/*.go', 'runtime/**/*.go', 'ffi/**/*.go', 'stdlib/**/*.go', 'stdlib/**/*.mgo', 'tooling/runtimecheck/*.go') }}
+          restore-keys: mini-go-oracle-${{ runner.os }}-
       - name: Install WASM and browser tools
         run: |
           cargo install wasm-bindgen-cli --version 0.2.128 --locked
           npm --prefix playground/runtime-rust/runtime-wasm ci
           npm exec --prefix playground/runtime-rust/runtime-wasm -- playwright install --with-deps chromium firefox
-      - name: Verify generated sources and Go implementation
-        run: |
-          make generate
-          git diff --exit-code
-          make lint test build
-      - name: Verify Rust and cross-language behavior
-        run: |
-          make runtime-rust-lint runtime-rust-test runtime-rust-conformance
-          make runtime-rust-rpc-test test-rpc-conformance
-          make runtime-rust-host-test runtime-rust-host-conformance
       - name: Verify TypeScript, WASM and compiler tooling
         run: |
+          make runtime-compiler-image
           cargo clippy --locked --manifest-path playground/runtime-rust/Cargo.toml \
             --target wasm32-unknown-unknown -p mini-go-wasm --all-features -- -D warnings
           make runtime-wasm-test runtime-compiler-test
       - name: Build and verify release artifacts
-        run: make release-package release-verify
+        run: |
+          export GOCACHE="$(go env GOCACHE)"
+          make release-package release-verify
       - name: Authenticate with crates.io
         if: ${{ !inputs.bootstrap }}
         id: crates
@@ -94,7 +110,6 @@ jobs:
       - name: Publish packages
         env:
           BOOTSTRAP: ${{ inputs.bootstrap }}
-          CARGO_TARGET_DIR: ${{ github.workspace }}/build/release/cargo-target
           CARGO_REGISTRY_TOKEN: ${{ inputs.bootstrap && secrets.CARGO_REGISTRY_TOKEN || steps.crates.outputs.token }}
           NPM_BOOTSTRAP_TOKEN: ${{ inputs.bootstrap && secrets.NPM_TOKEN || '' }}
         run: |
@@ -116,7 +131,6 @@ jobs:
               echo "$package $version already published with matching checksum"
               return
             fi
-            cargo publish --manifest-path "$rust/Cargo.toml" --locked -p "$package" --dry-run
             cargo publish --manifest-path "$rust/Cargo.toml" --locked -p "$package"
             for attempt in $(seq 1 30); do
               if remote_checksum=$(crate_checksum "$package" 2>/dev/null); then

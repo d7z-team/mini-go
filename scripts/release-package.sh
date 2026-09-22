@@ -68,6 +68,7 @@ fi
 compiler="$rust/tooling/assets/compiler.json.gz"
 compiler_sha256=$(sha256sum "$compiler" | cut -d ' ' -f 1)
 export CARGO_TARGET_DIR="$cargo_target"
+cargo fetch --manifest-path "$rust/Cargo.toml" --locked
 cargo package --manifest-path "$rust/Cargo.toml" --locked --offline -p mini-go
 cargo package --manifest-path "$rust/Cargo.toml" -p mini-go-tooling --no-verify --exclude-lockfile --offline
 cp "$cargo_target/package/mini-go-$version.crate" "$output/"

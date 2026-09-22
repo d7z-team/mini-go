@@ -157,8 +157,10 @@ make release-verify
 解包产物、核对 compiler 镜像，并以独立 Rust、Node 和 Chromium consumer 验证。调试未提交内容时可设置
 `RELEASE_FLAGS=--allow-dirty`，生成的 `.dirty` 版本不能发布。
 
-GitHub Actions 的 `Publish Rust and npm packages` 只接受最新 main，按 `mini-go`、`mini-go-tooling`、npm
-的顺序发布。tooling 精确依赖同批次 runtime；runtime 在 registry 可见后，workflow 使用
+GitHub Actions 的 `Publish Rust and npm packages` 只接受最新 main，并要求同一提交的 Go、Rust push CI
+已经成功。发布任务复用这些验证结果，执行 WASM/SDK 测试和分发包验证，再按 `mini-go`、`mini-go-tooling`、npm
+的顺序发布。Node 与 npm 使用兼容的固定版本；Cargo 构建缓存在 staging 之外复用。
+tooling 精确依赖同批次 runtime；runtime 在 registry 可见后，workflow 使用
 `release-finalize-tooling` 生成最终 tooling crate。发布采用 Trusted Publisher；仅首次建立包时使用
 workflow 的 `bootstrap` 输入和一次性 registry token。已存在的同版本产物必须通过完整性比较。
 

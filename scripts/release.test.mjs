@@ -1,12 +1,57 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const scripts = fileURLToPath(new URL("./", import.meta.url));
+
+test("release requires successful push CI for the exact commit", async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "mini-go-release-ci-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const gh = path.join(directory, "gh");
+  await writeFile(gh, '#!/bin/sh\ncat "$CI_TEST_RESPONSE"\n');
+  await chmod(gh, 0o755);
+  const response = path.join(directory, "response.json");
+  const success = {
+    head_sha: "candidate",
+    head_branch: "main",
+    event: "push",
+    status: "completed",
+    conclusion: "success",
+  };
+  for (const [name, run, accepted] of [
+    ["success", success, true],
+    ["missing", null, false],
+    ["other commit", { ...success, head_sha: "other" }, false],
+    ["other branch", { ...success, head_branch: "topic" }, false],
+    ["pull request", { ...success, event: "pull_request" }, false],
+    ["running", { ...success, status: "in_progress" }, false],
+    ["failed", { ...success, conclusion: "failure" }, false],
+  ]) {
+    await writeFile(response, JSON.stringify({ workflow_runs: run ? [run] : [] }));
+    const invoke = () => execFileSync("bash", [path.join(scripts, "release-check-ci.sh")], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PATH: `${directory}:${process.env.PATH}`,
+        CI_TEST_RESPONSE: response,
+        GITHUB_REPOSITORY: "d7z-team/mini-go",
+        GITHUB_SHA: "candidate",
+      },
+    });
+    if (accepted) {
+      const output = invoke();
+      assert.match(output, /go-test.yml passed/);
+      assert.match(output, /runtime-rust.yml passed/);
+    } else {
+      assert.throws(invoke, (error) => error.status === 1 && error.stdout.includes("::error::"), name);
+    }
+  }
+});
 
 function run(command, parameters, cwd) {
   return execFileSync(command, parameters, {
