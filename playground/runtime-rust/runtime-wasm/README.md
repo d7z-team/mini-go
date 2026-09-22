@@ -34,7 +34,7 @@ try {
 ```
 
 在 Go 宿主上通过 `mini-go-dev runtime-blocks` 编译镜像，步骤见
-[Rust 快速开始](https://github.com/d7z-team/go-mini/blob/main/playground/runtime-rust/README.md#快速开始)。
+[Rust 快速开始](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/README.md#快速开始)。
 镜像与 runtime 应来自同一工具链。
 JSON 或 gzip 镜像按原始字节传入，以保留 64 位整数精度。
 
@@ -137,7 +137,7 @@ const vm = await MiniGo.create(image, {
 设置 `rpcUrl` 可通过 WebSocket 连接 Mini-Go peer，支持双向调用、契约校验、取消与资源清理。
 断线会使调用和资源失效，SDK 不自动重连或重放；认证遵循浏览器或 Node 的 WebSocket 环境。
 `rpcOptions` 可覆盖 Endpoint 的租期、接纳期限和服务端调用上限；默认值与长期调用语义见
-[RPC 指南](https://github.com/d7z-team/go-mini/blob/main/RPC.md#错误与超时)。
+[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#错误与超时)。
 
 ### 独立 TypeScript RPC
 
@@ -231,4 +231,4 @@ DebugSession 与原生工具共用 Rust DAP 适配器。`createDebugSession(imag
 从 Git checkout 运行 `make runtime-wasm-pack` 生成本地可安装 tarball；完整的 Rust/npm 发布产物使用
 `make release-package release-verify` 在隔离 staging 中构建和验证。
 构建工具链、浏览器依赖、无 RPC 构建与验证命令统一见
-[开发指南](https://github.com/d7z-team/go-mini/blob/main/DEVELOPMENT.md#wasm-与-typescript)。
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#wasm-与-typescript)。

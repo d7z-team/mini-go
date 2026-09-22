@@ -65,13 +65,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/d7z-team/go-mini",
+    "url": "https://github.com/d7z-team/mini-go",
     "directory": "playground/runtime-rust/runtime-wasm"
   },
   "bugs": {
-    "url": "https://github.com/d7z-team/go-mini/issues"
+    "url": "https://github.com/d7z-team/mini-go/issues"
   },
-  "homepage": "https://github.com/d7z-team/go-mini/tree/main/playground/runtime-rust/runtime-wasm",
+  "homepage": "https://github.com/d7z-team/mini-go/tree/main/playground/runtime-rust/runtime-wasm",
   "publishConfig": {
     "access": "public"
   }

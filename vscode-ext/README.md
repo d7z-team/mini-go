@@ -4,7 +4,7 @@
 
 ## 安装与配置
 
-按[开发指南](https://github.com/d7z-team/go-mini/blob/main/DEVELOPMENT.md#编辑器扩展)构建 VSIX 后安装：
+按[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#编辑器扩展)构建 VSIX 后安装：
 
 ```bash
 code --install-extension /tmp/mini-go.vsix
@@ -14,7 +14,7 @@ code --install-extension /tmp/mini-go.vsix
 
 安装扩展后，在 VS Code 设置中将 `mini-go.lsp.path` 设为已安装的 `mini-go` 可执行文件的绝对路径。
 留空时从 VS Code 进程的 `PATH` 查找 `mini-go`；扩展不捆绑编译器二进制。命令安装方式见
-[项目中文 README](https://github.com/d7z-team/go-mini/blob/main/README_zh.md#安装)。
+[项目中文 README](https://github.com/d7z-team/mini-go/blob/main/README_zh.md#安装)。
 
 `mini-go.module` 设置应用导入前缀（默认 `app`）；`mini-go.sources` 接受
 `[{"module":"rules","directory":"../rules"}]`，相对工作区根装配其他源码。
@@ -26,4 +26,4 @@ code --install-extension /tmp/mini-go.vsix
 launch 参数见下方使用指南。
 
 项目与编辑器的使用约定见
-[使用指南](https://github.com/d7z-team/go-mini/blob/main/USAGE.md#编辑器与调试符号)。
+[使用指南](https://github.com/d7z-team/mini-go/blob/main/USAGE.md#编辑器与调试符号)。

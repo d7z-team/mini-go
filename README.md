@@ -105,8 +105,8 @@ The detailed guides linked below are written in Chinese.
 [wasm-sdk]: ./playground/runtime-rust/runtime-wasm/README.md
 [crate-runtime]: https://crates.io/crates/mini-go
 [crate-tooling]: https://crates.io/crates/mini-go-tooling
-[go-ci-badge]: https://github.com/d7z-team/go-mini/actions/workflows/go-test.yml/badge.svg
-[go-ci]: https://github.com/d7z-team/go-mini/actions/workflows/go-test.yml
+[go-ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml/badge.svg
+[go-ci]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml
 
 ## Contributing
 

@@ -89,8 +89,8 @@ Rust runtime 与 tooling 必须使用同一个精确快照版本。快照版本�
 | [开发指南](./DEVELOPMENT.md) | 生成、测试、跨语言验证与性能诊断 |
 | [共享测试数据](./testdata/README.md) | 跨后端语料、预期与更新入口 |
 
-[go-ci-badge]: https://github.com/d7z-team/go-mini/actions/workflows/go-test.yml/badge.svg
-[go-ci]: https://github.com/d7z-team/go-mini/actions/workflows/go-test.yml
+[go-ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml/badge.svg
+[go-ci]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml
 
 ## 参与开发
 

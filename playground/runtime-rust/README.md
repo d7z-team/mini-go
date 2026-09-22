@@ -49,7 +49,7 @@ GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev runtime-blocks -out /tmp/blocks pa
 | `host-conformance` | 通过进程 broker 接入 Go provider 的测试适配器 |
 
 RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执行)和
-[RPC 指南](https://github.com/d7z-team/go-mini/blob/main/RPC.md#rust-api)。
+[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#rust-api)。
 
 ## 接入导航
 
@@ -57,9 +57,9 @@ RPC 的异步装配与关闭顺序见 [Tokio 接入](USAGE.md#在-tokio-中执�
 | --- | --- |
 | 调用、限制、取消与 Tokio | [原生使用指南](USAGE.md) |
 | 标准库与自定义宿主 | [宿主能力](USAGE.md#宿主能力) |
-| RPC 生成与服务接入 | [Rust RPC API](https://github.com/d7z-team/go-mini/blob/main/RPC.md#rust-api) |
+| RPC 生成与服务接入 | [Rust RPC API](https://github.com/d7z-team/mini-go/blob/main/RPC.md#rust-api) |
 | 断点、变量和热更新 | [调试](USAGE.md#断点变量与单步) · [热更新](USAGE.md#热更新) |
-| 内存与性能观测 | [开发指南](https://github.com/d7z-team/go-mini/blob/main/DEVELOPMENT.md#缓存与性能) |
+| 内存与性能观测 | [开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能) |
 
 ## 编译器与语言工具
 
@@ -81,8 +81,8 @@ mini-go-tooling = "=<snapshot-version>"
 ## 开发与许可证
 
 构建、生成、一致性验证和基准命令统一见
-[开发指南](https://github.com/d7z-team/go-mini/blob/main/DEVELOPMENT.md#rust-验证)，数据入口见
-[共享测试数据](https://github.com/d7z-team/go-mini/blob/main/testdata/README.md)，内部职责见
-[架构](https://github.com/d7z-team/go-mini/blob/main/ARCHITECTURE.md)。
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#rust-验证)，数据入口见
+[共享测试数据](https://github.com/d7z-team/mini-go/blob/main/testdata/README.md)，内部职责见
+[架构](https://github.com/d7z-team/mini-go/blob/main/ARCHITECTURE.md)。
 
 本 crate 使用仓库 MIT 许可证，移植的 Go 算法保留 [Go 许可证](LICENSE-Go)。
