@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { isDocumentation, planRelease, requestJSON } from "./release-plan.mjs";
+import {
+  isDocumentation,
+  planRelease,
+  requestJSON,
+  waitForCI,
+} from "./release-plan.mjs";
 
 const scripts = fileURLToPath(new URL("./", import.meta.url));
 
@@ -54,18 +59,16 @@ async function releaseFixture(t) {
     );
     fixture.event = {
       repository: { full_name: "d7z-team/mini-go" },
-      workflow_run: {
-        head_repository: { full_name: "d7z-team/mini-go" },
-        head_branch: "main",
-        head_sha: fixture.release.commit,
-        event: "push",
-        conclusion: "success",
-      },
+      ref: "refs/heads/main",
+      after: fixture.release.commit,
+      deleted: false,
     };
     return fixture.release;
   };
   fixture.request = async (url) => {
     fixture.requests.push(url);
+    if (url.endsWith("/git/ref/heads/main"))
+      return { object: { sha: fixture.release.commit } };
     if (url.startsWith("https://api.github.com/")) {
       const workflow = /workflows\/([^/]+)\//.exec(url)[1];
       const query = new URL(url).searchParams;
@@ -113,7 +116,18 @@ async function releaseFixture(t) {
       directory,
       repository: "d7z-team/mini-go",
       event: fixture.event,
+      eventName: "push",
       request: fixture.request,
+      ...options,
+    });
+  fixture.wait = (options = {}) =>
+    waitForCI({
+      repository: "d7z-team/mini-go",
+      sha: fixture.release.commit,
+      request: fixture.request,
+      pause: async () => {
+        throw new Error("Unexpected CI wait");
+      },
       ...options,
     });
   fixture.base = await fixture.commit({
@@ -157,49 +171,100 @@ test("documentation classification uses suffixes and payload directories", () =>
   }
 });
 
-test("release waits for both exact-commit push workflows, including reruns", async (t) => {
+test("release waits for both exact-commit push workflows", async (t) => {
   const fixture = await releaseFixture(t);
   await fixture.commit({ "main.go": "package changed\n" });
   for (const workflow of ["go-test.yml", "runtime-rust.yml"]) {
     for (const state of [
       null,
+      { status: "queued" },
+      { status: "in_progress" },
+    ]) {
+      fixture.ci[workflow] = state;
+      let polls = 0;
+      assert.equal(
+        (
+          await fixture.wait({
+            pause: async (ms) => {
+              assert.equal(ms, 30_000);
+              polls++;
+              delete fixture.ci[workflow];
+            },
+          })
+        ).publish,
+        true,
+      );
+      assert.equal(polls, 1);
+    }
+    for (const state of [
       { head_sha: "other" },
       { head_branch: "topic" },
       { event: "pull_request" },
-      { status: "in_progress" },
-      { conclusion: "failure" },
-      { conclusion: "cancelled" },
     ]) {
       fixture.ci[workflow] = state;
-      fixture.requests = [];
-      assert.equal((await fixture.plan()).publish, false);
-      assert.ok(
-        fixture.requests.every((url) =>
-          url.startsWith("https://api.github.com/"),
-        ),
-      );
+      await assert.rejects(fixture.wait(), /does not match/);
+    }
+    for (const conclusion of ["failure", "cancelled", "timed_out", "skipped"]) {
+      fixture.ci[workflow] = { conclusion };
+      assert.equal((await fixture.wait()).publish, false);
     }
     delete fixture.ci[workflow];
   }
-  assert.equal((await fixture.plan()).publish, true);
+  assert.equal((await fixture.wait()).publish, true);
+});
+
+test("CI wait stops on a newer main, a bounded deadline, or an API error", async (t) => {
+  const fixture = await releaseFixture(t);
+  const sha = fixture.release.commit;
+  await fixture.commit({ "main.go": "package next\n" });
+  assert.match((await fixture.wait({ sha })).reason, /superseded/);
+  fixture.ci["go-test.yml"] = null;
+  let clock = 0;
+  await assert.rejects(
+    fixture.wait({
+      now: () => clock,
+      pause: async () => {
+        clock = 50 * 60_000;
+      },
+    }),
+    /Timed out/,
+  );
+  for (const request of [
+    async () => {
+      throw new Error("request failed");
+    },
+    async () => ({}),
+  ]) {
+    await assert.rejects(fixture.wait({ request }), /request failed|Invalid/);
+  }
+  await assert.rejects(
+    fixture.wait({
+      request: async (url) =>
+        url.includes("/workflows/") ? {} : fixture.request(url),
+    }),
+    /Invalid CI/,
+  );
 });
 
 test("only trusted current main candidates reach registry planning", async (t) => {
   const fixture = await releaseFixture(t);
   const event = structuredClone(fixture.event);
   for (const override of [
-    { event: "pull_request" },
-    { head_branch: "topic" },
-    { conclusion: "failure" },
-    { head_repository: { full_name: "fork/mini-go" } },
+    { ref: "refs/heads/topic" },
+    { deleted: true },
+    { repository: { full_name: "fork/mini-go" } },
   ]) {
     fixture.event = {
       ...event,
-      workflow_run: { ...event.workflow_run, ...override },
+      ...override,
     };
     assert.equal((await fixture.plan()).publish, false);
   }
   fixture.event = event;
+  assert.equal(
+    (await fixture.plan({ eventName: "pull_request" })).publish,
+    false,
+  );
   assert.equal(
     (await fixture.plan({ repository: "fork/mini-go" })).publish,
     false,
@@ -212,12 +277,12 @@ test("only trusted current main candidates reach registry planning", async (t) =
   assert.match((await fixture.plan()).reason, /superseded/);
   fixture.event = {
     ...event,
-    workflow_run: { ...event.workflow_run, head_sha: "bad" },
+    after: "bad",
   };
   await assert.rejects(fixture.plan(), /Invalid release commit/);
 });
 
-test("release planning rejects uncommitted inputs before querying CI", async (t) => {
+test("release planning rejects uncommitted inputs before querying registries", async (t) => {
   const fixture = await releaseFixture(t);
   await writeFile(path.join(fixture.directory, "main.go"), "package dirty\n");
   await assert.rejects(fixture.plan(), /clean worktree/);
@@ -289,14 +354,14 @@ test("published identities must match the candidate history", async (t) => {
     fixture.directory,
   );
   fixture.release = candidate;
-  fixture.event.workflow_run.head_sha = candidate.commit;
+  fixture.event.after = candidate.commit;
   await assert.rejects(fixture.plan());
 });
 
-test("registry and CI failures cannot become an empty publication baseline", async (t) => {
+test("registry failures cannot become an empty publication baseline", async (t) => {
   const fixture = await releaseFixture(t);
   await fixture.commit({ "main.go": "package changed\n" });
-  for (const host of ["api.github.com", "registry.npmjs.org", "crates.io"]) {
+  for (const host of ["registry.npmjs.org", "crates.io"]) {
     await assert.rejects(
       fixture.plan({
         request: async (url) => {

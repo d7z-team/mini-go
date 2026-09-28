@@ -5,6 +5,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
+import { setTimeout as delay } from "node:timers/promises";
 
 const crateVersionsURL = "https://crates.io/api/v1/crates/mini-go/versions";
 const npmURL = "https://registry.npmjs.org/@d7z-team%2fmini-go";
@@ -41,20 +42,19 @@ export async function planRelease({
   directory,
   repository,
   event,
+  eventName,
   request = requestJSON,
 }) {
-  const run = event.workflow_run;
   if (
     repository !== "d7z-team/mini-go" ||
     event.repository?.full_name !== repository ||
-    run?.head_repository?.full_name !== repository ||
-    run.event !== "push" ||
-    run.head_branch !== "main" ||
-    run.conclusion !== "success"
+    eventName !== "push" ||
+    event.ref !== "refs/heads/main" ||
+    event.deleted
   ) {
-    return { publish: false, reason: "Not a successful main push CI event" };
+    return { publish: false, reason: "Not a main push event" };
   }
-  const sha = run.head_sha;
+  const sha = event.after;
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Invalid release commit");
   const git = (...args) =>
     execFileSync("git", ["-C", directory, ...args], {
@@ -71,37 +71,6 @@ export async function planRelease({
   }
   if (git("status", "--porcelain=v1", "--untracked-files=all")) {
     throw new Error("Release planning requires a clean worktree");
-  }
-
-  for (const workflow of ["go-test.yml", "runtime-rust.yml"]) {
-    const query = new URLSearchParams({
-      head_sha: sha,
-      branch: "main",
-      event: "push",
-      per_page: "1",
-    });
-    const data = await request(
-      `https://api.github.com/repos/${repository}/actions/workflows/${workflow}/runs?${query}`,
-      {
-        headers: { Authorization: `Bearer ${process.env.GH_TOKEN}` },
-      },
-    );
-    if (!Array.isArray(data?.workflow_runs))
-      throw new Error(`Invalid CI response for ${workflow}`);
-    const latest = data.workflow_runs[0];
-    if (
-      latest?.head_sha !== sha ||
-      latest.head_branch !== "main" ||
-      latest.event !== "push" ||
-      latest.status !== "completed" ||
-      latest.conclusion !== "success"
-    ) {
-      return {
-        publish: false,
-        sha,
-        reason: `${workflow} has not succeeded for this commit`,
-      };
-    }
   }
 
   const release = JSON.parse(
@@ -215,17 +184,94 @@ export async function planRelease({
   };
 }
 
+export async function waitForCI({
+  repository,
+  sha,
+  request = requestJSON,
+  now = () => performance.now(),
+  pause = delay,
+}) {
+  const deadline = now() + 50 * 60_000;
+  const headers = { Authorization: `Bearer ${process.env.GH_TOKEN}` };
+  const query = new URLSearchParams({
+    head_sha: sha,
+    branch: "main",
+    event: "push",
+    per_page: "1",
+  });
+  while (now() < deadline) {
+    const ref = await request(
+      `https://api.github.com/repos/${repository}/git/ref/heads/main`,
+      { headers },
+    );
+    if (!/^[a-f0-9]{40}$/.test(ref?.object?.sha))
+      throw new Error("Invalid main ref response");
+    if (ref.object.sha !== sha)
+      return {
+        publish: false,
+        reason: "A newer main commit superseded this candidate",
+      };
+    let pending = false;
+    for (const workflow of ["go-test.yml", "runtime-rust.yml"]) {
+      const data = await request(
+        `https://api.github.com/repos/${repository}/actions/workflows/${workflow}/runs?${query}`,
+        { headers },
+      );
+      if (!Array.isArray(data?.workflow_runs))
+        throw new Error(`Invalid CI response for ${workflow}`);
+      const latest = data.workflow_runs[0];
+      if (!latest) {
+        pending = true;
+        continue;
+      }
+      if (
+        latest.head_sha !== sha ||
+        latest.head_branch !== "main" ||
+        latest.event !== "push"
+      ) {
+        throw new Error(
+          `${workflow} response does not match the candidate push`,
+        );
+      }
+      if (latest.status !== "completed") {
+        pending = true;
+        continue;
+      }
+      if (latest.conclusion !== "success")
+        return {
+          publish: false,
+          reason: `${workflow} finished with ${latest.conclusion}`,
+        };
+    }
+    if (now() >= deadline) break;
+    if (!pending)
+      return {
+        publish: true,
+        reason: "Both push workflows succeeded for this commit",
+      };
+    console.log(`Waiting for Go/Rust push CI for ${sha}`);
+    await pause(Math.min(30_000, deadline - now()));
+  }
+  throw new Error("Timed out waiting for Go/Rust push CI after 50 minutes");
+}
+
 if (
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   try {
-    const plan = await planRelease({
+    const repository = process.env.GITHUB_REPOSITORY;
+    let plan = await planRelease({
       directory: process.cwd(),
-      repository: process.env.GITHUB_REPOSITORY,
+      repository,
       event: JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")),
+      eventName: process.env.GITHUB_EVENT_NAME,
     });
     console.log(JSON.stringify(plan, null, 2));
+    if (plan.publish) {
+      plan = { ...plan, ...(await waitForCI({ repository, sha: plan.sha })) };
+      console.log(JSON.stringify(plan, null, 2));
+    }
     if (process.env.GITHUB_OUTPUT) {
       appendFileSync(
         process.env.GITHUB_OUTPUT,

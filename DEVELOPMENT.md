@@ -160,15 +160,17 @@ make release-verify
 解包产物、核对 compiler 镜像，并以独立 Rust、Node 和 Chromium consumer 验证。调试未提交内容时可设置
 `RELEASE_FLAGS=--allow-dirty`，生成的 `.dirty` 版本不能发布。
 
-[Publish Rust and npm packages](.github/workflows/publish.yml) 在 main 的 Go/Rust push CI 完成后自动判断发布。
-同一提交的两项 CI 都成功后，以 npm 与 crates.io 共同存在的最近快照为基线，检查到候选提交的文件差异。
+[Publish Rust and npm packages](.github/workflows/publish.yml) 由 main 的 push 自动触发，使用 registry 支持的 OIDC 事件身份。
+先以 npm 与 crates.io 共同存在的最近快照为基线，检查到候选提交的文件差异。
 `docs/` 与 `.md`、`.mdx`、`.rst` 文档单独变化时跳过；`testdata/`、`fixtures/`、`assets/` 中的文件按数据处理，
 其中 README 文档除外。源码、依赖、构建配置和未知后缀变化会进入发布。
 分类规则由 `scripts/release-plan.mjs` 集中维护，文档提交仍计入快照版本的 Git 提交数量。
 
-发布使用 `release` environment 的 Trusted Publisher，验证 WASM/SDK 与分发包后，依次发布 crate 和 npm。
+需要发布时，每 30 秒核对同一提交的 Go/Rust push CI，最多等待 50 分钟；两项都成功才构建。
+CI 失败或 main 已更新时跳过，超过等待期限则报错。发布使用 `release` environment 的 Trusted Publisher，
+验证 WASM/SDK 与分发包后，依次发布 crate 和 npm。
 两个 registry 已有同版本时跳过；只有一端存在时补齐发布，并对已有产物核对完整性。
-registry 查询失败会明确报错。失败后可重跑对应 CI 或发布运行；发布记录以 registry 为准。
+registry 查询失败会明确报错。修复 CI 后推送新提交，或在 CI 重跑成功后重跑对应发布运行；发布记录以 registry 为准。
 开始发布前再次检查候选是否仍是最新 main，开始后完成同一版本的两端发布。compiler 资源始终随包校验和分发。
 
 ## RPC 实现维护

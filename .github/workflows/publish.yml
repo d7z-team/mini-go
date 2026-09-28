@@ -1,9 +1,7 @@
 name: Publish Rust and npm packages
 
 on:
-  workflow_run:
-    workflows: [Go, Rust runtime]
-    types: [completed]
+  push:
     branches: [main]
 
 permissions:
@@ -18,18 +16,16 @@ jobs:
   plan:
     if: >-
       github.repository == 'd7z-team/mini-go' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.conclusion == 'success'
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       sha: ${{ steps.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
