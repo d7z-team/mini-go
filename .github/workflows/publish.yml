@@ -30,14 +30,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.2"
-      - run: make release-script-test
+      - run: make ci-script-test release-script-test
       - name: Decide whether to publish
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --no-tags origin main
-          node scripts/release-plan.mjs
+          node .github/scripts/release-plan.mjs
 
   publish:
     needs: plan

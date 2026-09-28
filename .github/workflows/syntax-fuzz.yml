@@ -5,8 +5,18 @@ on:
     - cron: '23 3 * * 1,4'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      workflow: syntax-fuzz.yml
   fuzz:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

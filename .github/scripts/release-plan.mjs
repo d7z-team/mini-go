@@ -6,37 +6,10 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
+import { codeChanges, requestJSON } from "./changes.mjs";
 
 const crateVersionsURL = "https://crates.io/api/v1/crates/mini-go/versions";
 const npmURL = "https://registry.npmjs.org/@d7z-team%2fmini-go";
-
-export function isDocumentation(name) {
-  if (name.startsWith("docs/")) return true;
-  if (!/\.(md|mdx|rst)$/i.test(name)) return false;
-  // Fixture payloads can contain Markdown; their directory guides are documentation.
-  if (/(^|\/)(testdata|fixtures|assets)\//.test(name)) {
-    return /^readme(?:[_-][\w-]+)?\.(md|mdx|rst)$/i.test(
-      path.posix.basename(name),
-    );
-  }
-  return true;
-}
-
-export async function requestJSON(
-  url,
-  { allowMissing = false, headers = {} } = {},
-) {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "mini-go-release (https://github.com/d7z-team/mini-go)",
-      ...headers,
-    },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (response.status === 404 && allowMissing) return null;
-  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-  return response.json();
-}
 
 export async function planRelease({
   directory,
@@ -77,7 +50,9 @@ export async function planRelease({
     execFileSync(
       process.execPath,
       [
-        fileURLToPath(new URL("./release-version.mjs", import.meta.url)),
+        fileURLToPath(
+          new URL("../../scripts/release-version.mjs", import.meta.url),
+        ),
         "--json",
         "--repository",
         directory,
@@ -168,11 +143,7 @@ export async function planRelease({
   if (git("rev-list", "--count", base) !== count)
     throw new Error("Published commit count does not match history");
   git("merge-base", "--is-ancestor", base, sha);
-  // Disable rename detection so both a deleted source and its new path are classified.
-  const changed = git("diff", "--no-renames", "--name-only", "-z", base, sha)
-    .split("\0")
-    .filter(Boolean);
-  const nonDocs = changed.filter((name) => !isDocumentation(name));
+  const nonDocs = codeChanges(directory, base, sha);
   return {
     ...result,
     base,

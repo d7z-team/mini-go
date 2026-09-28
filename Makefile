@@ -185,7 +185,10 @@ runtime-wasm-pack: _npm-deps ## 通过 prepack 构建 npm tarball
 	@cd $(wasm_dir) && npm pack --pack-destination "$(WASM_PACK_OUTPUT)"
 
 # Rust / npm 上游发布产物
-.PHONY: release-script-test release-package release-verify
+.PHONY: ci-script-test release-script-test release-package release-verify
+
+ci-script-test: ## 验证 CI 变更判断、发布准入和等待流程
+	@node --test .github/scripts/*.test.mjs
 
 release-script-test: ## 验证 Git 版本派生与 manifest 同步改写
 	@node --test scripts/release.test.mjs

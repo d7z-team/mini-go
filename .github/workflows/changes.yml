@@ -1,0 +1,39 @@
+name: Check code changes
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        required: true
+        type: string
+    outputs:
+      changed:
+        value: ${{ jobs.changes.outputs.changed }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.2"
+      - name: Compare code changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_WORKFLOW: ${{ inputs.workflow }}
+          CI_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: node .github/scripts/changes.mjs
+      - name: Verify CI scripts
+        if: steps.changes.outputs.changed == 'true'
+        run: make ci-script-test

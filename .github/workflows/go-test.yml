@@ -6,8 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      workflow: go-test.yml
   test:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

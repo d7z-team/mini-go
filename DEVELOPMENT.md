@@ -46,6 +46,17 @@ make lint test build
 
 提交前执行 `git diff --check`，确认生成输入和受影响的派生物保持一致，并记录实际运行的验证。
 
+### CI 变更判断
+
+Go、Rust 和语法 fuzz 共用 `.github/workflows/changes.yml` 的轻量检查；无非文档差异时跳过测试、构建和 fuzz 作业。
+PR 对比合并基点与 PR head；push、定时和手动运行对比该工作流最近一次成功且位于当前历史上的提交。
+因此，失败或取消的代码检查之后再提交文档，仍会执行测试。首次运行或找不到成功基线时执行完整检查。
+
+所有工作流共用 `.github/scripts/changes.mjs` 的目录和后缀规则。`docs/`、`.md`、`.mdx`、`.rst` 归为文档；
+`testdata/`、`fixtures/`、`assets/` 中除 README 外的文件归为输入数据，其他未知后缀按非文档处理。
+CI 专用脚本与测试放在 `.github/scripts/`，用 `make ci-script-test` 验证。
+本地依赖边界检查、版本派生、打包与产物验证脚本保留在 `scripts/`，不依赖 GitHub 运行环境。
+
 ## 生成与派生物
 
 根 [generate.go](generate.go) 是统一生成入口：
@@ -162,9 +173,8 @@ make release-verify
 
 [Publish Rust and npm packages](.github/workflows/publish.yml) 由 main 的 push 自动触发，使用 registry 支持的 OIDC 事件身份。
 先以 npm 与 crates.io 共同存在的最近快照为基线，检查到候选提交的文件差异。
-`docs/` 与 `.md`、`.mdx`、`.rst` 文档单独变化时跳过；`testdata/`、`fixtures/`、`assets/` 中的文件按数据处理，
-其中 README 文档除外。源码、依赖、构建配置和未知后缀变化会进入发布。
-分类规则由 `scripts/release-plan.mjs` 集中维护，文档提交仍计入快照版本的 Git 提交数量。
+文档分类沿用上述 [CI 变更判断](#ci-变更判断)；发布基线以 registry 为准，文档提交仍计入快照版本的 Git 提交数量。
+发布准入和等待逻辑位于 `.github/scripts/release-plan.mjs`。
 
 需要发布时，每 30 秒核对同一提交的 Go/Rust push CI，最多等待 50 分钟；两项都成功才构建。
 CI 失败或 main 已更新时跳过，超过等待期限则报错。发布使用 `release` environment 的 Trusted Publisher，
