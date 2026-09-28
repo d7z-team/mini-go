@@ -85,22 +85,9 @@
 
 ## 验证范围
 
-先跑目标测试，再按改动影响扩大范围。具体命令和缓存说明见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
-
-| 改动 | 验证 |
-| --- | --- |
-| Go 实现与测试 | 目标测试；共享行为变更执行 `make lint test build` |
-| Rust 实现 | 目标 Cargo 测试、`make runtime-rust-lint`；共享 VM 行为执行 `make runtime-rust-test`，相关 feature 按开发指南补测 |
-| TypeScript / WASM | `make runtime-wasm-test`；Rust WASM 代码还需目标配置的 Clippy |
-| RPC 跨语言契约 | 两侧对应测试及 `make test-rpc-conformance` |
-| 并发与生命周期 | 取消、关闭、失败回收；Go 补充相关 race，Rust 覆盖 owner/GC，SDK 覆盖 Worker 生命周期 |
-| compiler、stdlib、schema 或 generator 输入 | 执行 `make generate` 并验证派生内容 |
-| stdlib API 或源码注释 | 执行 `make doc` 与相关测试 |
-| 仅手写文档 | 检查链接、命令和示例；新增示例可在 `/tmp` 编译运行，不运行仓库生成或全量测试 |
-
-局部测试使用 `make test TEST_PACKAGES='./runtime/...' TEST_FLAGS='-run TestName'`；完整测试使用 `make test`。
-集成测试使用 `make test TEST_PACKAGES='./integrations'`，也由完整测试自动发现。
-Rust 编译会话测试使用 release 模式，遵循现有请求期限。
+先跑目标测试，再按改动影响扩大范围；必须完成[开发指南的验证矩阵](DEVELOPMENT.md#日常工作流)
+中对应范围的检查。Rust 编译会话测试使用 release 模式，遵循现有请求期限。
+仅修改手写文档时检查链接、命令和示例；新增示例可在 `/tmp` 编译运行，不运行仓库生成或全量测试。
 生成或构建结束后再启动消费对应产物的测试；性能采样和严格超时测试避免与重型构建争用资源。
 失败先确认代码、产物版本和运行条件，修复或复验应保留证据，不通过放宽期限、预算或断言掩盖问题。
 交付前检查 `git diff --check`；报告改动、实际验证及未完成项，只有用户要求时才创建提交。

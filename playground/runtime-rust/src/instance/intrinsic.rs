@@ -235,6 +235,7 @@ impl Instance {
                     deadline: self.clock.monotonic_ns().saturating_add(delay),
                     period,
                 });
+                self.timer_check_steps = usize::from(TASK_POLL_INTERVAL);
                 self.scope_work
                     .entry(self.running.scope)
                     .or_default()

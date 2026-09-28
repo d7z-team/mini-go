@@ -58,7 +58,7 @@ func (r *prepareManifestResolver) load(modulePath string) error {
 	if r.miss {
 		return nil
 	}
-	action, key, err := workspaceCacheAction(pkg, r.exportHashes, r.request.Optimization)
+	action, key, err := workspaceCacheAction(pkg, r.exportHashes, r.request.Optimization, r.request.Limits)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,30 @@ import { readFile } from "node:fs/promises";
 import * as tools from "@d7z-team/mini-go/tools";
 import { exerciseTools } from "./tools_scenario.js";
 import { createBrowserPage } from "./browser_helpers.js";
+import { exerciseCompilerWorkloads } from "./compiler_workloads_scenario.js";
+
+const workloads = JSON.parse(
+  await readFile(new URL("../../../../testdata/language/workloads.json", import.meta.url), "utf8"),
+).filter(({ Name }) => Name === "pure" || Name === "typed-view");
+
+test("Node compiler shares typed workloads and warm snapshots", { timeout: 60_000 }, async (t) => {
+  t.diagnostic(JSON.stringify(await exerciseCompilerWorkloads(tools, workloads)));
+});
+
+test(
+  "browser compiler shares typed workloads and warm snapshots",
+  { timeout: 60_000 },
+  async (t) => {
+    const page = await createBrowserPage(t, {
+      "/workloads.js": new URL("./compiler_workloads_scenario.js", import.meta.url),
+    });
+    const result = await page.evaluate(async (workloads) => {
+      const { exerciseCompilerWorkloads } = await import("/workloads.js");
+      return exerciseCompilerWorkloads(await import("/browser-tools.js"), workloads);
+    }, workloads);
+    t.diagnostic(JSON.stringify(result));
+  },
+);
 
 const workspace = JSON.parse(
   await readFile(new URL("../../../../testdata/language/workspace.json", import.meta.url), "utf8"),

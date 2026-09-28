@@ -1,4 +1,5 @@
-//! Cooperative tasks and wait registrations, mutated only by the instance owner.
+//! Task continuations and wait registrations. The owner schedules and parks
+//! tasks; native workers may own their private state while executing a slice.
 
 use super::*;
 

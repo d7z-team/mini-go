@@ -3,6 +3,62 @@ use mini_go::ffi::Cancellation;
 use serde_json::json;
 
 #[tokio::test]
+async fn shared_language_workloads_preserve_warm_analysis() {
+    let workloads: serde_json::Value =
+        serde_json::from_str(include_str!("../../../testdata/language/workloads.json")).unwrap();
+    for workload in workloads
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|workload| matches!(workload["Name"].as_str(), Some("pure" | "typed-view")))
+    {
+        let mut session = CompilerSession::new(include_bytes!("../assets/compiler.json.gz"))
+            .await
+            .unwrap();
+        let result = session
+            .call(
+                json!({"Operation":"workspace/open", "Root":"sample",
+            "Packages":[{"Namespace":"module:sample", "ModulePath":"sample", "Files":[
+                {"Path":"main.mgo", "Text":workload["Source"]}]}]}),
+                &Cancellation::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result["Error"].is_null(), "{}: {result}", workload["Name"]);
+        let first = session
+            .call(
+                json!({"Operation":"workspace/analyze"}),
+                &Cancellation::default(),
+            )
+            .await
+            .unwrap();
+        assert!(first["Error"].is_null(), "{first}");
+        for report in first["Analysis"]["Diagnostics"]
+            .as_object()
+            .unwrap()
+            .values()
+        {
+            assert!(
+                report["items"].as_array().is_none_or(Vec::is_empty),
+                "{report}"
+            );
+        }
+        let second = session
+            .call(
+                json!({"Operation":"workspace/analyze"}),
+                &Cancellation::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            first["Analysis"]["Snapshot"],
+            second["Analysis"]["Snapshot"]
+        );
+        session.close().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn delivery_confirmation_preserves_only_committed_inputs() {
     use mini_go::compiler::{CompilerPoll, RestoreState, SessionState};
     use std::{

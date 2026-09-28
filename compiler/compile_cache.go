@@ -15,7 +15,7 @@ type workspaceBuildCache struct {
 }
 
 func (c *workspaceBuildCache) Lookup(pkg workspace.PackageHeader, dependencyExportHashes map[string]string) (packageCacheLookup, error) {
-	action, key, err := workspaceCacheAction(pkg, dependencyExportHashes, c.request.Optimization)
+	action, key, err := workspaceCacheAction(pkg, dependencyExportHashes, c.request.Optimization, c.request.Limits)
 	if err != nil {
 		return packageCacheLookup{}, err
 	}
@@ -76,7 +76,7 @@ func (c *workspaceBuildCache) Store(pkg workspace.PackageHeader, dependencyExpor
 	if c.request.Cache == nil {
 		return nil
 	}
-	action, key, err := workspaceCacheAction(pkg, dependencyExportHashes, c.request.Optimization)
+	action, key, err := workspaceCacheAction(pkg, dependencyExportHashes, c.request.Optimization, c.request.Limits)
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func (c *workspaceBuildCache) Verify(pkg workspace.PackageHeader, dependencyExpo
 	if packageData.ExportHash != cachedExportHash {
 		return fmt.Errorf("compile cache verify failed for %q: rebuilt export hash %s, cached %s", pkg.Source.ModulePath, packageData.ExportHash, cachedExportHash)
 	}
-	_, key, err := workspaceCacheAction(pkg, dependencyExportHashes, c.request.Optimization)
+	_, key, err := workspaceCacheAction(pkg, dependencyExportHashes, c.request.Optimization, c.request.Limits)
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func (c *workspaceBuildCache) trace(event cache.Event) {
 	}
 }
 
-func workspaceCacheAction(pkg workspace.PackageHeader, dependencyExportHashes map[string]string, optimization OptimizationLevel) (cache.Action, string, error) {
+func workspaceCacheAction(pkg workspace.PackageHeader, dependencyExportHashes map[string]string, optimization OptimizationLevel, limits Limits) (cache.Action, string, error) {
 	action := cache.NewCompileAction(
 		Identity(),
 		pkg.Source.SelectionTarget,
@@ -120,6 +120,7 @@ func workspaceCacheAction(pkg workspace.PackageHeader, dependencyExportHashes ma
 		cacheDependencies(pkg.Imports, dependencyExportHashes),
 	)
 	action.Optimization = uint8(optimization)
+	action.LimitsHash = limits.cacheHash()
 	action.PackageID = pkg.Source.ID.String()
 	for _, resource := range pkg.Source.Resources {
 		action.ResourceFiles = append(action.ResourceFiles, cache.SourceFile{

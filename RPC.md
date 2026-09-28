@@ -5,19 +5,17 @@ MRPC 从一份 `.mrpc` 声明生成 Go、Mini-Go、Rust 和 TypeScript 的类型
 
 | 使用场景 | 接入方式 |
 | --- | --- |
-| Mini-Go 调用 Go 函数 | 生成 Provider，交给 `rpc.NewHost`，通过 `InstanceOptions.FFI` 注入 |
-| Go 调用 Go 服务 | 生成客户端，通过 `rpc.NewLocalBinder` 绑定 Provider |
-| Go 或另一台 VM 调用 Mini-Go 服务 | 脚本运行生成的 `Serve<Service>`，宿主配置 `HostOptions.PublishProvider` |
-| Browser / Node.js 直接调用或提供服务 | 生成 TypeScript binding，通过 `@d7z-team/mini-go/rpc` 建立独立连接 |
-| 动态选择多个服务实例 | 使用 `rpc/router.Router`，客户端可传入 labels 或 affinity key |
-| 跨进程调用 | 使用 `rpc/gateway` 的 WebSocket 连接，或 CLI 的 `gateway` 与 `run -rpc` |
+| Mini-Go 调用 Go 函数 | [生成 Provider 并注入 FFI Host](#从脚本调用-go) |
+| Go 客户端或 Mini-Go 服务端 | [本地 Binder 与服务发布](#go-客户端与-mini-go-服务端) |
+| Browser / Node.js 调用或提供服务 | [TypeScript / JavaScript API](#typescript--javascript-api) |
+| Rust 调用或提供服务 | [Rust API](#rust-api) |
+| 动态路由或跨进程调用 | [Router 与 WebSocket Gateway](#远程连接与路由) |
 
 Go 侧导入 `github.com/d7z-team/mini-go/rpc`，Mini-Go 侧导入标准包 `"rpc"`。基础 Engine 与 Instance 用法见
 [使用指南](./USAGE.md)。仓库内部协议、生成器和测试维护见[开发指南](./DEVELOPMENT.md#rpc-实现维护)。
 
-按任务查阅：[本地接入](#从脚本调用-go) · [接口类型](#接口与数据类型) ·
-[错误与超时](#错误与超时) · [资源](#资源与大对象) · [远程连接](#远程连接与路由) ·
-[服务替换](#服务替换与关闭) · [TypeScript](#typescript--javascript-api) · [Rust](#rust-api)。
+各语言共用的契约：[接口类型](#接口与数据类型) · [错误与超时](#错误与超时) ·
+[资源](#资源与大对象) · [服务替换与关闭](#服务替换与关闭)。
 
 ## 从脚本调用 Go
 
@@ -62,11 +60,10 @@ service Greeter {
 mini-go rpc generate \
   -mgo-out api/greeter_mrpc_gen.mgo -mgo-package greeter \
   -go-out api/greeter_mrpc_gen.go \
-  -ts-out api/greeter.ts \
   api/greeter.mrpc
 ```
 
-生成结果包含消息、handler、客户端和 Provider；省略不需要的语言输出参数即可。
+生成结果包含消息、handler、客户端和 Provider；按需添加 Rust 或 TypeScript 输出，同一命令的输出原子写入。
 接口修改后重新生成并分发各端 binding，契约不匹配会在绑定时失败。
 
 ### 3. 编写脚本
@@ -469,7 +466,7 @@ mini-go rpc generate -rust-out src/greeter.rs -rust-module crate::greeter api/gr
 
 将输出作为 `mod greeter` 装配。依赖 schema 的 `rust_module` 指定其模块路径；
 `rust_runtime` 默认 `mini_go`，`rust_prefix` 修改生成名称。
-这些配置只影响源码组织，生成需要 rustfmt。多语言输出可在同一命令中指定。
+这些配置只影响源码组织；生成 Rust 代码需要 rustfmt。
 
 | 操作 | API |
 | --- | --- |

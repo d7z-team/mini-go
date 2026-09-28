@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,6 +13,61 @@ import (
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/workspace"
 )
+
+func TestCompilerCachePreservesLimitDiagnostics(t *testing.T) {
+	sources, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{{ModulePath: "sample", Files: []source.File{{Path: "main.mgo", Text: `package main
+func Keep[T any](v T) T { return v }
+func main() { _ = Keep[int](1); _ = Keep[string]("value") }
+`}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, storage := range []string{"memory", "transient", "disk"} {
+		for _, operation := range []string{"compile", "prepare"} {
+			for _, limits := range []compiler.Limits{{MaxASTNodes: 2}, {MaxTokens: 8}, {MaxSyntaxDepth: 2}, {MaxSpecializations: 1}} {
+				t.Run(fmt.Sprintf("%s/%s/%+v", storage, operation, limits), func(t *testing.T) {
+					var shared cache.Cache
+					switch storage {
+					case "memory":
+						shared = cache.New(cache.NewMemoryBackend())
+					case "transient":
+						shared = cache.NewTransient(cache.TransientConfig{})
+					case "disk":
+						shared = cache.New(cache.NewDiskBackend(t.TempDir()))
+					}
+					run := func(store cache.Cache, limits compiler.Limits) []source.Diagnostic {
+						request := compiler.Request{Root: "sample", Sources: sources, Cache: store, Limits: limits}
+						if operation == "compile" {
+							result, err := compiler.Compile(request)
+							if err != nil {
+								t.Fatal(err)
+							}
+							return result.Diagnostics
+						}
+						result, err := compiler.Prepare(request)
+						if err != nil {
+							t.Fatal(err)
+						}
+						return result.Checked.Diagnostics
+					}
+					if diagnostics := run(shared, compiler.Limits{}); source.HasErrors(diagnostics) {
+						t.Fatal(diagnostics)
+					}
+					cold := run(nil, limits)
+					if !source.HasErrors(cold) {
+						t.Fatalf("limit did not reject input: %+v", limits)
+					}
+					if warm := run(shared, limits); !reflect.DeepEqual(warm, cold) {
+						t.Fatalf("warm=%v; cold=%v", warm, cold)
+					}
+					if diagnostics := run(shared, compiler.Limits{}); source.HasErrors(diagnostics) {
+						t.Fatal(diagnostics)
+					}
+				})
+			}
+		}
+	}
+}
 
 func TestPrepareCacheReusesLinkedImageAcrossSessions(t *testing.T) {
 	sources, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{{

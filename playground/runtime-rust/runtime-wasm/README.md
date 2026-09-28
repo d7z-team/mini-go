@@ -1,8 +1,13 @@
 # Mini-Go WebAssembly SDK
 
-使用同一套 TypeScript API，在浏览器和 Node.js 中运行预编译的 Mini-Go 镜像或直接连接 MRPC 服务。
-每个实例拥有一个 Worker。分发包包含 ESM、类型声明、Worker、WASM 和匹配的编译器镜像，
-使用者无需安装 Rust 工具链或额外运行时 npm 依赖。
+在浏览器和 Node.js 中运行 Mini-Go、编译源码或接入 MRPC。分发包包含 ESM、类型声明、Worker、WASM
+和匹配的编译器镜像，无需安装 Rust 工具链或额外运行时 npm 依赖。
+
+| 入口 | 用途 |
+| --- | --- |
+| `@d7z-team/mini-go` | 执行预编译镜像，每个实例拥有一个 Worker |
+| `@d7z-team/mini-go/tools` | 编译源码、语言查询与调试会话 |
+| `@d7z-team/mini-go/rpc` | 独立调用或提供 RPC 服务 |
 
 本文同时说明安装部署和 SDK 用法。按任务查阅：[Node.js](#安装与-nodejs-接入) · [浏览器部署](#浏览器部署) ·
 [执行与关闭](#执行取消与关闭) · [热更新](#热更新) · [宿主与 RPC](#宿主能力与-rpc) ·
@@ -16,8 +21,8 @@
 npm install @d7z-team/mini-go@git
 ```
 
-包名为 `@d7z-team/mini-go`，根入口按环境选择 Node 或浏览器实现；
-也可显式导入 `/node`、`/browser`。Node.js 要求 22.18 或更新版本。
+入口按环境选择 Node 或浏览器实现，runtime 也可显式导入 `/node`、`/browser`。
+Node.js 要求 22.18 或更新版本。
 
 ```ts
 import { readFile } from "node:fs/promises";
@@ -33,10 +38,8 @@ try {
 }
 ```
 
-在 Go 宿主上通过 `mini-go-dev runtime-blocks` 编译镜像，步骤见
-[Rust 快速开始](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/README.md#快速开始)。
-镜像与 runtime 应来自同一工具链。
-JSON 或 gzip 镜像按原始字节传入，以保留 64 位整数精度。
+镜像生成见[预编译示例](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#生成预编译示例)。
+镜像与 runtime 应来自同一工具链；JSON 或 gzip 镜像按原始字节传入，以保留 64 位整数精度。
 
 ## 浏览器部署
 
@@ -82,7 +85,7 @@ CSP 应允许脚本、Worker、WASM 编译及所需网络连接。runtime 资源
 调用通过有界队列进入，每次只有一个前台入口。`timeoutMs` 是有限的非负毫秒数，包含排队和后台 scope，
 缺省不设期限；`signal` 可取消构造或执行。每个 Worker 内单线程协作推进，需要并行时由应用创建多个实例。
 
-例如，在已创建的 `vm` 上限制一次调用的时间，并观察 scope 的最终清理状态：
+设置调用期限时，同时处理入口结果与 scope 清理结果：
 
 ```ts
 const call = vm.start("default", [values.int(10n)], { timeoutMs: 2_000 });
@@ -92,12 +95,9 @@ if (settled.status === "rejected") throw settled.reason;
 console.log(result.value.roots);
 ```
 
-主动取消可调用 `call.cancel()`，或向 `start` 传入 `{ signal: controller.signal }`。
-取消后的 Promise 可能拒绝，应同时处理 `result` 和 `settled`；实例仍由创建方在 finally 中关闭。
-
-正常停机时，先停止提交新调用和补丁，通知常驻脚本退出，等待 `result` 和 `settled`，再关闭实例。
-
-`close()` 停止接收工作、取消执行并等待宿主清理；signal 只限制本次等待，之后仍可再次等待终态。
+主动取消可调用 `call.cancel()` 或传入 `signal`。正常停机先停止提交新调用和补丁，通知常驻脚本退出，
+等待 `result` 和 `settled`，最后在 finally 中关闭实例。
+`close()` 停止接收工作、取消执行并等待宿主清理；其 signal 只限制本次等待，之后仍可再次等待终态。
 `terminate()` 直接销毁 Worker，不保证异步清理完成。
 
 ### 热更新
@@ -139,9 +139,7 @@ const vm = await MiniGo.create(image, {
 
 ### 独立 TypeScript RPC
 
-JavaScript/TypeScript 通过 `@d7z-team/mini-go/rpc` 建立独立连接，直接调用或提供 MRPC 服务。
-binding 由 `mini-go rpc generate -ts-out` 生成，同一份源码可在 Browser 与 Node.js 中使用。
-生成、客户端和 Provider 的完整示例见
+独立 RPC 接入无需 Mini-Go 镜像；生成 binding、客户端和 Provider 的完整示例见
 [RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#typescript--javascript-api)。
 
 直接部署 `dist` 时导入 `browser-rpc.js`，并通过 bundler 或 import map 解析生成代码中的
@@ -162,12 +160,9 @@ number 必须是安全整数；更大的值使用 bigint，最大为 92233720368
 
 `stats()` 提供 VM 计费、分配与 WASM 线性内存观测。
 
-语言查询和源码装配使用下方 tools 入口，由它加载匹配的编译器、选择预算并管理会话。
-直接加载 compiler 镜像时设置 `workload: "compiler"`。
-
 ## 编译器与语言工具
 
-`@d7z-team/mini-go/tools` 同时支持浏览器和 Node，在独立 Worker 中加载分发的编译器：
+tools 入口在独立 Worker 中加载分发的编译器，管理源码、资源配置和会话恢复：
 
 ```ts
 import { createLanguageService } from "@d7z-team/mini-go/tools";
@@ -193,6 +188,10 @@ try {
 `update` 按序提交文档编辑，`analyze` 发布快照，`query` 查询该快照，`prepare` 返回镜像、符号和源码。
 文件树可通过 `language.sources(trees, signal)` 装配为 Packages；Data 使用 base64 保存文件字节和二进制资源。
 
+编译器镜像由 Rust WASM VM 解释执行，首次分析成本取决于完整 import 依赖图。分发包携带的是标准库源码，
+首次使用仍需分析。频繁编辑时复用会话并用 `update` 提交变化；同一会话可复用已发布的分析结果，
+Worker 重建后从确认的源码输入重新分析。自行通过 runtime 加载 compiler 镜像时设置 `workload: "compiler"`。
+
 默认只允许编辑根工作区，`Editable` 可授权额外源码根。请求支持 AbortSignal；取消、Worker 丢失或
 未确认请求失败后，下一次请求从最后成功交付的输入重建，旧 snapshot 失效。
 
@@ -214,7 +213,6 @@ DebugSession 与原生工具共用 Rust DAP 适配器。`createDebugSession(imag
 
 ## 源码构建
 
-从 Git checkout 运行 `make runtime-wasm-pack` 生成本地可安装 tarball；完整的 Rust/npm 发布产物使用
-`make release-package release-verify` 在隔离 staging 中构建和验证。
-构建工具链、浏览器依赖、无 RPC 构建与验证命令统一见
-[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#wasm-与-typescript)。
+从 Git checkout 构建、测试及生成本地安装包，见
+[WASM 开发流程](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#wasm-与-typescript)；
+上游发布见[发布流程](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#rust-与-npm-发布)。

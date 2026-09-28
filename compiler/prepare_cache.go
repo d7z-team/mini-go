@@ -306,6 +306,7 @@ func newPrepareCacheAction(request Request, selectedTarget target.Target, mode s
 	}
 	capabilities := capabilitiesForModules(request.HostCapabilities, modulePaths)
 	action := cache.NewPrepareAction(Identity(), ir.ExecutionContract, selectedTarget, mode, request.Root, cacheEntryPoints(entries), artifacts, capabilities)
+	action.LimitsHash = request.Limits.cacheHash()
 	key, err := action.Key()
 	return action, key, err
 }

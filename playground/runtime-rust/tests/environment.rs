@@ -28,6 +28,50 @@ impl Clock for ManualClock {
     }
 }
 
+#[test]
+fn computing_with_a_timer_reads_time_at_bounded_owner_boundaries() {
+    struct CountingClock(AtomicU64);
+    impl Clock for CountingClock {
+        fn unix_time(&self) -> (i64, u32) {
+            (0, 0)
+        }
+        fn monotonic_ns(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            0
+        }
+    }
+    let image = support::image(json!({
+        "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":{"kind":3,"primitive":1}}]},
+        "constants":[{"id":"capacity","type":{"kind":3,"primitive":3},"value":1},
+            {"id":"delay","type":{"kind":3,"primitive":7},"value":1000000}],
+        "functions":[{"id":"fn.Main","instructions":[
+            {"op":"const","payload":{"constant":"capacity"}},
+            {"op":"make_waitable","payload":{"type":{"kind":9,"node":"channel"}}},
+            {"op":"const","payload":{"constant":"delay"}},
+            {"op":"zero","payload":{"type":{"kind":3,"primitive":7}}},
+            {"op":"call_intrinsic","payload":{"id":"time.timer_start","arg_count":3}},
+            {"op":"label","payload":{"label":"loop"}},
+            {"op":"jump","payload":{"label":"loop"}}]}]
+    }));
+    let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
+    let clock = Arc::new(CountingClock(AtomicU64::new(0)));
+    let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+    vm.set_environment(clock.clone(), Arc::new(mini_go::environment::SystemEntropy))
+        .unwrap();
+    vm.start("default", vec![]).unwrap();
+    assert_eq!(vm.poll_steps(10000).unwrap(), PollStatus::Running);
+    assert_eq!(vm.steps(), 10000);
+    let reads = clock.0.load(Ordering::Relaxed);
+    assert!(
+        reads > 1 && reads < 200,
+        "clock reads for 10000 steps: {reads}"
+    );
+    assert_eq!(vm.stats().timers, 1);
+    vm.cancel().unwrap();
+    assert_eq!(vm.stats().timers, 0);
+    vm.close().unwrap();
+}
+
 struct PartialEntropy;
 impl Entropy for PartialEntropy {
     fn read(&self, bytes: &mut [u8]) -> (usize, Option<RuntimeError>) {
