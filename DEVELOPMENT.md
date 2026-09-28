@@ -160,10 +160,16 @@ make release-verify
 解包产物、核对 compiler 镜像，并以独立 Rust、Node 和 Chromium consumer 验证。调试未提交内容时可设置
 `RELEASE_FLAGS=--allow-dirty`，生成的 `.dirty` 版本不能发布。
 
-在 GitHub Actions 手动触发 [Publish Rust and npm packages](.github/workflows/publish.yml)。
-它要求最新 main 的同一提交已通过 Go、Rust push CI，随后验证 WASM/SDK 和分发包，再依次发布 crate 与 npm。
-发布使用 Trusted Publisher；首次建立包可选择 `bootstrap`，并配置 `CARGO_REGISTRY_TOKEN` 与 `NPM_TOKEN`。
-已存在的同版本产物须通过完整性比较。
+[Publish Rust and npm packages](.github/workflows/publish.yml) 在 main 的 Go/Rust push CI 完成后自动判断发布。
+同一提交的两项 CI 都成功后，以 npm 与 crates.io 共同存在的最近快照为基线，检查到候选提交的文件差异。
+`docs/` 与 `.md`、`.mdx`、`.rst` 文档单独变化时跳过；`testdata/`、`fixtures/`、`assets/` 中的文件按数据处理，
+其中 README 文档除外。源码、依赖、构建配置和未知后缀变化会进入发布。
+分类规则由 `scripts/release-plan.mjs` 集中维护，文档提交仍计入快照版本的 Git 提交数量。
+
+发布使用 `release` environment 的 Trusted Publisher，验证 WASM/SDK 与分发包后，依次发布 crate 和 npm。
+两个 registry 已有同版本时跳过；只有一端存在时补齐发布，并对已有产物核对完整性。
+registry 查询失败会明确报错。失败后可重跑对应 CI 或发布运行；发布记录以 registry 为准。
+开始发布前再次检查候选是否仍是最新 main，开始后完成同一版本的两端发布。compiler 资源始终随包校验和分发。
 
 ## RPC 实现维护
 
