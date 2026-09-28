@@ -29,7 +29,7 @@ go install github.com/d7z-team/mini-go/cmd/mini-go@latest
 ```
 
 请将 Go 的可执行文件安装目录（`GOBIN`，未设置时为 `GOPATH/bin`）加入 `PATH`。
-作为 Go 依赖使用时，见下方[嵌入示例](#在-go-中使用)。
+作为 Go 依赖使用时，见下方[在 Go 中使用](#在-go-中使用)。
 
 ## 快速开始
 
@@ -48,9 +48,8 @@ mini-go check hello.mgo
 mini-go run hello.mgo
 ```
 
-输出 `Hello, Mini-Go!`。多文件可写为 `mini-go run main.mgo helper.mgo`。
-Mini-Go 源码统一使用 `.mgo`，测试文件使用 `_test.mgo`；Go 宿主代码使用 `.go`。
-目录模式用 `-module` 声明导入前缀，额外本地源码通过 `-source` 提供，详见[命令行使用](./USAGE.md#cli)。
+输出 `Hello, Mini-Go!`。Mini-Go 源码使用 `.mgo`，测试文件使用 `_test.mgo`。
+多文件、目录和本地模块的使用方式见[命令行指南](./USAGE.md#cli)。
 
 ## 在 Go 中使用
 
@@ -82,8 +81,6 @@ Rust 与 npm 分发均包含匹配的编译器资源。快照安装见组件指�
 | [RPC 使用指南](./RPC.md) | 声明接口、生成多语言 binding、跨语言调用和资源关闭 |
 | [标准库参考](./docs/reference/README.md) | 从源码生成的包与 API 文档 |
 | [VS Code 扩展](./vscode-ext/README.md) | 语法高亮与语言服务配置 |
-| [Rust 运行时](./playground/runtime-rust/README.md) · [使用指南](./playground/runtime-rust/USAGE.md) | 原生调用、取消、异步接入、调试与热更新 |
-| [浏览器与 Node.js](./playground/runtime-rust/runtime-wasm/README.md) | TypeScript SDK、Worker、WASM 与语言工具 |
 | [架构](./ARCHITECTURE.md) | 组件边界、数据流、状态所有权与生命周期 |
 | [开发指南](./DEVELOPMENT.md) | 生成、测试、跨语言验证与性能诊断 |
 | [共享测试数据](./testdata/README.md) | 跨后端语料、预期与更新入口 |

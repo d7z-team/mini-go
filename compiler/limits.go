@@ -1,12 +1,30 @@
 package compiler
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/parser"
 	"github.com/d7z-team/mini-go/compiler/scanner"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/workspace"
 )
+
+func (input Limits) cacheHash() string {
+	limits := normalizeCompilerLimits(input)
+	var material strings.Builder
+	material.WriteString("mini-go/compiler-limits/v1\x00")
+	for _, value := range []int{
+		limits.MaxPackages, limits.MaxFiles, limits.MaxTotalSourceBytes,
+		limits.MaxSourceBytes, limits.MaxTokens, limits.MaxSyntaxDepth, limits.MaxASTNodes,
+		limits.MaxDiagnostics, limits.MaxSpecializations,
+	} {
+		material.WriteString(strconv.Itoa(value))
+		material.WriteByte(0)
+	}
+	return source.HashText(material.String())
+}
 
 const DefaultMaxSpecializations = 100_000
 

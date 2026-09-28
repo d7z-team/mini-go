@@ -130,6 +130,22 @@ impl<'a> IntoIterator for &'a TimerQueue {
 }
 
 impl Instance {
+    pub(super) fn poll_ready_events(&mut self, check_timers: bool) -> Result<(), RuntimeError> {
+        let result = (|| {
+            if check_timers {
+                self.timer_check_steps = 0;
+                self.deliver_timers()?;
+            }
+            self.resume_blocked()
+        })();
+        if let Err(error) = result {
+            self.faulted = true;
+            self.abort()?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn next_timer_delay(&self) -> Option<std::time::Duration> {
         self.timers.deadline().map(|deadline| {
             std::time::Duration::from_nanos(deadline.saturating_sub(self.clock.monotonic_ns()))

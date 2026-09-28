@@ -7,6 +7,7 @@ import {
   type CompilerResponse,
 } from "./protocol.js";
 import type { Options, Stats } from "./types.js";
+import { deferred } from "./deferred.js";
 
 export type CompilerOptions = Pick<Options, "workerUrl" | "wasmUrl" | "signal">;
 export interface CompilerUpgrade {
@@ -126,8 +127,7 @@ export class LanguageService {
   private active?: Job;
   private bytes = 0;
   private closing = false;
-  private closePromise?: Promise<void>;
-  private closeResolve?: () => void;
+  private readonly closed = deferred<void>();
   private constructor(
     private readonly factory: WorkerFactory,
     private image: Uint8Array,
@@ -358,7 +358,7 @@ export class LanguageService {
       .finally(() => {
         job.cleanup();
         this.active = undefined;
-        if (this.closing) this.closeResolve?.();
+        if (this.closing) this.closed.resolve();
         else this.drain();
       });
   }
@@ -502,21 +502,18 @@ export class LanguageService {
     );
   }
   dispose(): Promise<void> {
-    if (this.closePromise) return this.closePromise;
+    if (this.closing) return this.closed.promise;
     this.closing = true;
-    this.closePromise = new Promise((resolve) => {
-      this.closeResolve = resolve;
-    });
-    const closed = new ToolsError("closed", "language service closed");
+    const closedError = new ToolsError("closed", "language service closed");
     for (const job of this.queue.splice(0)) {
       job.cleanup();
-      job.reject(closed);
+      job.reject(closedError);
     }
-    this.active?.controller.abort(closed);
-    if (this.peer) this.stop(this.peer, closed);
+    this.active?.controller.abort(closedError);
+    if (this.peer) this.stop(this.peer, closedError);
     this.restore = new Uint8Array();
     this.image = new Uint8Array();
-    if (!this.active) this.closeResolve?.();
-    return this.closePromise;
+    if (!this.active) this.closed.resolve();
+    return this.closed.promise;
   }
 }

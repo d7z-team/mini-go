@@ -339,29 +339,7 @@ func (machine *executionMachine) run(instructionBudget int) (outcome runOutcome)
 		if machine.runnableCount() != 0 {
 			continue
 		}
-		if len(machine.blocked) != 0 {
-			// A task between queues still owns a continuation. Its running or
-			// parking lease is a progress source, not evidence of deadlock.
-			if len(machine.tasks) != len(machine.blocked) {
-				return runOutcome{state: ExecutionPending}
-			}
-			if len(machine.vm.timers) != 0 {
-				return runOutcome{state: ExecutionPending}
-			}
-			for _, task := range machine.blocked {
-				if task.blocked != nil && task.blocked.kind == "ffi" {
-					return runOutcome{state: ExecutionPending}
-				}
-			}
-			if machine.foreground == nil {
-				return runOutcome{state: ExecutionPending}
-			}
-			return failedRun(machine.allBlockedError())
-		}
-		if machine.foreground == nil {
-			return runOutcome{state: ExecutionPending}
-		}
-		return failedRun(errors.New("root execution context did not complete"))
+		return machine.idleOutcome()
 	}
 }
 

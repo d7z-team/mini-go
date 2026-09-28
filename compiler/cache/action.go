@@ -15,11 +15,11 @@ import (
 
 const (
 	Format  = "mini-go-compile-cache"
-	Version = 25
+	Version = 26
 
-	packageActionDomain   = "minigo/package-action/v24\x00"
+	packageActionDomain   = "minigo/package-action/v25\x00"
 	packageManifestDomain = "minigo/package-manifest/v5\x00"
-	prepareActionDomain   = "minigo/prepare-action/v9\x00"
+	prepareActionDomain   = "minigo/prepare-action/v10\x00"
 	symbolActionDomain    = "minigo/symbol-action/v1\x00"
 )
 
@@ -50,6 +50,7 @@ type Dependency struct {
 }
 
 type Action struct {
+	LimitsHash       string        `json:"limits_hash"`
 	Format           string        `json:"format"`
 	Version          int           `json:"version"`
 	Compiler         string        `json:"compiler"`
@@ -102,6 +103,7 @@ type EntryPoint struct {
 }
 
 type PrepareAction struct {
+	LimitsHash   string            `json:"limits_hash"`
 	Format       string            `json:"format"`
 	Version      int               `json:"version"`
 	Compiler     string            `json:"compiler"`

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
@@ -38,6 +40,41 @@ func TestTransientCacheOwnsValuesAndEvictsAsOneEntry(t *testing.T) {
 	stats := store.Stats()
 	if stats.Entries != 1 || stats.Evictions != 1 || stats.Bytes <= 0 {
 		t.Fatalf("stats = %#v", stats)
+	}
+}
+
+func TestTransientEstimatesIncludeVariablePayloads(t *testing.T) {
+	text := strings.Repeat("x", 128<<10)
+	ref := types.TypeRef{Kind: types.Named, Named: types.TypeKey{ModulePath: text, DeclID: "Value"}}
+	cases := map[string]int64{
+		"partial declaration": ast.EstimatedDeclBytes(ast.Decl{
+			Kind: ast.DeclType,
+			Func: ast.FuncDecl{Body: ast.BlockStmt{Stmts: []ast.Statement{{
+				Kind: ast.StmtReturn, Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: text}},
+			}}}},
+		}),
+		"generic literal": estimatePackageDataBytes(PackageData{GenericTemplates: []GenericTemplate{{Decl: ast.Decl{
+			Kind: ast.DeclFunc, Func: ast.FuncDecl{Body: ast.BlockStmt{Stmts: []ast.Statement{{
+				Kind: ast.StmtReturn, Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: text}},
+			}}}},
+		}}}}),
+		"nested type": estimatePackageDataBytes(PackageData{TypeTable: types.TypeTable{Nodes: []types.TypeNode{{
+			Kind: types.Struct, Fields: []types.Field{{Name: "Value", Type: ref, Tag: text}},
+		}}}}),
+		"entry":      estimateExecutionImageBytes(ir.ExecutionImage{Entries: []ir.Entry{{Name: text}}}),
+		"capability": estimateExecutionImageBytes(ir.ExecutionImage{Capabilities: []string{text}}),
+		"symbol location": estimatePackageSymbolsBytes(ir.PackageSymbols{Functions: []ir.FunctionSymbols{{
+			Locations: []ir.InstructionSymbol{{Points: []ir.Location{{File: text}}}},
+		}}}),
+	}
+	for name, size := range cases {
+		if size < int64(len(text)) {
+			t.Errorf("%s: estimated %d bytes for %d bytes of content", name, size, len(text))
+		}
+	}
+	const maximum = int64(1<<63 - 1)
+	if got := cacheEntryBytes("key", maximum-1, 128); got != maximum {
+		t.Fatalf("overflowing estimate = %d", got)
 	}
 }
 
@@ -80,7 +117,7 @@ func TestTransientCompileCacheCountsPackageSymbols(t *testing.T) {
 		t.Fatalf("oversized symbol entry remained cached: %#v, %v", lookup, err)
 	}
 	stats := store.Stats()
-	if stats.Entries != 0 || stats.Bytes != 0 || stats.Evictions != 1 {
+	if stats.Entries != 0 || stats.Bytes != 0 || stats.Stores != 0 || stats.Evictions != 0 {
 		t.Fatalf("symbol eviction stats = %#v", stats)
 	}
 }

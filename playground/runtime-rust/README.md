@@ -5,7 +5,7 @@ Program 可共享，每个实例持有独立状态。浏览器与 Node.js 接入
 [runtime-wasm](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/runtime-wasm/README.md)。
 
 按任务查阅：[快速开始](#快速开始) · [原生使用指南](USAGE.md) · [功能配置](#功能配置) · [接入导航](#接入导航) ·
-[语言工具](#编译器与语言工具)。
+[语言工具](USAGE.md#本地源码与编译器工具)。
 
 ## 快速开始
 
@@ -30,13 +30,8 @@ cargo run --manifest-path playground/runtime-rust/Cargo.toml --example precompil
 结果为 55。同目录的 `closure.json` 演示闭包，`stateful.json` 演示实例状态。
 在自己的项目中加载镜像、调用与关闭实例，见[完整 Rust 示例](USAGE.md#加载调用与限制)。
 
-从仓库根目录生成自己的预编译镜像：
-
-```bash
-GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev runtime-blocks -out /tmp/blocks path/to/block.mgo
-```
-
-镜像与 runtime 必须使用匹配的工具链契约。仓库示例由根 `make generate` 更新。
+镜像与 runtime 必须使用匹配的工具链契约。生成自己的镜像见
+[预编译示例](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#生成预编译示例)。
 
 ## 功能配置
 
@@ -58,19 +53,8 @@ GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev runtime-blocks -out /tmp/blocks pa
 | 标准库与自定义宿主 | [宿主能力](USAGE.md#宿主能力) |
 | RPC 生成与服务接入 | [Rust RPC API](https://github.com/d7z-team/mini-go/blob/main/RPC.md#rust-api) |
 | 断点、变量和热更新 | [调试](USAGE.md#断点变量与单步) · [热更新](USAGE.md#热更新) |
+| 编译源码与语言服务 | [本地源码与编译器工具](USAGE.md#本地源码与编译器工具) |
 | 内存与性能观测 | [开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能) |
-
-## 编译器与语言工具
-
-需要从 Rust 编译源码时，启用 `compiler`：
-
-```toml
-[dependencies]
-mini-go = { version = "=<snapshot-version>", features = ["compiler"] }
-```
-
-发布的 crate 已包含编译器镜像；源码 checkout 先在仓库根执行 `make runtime-compiler-image`。
-编译会话复用 Go 编译器的语言与源码装配规则，调用方式见[本地源码与编译器工具](USAGE.md#本地源码与编译器工具)。
 
 ## 开发与许可证
 

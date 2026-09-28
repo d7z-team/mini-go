@@ -4,22 +4,49 @@ import "github.com/d7z-team/mini-go/compiler/source"
 
 // WalkExpressions visits every source expression once in lexical AST order.
 func WalkExpressions(program *Program, visit func(*Expression)) {
-	walkNodes(program, visit, nil, nil)
+	walkNodes(program, visit, nil, nil, nil)
 }
 
 // WalkTypes visits every source type expression once in lexical AST order.
 func WalkTypes(program *Program, visit func(*TypeExpr)) {
-	walkNodes(program, nil, visit, nil)
+	walkNodes(program, nil, visit, nil, nil)
 }
 
 // WalkSpans visits the source ranges of declarations, blocks, statements,
 // expressions and types in lexical AST order.
 func WalkSpans(program *Program, visit func(source.Span)) {
-	walkNodes(program, nil, nil, visit)
+	walkNodes(program, nil, nil, visit, nil)
 }
 
-func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*TypeExpr), visitSpan func(source.Span)) {
-	if program == nil || visitExpr == nil && visitType == nil && visitSpan == nil {
+// EstimatedDeclBytes conservatively accounts for a declaration's owned tree,
+// including source names and literal contents. Shared strings may be counted
+// more than once. An overflowing estimate saturates at the largest int64.
+func EstimatedDeclBytes(decl Decl) int64 {
+	const maximum = int64(1<<63 - 1)
+	var size int64
+	measure := func(base int64, texts ...string) {
+		if base > maximum-size {
+			size = maximum
+			return
+		}
+		size += base
+		for _, text := range texts {
+			if int64(len(text)) > maximum-size {
+				size = maximum
+				return
+			}
+			size += int64(len(text))
+		}
+	}
+	program := Program{Files: []File{{Decls: []Decl{decl}}}}
+	walkNodes(&program, nil, nil, func(span source.Span) {
+		measure(64, span.Start.File, span.End.File)
+	}, measure)
+	return size
+}
+
+func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*TypeExpr), visitSpan func(source.Span), measure func(int64, ...string)) {
+	if program == nil || visitExpr == nil && visitType == nil && visitSpan == nil && measure == nil {
 		return
 	}
 	var walkExpr func(*Expression)
@@ -34,6 +61,13 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		}
 		if visitExpr != nil {
 			visitExpr(expr)
+		}
+		if measure != nil {
+			measure(2048, string(expr.Kind), expr.Name, expr.NameID.Text, expr.Literal, expr.Operator, expr.Field, expr.FieldID.Text)
+			measure(0, expr.NameID.Span.Start.File, expr.NameID.Span.End.File, expr.FieldID.Span.Start.File, expr.FieldID.Span.End.File)
+			for _, file := range expr.EmbedFiles {
+				measure(int64(len(file.Data))+32, file.Path)
+			}
 		}
 		if visitSpan != nil {
 			visitSpan(expr.Span)
@@ -55,7 +89,8 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 				walkExpr(expr.Items[i].Key)
 				walkExpr(&expr.Items[i].Value)
 			}
-		} else {
+		}
+		if len(expr.Items) == 0 || measure != nil {
 			for i := range expr.Elements {
 				walkExpr(&expr.Elements[i])
 			}
@@ -64,7 +99,7 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 				walkExpr(&expr.Entries[i].Value)
 			}
 		}
-		if expr.Kind == ExprFunc {
+		if expr.Kind == ExprFunc || measure != nil {
 			walkFunc(&expr.Func)
 		}
 	}
@@ -75,6 +110,10 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		if visitType != nil {
 			visitType(typ)
 		}
+		if measure != nil {
+			measure(512, string(typ.Kind), typ.Name, typ.NameID.Text, typ.QualifierID.Text, typ.Direction)
+			measure(0, typ.NameID.Span.Start.File, typ.NameID.Span.End.File, typ.QualifierID.Span.Start.File, typ.QualifierID.Span.End.File)
+		}
 		if visitSpan != nil {
 			visitSpan(typ.Span)
 		}
@@ -84,6 +123,10 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		walkExpr(typ.Len)
 		for _, fields := range [][]Field{typ.Params, typ.Results, typ.Fields} {
 			for i := range fields {
+				if measure != nil {
+					measure(128, fields[i].Name, fields[i].NameID.Text, fields[i].Tag, fields[i].Span.Start.File, fields[i].Span.End.File)
+					measure(0, fields[i].NameID.Span.Start.File, fields[i].NameID.Span.End.File)
+				}
 				walkType(&fields[i].Type)
 			}
 		}
@@ -94,6 +137,9 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 			walkType(&typ.Embeds[i])
 		}
 		for i := range typ.Terms {
+			if measure != nil {
+				measure(80, typ.Terms[i].Span.Start.File, typ.Terms[i].Span.End.File)
+			}
 			walkType(&typ.Terms[i].Type)
 		}
 		for i := range typ.TypeArgs {
@@ -107,6 +153,9 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		if visitSpan != nil {
 			visitSpan(block.Span)
 		}
+		if measure != nil {
+			measure(128)
+		}
 		for i := range block.Stmts {
 			walkStmt(&block.Stmts[i])
 		}
@@ -115,14 +164,29 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		if function == nil {
 			return
 		}
+		if measure != nil {
+			measure(256, function.Name, function.NameID.Text, function.NameID.Span.Start.File, function.NameID.Span.End.File)
+		}
 		if function.Receiver != nil {
+			if measure != nil {
+				measure(128, function.Receiver.Name, function.Receiver.NameID.Text, function.Receiver.Tag)
+				measure(0, function.Receiver.Span.Start.File, function.Receiver.Span.End.File, function.Receiver.NameID.Span.Start.File, function.Receiver.NameID.Span.End.File)
+			}
 			walkType(&function.Receiver.Type)
 		}
 		for i := range function.TypeParams {
+			if measure != nil {
+				measure(128, function.TypeParams[i].Name, function.TypeParams[i].NameID.Text)
+				measure(0, function.TypeParams[i].Span.Start.File, function.TypeParams[i].Span.End.File, function.TypeParams[i].NameID.Span.Start.File, function.TypeParams[i].NameID.Span.End.File)
+			}
 			walkType(&function.TypeParams[i].Constraint)
 		}
 		for _, fields := range [][]Field{function.Params, function.Results} {
 			for i := range fields {
+				if measure != nil {
+					measure(128, fields[i].Name, fields[i].NameID.Text, fields[i].Tag, fields[i].Span.Start.File, fields[i].Span.End.File)
+					measure(0, fields[i].NameID.Span.Start.File, fields[i].NameID.Span.End.File)
+				}
 				walkType(&fields[i].Type)
 			}
 		}
@@ -134,6 +198,39 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		}
 		if visitSpan != nil {
 			visitSpan(decl.Span)
+		}
+		if measure != nil {
+			measure(4096, string(decl.Kind), decl.Import.Path, decl.Import.Alias, decl.Import.AliasID.Text, decl.Type.Name, decl.Type.NameID.Text)
+			measure(0, decl.Import.PathSpan.Start.File, decl.Import.PathSpan.End.File, decl.Import.AliasID.Span.Start.File, decl.Import.AliasID.Span.End.File, decl.Type.NameID.Span.Start.File, decl.Type.NameID.Span.End.File)
+			for _, value := range []ValueDecl{decl.Const, decl.Var} {
+				for _, name := range value.Names {
+					measure(16, name)
+				}
+				for _, name := range value.NameIDs {
+					measure(80, name.Text, name.Span.Start.File, name.Span.End.File)
+				}
+				for _, pattern := range value.EmbedPatterns {
+					measure(16, pattern)
+				}
+			}
+			for _, param := range decl.Type.TypeParams {
+				measure(128, param.Name, param.NameID.Text)
+				measure(0, param.Span.Start.File, param.Span.End.File, param.NameID.Span.Start.File, param.NameID.Span.End.File)
+			}
+			// Cloning retains every union field, including partial recovery
+			// trees. Account for that storage without changing semantic walks.
+			for _, value := range []*ValueDecl{&decl.Const, &decl.Var} {
+				walkType(&value.Type)
+				for i := range value.Values {
+					walkExpr(&value.Values[i])
+				}
+			}
+			for i := range decl.Type.TypeParams {
+				walkType(&decl.Type.TypeParams[i].Constraint)
+			}
+			walkType(&decl.Type.Type)
+			walkFunc(&decl.Func)
+			return
 		}
 		switch decl.Kind {
 		case DeclConst:
@@ -162,6 +259,10 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		if visitSpan != nil {
 			visitSpan(stmt.Span)
 		}
+		if measure != nil {
+			measure(1024, string(stmt.Kind), stmt.Op, stmt.Label, stmt.LabelID.Text, stmt.TypeSwitchName, stmt.TypeSwitchID.Text)
+			measure(0, stmt.LabelID.Span.Start.File, stmt.LabelID.Span.End.File, stmt.TypeSwitchID.Span.Start.File, stmt.TypeSwitchID.Span.End.File)
+		}
 		for i := range stmt.Decls {
 			walkDecl(&stmt.Decls[i])
 		}
@@ -180,6 +281,9 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		walkExpr(stmt.Value)
 		walkExpr(stmt.Range)
 		for i := range stmt.Cases {
+			if measure != nil {
+				measure(256, stmt.Cases[i].Span.Start.File, stmt.Cases[i].Span.End.File)
+			}
 			for j := range stmt.Cases[i].Values {
 				walkExpr(&stmt.Cases[i].Values[j])
 			}

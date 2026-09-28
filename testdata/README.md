@@ -11,7 +11,7 @@
 | [rpc](rpc/README.md) | wire golden、资源动作、schema、生成绑定和 VM 镜像 |
 | [runtime](runtime/README.md) | 源码与独立执行预期、字节码、调度和内存观察 |
 | [stdlib-host](stdlib-host/) | 环境、文件 I/O、console 场景与宿主预编译镜像 |
-| [language](language/) | 共享工作区与语言查询输入 |
+| [language](language/) | 共享工作区、语言查询，以及包含 errors/ffi 依赖的编译器工作负载 |
 | [workspace/sources.json](workspace/sources.json) | 源码树、包身份、URI、二进制资源与来源冲突 |
 | [debug](debug/) | 共享源码断点与停止原因预期 |
 

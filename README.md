@@ -53,10 +53,8 @@ mini-go check hello.mgo
 mini-go run hello.mgo
 ```
 
-The program prints `Hello, Mini-Go!`. Pass multiple files with
-`mini-go run main.mgo helper.mgo`. Mini-Go source files use `.mgo`, tests use `_test.mgo`, and Go
-host code uses `.go`. Directory mode uses `-module` for the logical import prefix and `-source` for
-additional local source trees; see the [CLI guide](./USAGE.md#cli).
+The program prints `Hello, Mini-Go!`. Mini-Go source files use `.mgo` and tests use `_test.mgo`.
+For multiple files, directories, and local modules, see the [CLI guide](./USAGE.md#cli).
 
 ## Use from Go
 
@@ -91,14 +89,11 @@ The detailed guides linked below are written in Chinese.
 | [RPC guide](./RPC.md) | Interface declarations, generated bindings, cross-language calls, and resource cleanup |
 | [Standard library reference](./docs/reference/README.md) | Generated package and API documentation |
 | [VS Code extension](./vscode-ext/README.md) | Syntax highlighting and language server configuration |
-| [Rust runtime][rust-runtime] · [usage guide][rust-usage] | Native calls, cancellation, async integration, debugging, and hot patching |
-| [Browser and Node.js][wasm-sdk] | TypeScript SDK, Worker deployment, WebAssembly, and language tools |
 | [Architecture](./ARCHITECTURE.md) | Component boundaries, data flow, state ownership, and lifecycle |
 | [Development guide](./DEVELOPMENT.md) | Generation, testing, cross-language verification, and performance diagnostics |
 | [Shared test data](./testdata/README.md) | Cross-backend fixtures, expectations, and update procedures |
 
 [rust-runtime]: ./playground/runtime-rust/README.md
-[rust-usage]: ./playground/runtime-rust/USAGE.md
 [wasm-sdk]: ./playground/runtime-rust/runtime-wasm/README.md
 [crate-runtime]: https://crates.io/crates/mini-go
 [go-ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml/badge.svg

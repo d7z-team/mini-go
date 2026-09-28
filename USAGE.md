@@ -129,17 +129,16 @@ library scope 超过限制时仅该 scope 失败；main scope 超限会结束实
 ### 资源限制与观测
 
 `InstanceOptions.Limits` 限制步数、任务、内存、调用边界和动态类型等资源，零值采用默认限制，正值覆盖。
+每个 scope 默认最多 1 亿步；`PollSteps` 和热更新都不重置预算。`MaxSteps` 可设为
+`minigo.UnlimitedSteps`（-1）以保留取消和其他限制、放开累计步数，其他负值无效。
 `Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供一致的状态快照；guest 内存统计用于逻辑计费，
 不等同于 Go heap 或进程 RSS。
 
 ### 长期运行
 
-长期实例宜承载有限业务调用，并在每次调用后等待 scope 结束。默认每个 scope 的步数上限为
-1 亿；`PollSteps` 和热更新都不重置预算。持续服务可将 `MaxSteps` 设为 `minigo.UnlimitedSteps`（-1），
-同时保留取消、分片推进与其他资源限制。其他负值无效。
-
-宿主负责持久化业务进度。长期运行的观测与缓存维护见
-[开发指南](DEVELOPMENT.md#缓存与性能)。
+长期实例宜承载有限业务调用，并在每次调用后等待 scope 结束。持续服务可按上述配置放开步数限制，
+业务进度由宿主持久化；旧代码的保留原因可用[版本引用诊断](#检查补丁与版本引用)检查。
+内存与性能诊断见[开发指南](DEVELOPMENT.md#缓存与性能)。
 
 ### 优雅停机
 
@@ -202,8 +201,8 @@ return err
 ```
 
 输出写入宿主的 `io.Writer`，`RunResult.Values` 只包含入口返回值。需要捕获输出时传入自己的 Writer。
-Instance 只拥有自己打开的 FFI Session；先关闭实例，再关闭共享 Host 与 backend。
-`Shutdown(ctx)` 可限制清理等待时间，`Close` 使用 background context；完整顺序见[优雅停机](#优雅停机)。
+Instance 只拥有自己打开的 FFI Session；共享宿主的关闭顺序见[优雅停机](#优雅停机)。
+`Shutdown(ctx)` 可限制清理等待时间，`Close` 使用 background context。
 
 ## 运行时热更新
 
@@ -356,7 +355,7 @@ Go 应用通过 `compiler/language` 查询语言信息，或使用 `compiler/ser
 管理文档更新、分析与构建；会话使用完毕调用 `Close`。
 版本和快照的关系见 [架构](ARCHITECTURE.md#语言服务与调试)。
 
-非 Go 项目可使用 [Rust 语言工具](playground/runtime-rust/README.md#编译器与语言工具) 或
+非 Go 项目可使用 [Rust 语言工具](playground/runtime-rust/USAGE.md#本地源码与编译器工具) 或
 [浏览器/Node 语言工具](playground/runtime-rust/runtime-wasm/README.md#编译器与语言工具)，
 在独立 VM 中复用同一套编译器与语言规则。
 

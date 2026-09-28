@@ -4,14 +4,19 @@ import (
 	"math/rand"
 	"sort"
 	"testing"
+
+	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func TestBlockedContextProjectionIsBoundedAndStable(t *testing.T) {
 	machine := &executionMachine{}
 	for _, i := range rand.New(rand.NewSource(1)).Perm(1000) {
 		machine.blocked = append(machine.blocked, &executionTask{
-			scope:   &executionScope{id: int64(i % 2)},
-			blocked: &blockedOperation{error: Error{ExecutionContextID: int64(i / 2), Err: WaitBlockedError{Message: "waiting"}}},
+			scope: &executionScope{id: int64(i % 2)},
+			blocked: &blockedOperation{error: Error{
+				ExecutionContextID: int64(i / 2), Generation: 2, ProgramHash: "revision", ModulePath: "example/blocked",
+				FunctionID: "fn.wait", PC: 3, Op: string(ir.OpWaitableRecv), Err: WaitBlockedError{Message: "waiting"},
+			}},
 		})
 	}
 	machine.blocked = append(machine.blocked, nil, &executionTask{})
@@ -22,6 +27,9 @@ func TestBlockedContextProjectionIsBoundedAndStable(t *testing.T) {
 	for i, context := range contexts {
 		if context.ExecutionContextID != int64(i/2) || context.ScopeID != int64(i%2) || context.Reason != "waiting" {
 			t.Fatalf("context %d = %+v", i, context)
+		}
+		if context.Revision.Generation != 2 || context.Revision.Hash != "revision" || context.ModulePath != "example/blocked" || context.FunctionID != "fn.wait" || context.PC != 3 || context.Op != string(ir.OpWaitableRecv) {
+			t.Fatalf("context %d lost source identity: %+v", i, context)
 		}
 	}
 }

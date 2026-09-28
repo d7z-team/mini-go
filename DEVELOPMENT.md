@@ -5,7 +5,7 @@
 
 [日常工作流](#日常工作流) · [生成](#生成与派生物) · [测试](#测试组织) ·
 [Rust](#rust-验证) · [WASM](#wasm-与-typescript) · [发布](#rust-与-npm-发布) ·
-[性能](#缓存与性能) · [编辑器](#编辑器扩展)
+[编译会话](#编译会话驱动) · [性能](#缓存与性能) · [编辑器](#编辑器扩展)
 
 ## 开发环境
 
@@ -36,13 +36,13 @@ make lint test build
 | 改动范围 | 最低验证 |
 | --- | --- |
 | Go 实现或共享行为 | 目标测试；`make lint test build` |
-| 并发、取消或资源生命周期 | 相关行为测试和 `make race` 的对应包 |
+| 并发、取消或资源生命周期 | 取消、关闭与失败回收；Go 对应包的 `make race`、Rust owner/GC、SDK Worker 生命周期 |
 | compiler、stdlib、schema 或 generator | `make generate` 后运行受影响测试 |
 | stdlib API 或源码注释 | `make doc` 和相关测试 |
-| Rust 原生实现 | 目标 Cargo 测试、`make runtime-rust-lint`；共享 VM 行为再跑 `make runtime-rust-test` |
+| Rust 原生实现 | 目标 Cargo 测试、`make runtime-rust-lint`；共享 VM 行为再跑 `make runtime-rust-test`，相关 feature 按下文补测 |
 | TypeScript / WASM | `make runtime-wasm-test`，以及目标配置的 Rust Clippy |
 | RPC 跨语言契约 | 两侧测试和 `make test-rpc-conformance` |
-| 手写文档 | 本地链接、命令和示例；不运行文档生成 |
+| 手写文档 | 链接、章节锚点、命令和示例；不运行生成或全量测试 |
 
 提交前执行 `git diff --check`，确认生成输入和受影响的派生物保持一致，并记录实际运行的验证。
 
@@ -77,6 +77,16 @@ make runtime-compiler-image  # 仅 compiler 镜像
 依赖对应产物的测试。
 
 手写文档职责见 [AGENTS.md](AGENTS.md#文档职责)。调查、设计、性能原始数据和实施记录保存在 `/tmp`。
+
+### 生成预编译示例
+
+在仓库根将自己的源码编译为 Rust/WASM 可加载的镜像：
+
+```bash
+go run ./cmd/mini-go-dev runtime-blocks -out /tmp/blocks path/to/block.mgo
+```
+
+使用与编译器匹配的 runtime 加载输出文件；仓库的 `examples/blocks` 则由 `make generate` 统一更新。
 
 ## 测试组织
 
@@ -113,7 +123,7 @@ goroutine 和子进程。复杂构造集中在所属 domain 的测试辅助文�
 模块初始化、取消、关闭以及 GC/Patch/DAP 停稳。共享工作量见
 [runtime testdata](testdata/runtime/README.md)。编译会话测试使用 release 模式并在请求期限内完成。
 
-`runtime-rust-lint` 分别检查 `compiler`、`dap`、`language-server` feature；默认 VM 测试不加载编译器。
+`runtime-rust-lint` 还单独检查 `compiler`、`dap`、`language-server` feature；默认 VM 测试不加载编译器。
 `host-conformance` feature 用于经进程 broker 接入 Go provider 的测试，应用接入使用 `stdlib-host`。
 编译器资源统一生成到 `playground/runtime-rust/assets/compiler.json.gz`；crate 包含该文件，
 原生 `compiler` 按需内嵌，WASM 使用 SDK 的 `dist/tools/compiler.json.gz`，二进制不重复内嵌。
@@ -182,6 +192,17 @@ make release-verify
 续租只确认对应批次，失效授权不能恢复；资源关闭失败仍保留 owner 和额度。MRPC、FFI envelope 和
 Endpoint framing 的身份由各自源码维护，不在手写文档复制字段表。
 
+## 编译会话驱动
+
+原生 Rust 和 WASM 共用 `CompilerSession` 的编译协议与恢复状态。接入方通常使用
+[Rust 异步 API](playground/runtime-rust/USAGE.md#本地源码与编译器工具)或
+[TypeScript tools](playground/runtime-rust/runtime-wasm/README.md#编译器与语言工具)。
+
+维护底层驱动或自建事件循环时，通过 `from_image`、`start`、`poll`、`cancel`、`close_now` 推进会话。
+`poll` 返回成功结果后，确认交付再执行 `acknowledge`；未交付结果用 `abandon` 丢弃。
+`RestoreState` 只重建确认过的编译输入，替换 owner 时使用严格递增的 generation。
+恢复和分析共用请求剩余期限；取消、Worker 故障与升级测试须验证输入恢复、快照失效和旧 owner 清理。
+
 ## 缓存与性能
 
 持久缓存通过 `MINIGO_CACHE` 设置，用户配置见[编译缓存](USAGE.md#编译缓存)。常用诊断：
@@ -200,6 +221,15 @@ dist 与本地生成镜像按所属工具单独管理。
 性能测量使用 Go benchmark/pprof 或 `make runtime-rust-bench`。固定源码、输入、结果、编译参数和并行度，
 串行保留多次采样；消融一次只改变一个机制，并另外验证行为、计费和回收。报告区分 guest 逻辑费用、
 当前存活内存、累计分配、进程资源和吞吐/延迟，不能用短时或多实例结果推断长期同实例行为。
+
+编译器工作负载见 `testdata/language/workloads.json`，包含纯函数、类型化集合以及 errors/ffi 的实际依赖。
+比较原生 Go 与 VM 编译器时分别记录加载、初始化、首次 check/open、同 revision 分析和编辑后分析；
+镜像携带标准库源码，不代表依赖已经完成语义分析。固定 compiler image 才能隔离 VM 执行优化，
+编译器代码变化需重新生成镜像并记录 identity。浏览器测量还需区分 Worker 往返与 VM 内执行时间。
+
+缓存测试分别验证冷、热路径的限制诊断与源依赖失效；零值与显式默认限制应共享身份，改变有效限制应重新检查。
+`TransientStats.Bytes` 是 AST、类型、镜像和符号的保守结构估算；超大条目在复制前拒收且不挤出正常缓存。
+这些数值与 RSS、WASM 线性内存分别记录。
 
 长期运行测试先预热固定工作集，再重复调用、取消与热更新，检查 task、timer、FFI、revision、连接和内存
 是否稳定。WASM 还应记录线性内存容量。原始采样和调查结论保存在 `/tmp`。

@@ -15,6 +15,8 @@ type TransientConfig struct {
 	MaxBytes   int64
 }
 
+const maximumEstimate = int64(1<<63 - 1)
+
 // TransientStats reports observable cache behavior and current ownership.
 type TransientStats struct {
 	Hits, Misses, Stores, Evictions, Clears uint64
@@ -49,7 +51,7 @@ type TransientCache struct {
 	prepare map[string]transientPrepareEntry
 	order   []transientOrderEntry
 	locks   actionLocks
-	bytes   int64
+	bytes   uint64
 	stats   TransientStats
 }
 
@@ -134,18 +136,25 @@ func (c *TransientCache) StoreCompile(action Action, artifact ir.Artifact, symbo
 		return Manifest{}, errors.New("export data does not match artifact")
 	}
 	manifest := NewManifest(artifact, artifactHash, data.ExportHash)
+	size := cacheEntryBytes(key, estimateArtifactBytes(artifact), estimatePackageSymbolsBytes(symbols), estimatePackageDataBytes(data))
+	for _, dependency := range manifest.RuntimeDependencies {
+		size = cacheEntryBytes(dependency, size)
+	}
+	if size == maximumEstimate || size > c.config.MaxBytes {
+		return manifest, nil
+	}
 	entry := transientCompileEntry{
 		lookup:   Lookup{Artifact: ir.CloneArtifact(artifact), Symbols: ir.ClonePackageSymbols(symbols), ExportData: clonePackageData(data), ArtifactHash: artifactHash, ExportHash: data.ExportHash},
-		manifest: manifest, size: estimateArtifactBytes(artifact) + estimatePackageSymbolsBytes(symbols) + estimatePackageDataBytes(data),
+		manifest: manifest, size: size,
 	}
 	c.mu.Lock()
 	if previous, ok := c.compile[key]; ok {
-		c.bytes -= previous.size
+		c.bytes -= uint64(previous.size)
 	} else {
 		c.order = append(c.order, transientOrderEntry{key: key})
 	}
 	c.compile[key] = entry
-	c.bytes += entry.size
+	c.bytes += uint64(entry.size)
 	c.stats.Stores++
 	c.evictLocked()
 	c.mu.Unlock()
@@ -185,18 +194,25 @@ func (c *TransientCache) StorePrepare(action PrepareAction, output PreparedOutpu
 	if err != nil {
 		return err
 	}
+	size := cacheEntryBytes(key, estimateExecutionImageBytes(output.Image))
+	for _, entry := range output.TestManifest {
+		size = cacheEntryBytes(entry.Package+entry.Name, size, 64)
+	}
+	if size == maximumEstimate || size > c.config.MaxBytes {
+		return nil
+	}
 	entry := transientPrepareEntry{
 		lookup: PrepareLookup{Image: ir.CloneExecutionImage(output.Image), TestManifest: append([]TestEntry(nil), output.TestManifest...)},
-		size:   estimateExecutionImageBytes(output.Image) + int64(len(output.TestManifest))*64,
+		size:   size,
 	}
 	c.mu.Lock()
 	if previous, ok := c.prepare[key]; ok {
-		c.bytes -= previous.size
+		c.bytes -= uint64(previous.size)
 	} else {
 		c.order = append(c.order, transientOrderEntry{key: key, isPrepare: true})
 	}
 	c.prepare[key] = entry
-	c.bytes += entry.size
+	c.bytes += uint64(entry.size)
 	c.stats.Stores++
 	c.evictLocked()
 	c.mu.Unlock()
@@ -232,16 +248,20 @@ func (c *TransientCache) StoreSymbols(action SymbolAction, symbols ir.ProgramSym
 		return err
 	}
 	key = "symbols\x00" + key
+	size := cacheEntryBytes(key, estimateProgramSymbolsBytes(symbols))
+	if size == maximumEstimate || size > c.config.MaxBytes {
+		return nil
+	}
 	owned := ir.CloneProgramSymbols(symbols)
-	entry := transientPrepareEntry{symbols: &owned, size: estimateProgramSymbolsBytes(symbols)}
+	entry := transientPrepareEntry{symbols: &owned, size: size}
 	c.mu.Lock()
 	if previous, ok := c.prepare[key]; ok {
-		c.bytes -= previous.size
+		c.bytes -= uint64(previous.size)
 	} else {
 		c.order = append(c.order, transientOrderEntry{key: key, isPrepare: true})
 	}
 	c.prepare[key] = entry
-	c.bytes += entry.size
+	c.bytes += uint64(entry.size)
 	c.stats.Stores++
 	c.evictLocked()
 	c.mu.Unlock()
@@ -273,19 +293,19 @@ func (c *TransientCache) LockSymbols(ctx context.Context, action SymbolAction) (
 }
 
 func (c *TransientCache) evictLocked() {
-	for len(c.compile)+len(c.prepare) > c.config.MaxEntries || c.bytes > c.config.MaxBytes {
+	for len(c.compile)+len(c.prepare) > c.config.MaxEntries || c.bytes > uint64(c.config.MaxBytes) {
 		oldest := c.order[0]
 		c.order[0] = transientOrderEntry{}
 		c.order = c.order[1:]
 		if oldest.isPrepare {
 			if entry, ok := c.prepare[oldest.key]; ok {
 				delete(c.prepare, oldest.key)
-				c.bytes -= entry.size
+				c.bytes -= uint64(entry.size)
 				c.stats.Evictions++
 			}
 		} else if entry, ok := c.compile[oldest.key]; ok {
 			delete(c.compile, oldest.key)
-			c.bytes -= entry.size
+			c.bytes -= uint64(entry.size)
 			c.stats.Evictions++
 		}
 	}
@@ -295,7 +315,7 @@ func (c *TransientCache) Stats() TransientStats {
 	c.mu.Lock()
 	stats := c.stats
 	stats.Entries = len(c.compile) + len(c.prepare)
-	stats.Bytes = c.bytes
+	stats.Bytes = int64(c.bytes)
 	c.mu.Unlock()
 	return stats
 }
@@ -337,71 +357,167 @@ func clonePackageData(data PackageData) PackageData {
 }
 
 func estimateArtifactBytes(artifact ir.Artifact) int64 {
-	size := int64(len(artifact.Module.Path) + len(artifact.Module.Package))
-	for _, constant := range artifact.Constants {
-		size += int64(len(constant.ID) + len(constant.Value) + 32)
+	size := estimatePackageDataBytes(PackageData{
+		ModulePath: artifact.Module.Path, Package: artifact.Module.Package,
+		TypeTable: artifact.TypeTable, Constants: artifact.Constants, Exports: artifact.Exports, Requirements: artifact.Requirements,
+	})
+	size = cacheEntryBytes(artifact.Format, size, int64(len(artifact.OpcodeSet)))
+	for _, global := range artifact.Globals {
+		size = cacheEntryBytes(global.ID, size, estimateTypeRefBytes(global.Type))
 	}
 	for _, function := range artifact.Functions {
-		size += int64(len(function.ID)) + int64(len(function.Locals)+len(function.Upvalues))*64
+		size = cacheEntryBytes(function.ID, size, estimateSignatureBytes(function.Signature))
+		for _, local := range function.Locals {
+			size = cacheEntryBytes(local.ID, size, estimateTypeRefBytes(local.Type))
+		}
+		for _, upvalue := range function.Upvalues {
+			size = cacheEntryBytes(upvalue.ID, size, estimateTypeRefBytes(upvalue.Type))
+		}
+		for _, local := range function.ResultLocals {
+			size = cacheEntryBytes(local, size)
+		}
 		for _, instruction := range function.Instructions {
-			size += int64(len(instruction.Op) + len(instruction.Payload))
+			size = cacheEntryBytes(instruction.Op, size, int64(len(instruction.Payload)))
 		}
 	}
-	size += int64(len(artifact.TypeTable.Nodes))*128 + int64(len(artifact.Globals)+len(artifact.Exports)+len(artifact.Requirements))*64
 	return size
 }
 
 func estimatePackageDataBytes(data PackageData) int64 {
-	return int64(len(data.ModulePath)+len(data.Package)+len(data.ArtifactHash)+len(data.ExportHash)) +
-		int64(len(data.TypeTable.Nodes))*128 + int64(len(data.Constants)+len(data.Exports)+len(data.Requirements))*64 +
-		int64(len(data.GenericTemplates))*256
+	size := cacheEntryBytes(data.ModulePath, int64(len(data.Format)+len(data.Package)+len(data.ArtifactHash)+len(data.ExportHash)))
+	for _, node := range data.TypeTable.Nodes {
+		size = cacheEntryBytes(string(node.ID), size, 512, int64(len(node.Name)+len(node.Identity.ModulePath)+len(node.Identity.DeclID)))
+		for _, ref := range []types.TypeRef{node.AliasTarget, node.Underlying, node.Elem, node.Key, node.Constraint, node.Base} {
+			size = cacheEntryBytes("", size, estimateTypeRefBytes(ref))
+		}
+		for _, refs := range [][]types.TypeRef{node.Tuple, node.TypeArgs} {
+			for _, ref := range refs {
+				size = cacheEntryBytes("", size, estimateTypeRefBytes(ref))
+			}
+		}
+		for _, field := range node.Fields {
+			size = cacheEntryBytes(field.Name, size, int64(len(field.Tag)), estimateTypeRefBytes(field.Type))
+		}
+		for _, method := range node.Methods {
+			size = cacheEntryBytes(method.Name, size, int64(len(method.FunctionID)+len(method.ModulePath)), estimateTypeRefBytes(method.Receiver), estimateSignatureBytes(method.Signature))
+		}
+		for _, term := range node.Terms {
+			size = cacheEntryBytes("", size, estimateTypeRefBytes(term.Type))
+		}
+		if node.Signature != nil {
+			size = cacheEntryBytes("", size, estimateSignatureBytes(*node.Signature))
+		}
+	}
+	for _, constant := range data.Constants {
+		size = cacheEntryBytes(constant.ID, size, int64(len(constant.Value)), estimateTypeRefBytes(constant.Type))
+	}
+	for _, export := range data.Exports {
+		size = cacheEntryBytes(export.Name, size, int64(len(export.ID)+len(export.Kind)), estimateTypeRefBytes(export.Type))
+	}
+	for _, requirement := range data.Requirements {
+		size = cacheEntryBytes(requirement.ModulePath, size, int64(len(requirement.Hash)+len(requirement.Kind)))
+		for _, name := range requirement.Exports {
+			size = cacheEntryBytes(name, size)
+		}
+	}
+	for _, file := range data.SourceFiles {
+		size = cacheEntryBytes(file.Path, size, int64(len(file.ID)+len(file.Hash)))
+	}
+	for _, template := range data.GenericTemplates {
+		size = cacheEntryBytes(template.Name, size, int64(len(template.DeclID)+len(template.Kind)+len(template.Type)), ast.EstimatedDeclBytes(template.Decl))
+		for _, ref := range template.References {
+			size = cacheEntryBytes(ref.Name, size, int64(len(ref.Span.Start.File)+len(ref.Span.End.File)), 64)
+		}
+	}
+	return size
+}
+
+// A conservative structural estimate: values shared between fields are charged
+// independently. Saturation rejects an entry instead of wrapping its budget.
+func cacheEntryBytes(text string, parts ...int64) int64 {
+	size := int64(len(text))
+	if size > maximumEstimate-64 {
+		return maximumEstimate
+	}
+	size += 64
+	for _, part := range parts {
+		if part < 0 || part > maximumEstimate-size {
+			return maximumEstimate
+		}
+		size += part
+	}
+	return size
+}
+
+func estimateTypeRefBytes(ref types.TypeRef) int64 {
+	return cacheEntryBytes(string(ref.Node), int64(len(ref.Named.ModulePath)+len(ref.Named.DeclID)))
+}
+
+func estimateSignatureBytes(signature types.FunctionSignature) int64 {
+	var size int64
+	for _, param := range signature.Params {
+		size = cacheEntryBytes("", size, estimateTypeRefBytes(param.Type))
+	}
+	for _, result := range signature.Results {
+		size = cacheEntryBytes("", size, estimateTypeRefBytes(result))
+	}
+	return size
 }
 
 func estimateExecutionImageBytes(image ir.ExecutionImage) int64 {
-	size := int64(len(image.CompilerID) + len(image.Root) + len(image.Hash))
-	for modulePath, archive := range image.Packages {
-		size += int64(len(modulePath) + len(archive.Artifact) + len(archive.ArtifactHash))
+	size := cacheEntryBytes(image.CompilerID, int64(len(image.Root)+len(image.Hash)+len(image.Format)+len(image.ContractID)))
+	for _, tag := range image.Target.Tags {
+		size = cacheEntryBytes(tag, size)
 	}
-	return size + int64(len(image.Entries))*64
+	for _, capability := range image.Capabilities {
+		size = cacheEntryBytes(capability, size)
+	}
+	for modulePath, archive := range image.Packages {
+		size = cacheEntryBytes(modulePath, size, int64(len(archive.Artifact)), int64(len(archive.ArtifactHash)))
+	}
+	for _, entry := range image.Entries {
+		size = cacheEntryBytes(entry.Name, size, int64(len(entry.ModulePath)+len(entry.FunctionID)))
+	}
+	return size
 }
 
 func estimateProgramSymbolsBytes(symbols ir.ProgramSymbols) int64 {
-	size := int64(len(symbols.ProgramHash) + len(symbols.CompilerID) + len(symbols.Hash))
+	size := cacheEntryBytes(symbols.ProgramHash, int64(len(symbols.CompilerID)+len(symbols.Hash)+len(symbols.Format)+len(symbols.ContractID)))
 	for modulePath, symbols := range symbols.Packages {
-		size += int64(len(modulePath)) + estimatePackageSymbolsBytes(symbols)
+		size = cacheEntryBytes(modulePath, size, estimatePackageSymbolsBytes(symbols))
 	}
 	return size
 }
 
 func estimatePackageSymbolsBytes(symbols ir.PackageSymbols) int64 {
-	size := int64(len(symbols.ModulePath) + len(symbols.SourceHash) + len(symbols.CodeHash))
+	size := cacheEntryBytes(symbols.ModulePath, int64(len(symbols.SourceHash)+len(symbols.CodeHash)))
 	for _, file := range symbols.Files {
-		size += int64(len(file.ID) + len(file.Path) + len(file.Hash))
+		size = cacheEntryBytes(file.ID, size, int64(len(file.Path)+len(file.Hash)))
 	}
 	for _, global := range symbols.Globals {
-		size += int64(len(global.ID) + len(global.Name))
+		size = cacheEntryBytes(global.ID, size, int64(len(global.Name)))
 	}
 	for _, function := range symbols.Functions {
-		size += int64(len(function.ID) + len(function.Name))
+		size = cacheEntryBytes(function.ID, size, int64(len(function.Name)), 128)
 		if function.Declaration != nil {
-			size += int64(len(function.Declaration.File)) + 16
+			size = cacheEntryBytes(function.Declaration.File, size)
 		}
 		for _, local := range function.Locals {
-			size += int64(len(local.ID)+len(local.Name)) + 24
+			size = cacheEntryBytes(local.ID, size, int64(len(local.Name)))
 			if local.Declaration != nil {
-				size += int64(len(local.Declaration.File)) + 16
+				size = cacheEntryBytes(local.Declaration.File, size)
 			}
 		}
 		for _, upvalue := range function.Upvalues {
-			size += int64(len(upvalue.ID) + len(upvalue.Name))
+			size = cacheEntryBytes(upvalue.ID, size, int64(len(upvalue.Name)))
 		}
 		for _, scope := range function.Scopes {
-			size += 16 + int64(len(scope.Ranges))*16
+			size = cacheEntryBytes("", size, int64(len(scope.Ranges))*16)
 		}
 		for _, location := range function.Locations {
-			size += 8
+			size = cacheEntryBytes("", size)
 			for _, point := range location.Points {
-				size += int64(len(point.File)) + 16
+				size = cacheEntryBytes(point.File, size)
 			}
 		}
 	}

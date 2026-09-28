@@ -182,8 +182,15 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 
 ## 本地源码与编译器工具
 
-启用 `mini-go` 的 `compiler` feature。通过 `language::read_directory`
-读取本地文件树，或构造 `SourceTree` 提供内存文件；模块身份由 `module_path` 声明。
+启用 `compiler` feature；发布的 crate 已包含匹配的编译器镜像：
+
+```toml
+[dependencies]
+mini-go = { version = "=<snapshot-version>", features = ["compiler"] }
+```
+
+源码 checkout 的镜像准备见[生成与派生物](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#生成与派生物)。
+通过 `language::read_directory` 读取本地文件树，或构造 `SourceTree` 提供内存文件；模块身份由 `module_path` 声明。
 应用与库都传给 `LanguageService::sources`，由编译器执行统一的包发现和资源规则：
 
 ```rust
@@ -200,9 +207,9 @@ async fn open_sources(root: &std::path::Path) -> Result<LanguageService, Runtime
 }
 ```
 
-调用方完成使用后执行 `language.close().await`。文件的 Data 是 base64 字节，
-保留二进制资源；装配错误不会替换当前工作区。额外模块同样作为 SourceTree 提供，
-compiler 按 import 选择参与编译的包。
+调用方完成使用后执行 `language.close().await`。额外模块同样作为 SourceTree 提供，
+compiler 按 import 选择参与编译的包；文件 Data 使用 base64 保留二进制资源。
+装配错误不会替换当前工作区，工作区替换保留打开的缓冲区，`Editable` 可授权编辑额外包。
 
 ### 会话生命周期
 
@@ -212,13 +219,9 @@ compiler 按 import 选择参与编译的包。
 取消先通知 guest，最多给予 2 秒清理时间；丢弃调用 future 会丢弃未确认的会话状态。
 恢复仅重建已成功交付的源码输入，恢复后旧 snapshot 过期。`upgrade` 在候选会话中恢复并分析成功后切换。
 成功升级的 `UpgradeResult::cleanup_error` 单独报告旧 owner 的清理错误，此时新会话已经提交。
-工作区替换保留打开的缓冲区，`Editable` 可授权编辑额外包。
 
-自定义事件循环可使用跨平台 `from_image`、`start`、`poll`、`cancel`、`acknowledge`、`close_now`。
-`poll` 返回成功结果后，调用方确认交付再执行 `acknowledge`；未交付结果用 `abandon` 丢弃。
-`RestoreState` 用于重建编译输入；替换 owner 时使用严格递增的 generation。
-原生异步 API 自动完成交付确认。共享状态和平台分工见
-[架构](https://github.com/d7z-team/mini-go/blob/main/ARCHITECTURE.md#语言服务与调试)。
+自建事件循环可使用 `CompilerSession` 的同步推进接口；原生异步 API 自动处理交付确认。
+驱动约定见[编译会话驱动](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#编译会话驱动)。
 
 ### stdio 服务
 

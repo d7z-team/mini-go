@@ -176,7 +176,11 @@ test("compiler admission bounds bytes and honors queued and delivery deadlines",
       false,
     );
   } finally {
-    await service.dispose();
+    const queued = assert.rejects(service.request({ Operation: "queued" }), /closed/);
+    const closing = service.dispose();
+    assert.equal(service.dispose(), closing);
+    await closing;
+    await queued;
     await failure;
   }
 });

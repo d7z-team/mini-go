@@ -1,5 +1,6 @@
-//! Single-owner execution. All guest mutation requires an exclusive instance
-//! borrow; polling executes an exact bounded number of guest instructions.
+//! Owner-coordinated execution. Native workers own task-private continuations;
+//! shared state and control transactions remain with the instance owner.
+//! Polling executes an exact bounded number of guest instructions.
 
 use crate::{
     contract_generated as wire,
@@ -49,6 +50,9 @@ mod waiters;
 
 /// Disables the cumulative instruction budget while retaining poll quanta.
 pub const UNLIMITED_STEPS: i64 = -1;
+
+// Cooperative owner checks share one cadence, independent of native batch size.
+const TASK_POLL_INTERVAL: u8 = 64;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionLimits {
@@ -179,6 +183,7 @@ pub struct Instance {
     clock: Arc<dyn crate::environment::Clock>,
     entropy: Arc<dyn crate::environment::Entropy>,
     timers: timer::TimerQueue,
+    timer_check_steps: usize,
     reflected_types: Vec<(TypeIdentity, Value)>,
     reflected_type_indices: HashMap<TypeIdentity, usize>,
     reflected_type_keys: HashMap<String, usize>,
@@ -265,6 +270,7 @@ impl Instance {
             clock: Arc::new(crate::environment::SystemClock::default()),
             entropy: Arc::new(crate::environment::SystemEntropy),
             timers: timer::TimerQueue::default(),
+            timer_check_steps: 0,
             reflected_types: Vec::new(),
             reflected_type_indices: HashMap::new(),
             reflected_type_keys: HashMap::new(),
@@ -833,14 +839,14 @@ impl Instance {
         if self
             .runnable
             .front()
-            .is_some_and(|task| !task_runner::can_run_privately(task))
+            .is_some_and(|task| !task_runner::can_execute_private_instruction(task))
         {
             return Ok(None);
         }
         let mut selected = Vec::with_capacity(wanted);
         for _ in 0..available {
             let task = self.runnable.pop_front().unwrap();
-            if selected.len() < wanted && task_runner::can_run_privately(&task) {
+            if selected.len() < wanted && task_runner::can_execute_private_instruction(&task) {
                 selected.push(task);
             } else {
                 self.runnable.push_back(task);
@@ -910,7 +916,15 @@ impl Instance {
     }
 
     fn poll(&mut self, count: usize, background: bool) -> Result<PollStatus, RuntimeError> {
-        let result = self.poll_loop(count, background);
+        let result = self.poll_loop(count, background).and_then(|status| {
+            if matches!(status, PollStatus::Running | PollStatus::Pending) {
+                self.poll_ready_events(true)?;
+                if status == PollStatus::Pending && !self.runnable.is_empty() {
+                    return Ok(PollStatus::Running);
+                }
+            }
+            Ok(status)
+        });
         self.running.step_grant = None;
         result
     }
@@ -928,6 +942,7 @@ impl Instance {
 
     fn poll_loop(&mut self, count: usize, background: bool) -> Result<PollStatus, RuntimeError> {
         self.last_poll_steps = 0;
+        self.timer_check_steps = usize::from(TASK_POLL_INTERVAL);
         if self.closed {
             return Err(RuntimeError::new(
                 "closed",
@@ -950,11 +965,10 @@ impl Instance {
             if self.poll_ready(background) {
                 return Ok(PollStatus::Ready);
             }
-            if let Err(error) = self.deliver_timers().and_then(|()| self.resume_blocked()) {
-                self.faulted = true;
-                self.abort()?;
-                return Err(error);
-            }
+            self.poll_ready_events(
+                self.timer_check_steps >= usize::from(TASK_POLL_INTERVAL)
+                    || self.running.frames.is_empty(),
+            )?;
             if self.running.frames.is_empty() && !self.schedule_next() {
                 return Ok(PollStatus::Pending);
             }
@@ -983,7 +997,9 @@ impl Instance {
                     self.running.step_grant = None;
                 }
                 if self.running.step_grant.is_none() {
-                    match self.scope_steps[&self.running.scope].reserve(self.limits.max_steps, 64) {
+                    match self.scope_steps[&self.running.scope]
+                        .reserve(self.limits.max_steps, u64::from(TASK_POLL_INTERVAL))
+                    {
                         Ok(Some(grant)) => self.running.step_grant = Some(grant),
                         Ok(None) => {
                             self.yield_task();
@@ -1023,6 +1039,24 @@ impl Instance {
                         }
                     }
                     if instruction_step {
+                        self.types.use_context(
+                            self.running
+                                .frames
+                                .last()
+                                .unwrap()
+                                .revision
+                                .program
+                                .decoded
+                                .types(),
+                        );
+                        if task_runner::can_execute_private_instruction(&self.running)
+                            && task_runner::try_execute_private_instruction(
+                                &mut self.running,
+                                &self.types,
+                            )
+                        {
+                            return Ok(());
+                        }
                         if retrying {
                             self.running.restore_instruction();
                             self.running.retry_instruction = false;
@@ -1036,6 +1070,7 @@ impl Instance {
             if counted_instruction {
                 self.steps = self.steps.saturating_add(1);
                 self.last_poll_steps += 1;
+                self.timer_check_steps += 1;
                 if self.debug.profile_every != 0 {
                     self.debug.profile_phase =
                         if self.debug.profile_phase >= self.debug.profile_every - 1 {
@@ -1092,7 +1127,8 @@ impl Instance {
                 self.running.transient_roots.clear();
                 self.running.popped_frame = None;
                 if counted_instruction {
-                    self.running.scheduling_phase = (self.running.scheduling_phase + 1) % 64;
+                    self.running.scheduling_phase =
+                        (self.running.scheduling_phase + 1) % TASK_POLL_INTERVAL;
                 }
                 return Ok(PollStatus::Running);
             }
@@ -1156,7 +1192,7 @@ impl Instance {
                 task.finish_instruction();
                 task.transient_roots.clear();
                 if counted_instruction {
-                    task.scheduling_phase = (task.scheduling_phase + 1) % 64;
+                    task.scheduling_phase = (task.scheduling_phase + 1) % TASK_POLL_INTERVAL;
                 }
                 if let Some(frame) = task
                     .popped_frame
@@ -1947,15 +1983,6 @@ impl Instance {
                 .decoded
                 .types(),
         );
-        // Native workers and the serial/WASM owner share this implementation
-        // for task-private instructions. The owner reaches the larger match
-        // below only for shared storage, control transactions, allocation or
-        // an error path that needs instance state.
-        if task_runner::can_run_privately(&self.running)
-            && task_runner::step_private_instruction(&mut self.running, &self.types)
-        {
-            return Ok(());
-        }
         if self.running.frames.last().unwrap().panic.is_some() {
             self.running.frames.last_mut().unwrap().resume = None;
             self.running.frames.last_mut().unwrap().tail_return = None;

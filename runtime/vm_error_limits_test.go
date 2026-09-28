@@ -171,29 +171,6 @@ func TestVMReportsEveryBlockedExecutionContext(t *testing.T) {
 	}
 }
 
-func TestBlockedContextSnapshotIsSortedAndBounded(t *testing.T) {
-	machine := &executionMachine{}
-	for id := int64(70); id >= 1; id-- {
-		machine.blocked = append(machine.blocked, &executionTask{
-			id:    id,
-			scope: &executionScope{id: id + 100},
-			blocked: &blockedOperation{error: Error{
-				ExecutionContextID: id, Generation: 2, ProgramHash: "revision", ModulePath: "example/blocked",
-				FunctionID: "fn.wait", PC: 3, Op: string(ir.OpWaitableRecv), Err: WaitBlockedError{Message: "waiting"},
-			}},
-		})
-	}
-	total, contexts := machine.blockedContextSnapshot()
-	if total != 70 || len(contexts) != maxBlockedContexts {
-		t.Fatalf("blocked snapshot = total %d, contexts %d", total, len(contexts))
-	}
-	for index, context := range contexts {
-		if context.ExecutionContextID != int64(index+1) || context.ScopeID != int64(index+101) || context.Reason != "waiting" {
-			t.Fatalf("blocked context %d = %#v", index, context)
-		}
-	}
-}
-
 func TestLibraryIdleDoesNotReportForegroundDeadlock(t *testing.T) {
 	artifact := ir.NewArtifact("example/library-idle", "main")
 	artifact.Functions = []ir.Function{{

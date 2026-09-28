@@ -1,7 +1,6 @@
-//! Native task slices. A worker owns one complete task continuation and only
-//! executes operations whose state belongs to that task. Shared storage,
-//! lifecycle changes and potentially blocking operations return to the
-//! instance owner as short control transactions.
+//! Task-private instructions shared by the serial owner and native worker
+//! slices. Shared storage, lifecycle changes and potentially blocking
+//! operations use the owner's instruction transaction.
 
 use super::{frame::Local, scheduler::Task, *};
 #[cfg(not(target_arch = "wasm32"))]
@@ -72,7 +71,7 @@ impl TaskBatch {
     }
 }
 
-pub(super) fn can_run_privately(task: &Task) -> bool {
+pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
     if task.pending_write.is_some()
         || task.selection_completion.is_some()
         || task.retry_instruction
@@ -223,26 +222,52 @@ pub(super) fn start_private_batch(
 #[cfg(not(target_arch = "wasm32"))]
 fn run_private_slice(mut task: Task, quantum: usize, mut types: TypeRegistry) -> TaskRun {
     let mut steps = 0usize;
-    while steps < quantum && can_run_privately(&task) {
-        types.use_context(task.frames.last().unwrap().revision.program.decoded.types());
-        if !step_private_instruction(&mut task, &types) {
+    while steps < quantum && can_execute_private_instruction(&task) {
+        if task
+            .step_grant
+            .as_ref()
+            .is_none_or(|grant| grant.remaining == 0)
+        {
             break;
         }
-        let Some(grant) = task.step_grant.as_mut() else {
+        types.use_context(task.frames.last().unwrap().revision.program.decoded.types());
+        if !try_execute_private_instruction(&mut task, &types) {
             break;
-        };
-        grant.consume();
-        task.scheduling_phase = (task.scheduling_phase + 1) % 64;
+        }
+        task.step_grant.as_mut().unwrap().consume();
+        task.scheduling_phase = (task.scheduling_phase + 1) % TASK_POLL_INTERVAL;
         task.transient_roots.clear();
         steps += 1;
     }
     TaskRun { task, steps }
 }
 
-pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) -> bool {
-    let frame = task.frames.last().unwrap();
+pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegistry) -> bool {
+    let frame = task.frames.last_mut().unwrap();
     let pc = frame.pc;
-    let function = frame.prepared.clone();
+    let function = &frame.prepared;
+    // Every fallible check precedes the commit. Returning false must leave the
+    // continuation and accounting untouched so the owner can retry normally.
+    let popped = match function.execution[pc] {
+        PreparedInstruction::Local { store: true, .. }
+        | PreparedInstruction::Jump {
+            conditional: true, ..
+        }
+        | PreparedInstruction::Unary(_) => 1,
+        PreparedInstruction::Binary(_) => 2,
+        PreparedInstruction::Operand => match function.code[pc] {
+            Instruction::Pop | Instruction::LoadField(_) | Instruction::Len | Instruction::Cap => 1,
+            Instruction::StringRuneAt | Instruction::StringNextRuneIndex => 2,
+            _ => 0,
+        },
+        _ => 0,
+    };
+    if frame.stack.len() < popped {
+        return false;
+    }
+    let Ok(popped_capacity) = memory::grow_frame_buffer(frame.memory.popped, popped, false) else {
+        return false;
+    };
     let mut next_pc = pc + 1;
     let mut result = None;
     match function.execution[pc] {
@@ -272,18 +297,14 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
                 }) else {
                     return false;
                 };
-                let Local::Private(local) = &mut task.frames.last_mut().unwrap().locals[index]
-                else {
+                let Local::Private(local) = &mut frame.locals[index] else {
                     return false;
                 };
                 if local.get().typ != value.typ || local.replace(value, bytes).is_err() {
                     return false;
                 }
-                if task.pop().is_err() {
-                    return false;
-                }
             } else {
-                let Local::Private(value) = &task.frames.last().unwrap().locals[index] else {
+                let Local::Private(value) = &frame.locals[index] else {
                     return false;
                 };
                 if matches!(value.get().data, Data::Uninitialized) {
@@ -297,15 +318,12 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
             conditional,
         } => {
             let jump = if conditional {
-                let Some(value) = task.frames.last().unwrap().stack.last() else {
+                let Some(value) = frame.stack.last() else {
                     return false;
                 };
                 let Data::Bool(value) = value.data else {
                     return false;
                 };
-                if task.pop().is_err() {
-                    return false;
-                }
                 value
             } else {
                 true
@@ -315,19 +333,16 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
             }
         }
         PreparedInstruction::Unary(operator) => {
-            let Some(value) = task.frames.last().unwrap().stack.last().cloned() else {
+            let Some(value) = frame.stack.last().cloned() else {
                 return false;
             };
             let Ok(value) = crate::operators::unary(operator, value, types) else {
                 return false;
             };
-            if task.pop().is_err() {
-                return false;
-            }
             result = Some(value);
         }
         PreparedInstruction::Binary(operator) => {
-            let stack = &task.frames.last().unwrap().stack;
+            let stack = &frame.stack;
             if stack.len() < 2 {
                 return false;
             }
@@ -344,17 +359,10 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
             let Ok(value) = crate::operators::binary(operator, left, right, types) else {
                 return false;
             };
-            if task.pop().is_err() || task.pop().is_err() {
-                return false;
-            }
             result = Some(value);
         }
         PreparedInstruction::Operand => match &function.code[pc] {
-            Instruction::Pop => {
-                if task.pop().is_err() {
-                    return false;
-                }
-            }
+            Instruction::Pop => {}
             Instruction::Zero(_) => {
                 let Some(typ) = function.operand_types[pc].as_ref() else {
                     return false;
@@ -395,7 +403,7 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
                 });
             }
             Instruction::LoadField(payload) => {
-                let Some(value) = task.frames.last().unwrap().stack.last() else {
+                let Some(value) = frame.stack.last() else {
                     return false;
                 };
                 let Data::Struct(fields) = &value.data else {
@@ -404,14 +412,11 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
                 let Some(value) = fields.get(&payload.field).cloned() else {
                     return false;
                 };
-                if task.pop().is_err() {
-                    return false;
-                }
                 result = Some(value);
             }
             Instruction::Len | Instruction::Cap => {
                 let capacity = matches!(function.code[pc], Instruction::Cap);
-                let Some(value) = task.frames.last().unwrap().stack.last() else {
+                let Some(value) = frame.stack.last() else {
                     return false;
                 };
                 let pointer_array_length = match types.pointer_element(&value.typ) {
@@ -437,13 +442,10 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
                     (Data::Nil, None) => 0,
                     _ => return false,
                 };
-                if task.pop().is_err() {
-                    return false;
-                }
                 result = Some(Value::int(length));
             }
             Instruction::StringRuneAt | Instruction::StringNextRuneIndex => {
-                let stack = &task.frames.last().unwrap().stack;
+                let stack = &frame.stack;
                 if stack.len() < 2 {
                     return false;
                 }
@@ -461,9 +463,6 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
                 }
                 let (rune, width) = crate::value::decode_rune(&bytes[index..]);
                 let next = matches!(function.code[pc], Instruction::StringNextRuneIndex);
-                if task.pop().is_err() || task.pop().is_err() {
-                    return false;
-                }
                 result = Some(if next {
                     Value::int((index + width) as i64)
                 } else {
@@ -474,11 +473,7 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
                 });
             }
             Instruction::MapIterClose(payload) => {
-                task.frames
-                    .last_mut()
-                    .unwrap()
-                    .map_iterators
-                    .remove(&payload.local);
+                frame.map_iterators.remove(&payload.local);
             }
             _ => return false,
         },
@@ -486,10 +481,143 @@ pub(super) fn step_private_instruction(task: &mut Task, types: &TypeRegistry) ->
         | PreparedInstruction::Upvalue { .. }
         | PreparedInstruction::Global { .. } => return false,
     }
-    let frame = task.frames.last_mut().unwrap();
+    frame.memory.popped = popped_capacity;
+    frame.stack.truncate(frame.stack.len() - popped);
     frame.pc = next_pc;
     if let Some(value) = result {
         frame.stack.push(value);
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn division_program(divisor: i64) -> Arc<Program> {
+        test_helpers::program_with_artifact(|artifact| {
+            artifact["constants"] = serde_json::json!([
+                {"id":"a","type":{"kind":3,"primitive":3},"value":42},
+                {"id":"b","type":{"kind":3,"primitive":3},"value":divisor}]);
+            artifact["functions"] = serde_json::json!([{
+                "id":"fn.Main", "signature":{"results":[{"kind":3,"primitive":3}]},
+                "instructions":[{"op":"const","payload":{"constant":"a"}},
+                    {"op":"const","payload":{"constant":"b"}},
+                    {"op":"binary","payload":{"operator":"/"}},
+                    {"op":"return","payload":{"result_count":1}}]}]);
+        })
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn private_slice_stops_at_its_granted_budget() {
+        let mut vm = Instance::new(division_program(2), ExecutionLimits::default()).unwrap();
+        vm.start("default", vec![]).unwrap();
+        vm.running.step_grant = vm.scope_steps[&vm.running.scope].reserve(2, 64).unwrap();
+        let run = run_private_slice(std::mem::take(&mut vm.running), 64, vm.types.clone());
+        assert_eq!(run.steps, 2);
+        vm.running = run.task;
+        assert_eq!(vm.running.frames.last().unwrap().pc, 2);
+        assert_eq!(vm.running.frames.last().unwrap().stack.len(), 2);
+        vm.close().unwrap();
+    }
+
+    #[test]
+    fn serial_private_execution_matches_owner_accounting_without_retry_copies() {
+        let program = division_program(2);
+        let mut fast = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
+        let mut owner = Instance::new(program, ExecutionLimits::default()).unwrap();
+        fast.start("default", vec![]).unwrap();
+        owner.start("default", vec![]).unwrap();
+        for _ in 0..3 {
+            // An active transaction must use the owner path. Both paths still
+            // have identical logical buffers and instruction budgets.
+            let pc = owner.running.frames.last().unwrap().pc;
+            owner.running.begin_instruction(pc);
+            assert_eq!(fast.poll_steps(1).unwrap(), owner.poll_steps(1).unwrap());
+            assert_eq!(fast.steps(), owner.steps());
+            assert_eq!(fast.memory_stats(), owner.memory_stats());
+        }
+        assert_eq!(fast.running.retry_operands.capacity(), 0);
+        assert!(owner.running.retry_operands.capacity() >= 2);
+        for vm in [&mut fast, &mut owner] {
+            assert_eq!(
+                vm.running.frames.last().unwrap().stack[0]
+                    .integer()
+                    .unwrap(),
+                21
+            );
+            assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
+            vm.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn private_store_rejection_preserves_operands_local_and_accounting() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([{
+                "id":"fn.Main", "locals":[{"id":"value","type":{"kind":3,"primitive":2}}],
+                "instructions":[{"op":"zero","payload":{"type":{"kind":3,"primitive":2}}},
+                    {"op":"store_local","payload":{"local":"value"}},
+                    {"op":"zero","payload":{"type":{"kind":3,"primitive":2}}},
+                    {"op":"store_local","payload":{"local":"value"}}, {"op":"return","payload":{}}]
+            }]);
+        });
+        let mut vm = Instance::new(
+            program,
+            ExecutionLimits {
+                max_heap_bytes: 4096,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        vm.start("default", vec![]).unwrap();
+        assert_eq!(vm.poll_steps(3).unwrap(), PollStatus::Running);
+        let frame = vm.running.frames.last_mut().unwrap();
+        frame.stack[0] = Value::string("x".repeat(8192));
+        let before = vm.heap_stats();
+        assert!(can_execute_private_instruction(&vm.running));
+        assert!(!try_execute_private_instruction(&mut vm.running, &vm.types));
+        let frame = vm.running.frames.last().unwrap();
+        assert_eq!(frame.pc, 3);
+        assert_eq!(frame.stack.len(), 1);
+        let Local::Private(local) = &frame.locals[0] else {
+            panic!("private local")
+        };
+        assert!(matches!(&local.get().data,Data::String(bytes) if bytes.is_empty()));
+        assert_eq!(vm.heap_stats().live_bytes, before.live_bytes);
+        assert_eq!(
+            vm.heap_stats().total_allocated_bytes,
+            before.total_allocated_bytes
+        );
+        vm.close().unwrap();
+    }
+
+    #[test]
+    fn private_binary_failure_preserves_stack_and_success_preserves_buffer_charge() {
+        for divisor in [0, 2] {
+            let mut vm =
+                Instance::new(division_program(divisor), ExecutionLimits::default()).unwrap();
+            vm.start("default", vec![]).unwrap();
+            vm.poll_steps(2).unwrap();
+            assert_eq!(
+                try_execute_private_instruction(&mut vm.running, &vm.types),
+                divisor != 0
+            );
+            let frame = vm.running.frames.last().unwrap();
+            if divisor == 0 {
+                assert_eq!(frame.pc, 2);
+                assert_eq!(frame.stack[0].integer().unwrap(), 42);
+                assert_eq!(frame.stack[1].integer().unwrap(), 0);
+            } else {
+                assert_eq!(frame.pc, 3);
+                assert_eq!(frame.stack[0].integer().unwrap(), 21);
+                assert_eq!(
+                    frame.memory.popped,
+                    memory::grow_frame_buffer(0, 2, false).unwrap()
+                );
+            }
+            vm.close().unwrap();
+        }
+    }
 }

@@ -69,30 +69,6 @@ func (machine *executionMachine) prepareTaskBatch(parallelism, budget int) (*tas
 	return &taskBatch{machine: machine, runs: runs, done: make(chan struct{})}, runOutcome{state: ExecutionRunning}
 }
 
-func (machine *executionMachine) idleOutcome() runOutcome {
-	if machine.runnableCount() != 0 {
-		return runOutcome{state: ExecutionRunning}
-	}
-	if len(machine.blocked) != 0 {
-		if len(machine.tasks) != len(machine.blocked) || len(machine.vm.timers) != 0 {
-			return runOutcome{state: ExecutionPending}
-		}
-		for _, task := range machine.blocked {
-			if task.blocked != nil && task.blocked.kind == "ffi" {
-				return runOutcome{state: ExecutionPending}
-			}
-		}
-		if machine.foreground == nil {
-			return runOutcome{state: ExecutionPending}
-		}
-		return failedRun(machine.allBlockedError())
-	}
-	if machine.foreground == nil {
-		return runOutcome{state: ExecutionPending}
-	}
-	return failedRun(errors.New("root execution context did not complete"))
-}
-
 func (batch *taskBatch) launch() {
 	batch.pending.Store(int64(len(batch.runs)))
 	executor := defaultExecutor()
