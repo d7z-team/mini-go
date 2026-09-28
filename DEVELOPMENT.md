@@ -189,7 +189,8 @@ make release-verify
 需要发布时，每 30 秒核对同一提交的 Go/Rust push CI，最多等待 50 分钟；两项都成功才构建。
 CI 失败或 main 已更新时跳过，超过等待期限则报错。发布使用 `release` environment 的 Trusted Publisher，
 验证 WASM/SDK 与分发包后，依次发布 crate 和 npm。
-两个 registry 已有同版本时跳过；只有一端存在时补齐发布，并对已有产物核对完整性。
+两个 registry 已有同版本时跳过；只有一端存在时补齐发布，已有 crate 核对完整性。
+npm 以 `npm publish` 成功退出为发布成功，registry 对外可见时间由 npm 处理。
 registry 查询失败会明确报错。修复 CI 后推送新提交，或在 CI 重跑成功后重跑对应发布运行；发布记录以 registry 为准。
 开始发布前再次检查候选是否仍是最新 main，开始后完成同一版本的两端发布。compiler 资源始终随包校验和分发。
 
