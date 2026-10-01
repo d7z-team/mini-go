@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -274,33 +275,40 @@ func TestEndpointEnforcesNegotiatedBindingLimit(t *testing.T) {
 }
 
 func TestEndpointRequestContextDoesNotWaitForBlockedMessageWrite(t *testing.T) {
-	method := Method{ID: "example/write::Service.Value", Service: "example/write::Service", Name: "Value", ContractHash: testContractHash}
-	clientSide, serverSide := newTestMessagePipe()
-	clientConn := &blockedWriteConn{MessageConn: clientSide, release: make(chan struct{})}
-	client, err := OpenEndpoint(clientConn, EndpointServices{}, EndpointOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server, err := OpenEndpoint(serverSide, EndpointServices{}, EndpointOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	defer server.Close()
-	if err := client.Ready(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	clientConn.blocked.Store(true)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	_, err = client.Bind(ctx, testBindRequest(method))
-	if codeOf(err) != CodeDeadlineExceeded {
-		t.Fatalf("blocked write error = %v", err)
-	}
-	if time.Since(started) > 250*time.Millisecond {
-		t.Fatal("request waited for the blocked transport write")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		method := Method{ID: "example/write::Service.Value", Service: "example/write::Service", Name: "Value", ContractHash: testContractHash}
+		clientSide, serverSide := newTestMessagePipe()
+		clientConn := &blockedWriteConn{MessageConn: clientSide, release: make(chan struct{}), entered: make(chan struct{}, 1)}
+		client, err := OpenEndpoint(clientConn, EndpointServices{}, EndpointOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server, err := OpenEndpoint(serverSide, EndpointServices{}, EndpointOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		defer server.Close()
+		if err := client.Ready(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		clientConn.blocked.Store(true)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { _, bindErr := client.Bind(ctx, testBindRequest(method)); done <- bindErr }()
+		<-clientConn.entered
+		cancel()
+		err = <-done
+		if codeOf(err) != CodeCanceled {
+			t.Fatalf("blocked write error = %v", err)
+		}
+		select {
+		case <-clientConn.release:
+			t.Fatal("transport released before request cancellation returned")
+		default:
+		}
+	})
 }
 
 func TestEndpointCancellationReleasesLateBinding(t *testing.T) {

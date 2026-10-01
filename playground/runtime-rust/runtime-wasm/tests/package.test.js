@@ -14,7 +14,7 @@ const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 
 test(
   "packed package runs outside the repository in Node and browser",
-  { timeout: 60_000 },
+  { timeout: 600_000 },
   async (t) => {
     const directory = await mkdtemp(path.join(tmpdir(), "mini-go-consumer-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
@@ -37,7 +37,7 @@ test(
           "--pack-destination",
           directory,
         ],
-        { cwd: packageRoot },
+        { cwd: packageRoot, signal: t.signal },
       );
       [{ filename, name: packageName }] = Object.values(JSON.parse(packed.stdout));
     }
@@ -56,7 +56,7 @@ test(
         path.join(directory, ".npm-cache"),
         path.join(directory, filename),
       ],
-      { cwd: directory },
+      { cwd: directory, signal: t.signal },
     );
     const installed = path.join(directory, "node_modules", packageName);
     const image = await readFile(path.join(process.env.MINIGO_WASM_FIXTURES, "answer.json"));
@@ -69,7 +69,7 @@ test(
     import { RPC } from '${packageName}/rpc';
     import { createLanguageService } from '${packageName}/tools';
     if (RPC !== RootRPC || typeof RPC.connect !== 'function') throw new Error('RPC export mismatch');
-    const language = await createLanguageService();
+    const language = await createLanguageService(undefined, { timeoutMs: 300_000 });
     await language.dispose();
     const vm = await MiniGo.create(await readFile(new URL('./image.json', import.meta.url)));
     try {
@@ -80,7 +80,11 @@ test(
   `,
     );
     // A successful process exit also verifies worker/timer cleanup.
-    await exec(process.execPath, ["consumer.mjs"], { cwd: directory, timeout: 15_000 });
+    await exec(process.execPath, ["consumer.mjs"], {
+      cwd: directory,
+      timeout: 300_000,
+      signal: t.signal,
+    });
     await mkdir(path.join(directory, "generated"));
     await cp(
       path.resolve(packageRoot, "../../../testdata/rpc/generated/typescript/types.ts"),
@@ -106,7 +110,7 @@ test(
     }
     const workspace: WorkspaceInput={Root:'sample',Packages:[]};
     async function sources() {
-      const service = await createLanguageService();
+      const service = await createLanguageService(undefined, { timeoutMs: 300_000 });
       const trees: SourceTree[] = [{ModulePath:'app', Files:[]}];
       try { const result: SourcePackages = await service.sources(trees); return result.Packages; }
       finally { await service.dispose(); }
@@ -134,7 +138,7 @@ test(
         "ES2022",
         "consumer.mts",
       ],
-      { cwd: directory },
+      { cwd: directory, signal: t.signal },
     );
     let browser;
     const server = http.createServer(async (request, response) => {
@@ -168,8 +172,10 @@ test(
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
-      browser = await chromium.launch({ headless: true });
+      browser = await chromium.launch({ headless: true, timeout: 300_000 });
+      t.signal.throwIfAborted();
       const page = await browser.newPage();
+      page.setDefaultTimeout(300_000);
       await page.goto(`http://127.0.0.1:${server.address().port}`);
       assert.equal(
         await page.evaluate(async () => {

@@ -62,13 +62,11 @@ func newFFIBridge(t *testing.T, providers ...func() (rpc.Provider, error)) ffi.B
 	return bridge
 }
 
-func callEntryWithClock(instance *minigoruntime.Instance, clock *minigoruntime.ManualClock) (minigoruntime.RunResult, error) {
+func callEntryWithClock(ctx context.Context, instance *minigoruntime.Instance, clock *minigoruntime.ManualClock) (minigoruntime.RunResult, error) {
 	execution, err := instance.StartEntry()
 	if err != nil {
 		return minigoruntime.RunResult{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	for {
 		if err := ctx.Err(); err != nil {
 			execution.Cancel()

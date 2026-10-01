@@ -1,5 +1,10 @@
 export async function exerciseCompilerWorkload(tools, workload, signal) {
-  const service = await tools.createLanguageService(undefined, { signal });
+  const service = await tools.createLanguageService(undefined, { signal, timeoutMs: 300_000 });
+  const abort = () => {
+    void service.dispose();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   try {
     const started = performance.now();
     const uri = "file:///sample/main.mgo";
@@ -70,6 +75,7 @@ export async function exerciseCompilerWorkload(tools, workload, signal) {
     }
     return measurement;
   } finally {
+    signal?.removeEventListener("abort", abort);
     await service.dispose();
   }
 }

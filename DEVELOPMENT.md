@@ -137,7 +137,9 @@ API 见 [Rust 使用指南](playground/runtime-rust/USAGE.md)。
 跨进程 peer 路径按 Cargo metadata 解析，支持 `CARGO_TARGET_DIR`。
 
 调度、GC、热更新或帧复用改动应覆盖步骤计费、不同并行度、共享状态、等待、初始化、取消和关闭，
-以及 GC/Patch/DAP 安全点。编译会话测试使用 release 模式并遵守请求期限。
+以及 GC/Patch/DAP 安全点。编译会话测试使用 release 模式，重型集成场景显式设置有限的请求预算，
+测试防挂期限覆盖整条场景；功能断言验证结果、状态和资源计费，不以实际完成秒数判断正确性。
+期限边界由可控时钟验证，并发顺序通过事件同步验证。超时报告当前阶段与已有统计信息。
 
 `host-conformance` 是测试用 broker feature，应用宿主接入使用 `stdlib-host`。
 

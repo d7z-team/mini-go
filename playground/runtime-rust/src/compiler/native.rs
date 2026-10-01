@@ -17,10 +17,25 @@ impl CompilerSession {
         Self::new(include_bytes!("../../assets/compiler.json.gz")).await
     }
     pub async fn new(image: &[u8]) -> Result<Self, RuntimeError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        Self::new_with_timeout(image, Duration::from_secs(30)).await
+    }
+    /// Prepare and initialize a compiler within one shared timeout.
+    pub async fn new_with_timeout(image: &[u8], timeout: Duration) -> Result<Self, RuntimeError> {
+        if timeout.is_zero() {
+            return Err(failure("deadline", "compiler preparation deadline"));
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .filter(|_| u64::try_from(timeout.as_nanos()).is_ok())
+            .ok_or_else(|| failure("invalid_argument", "request timeout is too large"))?;
         let mut session = tokio::time::timeout_at(
             deadline,
-            Self::prepare_native(image, 1, RestoreState::default()),
+            Self::prepare_native(
+                image,
+                1,
+                RestoreState::default(),
+                Arc::new(SystemClock::default()),
+            ),
         )
         .await
         .map_err(|_| failure("deadline", "compiler preparation deadline"))??;
@@ -37,6 +52,7 @@ impl CompilerSession {
         image: &[u8],
         generation: u64,
         restore: RestoreState,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, RuntimeError> {
         if image.len() > LoadLimits::compiler().max_image_bytes {
             return Err(failure("load_limit", "compiler image too large"));
@@ -48,7 +64,7 @@ impl CompilerSession {
             if let Some((image, restore, send)) = work.lock().unwrap().take()
                 && !send.is_closed()
             {
-                let result = Self::from_image(&image, generation, restore);
+                let result = Self::with_clock(&image, generation, restore, clock.clone());
                 let _ = send.send(result);
             }
             Next::Done
@@ -106,13 +122,29 @@ impl CompilerSession {
         image: &[u8],
         cancel: &Cancellation,
     ) -> Result<UpgradeResult, RuntimeError> {
+        self.upgrade_with_timeout(image, cancel, Duration::from_secs(30))
+            .await
+    }
+    /// Prepare and restore a replacement within one shared timeout.
+    pub async fn upgrade_with_timeout(
+        &mut self,
+        image: &[u8],
+        cancel: &Cancellation,
+        timeout: Duration,
+    ) -> Result<UpgradeResult, RuntimeError> {
         if !matches!(self.state, SessionState::Idle | SessionState::Discarded) {
             return Err(failure("busy", "session unavailable for upgrade"));
         }
         if cancel.is_cancelled() {
             return Err(failure("canceled", "upgrade canceled"));
         }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        if timeout.is_zero() {
+            return Err(failure("deadline", "upgrade preparation deadline"));
+        }
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .filter(|_| u64::try_from(timeout.as_nanos()).is_ok())
+            .ok_or_else(|| failure("invalid_argument", "request timeout is too large"))?;
         let generation = self
             .generation_high_watermark
             .checked_add(1)
@@ -120,7 +152,7 @@ impl CompilerSession {
         self.generation_high_watermark = generation;
         let mut candidate = tokio::select! {
             _ = cancel.cancelled() => return Err(failure("canceled", "upgrade canceled")),
-            result = tokio::time::timeout_at(deadline, Self::prepare_native(image, generation, self.confirmed.clone())) =>
+            result = tokio::time::timeout_at(deadline, Self::prepare_native(image, generation, self.confirmed.clone(), self.clock.clone())) =>
                 result.map_err(|_| failure("deadline", "upgrade preparation deadline"))??,
         };
         // Initial polling restores and analyzes confirmed inputs before hello is delivered.

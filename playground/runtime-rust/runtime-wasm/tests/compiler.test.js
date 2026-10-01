@@ -55,7 +55,7 @@ test("compiler response preserves exact image bytes when loading the compiled pr
 
 test(
   "compiler workload: Node default-budget RPC compilation and execution",
-  { timeout: 60_000 },
+  { timeout: 600_000 },
   async (t) => {
     const address = await startPeer(t);
     const workloads = JSON.parse(
@@ -70,13 +70,14 @@ test(
       await readFile(compilerImage),
       workloads.find((w) => w.Name === "rpc").Source,
       address,
+      t.signal,
     );
   },
 );
 
 test(
   "compiler workload: browser default-budget RPC compilation and execution",
-  { timeout: 60_000 },
+  { timeout: 600_000 },
   async (t) => {
     const address = await startPeer(t);
     const page = await openBrowserPage(
@@ -109,15 +110,15 @@ test(
 
 test(
   "compiler workload: Node gzip image initialization and repeated source checks",
-  { timeout: 60_000 },
-  async () => {
-    await exerciseCompiler(MiniGo, values, await readFile(compilerImage));
+  { timeout: 600_000 },
+  async (t) => {
+    await exerciseCompiler(MiniGo, values, await readFile(compilerImage), t.signal);
   },
 );
 
 test(
   "compiler workload: browser image initialization and repeated source checks",
-  { timeout: 60_000 },
+  { timeout: 600_000 },
   async (t) => {
     const page = await createBrowserPage(t, {
       "/scenario.js": new URL("./compiler_scenario.js", import.meta.url),

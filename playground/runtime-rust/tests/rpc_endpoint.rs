@@ -9,13 +9,20 @@ use connection::Pipe;
 
 struct ExpiringResource(Arc<tokio::sync::Semaphore>);
 
-struct SlowCloseResource(Arc<std::sync::atomic::AtomicUsize>);
+struct RenewedWork {
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+    closed: std::sync::atomic::AtomicUsize,
+}
+
+struct GatedCloseResource(Arc<RenewedWork>);
 
 struct AdmissionFilter {
     pipe: Pipe,
     assembly: std::sync::Mutex<protocol::Assembly>,
     suppress: Arc<std::sync::atomic::AtomicBool>,
     written: Option<Arc<std::sync::atomic::AtomicBool>>,
+    renewed: Option<Arc<tokio::sync::Semaphore>>,
 }
 impl MessageConn for AdmissionFilter {
     fn read(&self) -> BoxFuture<'_, Result<Vec<u8>>> {
@@ -28,9 +35,12 @@ impl MessageConn for AdmissionFilter {
                 .lock()
                 .unwrap()
                 .push(&fragment, &Limits::default())?;
-            if let Some(message) = message
-                && protocol::Frame::decode(&message, &Limits::default())?.kind == protocol::ACCEPTED
-            {
+            let frame = message
+                .as_ref()
+                .map(|message| protocol::Frame::decode(message, &Limits::default()))
+                .transpose()?;
+            let kind = frame.as_ref().map(|frame| frame.kind);
+            if kind == Some(protocol::ACCEPTED) {
                 if self.suppress.load(std::sync::atomic::Ordering::SeqCst) {
                     return Ok(());
                 }
@@ -42,7 +52,17 @@ impl MessageConn for AdmissionFilter {
                     return Ok(());
                 }
             }
-            self.pipe.write(fragment).await
+            self.pipe.write(fragment).await?;
+            if let Some(frame) = frame
+                && frame.kind == protocol::RENEW_ACK
+                && let Some(renewed) = &self.renewed
+                && !protocol::decode_lease_targets(&frame.values, &Limits::default())?
+                    .1
+                    .is_empty()
+            {
+                renewed.add_permits(1);
+            }
+            Ok(())
         })
     }
     fn close(&self) {
@@ -105,6 +125,7 @@ async fn handler_waits_for_admission_write_completion() {
             assembly: Default::default(),
             suppress: Arc::new(AtomicBool::new(false)),
             written: Some(written.clone()),
+            renewed: None,
         }),
         Some(binder),
         EndpointOptions::default(),
@@ -271,7 +292,7 @@ async fn admitted_calls_preserve_caller_deadline_and_cancellation_status() {
     right.shutdown().await.unwrap();
 }
 
-impl Resource for SlowCloseResource {
+impl Resource for GatedCloseResource {
     fn invoke(
         &self,
         _: CallContext,
@@ -282,8 +303,11 @@ impl Resource for SlowCloseResource {
     }
     fn close(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async {
-            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.entered.add_permits(1);
+            self.0.release.acquire().await.unwrap().forget();
+            self.0
+                .closed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         })
     }
@@ -291,9 +315,15 @@ impl Resource for SlowCloseResource {
 
 #[tokio::test(flavor = "current_thread")]
 async fn admission_bounds_waiting_and_renewal_keeps_adopted_operations_alive() {
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
     let runtime = tokio::runtime::Handle::current();
-    let closed_resources = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let owner = closed_resources.clone();
+    let work = Arc::new(RenewedWork {
+        entered: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Semaphore::new(0),
+        closed: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let renewed = Arc::new(tokio::sync::Semaphore::new(0));
+    let owner = work.clone();
     let method = Method {
         id: "fixture.Slow.open".into(),
         service: "fixture.Slow".into(),
@@ -307,9 +337,13 @@ async fn admission_bounds_waiting_and_renewal_keeps_adopted_operations_alive() {
             invoke: Some(Arc::new(move |context, _| {
                 let owner = owner.clone();
                 Box::pin(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    owner.entered.add_permits(1);
+                    tokio::select! {
+                        permit = owner.release.acquire() => permit.unwrap().forget(),
+                        _ = context.cancellation.cancelled() => return Err(Status::new("canceled", "test invocation canceled")),
+                    }
                     Ok(vec![context.export(
-                        Arc::new(SlowCloseResource(owner)),
+                        Arc::new(GatedCloseResource(owner)),
                         "b".repeat(64),
                     )?])
                 })
@@ -333,8 +367,8 @@ async fn admission_bounds_waiting_and_renewal_keeps_adopted_operations_alive() {
         }),
         None,
         EndpointOptions {
-            lease_ttl: std::time::Duration::from_millis(800),
-            admission_timeout: std::time::Duration::from_millis(150),
+            lease_ttl: std::time::Duration::from_secs(4),
+            admission_timeout: std::time::Duration::from_secs(2),
             ..Default::default()
         },
     )
@@ -350,10 +384,11 @@ async fn admission_bounds_waiting_and_renewal_keeps_adopted_operations_alive() {
             assembly: Default::default(),
             suppress: suppress_admission.clone(),
             written: None,
+            renewed: Some(renewed.clone()),
         }),
         Some(binder),
         EndpointOptions {
-            lease_ttl: std::time::Duration::from_millis(300),
+            lease_ttl: std::time::Duration::from_secs(4),
             ..Default::default()
         },
     )
@@ -365,28 +400,40 @@ async fn admission_bounds_waiting_and_renewal_keeps_adopted_operations_alive() {
         )
         .await
         .unwrap();
-    let result = routes
+    let invoking = routes.clone();
+    let invoke_method = method.clone();
+    let pending = tokio::spawn(async move { invoking
         .invoke(
             CallContext::default(),
             Call {
-                method: method.clone(),
+                method: invoke_method,
                 receiver: None,
                 arguments: vec![],
             },
         )
         .await
-        .unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+        .unwrap() });
+    work.entered.acquire().await.unwrap().forget();
+    renewed.forget_permits(renewed.available_permits());
+    renewed.acquire_many(2).await.unwrap().forget();
+    work.release.add_permits(1);
+    let result = pending.await.unwrap();
+    renewed.forget_permits(renewed.available_permits());
+    renewed.acquire_many(2).await.unwrap().forget();
     let values = result.accept().await.unwrap().consume();
     let Data::Resource(reference) = &values[0].data else {
         panic!("expected resource")
     };
-    routes
-        .drop_resource(CallContext::default(), reference.clone())
-        .await
-        .unwrap();
+    let closing = routes.clone();
+    let reference = reference.clone();
+    let pending_close = tokio::spawn(async move { closing.drop_resource(CallContext::default(), reference).await.unwrap() });
+    work.entered.acquire().await.unwrap().forget();
+    renewed.forget_permits(renewed.available_permits());
+    renewed.acquire_many(2).await.unwrap().forget();
+    work.release.add_permits(1);
+    pending_close.await.unwrap();
     assert_eq!(
-        closed_resources.load(std::sync::atomic::Ordering::SeqCst),
+        work.closed.load(std::sync::atomic::Ordering::SeqCst),
         1
     );
     suppress_admission.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -411,6 +458,7 @@ async fn admission_bounds_waiting_and_renewal_keeps_adopted_operations_alive() {
     left.shutdown().await.unwrap();
     right.shutdown().await.unwrap();
     assert_eq!(right.stats(), EndpointStats::default());
+    }).await.expect("renewal integration watchdog");
 }
 impl Resource for ExpiringResource {
     fn invoke(
@@ -577,10 +625,6 @@ async fn renewal_timeout_closes_a_blocked_transport_and_wakes_owners() {
     )
     .unwrap();
     entered.cancelled().await;
-    assert_eq!(
-        left.ping(CallContext::default()).await.unwrap_err().code,
-        "resource_exhausted"
-    );
     tokio::time::timeout(std::time::Duration::from_secs(2), closed.cancelled())
         .await
         .unwrap();
@@ -632,7 +676,7 @@ impl MessageConn for GatedWrite {
 
 #[tokio::test(flavor = "current_thread")]
 async fn cancel_during_physical_write_closes_transport_and_reclaims_capacity() {
-    for saturated in [false, true] {
+    for (saturated, occupied_control) in [(false, false), (false, true), (true, false)] {
         let runtime = tokio::runtime::Handle::current();
         let method = Method {
             id: "fixture.Wait.Call".into(),
@@ -726,6 +770,23 @@ async fn cancel_during_physical_write_closes_transport_and_reclaims_capacity() {
         });
         entered.cancelled().await;
         let mut queued = Vec::new();
+        if occupied_control {
+            let endpoint = left.clone();
+            queued.push(tokio::spawn(async move {
+                endpoint.ping(CallContext::default()).await
+            }));
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while left.stats().pending_calls < 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                left.ping(CallContext::default()).await.unwrap_err().code,
+                "resource_exhausted"
+            );
+        }
         if saturated {
             // Fill the reserved control queue while a physical data write is blocked.
             for _ in 0..33 {

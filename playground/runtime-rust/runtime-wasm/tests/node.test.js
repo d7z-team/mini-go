@@ -138,8 +138,10 @@ test(
     });
     const vm = await MiniGo.create(await load("loop"));
     instances.push(vm);
+    const initialSteps = (await vm.stats()).steps;
     const execution = vm.start("default");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    while ((await vm.stats()).steps === initialSteps)
+      await new Promise((resolve) => setTimeout(resolve, 1));
     await vm.pause();
     const frames = await vm.stack();
     assert.ok(frames.length);
@@ -205,13 +207,22 @@ test(
     await host.close();
     await active.result.catch(() => {});
 
-    const late = await MiniGo.create(await load("host"), { providerModule });
+    const callChannel = new BroadcastChannel(`late-call-${crypto.randomUUID()}`);
+    t.after(() => callChannel.close());
+    const lateEntered = new Promise((resolve) => {
+      callChannel.onmessage = resolve;
+    });
+    const gatedProvider = new URL(providerModule);
+    gatedProvider.searchParams.set("callChannel", callChannel.name);
+    const late = await MiniGo.create(await load("host"), { providerModule: gatedProvider });
     instances.push(late);
     const call = late.start("default");
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await lateEntered;
     call.cancel();
+    callChannel.postMessage("release");
     await late.close();
     await call.result.catch(() => {});
+    callChannel.close();
     const aborted = new AbortController();
     const initializing = MiniGo.create(await load("init"), {
       signal: aborted.signal,

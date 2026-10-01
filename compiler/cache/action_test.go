@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/d7z-team/mini-go/compiler/target"
@@ -13,38 +14,41 @@ import (
 )
 
 func TestCompileActionLockSerializesSameKey(t *testing.T) {
-	store := New(NewMemoryBackend())
-	action := testCacheAction("example/main", "main", nil, nil)
-	releaseFirst, err := store.LockCompile(t.Context(), action)
-	if err != nil {
-		t.Fatal(err)
-	}
-	acquired := make(chan func())
-	var wait sync.WaitGroup
-	wait.Add(1)
-	go func() {
-		defer wait.Done()
-		release, err := store.LockCompile(t.Context(), action)
+	synctest.Test(t, func(t *testing.T) {
+		store := New(NewMemoryBackend())
+		action := testCacheAction("example/main", "main", nil, nil)
+		releaseFirst, err := store.LockCompile(t.Context(), action)
 		if err != nil {
-			t.Error(err)
-			return
+			t.Fatal(err)
 		}
-		acquired <- release
-	}()
-	select {
-	case release := <-acquired:
-		release()
-		t.Fatal("second caller acquired an active package action")
-	case <-time.After(10 * time.Millisecond):
-	}
-	releaseFirst()
-	select {
-	case release := <-acquired:
-		release()
-	case <-time.After(time.Second):
-		t.Fatal("second caller did not acquire released package action")
-	}
-	wait.Wait()
+		acquired := make(chan func())
+		var wait sync.WaitGroup
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			release, err := store.LockCompile(t.Context(), action)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			acquired <- release
+		}()
+		synctest.Wait()
+		select {
+		case release := <-acquired:
+			release()
+			t.Fatal("second caller acquired an active package action")
+		default:
+		}
+		releaseFirst()
+		select {
+		case release := <-acquired:
+			release()
+		case <-time.After(time.Second):
+			t.Fatal("second caller did not acquire released package action")
+		}
+		wait.Wait()
+	})
 }
 
 func TestCompileActionLocksAreIndependentAcrossStores(t *testing.T) {

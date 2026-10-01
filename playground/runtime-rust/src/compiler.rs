@@ -385,27 +385,40 @@ impl CompilerSession {
         }
         let (seconds, nanos) = self.clock.unix_time();
         let now_wall = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
-        let mut budget = timeout.as_nanos().min(30_000_000_000) as u64;
+        let mut budget = u64::try_from(timeout.as_nanos())
+            .map_err(|_| failure("invalid_argument", "request timeout is too large"))?;
         if let Some(deadline) = input.get("Deadline") {
             let deadline = deadline
                 .as_str()
-                .and_then(|v| v.parse::<i128>().ok())
+                .and_then(|v| v.parse::<i64>().ok())
                 .ok_or_else(|| failure("invalid_argument", "invalid request deadline"))?;
             budget =
-                budget.min(deadline.saturating_sub(now_wall).clamp(0, u64::MAX as i128) as u64);
+                budget.min((i128::from(deadline) - now_wall).clamp(0, u64::MAX as i128) as u64);
         }
         if budget == 0 {
             return Err(failure("deadline", "compiler request deadline"));
         }
+        let until = self
+            .clock
+            .monotonic_ns()
+            .checked_add(budget)
+            .ok_or_else(|| failure("invalid_argument", "request timeout is too large"))?;
+        let wall_deadline = i64::try_from(now_wall + i128::from(budget))
+            .map_err(|_| failure("invalid_argument", "request deadline is out of range"))?;
         let stage = if self.machine.is_none() {
-            self.machine = Some(Instance::with_bridge(
+            let mut machine = Instance::with_bridge(
                 self.program
                     .as_ref()
                     .expect("open compiler program")
                     .clone(),
                 ExecutionLimits::compiler(),
                 &self.control,
-            )?);
+            )?;
+            machine.set_environment(
+                self.clock.clone(),
+                Arc::new(crate::environment::SystemEntropy),
+            )?;
+            self.machine = Some(machine);
             self.state = SessionState::Initializing;
             Stage::Initialize
         } else {
@@ -416,8 +429,8 @@ impl CompilerSession {
             input,
             stage,
             token: String::new(),
-            until: self.clock.monotonic_ns().saturating_add(budget),
-            wall_deadline: (now_wall + i128::from(budget)).to_string(),
+            until,
+            wall_deadline: wall_deadline.to_string(),
             canceled: None,
         });
         Ok(())

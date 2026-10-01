@@ -205,7 +205,10 @@ compiler 按 import 选择依赖。装配错误保留当前工作区，`Editable
 
 `CompilerSession::bundled().await` 使用分发镜像，`new(image).await` 使用显式镜像。
 编译会话的原生异步 API 运行在启用时间支持的 Tokio runtime 中。
-调用期限上限为 30 秒，`call_with_timeout` 可缩短期限；恢复和分析共用当前调用的剩余期限。
+调用默认期限为 30 秒；`new_with_timeout`、`call_with_timeout` 和 `upgrade_with_timeout`
+可显式设置有限期限。构造的解码与初始化、升级的准备与恢复分别共用整个操作的期限，
+请求的恢复和分析共用当前调用的剩余期限；请求中的 `Deadline` 可进一步缩短预算。
+自建驱动使用 `with_clock` 时，会话与内部 VM 使用同一时钟。
 取消先通知 guest，最多给予 2 秒清理时间；丢弃调用 future 会丢弃未确认的会话状态。
 恢复仅重建已成功交付的源码输入，恢复后旧 snapshot 过期。`upgrade` 在候选会话中恢复并分析成功后切换。
 成功升级的 `UpgradeResult::cleanup_error` 单独报告旧 owner 的清理错误，此时新会话已经提交。

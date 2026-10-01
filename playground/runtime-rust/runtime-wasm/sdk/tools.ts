@@ -9,7 +9,10 @@ import {
 import type { Options, Stats } from "./types.js";
 import { deferred } from "./deferred.js";
 
-export type CompilerOptions = Pick<Options, "workerUrl" | "wasmUrl" | "signal">;
+export interface CompilerOptions extends Pick<Options, "workerUrl" | "wasmUrl" | "signal"> {
+  /** Request budget including queueing, initialization and recovery. Defaults to 30 seconds. */
+  timeoutMs?: number;
+}
 export interface CompilerUpgrade {
   cleanupError?: Failure;
 }
@@ -131,17 +134,21 @@ export class LanguageService {
   private constructor(
     private readonly factory: WorkerFactory,
     private image: Uint8Array,
-    private readonly options: CompilerOptions,
+    private readonly options: CompilerOptions & { timeoutMs: number },
   ) {}
   static async create(
     factory: WorkerFactory,
     image: Uint8Array | ArrayBuffer,
     options: CompilerOptions = {},
   ): Promise<LanguageService> {
+    const timeoutMs = options.timeoutMs === undefined ? 30_000 : options.timeoutMs;
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
+      throw new ToolsError("invalid_argument", "invalid compiler timeoutMs");
     if (image.byteLength > MAX_BYTES)
       throw new ToolsError("load_limit", "compiler image too large");
     const service = new LanguageService(factory, copyBytes(image), {
       ...options,
+      timeoutMs,
       signal: undefined,
       workerUrl: options.workerUrl?.toString(),
       wasmUrl: options.wasmUrl?.toString(),
@@ -302,7 +309,7 @@ export class LanguageService {
     bytes: number,
     action: (signal: AbortSignal, deadline: number) => Promise<T>,
     signal?: AbortSignal,
-    timeout = 30_000,
+    timeout = this.options.timeoutMs,
   ): Promise<T> {
     if (this.closing) return Promise.reject(new ToolsError("closed", "language service closed"));
     if (signal?.aborted) return Promise.reject(signal.reason);
@@ -365,7 +372,7 @@ export class LanguageService {
   request(input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolsResponse> {
     const text = JSON.stringify(input);
     const bytes = new TextEncoder().encode(text).byteLength;
-    let timeout = 30_000;
+    let timeout = this.options.timeoutMs;
     if (input.Deadline !== undefined) {
       try {
         timeout = Math.max(

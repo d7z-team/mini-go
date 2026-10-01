@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -143,50 +144,53 @@ func bindBorrowResource(t *testing.T, resource Resource) (*RouteSet, Method, Res
 }
 
 func TestRouteSetBorrowsReceiverAndArgumentsAtomicallyUntilInvokeReturns(t *testing.T) {
-	resource := &borrowGateResource{started: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
-	routes, read, ref := bindBorrowResource(t, resource)
-	defer routes.Shutdown(context.Background())
+	synctest.Test(t, func(t *testing.T) {
+		resource := &borrowGateResource{started: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
+		routes, read, ref := bindBorrowResource(t, resource)
+		defer routes.Shutdown(context.Background())
 
-	callDone := make(chan error, 1)
-	go func() {
-		_, err := routes.Call(context.Background(), Call{Method: read, Receiver: &ref, Arguments: []Value{{Type: ref.TypeHash, Resource: &ref}}})
-		callDone <- err
-	}()
-	select {
-	case <-resource.started:
-	case <-time.After(time.Second):
-		t.Fatal("resource invocation did not start")
-	}
-	routes.mu.Lock()
-	entry := routes.resources[ref.ObjectID]
-	if entry == nil || entry.borrowed != 1 {
+		callDone := make(chan error, 1)
+		go func() {
+			_, err := routes.Call(context.Background(), Call{Method: read, Receiver: &ref, Arguments: []Value{{Type: ref.TypeHash, Resource: &ref}}})
+			callDone <- err
+		}()
+		select {
+		case <-resource.started:
+		case <-time.After(time.Second):
+			t.Fatal("resource invocation did not start")
+		}
+		routes.mu.Lock()
+		entry := routes.resources[ref.ObjectID]
+		if entry == nil || entry.borrowed != 1 {
+			routes.mu.Unlock()
+			t.Fatalf("borrow count = %v", entry)
+		}
 		routes.mu.Unlock()
-		t.Fatalf("borrow count = %v", entry)
-	}
-	routes.mu.Unlock()
 
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- routes.Drop(context.Background(), ref) }()
-	select {
-	case <-resource.closed:
-		t.Fatal("resource closed while invocation was still running")
-	case <-time.After(25 * time.Millisecond):
-	}
-	select {
-	case err := <-closeDone:
-		t.Fatalf("close returned before invocation: %v", err)
-	default:
-	}
-	close(resource.release)
-	if err := <-callDone; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-closeDone; err != nil {
-		t.Fatal(err)
-	}
-	if resource.closes.Load() != 1 {
-		t.Fatalf("close count = %d", resource.closes.Load())
-	}
+		closeDone := make(chan error, 1)
+		go func() { closeDone <- routes.Drop(context.Background(), ref) }()
+		synctest.Wait()
+		select {
+		case <-resource.closed:
+			t.Fatal("resource closed while invocation was still running")
+		default:
+		}
+		select {
+		case err := <-closeDone:
+			t.Fatalf("close returned before invocation: %v", err)
+		default:
+		}
+		close(resource.release)
+		if err := <-callDone; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-closeDone; err != nil {
+			t.Fatal(err)
+		}
+		if resource.closes.Load() != 1 {
+			t.Fatalf("close count = %d", resource.closes.Load())
+		}
+	})
 }
 
 func TestRouteSetRejectsSynchronousResourceSelfClose(t *testing.T) {

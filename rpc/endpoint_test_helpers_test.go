@@ -10,11 +10,18 @@ type blockedWriteConn struct {
 	MessageConn
 	blocked atomic.Bool
 	release chan struct{}
+	entered chan struct{}
 	once    sync.Once
 }
 
 func (conn *blockedWriteConn) Write(ctx context.Context, message []byte) error {
 	if conn.blocked.Load() {
+		if conn.entered != nil {
+			select {
+			case conn.entered <- struct{}{}:
+			default:
+			}
+		}
 		select {
 		case <-conn.release:
 		case <-ctx.Done():

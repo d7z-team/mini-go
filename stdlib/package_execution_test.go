@@ -66,7 +66,7 @@ func TestPackageTestsExecuteInRuntime(t *testing.T) {
 			if err != nil {
 				t.Fatalf("instantiate test program: %v", err)
 			}
-			report, runErr := callEntryWithClock(instance, clock)
+			report, runErr := callEntryWithClock(t.Context(), instance, clock)
 			closeErr := instance.Close()
 			if runErr != nil {
 				t.Fatal(runErr)

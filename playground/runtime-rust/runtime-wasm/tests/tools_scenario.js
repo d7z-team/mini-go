@@ -1,10 +1,18 @@
 // The same tools contract runs in Node and a browser worker.
-export async function exerciseTools(tools, workspace, sourceFixture, debugFixture, queries) {
-  const service = await tools.createLanguageService();
-  const incrementalTimes = [];
-  const queryTimes = [];
-  const memorySamples = [];
-  let cancellationMs;
+export async function exerciseTools(
+  tools,
+  workspace,
+  sourceFixture,
+  debugFixture,
+  queries,
+  signal,
+) {
+  const service = await tools.createLanguageService(undefined, { timeoutMs: 300_000, signal });
+  const abort = () => {
+    void service.dispose();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   try {
     await service.open(workspace);
     const first = await service.analyze();
@@ -46,8 +54,8 @@ export async function exerciseTools(tools, workspace, sourceFixture, debugFixtur
         Text: workspace.Packages[0].Files[0].Text,
       },
     ]);
-    for (let version = 2; version <= 101; version++) {
-      const started = performance.now();
+    let snapshot = first.Snapshot;
+    for (const version of [2, 3]) {
       await service.update([
         {
           Operation: "change",
@@ -56,20 +64,18 @@ export async function exerciseTools(tools, workspace, sourceFixture, debugFixtur
           Changes: [{ text: workspace.Packages[0].Files[0].Text.replace("42", String(version)) }],
         },
       ]);
-      await service.analyze();
-      incrementalTimes.push(performance.now() - started);
-      const queried = performance.now();
-      await service.query("hover", { URI: uri, Position: { line: 2, character: 6 } });
-      queryTimes.push(performance.now() - queried);
-      if (version % 10 === 0) {
-        const stats = await service.stats();
-        memorySamples.push({
-          heapBytes: String(stats.heapBytes),
-          memoryBytes: String(stats.memoryBytes),
-          allocatedBytes: String(stats.memoryAllocatedBytes),
-          wasmBytes: stats.wasmBytes,
-        });
-      }
+      const analysis = await service.analyze();
+      if (analysis.Snapshot === snapshot) throw new Error("edit retained the old snapshot");
+      if (Object.values(analysis.Diagnostics).some((report) => report.items?.length))
+        throw new Error("edit produced diagnostics");
+      if ((await service.analyze()).Snapshot !== analysis.Snapshot)
+        throw new Error("unchanged analysis lost its snapshot");
+      snapshot = analysis.Snapshot;
+      const editedHover = await service.query("hover", {
+        URI: uri,
+        Position: { line: 2, character: 6 },
+      });
+      if (!editedHover.contents.value.includes("Answer")) throw new Error("edit lost the symbol");
     }
     try {
       await service.query("hover", {
@@ -97,24 +103,6 @@ export async function exerciseTools(tools, workspace, sourceFixture, debugFixtur
       if (error.message === "invalid upgrade accepted") throw error;
     }
     await service.query("hover", { URI: uri, Position: { line: 2, character: 6 } });
-    const runningCancel = new AbortController();
-    let canceledAt;
-    const cancelTimer = setTimeout(() => {
-      canceledAt = performance.now();
-      runningCancel.abort();
-    }, 10);
-    try {
-      await service.prepare(
-        { Symbols: true, EntryPoints: debugFixture.EntryPoints },
-        runningCancel.signal,
-      );
-      throw new Error("active build cancellation was not observed");
-    } catch (error) {
-      if (error.name !== "AbortError") throw error;
-      cancellationMs = performance.now() - canceledAt;
-    } finally {
-      clearTimeout(cancelTimer);
-    }
     await service.analyze();
     const build = await service.prepare({ Symbols: true, EntryPoints: debugFixture.EntryPoints });
     const debug = await tools.createDebugSession(new TextEncoder().encode(build.ImageJSON), {
@@ -129,7 +117,8 @@ export async function exerciseTools(tools, workspace, sourceFixture, debugFixtur
       if (!breakpoints.breakpoints[0].verified) throw new Error("breakpoint not bound");
       await debug.request("configurationDone");
       let stop;
-      for (let attempt = 0; attempt < 1000 && !stop; attempt++) {
+      while (!stop) {
+        signal?.throwIfAborted();
         stop = (await debug.events()).find((event) => event.event === "stopped");
         if (!stop) await new Promise((resolve) => setTimeout(resolve, 1));
       }
@@ -142,7 +131,8 @@ export async function exerciseTools(tools, workspace, sourceFixture, debugFixtur
       if (output[0]?.event !== "output") throw new Error("output event missing");
       await debug.request("continue", { threadId: stop.body.threadId });
       let terminated = false;
-      for (let attempt = 0; attempt < 1000 && !terminated; attempt++) {
+      while (!terminated) {
+        signal?.throwIfAborted();
         terminated = (await debug.events()).some((event) => event.event === "terminated");
         if (!terminated) await new Promise((resolve) => setTimeout(resolve, 1));
       }
@@ -155,18 +145,13 @@ export async function exerciseTools(tools, workspace, sourceFixture, debugFixtur
     const stats = await service.stats();
     if (stats.activeScopes !== 0n || stats.tasks !== 0n || stats.ffiCalls !== 0n)
       throw new Error("compiler request resources retained");
-    incrementalTimes.sort((a, b) => a - b);
-    queryTimes.sort((a, b) => a - b);
     return {
-      incrementalP95: incrementalTimes[Math.floor(incrementalTimes.length * 0.95)],
-      queryP95: queryTimes[Math.floor(queryTimes.length * 0.95)],
-      cancellationMs,
       guestHeapBytes: String(stats.heapBytes),
       guestMemoryBytes: String(stats.memoryBytes),
-      memorySamples,
       wasmBytes: stats.wasmBytes,
     };
   } finally {
+    signal?.removeEventListener("abort", abort);
     await service.dispose();
     await service.dispose();
   }

@@ -1,8 +1,10 @@
 // This scenario runs unchanged in Node and browser workers.
-async function compilerRequest(vm, values, request) {
-  const execution = vm.start("default", [
-    values.bytes(new TextEncoder().encode(JSON.stringify(request))),
-  ]);
+async function compilerRequest(vm, values, request, signal) {
+  const execution = vm.start(
+    "default",
+    [values.bytes(new TextEncoder().encode(JSON.stringify(request)))],
+    { signal },
+  );
   const snapshot = await execution.result;
   await execution.settled;
   const data = snapshot.roots[0].data;
@@ -46,11 +48,11 @@ async function compilerRequest(vm, values, request) {
   return response;
 }
 
-export async function exerciseCompiler(MiniGo, values, image) {
+export async function exerciseCompiler(MiniGo, values, image, signal) {
   const vm = await MiniGo.create(image, {
     workload: "compiler",
     maxSteps: 5_000_000,
-    signal: AbortSignal.timeout(20_000),
+    signal,
   });
   try {
     let envelope;
@@ -72,7 +74,7 @@ export async function exerciseCompiler(MiniGo, values, image) {
                 },
               ],
             };
-      envelope = await compilerRequest(vm, values, request);
+      envelope = await compilerRequest(vm, values, request, signal);
       if (i === 0 ? !envelope.Error : envelope.Error || envelope.Diagnostics?.length) {
         throw new Error(`compiler response: ${JSON.stringify(envelope)}`);
       }
@@ -86,25 +88,30 @@ export async function exerciseCompiler(MiniGo, values, image) {
   }
 }
 
-export async function exerciseCompiledRPC(MiniGo, values, image, source, address) {
-  const compiler = await MiniGo.create(image, { workload: "compiler" });
+export async function exerciseCompiledRPC(MiniGo, values, image, source, address, signal) {
+  const compiler = await MiniGo.create(image, { workload: "compiler", signal });
   let prepared;
   try {
-    const envelope = await compilerRequest(compiler, values, {});
-    prepared = await compilerRequest(compiler, values, {
-      Format: envelope.Format,
-      Version: envelope.Version,
-      Operation: "prepare",
-      Root: "sample",
-      Packages: [
-        {
-          Namespace: "module:sample",
-          ModulePath: "sample",
-          Files: [{ Path: "main.mgo", Text: source }],
-        },
-      ],
-      EntryPoints: [{ Name: "default", ModulePath: "sample", Function: "Main" }],
-    });
+    const envelope = await compilerRequest(compiler, values, {}, signal);
+    prepared = await compilerRequest(
+      compiler,
+      values,
+      {
+        Format: envelope.Format,
+        Version: envelope.Version,
+        Operation: "prepare",
+        Root: "sample",
+        Packages: [
+          {
+            Namespace: "module:sample",
+            ModulePath: "sample",
+            Files: [{ Path: "main.mgo", Text: source }],
+          },
+        ],
+        EntryPoints: [{ Name: "default", ModulePath: "sample", Function: "Main" }],
+      },
+      signal,
+    );
     if (prepared.Error || prepared.Diagnostics?.length || !prepared.ImageJSON)
       throw new Error(`RPC compilation failed: ${JSON.stringify(prepared)}`);
     await compiler.close();
@@ -113,9 +120,10 @@ export async function exerciseCompiledRPC(MiniGo, values, image, source, address
   }
   const vm = await MiniGo.create(new TextEncoder().encode(prepared.ImageJSON), {
     rpcUrl: `${address.replace("http", "ws")}/rpc`,
+    signal,
   });
   try {
-    const execution = vm.start("default");
+    const execution = vm.start("default", [], { signal });
     const result = await execution.result;
     await execution.settled;
     if (result.roots[0].data.Integer !== 42n) throw new Error("compiled RPC result must be 42");

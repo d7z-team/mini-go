@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -16,7 +17,10 @@ import { fileURLToPath } from "node:url";
 const repository = fileURLToPath(new URL("../", import.meta.url));
 
 async function fixture(t) {
-  const directory = await mkdtemp(path.join(tmpdir(), "mini-go-build-"));
+  // Make resolves CURDIR physically, including when TMPDIR is a symlink.
+  const directory = await realpath(
+    await mkdtemp(path.join(tmpdir(), "mini-go-build-")),
+  );
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = path.join(directory, "tools");
   await mkdir(bin);

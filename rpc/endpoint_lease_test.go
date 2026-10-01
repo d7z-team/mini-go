@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -33,67 +34,69 @@ func (l *renewableWorkLease) Invoke(ctx context.Context, _ Method, _ []Value) (*
 func (*renewableWorkLease) Close() error { return nil }
 
 func TestEndpointRenewalKeepsCallDecisionAndCloseAlive(t *testing.T) {
-	const ttl = 300 * time.Millisecond
-	resource := &gatedCloseResource{started: make(chan struct{}), finish: make(chan struct{})}
-	lease := &renewableWorkLease{callStarted: make(chan struct{}), callRelease: make(chan struct{}), decisionStarted: make(chan struct{}), decisionRelease: make(chan struct{}), resource: resource}
-	releaseCall := sync.OnceFunc(func() { close(lease.callRelease) })
-	releaseDecision := sync.OnceFunc(func() { close(lease.decisionRelease) })
-	releaseClose := sync.OnceFunc(func() { close(resource.finish) })
-	method := Method{ID: "lease::Service.Open", Service: "lease::Service", Name: "Open", ContractHash: testContractHash}
-	binder, err := NewLocalBinder(LocalBinderOptions{}, localBinderProvider{contract: testContract(method), bind: func(context.Context, BindRequest) (ProviderLease, error) { return lease, nil }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, server := openEndpointPair(t, nil, binder, EndpointOptions{LeaseTTL: ttl, AdmissionTimeout: 100 * time.Millisecond})
-	t.Cleanup(func() {
+	synctest.Test(t, func(t *testing.T) {
+		const ttl = 300 * time.Millisecond
+		resource := &gatedCloseResource{started: make(chan struct{}), finish: make(chan struct{})}
+		lease := &renewableWorkLease{callStarted: make(chan struct{}), callRelease: make(chan struct{}), decisionStarted: make(chan struct{}), decisionRelease: make(chan struct{}), resource: resource}
+		releaseCall := sync.OnceFunc(func() { close(lease.callRelease) })
+		releaseDecision := sync.OnceFunc(func() { close(lease.decisionRelease) })
+		releaseClose := sync.OnceFunc(func() { close(resource.finish) })
+		method := Method{ID: "lease::Service.Open", Service: "lease::Service", Name: "Open", ContractHash: testContractHash}
+		binder, err := NewLocalBinder(LocalBinderOptions{}, localBinderProvider{contract: testContract(method), bind: func(context.Context, BindRequest) (ProviderLease, error) { return lease, nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client, server := openEndpointPair(t, nil, binder, EndpointOptions{LeaseTTL: ttl, AdmissionTimeout: 100 * time.Millisecond})
+		t.Cleanup(func() {
+			releaseCall()
+			releaseDecision()
+			releaseClose()
+			_ = client.Close()
+			_ = server.Close()
+			_ = client.Shutdown(context.Background())
+			_ = server.Shutdown(context.Background())
+		})
+		routes, err := client.Bind(t.Context(), testBindRequest(method))
+		if err != nil {
+			t.Fatal(err)
+		}
+		called := make(chan *Result, 1)
+		errors := make(chan error, 3)
+		go func() { result, err := routes.Call(t.Context(), Call{Method: method}); called <- result; errors <- err }()
+		<-lease.callStarted
+		time.Sleep(2 * ttl)
+		if err := client.endpointError(); err != nil {
+			t.Fatal(err)
+		}
 		releaseCall()
+		result := <-called
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+		go func() { errors <- result.Accept(t.Context()) }()
+		<-lease.decisionStarted
+		time.Sleep(2 * ttl)
+		if err := client.endpointError(); err != nil {
+			t.Fatal(err)
+		}
 		releaseDecision()
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+		go func() { errors <- routes.Drop(t.Context(), *result.Values[0].Resource) }()
+		<-resource.started
+		time.Sleep(2 * ttl)
+		if err := client.endpointError(); err != nil {
+			t.Fatal(err)
+		}
 		releaseClose()
-		_ = client.Close()
-		_ = server.Close()
-		_ = client.Shutdown(context.Background())
-		_ = server.Shutdown(context.Background())
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+		if resource.calls.Load() != 1 {
+			t.Fatal("close was repeated across renewal rounds")
+		}
 	})
-	routes, err := client.Bind(t.Context(), testBindRequest(method))
-	if err != nil {
-		t.Fatal(err)
-	}
-	called := make(chan *Result, 1)
-	errors := make(chan error, 3)
-	go func() { result, err := routes.Call(t.Context(), Call{Method: method}); called <- result; errors <- err }()
-	<-lease.callStarted
-	time.Sleep(2 * ttl)
-	if err := client.endpointError(); err != nil {
-		t.Fatal(err)
-	}
-	releaseCall()
-	result := <-called
-	if err := <-errors; err != nil {
-		t.Fatal(err)
-	}
-	go func() { errors <- result.Accept(t.Context()) }()
-	<-lease.decisionStarted
-	time.Sleep(2 * ttl)
-	if err := client.endpointError(); err != nil {
-		t.Fatal(err)
-	}
-	releaseDecision()
-	if err := <-errors; err != nil {
-		t.Fatal(err)
-	}
-	go func() { errors <- routes.Drop(t.Context(), *result.Values[0].Resource) }()
-	<-resource.started
-	time.Sleep(2 * ttl)
-	if err := client.endpointError(); err != nil {
-		t.Fatal(err)
-	}
-	releaseClose()
-	if err := <-errors; err != nil {
-		t.Fatal(err)
-	}
-	if resource.calls.Load() != 1 {
-		t.Fatal("close was repeated across renewal rounds")
-	}
 }
 
 func TestEndpointRenewalAcknowledgementPreservesTargetAndTime(t *testing.T) {

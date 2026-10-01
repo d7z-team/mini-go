@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn compiler_instance(max_steps: i64) -> Instance {
+fn compiler_instance(max_steps: i64, deadline: Instant) -> Instance {
     let image = DecodedImage::decode_gzip(
         include_bytes!("../assets/compiler.json.gz"),
         LoadLimits::compiler(),
@@ -25,11 +25,11 @@ fn compiler_instance(max_steps: i64) -> Instance {
         },
     )
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
     while vm.poll_initialize(&Cancellation::default(), 4096).unwrap() != PollStatus::Ready {
         assert!(
             Instant::now() < deadline,
-            "compiler initialization deadline"
+            "compiler initialization watchdog: {:?}",
+            vm.stats()
         );
     }
     vm
@@ -37,7 +37,8 @@ fn compiler_instance(max_steps: i64) -> Instance {
 
 #[test]
 fn compiler_workload_initializes_and_checks_source() {
-    let mut vm = compiler_instance(5_000_000);
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let mut vm = compiler_instance(5_000_000, deadline);
     let mut envelope = serde_json::json!({});
     for index in 0..3 {
         let request = if index == 0 {
@@ -50,9 +51,12 @@ fn compiler_workload_initializes_and_checks_source() {
         };
         vm.start_bytes("default", &serde_json::to_vec(&request).unwrap())
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(20);
         while vm.poll_steps(4096).unwrap() != PollStatus::Ready {
-            assert!(Instant::now() < deadline, "compiler request deadline");
+            if Instant::now() >= deadline {
+                let stats = vm.stats();
+                vm.close().unwrap();
+                panic!("compiler request {index} watchdog: {stats:?}");
+            }
         }
         let snapshot = vm.snapshot_results(Default::default()).unwrap();
         envelope = serde_json::from_slice(&snapshot.bytes(&snapshot.roots[0]).unwrap()).unwrap();
@@ -222,6 +226,7 @@ async fn compiler_prepares_rpc_source_and_executes_owned_host_call() {
     rpc::VmExecutor::new(handle, 1)
         .unwrap()
         .run(move || {
+            let deadline = Instant::now() + Duration::from_secs(600);
             let workloads: serde_json::Value =
                 serde_json::from_str(include_str!("../../../testdata/language/workloads.json"))
                     .unwrap();
@@ -231,9 +236,15 @@ async fn compiler_prepares_rpc_source_and_executes_owned_host_call() {
                 .iter()
                 .find(|workload| workload["Name"] == "rpc")
                 .unwrap()["Source"];
-            let mut compiler = compiler_instance(ExecutionLimits::compiler().max_steps);
+            let mut compiler = compiler_instance(ExecutionLimits::compiler().max_steps, deadline);
             compiler.start_bytes("default", b"{}").unwrap();
-            while compiler.poll_steps(4096).unwrap() != PollStatus::Ready {}
+            while compiler.poll_steps(4096).unwrap() != PollStatus::Ready {
+                assert!(
+                    Instant::now() < deadline,
+                    "compiler handshake watchdog: {:?}",
+                    compiler.stats()
+                );
+            }
             let envelope = compiler.snapshot_results(Default::default()).unwrap();
             let envelope: serde_json::Value =
                 serde_json::from_slice(&envelope.bytes(&envelope.roots[0]).unwrap()).unwrap();
@@ -248,8 +259,7 @@ async fn compiler_prepares_rpc_source_and_executes_owned_host_call() {
             compiler
                 .start_bytes("default", &serde_json::to_vec(&request).unwrap())
                 .unwrap();
-            // The compiler's deterministic step/heap limits bound this test.
-            // Wall-clock throughput is reported independently by benchmarks.
+            // Step/heap limits bound guest work; the watchdog bounds the whole test.
             while compiler.poll_steps(4096).unwrap_or_else(|error| {
                 panic!(
                     "RPC prepare failed after {:?}, {} steps: {error}",
@@ -257,7 +267,13 @@ async fn compiler_prepares_rpc_source_and_executes_owned_host_call() {
                     compiler.steps()
                 )
             }) != PollStatus::Ready
-            {}
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "RPC prepare watchdog: {:?}",
+                    compiler.stats()
+                );
+            }
             eprintln!(
                 "RPC prepare: {:?}, {} steps",
                 start.elapsed(),
@@ -283,7 +299,6 @@ async fn compiler_prepares_rpc_source_and_executes_owned_host_call() {
                     .unwrap();
             vm.start("default", Vec::new()).unwrap();
             let wake = vm.wake();
-            let deadline = Instant::now() + Duration::from_secs(15);
             loop {
                 assert!(Instant::now() < deadline, "compiled RPC did not settle");
                 let epoch = wake.epoch();

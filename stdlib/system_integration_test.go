@@ -60,7 +60,7 @@ func TestSystemCapabilitiesExecuteInRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, runErr := callEntryWithClock(instance, clock)
+	_, runErr := callEntryWithClock(t.Context(), instance, clock)
 	closeErr := instance.Close()
 	if runErr != nil {
 		t.Fatal(runErr)

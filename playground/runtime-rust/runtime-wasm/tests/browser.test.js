@@ -133,8 +133,10 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
               await vm.close();
             }
             const vm = await MiniGo.create(await load("loop"));
+            const initialSteps = (await vm.stats()).steps;
             const execution = vm.start("default");
-            await new Promise((resolve) => setTimeout(resolve, 30));
+            while ((await vm.stats()).steps === initialSteps)
+              await new Promise((resolve) => setTimeout(resolve, 1));
             await vm.pause();
             const frames = await vm.stack();
             check(frames.length > 0, "paused stack available");
@@ -169,14 +171,20 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
             pending.cancel();
             await pending.result.catch(() => {});
             await host.close();
+            const callChannel = new BroadcastChannel(`late-call-${crypto.randomUUID()}`);
+            const lateEntered = new Promise((resolve) => {
+              callChannel.onmessage = resolve;
+            });
             const late = await MiniGo.create(await load("host"), {
-              providerModule: `${location.origin}/playground/runtime-rust/runtime-wasm/tests/provider.js`,
+              providerModule: `${location.origin}/playground/runtime-rust/runtime-wasm/tests/provider.js?callChannel=${callChannel.name}`,
             });
             const lateCall = late.start("default");
-            await new Promise((resolve) => setTimeout(resolve, 5));
+            await lateEntered;
             lateCall.cancel();
+            callChannel.postMessage("release");
             await late.close();
             await lateCall.result.catch(() => {});
+            callChannel.close();
             const initAbort = new AbortController();
             const initializing = MiniGo.create(await load("init"), {
               signal: initAbort.signal,

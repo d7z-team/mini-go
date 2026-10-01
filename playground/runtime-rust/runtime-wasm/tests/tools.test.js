@@ -12,14 +12,14 @@ const workloads = JSON.parse(
 for (const workload of workloads) {
   test(
     `Node compiler workload ${workload.Name} preserves warm snapshots`,
-    { timeout: 60_000 },
+    { timeout: 600_000 },
     async (t) => {
       t.diagnostic(JSON.stringify(await exerciseCompilerWorkload(tools, workload, t.signal)));
     },
   );
   test(
     `browser compiler workload ${workload.Name} preserves warm snapshots`,
-    { timeout: 60_000 },
+    { timeout: 600_000 },
     async (t) => {
       const page = await createBrowserPage(t, {
         "/workloads.js": new URL("./compiler_workloads_scenario.js", import.meta.url),
@@ -47,16 +47,18 @@ const debugFixture = JSON.parse(
 );
 test(
   "Node tools use the distributed compiler and shared language/source fixtures",
-  { timeout: 180_000 },
+  { timeout: 600_000 },
   async (t) => {
     t.diagnostic(
-      JSON.stringify(await exerciseTools(tools, workspace, sourceFixture, debugFixture, queries)),
+      JSON.stringify(
+        await exerciseTools(tools, workspace, sourceFixture, debugFixture, queries, t.signal),
+      ),
     );
   },
 );
 test(
   "browser tools use the distributed compiler and shared language/source fixtures",
-  { timeout: 180_000 },
+  { timeout: 600_000 },
   async (t) => {
     const page = await createBrowserPage(t, {
       "/scenario.js": new URL("./tools_scenario.js", import.meta.url),

@@ -9,12 +9,13 @@ export async function openBrowserPage(t, url) {
     await browser?.close();
   });
   t.signal.addEventListener("abort", () => void browser?.close(), { once: true });
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, timeout: 300_000 });
   if (t.signal.aborted) {
     await browser.close();
     t.signal.throwIfAborted();
   }
   const page = await browser.newPage();
+  page.setDefaultTimeout(300_000);
   await page.goto(url);
   return page;
 }
