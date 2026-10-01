@@ -12,7 +12,7 @@ WebAssembly SDK. The `mini-go` CLI also runs `.mgo` files without a host applica
 
 ## Features
 
-- **Go-like language**: generics, closures, channels and select, defer/panic/recover, reflection, and embedded resources.
+- **Go-like language**: generics and generic methods, promoted-field literals, closures, channels and select, defer/panic/recover, reflection, and embedded resources.
 - **Controlled execution**: isolated instances, bounded parallelism, cancellation, limits, observability, and hot patching.
 - **Host integration**: FFI capabilities and generated Go, Mini-Go, Rust, and TypeScript MRPC bindings.
 - **Portable runtime**: native Go and Rust backends plus a TypeScript SDK for browsers and Node.js.
@@ -23,7 +23,8 @@ See the [standard library reference](./docs/reference/README.md) for supported A
 
 ## Installation
 
-Mini-Go requires Go 1.26 or later.
+The host toolchain requires Go 1.26 or later. Mini-Go's language and standard library have their own
+support scope; see [language and standard library](./USAGE.md#语言与标准库).
 
 ```bash
 go install github.com/d7z-team/mini-go/cmd/mini-go@latest

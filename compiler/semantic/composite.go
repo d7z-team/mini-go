@@ -65,6 +65,7 @@ func (a *analyzer) compositeInfo(expr *ast.Expression) CompositeInfo {
 
 func (a *analyzer) analyzeCompositeElements(expr *ast.Expression, scope ScopeID) {
 	composite := a.compositeInfo(expr)
+	composite.Initializers = make([]Selection, len(expr.Items))
 	a.info.Composites[expr.NodeID] = composite
 	analyzeValue := func(value *ast.Expression, target types.TypeRef) {
 		if value.Kind == ast.ExprComposite && (value.Type == nil || value.Type.Kind == ast.TypeInvalid) && target.Valid() {
@@ -84,11 +85,37 @@ func (a *analyzer) analyzeCompositeElements(expr *ast.Expression, scope ScopeID)
 		if composite.Shape == types.Struct {
 			if entry.Key == nil && i < len(composite.Fields) {
 				target = composite.Fields[i].Type
-			} else if entry.Key != nil {
-				for _, field := range composite.Fields {
-					if field.Name == entry.Key.Name {
-						target = field.Type
-						break
+			} else if entry.Key != nil && entry.Key.Kind == ast.ExprIdent {
+				candidate, found := a.lookupSelector(composite.Type, entry.Key.Name, false)
+				if candidate.ambiguous {
+					a.addDiagnostic("semantic.composite.ambiguous", "struct initializer names an ambiguous promoted field", entry.Key.Span)
+				} else if candidate.inaccessible {
+					a.addDiagnostic("semantic.composite.unexported", "struct initializer names an inaccessible field", entry.Key.Span)
+				}
+				if found && candidate.selection.Kind == SelectionField {
+					selection := candidate.selection
+					target = candidate.fieldType
+					composite.Initializers[i] = selection
+					a.info.Selections[entry.Key.NodeID] = selection
+					current := composite.Type
+					for depth, index := range selection.Index {
+						if depth > 0 && a.info.Relations.View(current).Shape() == types.Pointer {
+							a.addDiagnostic("semantic.composite.embedded_pointer", "cannot initialize a promoted field through an embedded pointer", entry.Key.Span)
+							break
+						}
+						current = a.structFields(current)[index].Type
+					}
+					for _, previous := range composite.Initializers[:i] {
+						if len(previous.Index) == 0 {
+							continue
+						}
+						prefix := true
+						for j := 0; j < len(previous.Index) && j < len(selection.Index); j++ {
+							prefix = prefix && previous.Index[j] == selection.Index[j]
+						}
+						if prefix && len(previous.Index) != len(selection.Index) {
+							a.addDiagnostic("semantic.composite.overlap", "struct initializers overlap an embedded field", entry.Key.Span)
+						}
 					}
 				}
 			}
@@ -97,4 +124,5 @@ func (a *analyzer) analyzeCompositeElements(expr *ast.Expression, scope ScopeID)
 		}
 		analyzeValue(&entry.Value, target)
 	}
+	a.info.Composites[expr.NodeID] = composite
 }

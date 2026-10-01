@@ -115,6 +115,8 @@ type FuncDecl struct {
 	Results    []Field     `json:"results,omitempty"`
 	Body       BlockStmt   `json:"body,omitempty"`
 	Template   bool        `json:"template,omitempty"`
+	// DefinitionModule preserves the lexical owner of a checked template.
+	DefinitionModule string `json:"definition_module,omitempty"`
 }
 
 type TypeParam struct {
@@ -126,13 +128,15 @@ type TypeParam struct {
 }
 
 type Field struct {
-	NodeID   NodeID      `json:"node_id,omitempty"`
-	Name     string      `json:"name,omitempty"`
-	NameID   Identifier  `json:"name_identifier,omitempty"`
-	Type     TypeExpr    `json:"type"`
-	Tag      string      `json:"tag,omitempty"`
-	Variadic bool        `json:"variadic,omitempty"`
-	Span     source.Span `json:"span,omitempty"`
+	NodeID NodeID `json:"node_id,omitempty"`
+	Name   string `json:"name,omitempty"`
+	// EmbeddedName retains the source field name when its generic type is specialized.
+	EmbeddedName string      `json:"embedded_name,omitempty"`
+	NameID       Identifier  `json:"name_identifier,omitempty"`
+	Type         TypeExpr    `json:"type"`
+	Tag          string      `json:"tag,omitempty"`
+	Variadic     bool        `json:"variadic,omitempty"`
+	Span         source.Span `json:"span,omitempty"`
 }
 
 type TypeKind string
@@ -271,26 +275,30 @@ const (
 )
 
 type Expression struct {
-	NodeID     NodeID       `json:"node_id,omitempty"`
-	Kind       ExprKind     `json:"kind,omitempty"`
-	Span       source.Span  `json:"span,omitempty"`
-	Name       string       `json:"name,omitempty"`
-	NameID     Identifier   `json:"name_identifier,omitempty"`
-	Literal    string       `json:"literal,omitempty"`
-	Type       *TypeExpr    `json:"type,omitempty"`
-	TypeSwitch bool         `json:"type_switch,omitempty"`
-	Operator   string       `json:"operator,omitempty"`
-	Left       *Expression  `json:"left,omitempty"`
-	Right      *Expression  `json:"right,omitempty"`
-	Operand    *Expression  `json:"operand,omitempty"`
-	Callee     *Expression  `json:"callee,omitempty"`
-	Args       []Expression `json:"args,omitempty"`
-	Ellipsis   bool         `json:"ellipsis,omitempty"`
-	Field      string       `json:"field,omitempty"`
-	Index      *Expression  `json:"index,omitempty"`
-	Start      *Expression  `json:"start,omitempty"`
-	End        *Expression  `json:"end,omitempty"`
-	Max        *Expression  `json:"max,omitempty"`
+	NodeID NodeID      `json:"node_id,omitempty"`
+	Kind   ExprKind    `json:"kind,omitempty"`
+	Span   source.Span `json:"span,omitempty"`
+	Name   string      `json:"name,omitempty"`
+	// FunctionModule/FunctionID bind compiler-generated references to their
+	// definition. Source parsing never creates these fields.
+	FunctionModule string       `json:"function_module,omitempty"`
+	FunctionID     string       `json:"function_id,omitempty"`
+	NameID         Identifier   `json:"name_identifier,omitempty"`
+	Literal        string       `json:"literal,omitempty"`
+	Type           *TypeExpr    `json:"type,omitempty"`
+	TypeSwitch     bool         `json:"type_switch,omitempty"`
+	Operator       string       `json:"operator,omitempty"`
+	Left           *Expression  `json:"left,omitempty"`
+	Right          *Expression  `json:"right,omitempty"`
+	Operand        *Expression  `json:"operand,omitempty"`
+	Callee         *Expression  `json:"callee,omitempty"`
+	Args           []Expression `json:"args,omitempty"`
+	Ellipsis       bool         `json:"ellipsis,omitempty"`
+	Field          string       `json:"field,omitempty"`
+	Index          *Expression  `json:"index,omitempty"`
+	Start          *Expression  `json:"start,omitempty"`
+	End            *Expression  `json:"end,omitempty"`
+	Max            *Expression  `json:"max,omitempty"`
 	// Items keeps keyed and unkeyed composite operands in source order.
 	Items      []KeyValue  `json:"items,omitempty"`
 	EmbedFiles []EmbedFile `json:"embed_files,omitempty"`

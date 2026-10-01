@@ -274,10 +274,10 @@ func TestLowerKeyedArrayCompositeFillsZeros(t *testing.T) {
 			t.Fatalf("expected zero Int64 at index %d, got %#v", index, array.Elements[index])
 		}
 	}
-	if array.Elements[2].Kind != ir.ExprLiteral || string(array.Elements[2].Value) != "40" {
+	if array.Elements[2].Kind != ir.ExprLiteral || string(array.Elements[2].Value.JSON()) != "40" {
 		t.Fatalf("expected literal 40 at index 2, got %#v", array.Elements[2])
 	}
-	if array.Elements[4].Kind != ir.ExprLiteral || string(array.Elements[4].Value) != "2" {
+	if array.Elements[4].Kind != ir.ExprLiteral || string(array.Elements[4].Value.JSON()) != "2" {
 		t.Fatalf("expected literal 2 at index 4, got %#v", array.Elements[4])
 	}
 }
@@ -335,7 +335,7 @@ func TestLowerMixedArrayCompositePreservesItemOrder(t *testing.T) {
 		t.Fatalf("expected 5-element mixed array expression, got %#v", array)
 	}
 	for index, literal := range map[int]string{0: "1", 3: "4", 4: "5"} {
-		if array.Elements[index].Kind != ir.ExprLiteral || string(array.Elements[index].Value) != literal {
+		if array.Elements[index].Kind != ir.ExprLiteral || string(array.Elements[index].Value.JSON()) != literal {
 			t.Fatalf("expected literal %s at index %d, got %#v", literal, index, array.Elements[index])
 		}
 	}
@@ -434,7 +434,7 @@ func TestLowerSliceShorthandDefaults(t *testing.T) {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
 	lowDefault := fn.Body[1].Expr
-	if lowDefault.Kind != ir.ExprSlice || lowDefault.Start == nil || lowDefault.Start.Kind != ir.ExprLiteral || string(lowDefault.Start.Value) != "0" {
+	if lowDefault.Kind != ir.ExprSlice || lowDefault.Start == nil || lowDefault.Start.Kind != ir.ExprLiteral || string(lowDefault.Start.Value.JSON()) != "0" {
 		t.Fatalf("expected missing low to default to zero literal, got %#v", lowDefault)
 	}
 	highDefault := fn.Body[2].Expr
@@ -446,7 +446,7 @@ func TestLowerSliceShorthandDefaults(t *testing.T) {
 	}
 	fullDefault := fn.Body[3].Expr
 	if fullDefault.Kind != ir.ExprLet || fullDefault.Body == nil || fullDefault.Body.Start == nil ||
-		fullDefault.Body.Start.Kind != ir.ExprLiteral || string(fullDefault.Body.Start.Value) != "0" ||
+		fullDefault.Body.Start.Kind != ir.ExprLiteral || string(fullDefault.Body.Start.Value.JSON()) != "0" ||
 		fullDefault.Body.End == nil || fullDefault.Body.End.Kind != ir.ExprLen {
 		t.Fatalf("expected full slice shorthand to default low/high, got %#v", fullDefault)
 	}

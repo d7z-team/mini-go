@@ -31,6 +31,27 @@ export async function exerciseCompilerWorkload(tools, workload, signal) {
     const second = await service.analyze(signal);
     if (first.Snapshot !== second.Snapshot) throw new Error("unchanged analysis lost its snapshot");
     const measurement = { name: workload.Name, openMs, warmMs: performance.now() - analyzed };
+    if (workload.Name === "generic-methods") {
+      const lines = workload.Source.split("\n");
+      const line = lines.findIndex((text) => text.includes("X: 42"));
+      const query = { URI: uri, Position: { line, character: lines[line].indexOf("X: 42") } };
+      const definitions = await service.query("definition", query, signal);
+      if (definitions.length !== 1 || definitions[0].range.start.line !== 1)
+        throw new Error("promoted field declaration is missing");
+      const hover = await service.query("hover", query, signal);
+      if (!hover.contents.value.includes("X Int"))
+        throw new Error("promoted field type is missing");
+      const built = await service.prepare(
+        {
+          Symbols: true,
+          EntryPoints: [{ Name: "default", ModulePath: "sample", Function: "Main" }],
+        },
+        signal,
+      );
+      if (built.Error || built.Diagnostics?.length || !built.ImageJSON || !built.SymbolsJSON)
+        throw new Error(JSON.stringify(built));
+      if (!JSON.parse(built.ImageJSON).hash) throw new Error("compiled image identity is missing");
+    }
     if (workload.Name === "rpc") {
       const hover = await service.query(
         "hover",

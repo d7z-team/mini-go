@@ -43,6 +43,7 @@ Package bytes implements functions for the manipulation of byte slices. It is an
 - [func ContainsRune](#func-containsrune)
 - [func Count](#func-count)
 - [func Cut](#func-cut)
+- [func CutLast](#func-cutlast)
 - [func CutPrefix](#func-cutprefix)
 - [func CutSuffix](#func-cutsuffix)
 - [func Equal](#func-equal)
@@ -171,6 +172,14 @@ func Cut(s []byte, sep []byte) ([]byte, []byte, bool)
 Cut slices s around the first instance of sep, returning the text before and after sep. The found result reports whether sep appears in s. If sep does not appear in s, cut returns s, nil, false.
 
 Cut returns slices of the original slice s, not copies.
+
+### func CutLast
+
+```go
+func CutLast(s, sep []byte) (before, after []byte, found bool)
+```
+
+CutLast slices s around the last instance of sep. The returned slices share s's storage. If sep is absent, it returns s, nil, false.
 
 ### func CutPrefix
 

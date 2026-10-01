@@ -18,7 +18,7 @@ func (a *analyzer) analyzeExpr(expr *ast.Expression, scope ScopeID) {
 	if expr.Type != nil {
 		info.Type = a.typeOf(*expr.Type)
 	}
-	if expr.Kind == ast.ExprIdent {
+	if expr.Kind == ast.ExprIdent && expr.FunctionID == "" {
 		if expr.Name == "_" {
 			info.Category = ValueBlank
 		}
@@ -48,6 +48,10 @@ func (a *analyzer) analyzeExpr(expr *ast.Expression, scope ScopeID) {
 	}
 	a.info.Exprs[expr.NodeID] = info
 	a.analyzeType(expr.Type, scope)
+	if expr.FunctionID != "" {
+		info.Type = a.resolvedTypePtr(expr.Type)
+		a.info.Exprs[expr.NodeID] = info
+	}
 	a.analyzeExpr(expr.Left, scope)
 	a.analyzeExpr(expr.Right, scope)
 	a.analyzeExpr(expr.Operand, scope)
@@ -87,7 +91,9 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 			info.Signature = &signature
 		}
 	case ast.ExprLiteral:
-		info = a.finalizeLiteral(expr, info)
+		info.Type = a.resolvedTypePtr(expr.Type)
+		info.Mode = ExprConstant
+		info.Untyped = true
 	case ast.ExprUnary:
 		info = a.finalizeUnary(expr, info)
 	case ast.ExprBinary:
@@ -103,8 +109,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 			info.Mode = ExprValue
 		}
 	case ast.ExprComposite:
-		composite := a.compositeInfo(expr)
-		a.info.Composites[expr.NodeID] = composite
+		composite := a.info.Composites[expr.NodeID]
 		if composite.Type.Valid() {
 			info.Type = composite.Type
 			info.Mode = ExprValue
@@ -207,7 +212,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 					bound, _, bounded := view.Array()
 					if primitive, ok := view.Primitive(); ok && primitive == types.PrimitiveString {
 						if textValue, ok := a.evaluateConstantExpression(*expr.Operand, a.info.NodeScopes[expr.NodeID]); ok {
-							if text, err := strconv.Unquote(textValue.Text); err == nil {
+							if text, ok := textValue.StringValue(); ok {
 								bound, bounded = int64(len(text)), true
 							}
 						}

@@ -1,11 +1,11 @@
 package lower
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 )
 
@@ -102,7 +102,7 @@ func (l *lowerer) lowerSelectCommunication(stmt ast.Statement, defaultIndex int,
 	selectedRef := ir.Expression{Kind: ir.ExprLocal, Local: selectedLocal}
 	out = append(out, selection)
 	for ordinal, caseIndex := range commCaseIndexes {
-		index := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(strconv.FormatInt(int64(ordinal), 10))}
+		index := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(strconv.FormatInt(int64(ordinal), 10))}
 		cond := ir.Expression{Kind: ir.ExprBinary, Operator: "==", Left: &selectedRef, Right: &index}
 		out = append(out, ir.Statement{Kind: ir.StmtJumpIf, Expr: cond, Label: caseLabels[caseIndex]})
 	}

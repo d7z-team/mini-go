@@ -1,0 +1,27 @@
+package rand_test
+
+import (
+	rand "math/rand/v2"
+	"testing"
+)
+
+type count int32
+
+func TestRandN(t *testing.T) {
+	a, b := rand.New(rand.NewPCG(1, 2)), rand.New(rand.NewPCG(1, 2))
+	for range 30 {
+		value := a.N(count(97))
+		if value != count(b.Int32N(97)) || value < 0 || value >= 97 {
+			t.Fatal("receiver source or type", value)
+		}
+	}
+	if a.N(uint64(1)) != 0 {
+		t.Fatal("unit bound")
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("invalid bound did not panic")
+		}
+	}()
+	a.N(0)
+}

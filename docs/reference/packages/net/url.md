@@ -31,6 +31,7 @@ See RFC 3986. This package generally follows RFC 3986, except where it deviates 
 - [func QueryUnescape](#func-queryunescape)
 - [type URL](#type-url)
   - [URL.AppendBinary](#func-urlappendbinary)
+  - [URL.Clone](#func-urlclone)
   - [URL.EscapedFragment](#func-urlescapedfragment)
   - [URL.EscapedPath](#func-urlescapedpath)
   - [URL.Hostname](#func-urlhostname)
@@ -53,6 +54,7 @@ See RFC 3986. This package generally follows RFC 3986, except where it deviates 
   - [Userinfo.Username](#func-userinfousername)
 - [type Values](#type-values)
   - [Values.Add](#func-valuesadd)
+  - [Values.Clone](#func-valuesclone)
   - [Values.Del](#func-valuesdel)
   - [Values.Encode](#func-valuesencode)
   - [Values.Get](#func-valuesget)
@@ -369,6 +371,14 @@ func (u *URL) AppendBinary(dst []byte) ([]byte, error)
 
 AppendBinary appends the binary representation of the URL to dst.
 
+#### func URL.Clone
+
+```go
+func (u *URL) Clone() *URL
+```
+
+Clone creates a deep copy of the fields of u.
+
 #### func URL.EscapedFragment
 
 ```go
@@ -547,6 +557,14 @@ func (v Values) Add(key, value string)
 ```
 
 Add adds the value to key. It appends to any existing values associated with key.
+
+#### func Values.Clone
+
+```go
+func (v Values) Clone() Values
+```
+
+Clone creates a deep copy of the values, preserving nil maps and slices.
 
 #### func Values.Del
 

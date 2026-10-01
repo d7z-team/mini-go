@@ -1,0 +1,5 @@
+package lib
+
+import renamed "example/other"
+
+func Imported[T ~int](x T) T { return renamed.Identity(T(renamed.Value(int(x)) + renamed.Offset)) }

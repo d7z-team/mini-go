@@ -8,13 +8,14 @@ import (
 	"github.com/d7z-team/mini-go/compiler/cache"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/source"
+	"github.com/d7z-team/mini-go/compiler/token"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
-// bindDotImports makes imported references explicit before declarations are
+// bindSourceImports makes imported references unambiguous before declarations are
 // copied for specialization. The semantic binding, not the spelling, identifies
 // each reference and preserves local shadowing and definition-site scope.
-func (s *genericSpecializer) bindDotImports(program *ast.Program) {
+func (s *genericSpecializer) bindSourceImports(program *ast.Program) {
 	aliases := make(map[string]string)
 	used := make(map[string]bool, len(s.info.Objects))
 	for _, object := range s.info.Objects {
@@ -23,7 +24,7 @@ func (s *genericSpecializer) bindDotImports(program *ast.Program) {
 	for i := range program.Files {
 		for j := range program.Files[i].Decls {
 			decl := &program.Files[i].Decls[j]
-			if decl.Kind != ast.DeclImport || decl.Import.Alias != "." {
+			if decl.Kind != ast.DeclImport || decl.Import.Alias == "_" || decl.Import.IsEmbedMarker() {
 				continue
 			}
 			path := decl.Import.Path
@@ -49,6 +50,10 @@ func (s *genericSpecializer) bindDotImports(program *ast.Program) {
 			return
 		}
 		object, ok := s.info.Object(s.info.Uses[expr.NodeID])
+		if ok && object.Kind == check.ObjectImport && aliases[object.ImportPath] != "" {
+			expr.Name = aliases[object.ImportPath]
+			return
+		}
 		if !ok || object.ExportName == "" || aliases[object.ModulePath] == "" {
 			return
 		}
@@ -60,6 +65,11 @@ func (s *genericSpecializer) bindDotImports(program *ast.Program) {
 			return
 		}
 		object, ok := s.info.Object(s.info.Uses[typ.NodeID])
+		if ok && object.Kind == check.ObjectImport && aliases[object.ImportPath] != "" {
+			if dot := strings.IndexByte(typ.Name, '.'); dot >= 0 {
+				typ.Name = aliases[object.ImportPath] + typ.Name[dot:]
+			}
+		}
 		if ok && object.Kind == check.ObjectType && object.ExportName != "" && aliases[object.ModulePath] != "" {
 			typ.Name = aliases[object.ModulePath] + "." + object.ExportName
 		}
@@ -96,13 +106,102 @@ func (s *genericSpecializer) collectImportedGenerics(program ast.Program, depend
 		}
 		templateFiles := make(map[string]struct{}, len(data.GenericTemplates))
 		for _, template := range data.GenericTemplates {
-			decl := template.Decl
-			references := make(map[ast.NodeID]string, len(template.References))
-			referenceOffsets := make(map[int]string, len(template.References))
-			for _, reference := range template.References {
-				references[reference.Node] = strings.TrimSpace(reference.Name)
-				referenceOffsets[reference.Span.Start.Offset] = strings.TrimSpace(reference.Name)
+			decl := cloneGenericDecl(template.Decl)
+			var templateImports []ast.ImportDecl
+			if file == "" {
+				templateImports = append(templateImports, ast.ImportDecl{Path: data.ModulePath, Alias: alias})
 			}
+			importAliases := make(map[string]string)
+			for _, reference := range template.References {
+				if check.ObjectKind(reference.Kind) != check.ObjectImport || importAliases[reference.Name] != "" {
+					continue
+				}
+				_, importedAlias := specializationNames("import", reference.ModulePath, nil)
+				importAliases[reference.Name] = importedAlias
+				templateImports = append(templateImports, ast.ImportDecl{Path: reference.ModulePath, Alias: importedAlias})
+				s.importPaths[importedAlias] = reference.ModulePath
+				if imported, found := dependencies[reference.ModulePath]; found {
+					for name, underlying := range importedNamedTypes(imported) {
+						s.typeDefs[importedAlias+"."+name] = underlying
+					}
+				}
+			}
+			// Bind private references while original node IDs and source paths
+			// still identify the checked declaration. No offset-only fallback is
+			// needed after binding, including across template source files.
+			referenceByNode := make(map[ast.NodeID]cache.GenericReference, len(template.References))
+			for _, reference := range template.References {
+				referenceByNode[reference.Node] = reference
+			}
+			bound := ast.Program{Files: []ast.File{{Decls: []ast.Decl{decl}}}}
+			expressionTypes := make(map[ast.NodeID]types.TypeRef, len(template.Expressions))
+			for _, expression := range template.Expressions {
+				expressionTypes[expression.Node] = expression.Type
+			}
+			ast.WalkExpressions(&bound, func(expr *ast.Expression) {
+				if ref, found := expressionTypes[expr.NodeID]; found && expr.Type == nil {
+					typ := semanticTypeExpr(&data.TypeTable, ref, expr.Span)
+					s.normalizeSourceTypeNames(&typ)
+					expr.Type = &typ
+				}
+				reference, found := referenceByNode[expr.NodeID]
+				if !found || expr.Kind != ast.ExprIdent || reference.Name != expr.Name || reference.Span.Start != expr.Span.Start {
+					return
+				}
+				if check.ObjectKind(reference.Kind) == check.ObjectImport {
+					expr.Name = importAliases[reference.Name]
+					return
+				}
+				if reference.Generic || check.ObjectKind(reference.Kind) == check.ObjectType || check.ObjectKind(reference.Kind) == check.ObjectVar && token.IsExportedName(reference.Name) {
+					operand := ast.Expression{Kind: ast.ExprIdent, Name: alias, Span: expr.Span}
+					*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprSelector, Operand: &operand, Field: reference.Name, Span: expr.Span}
+					return
+				}
+				parser := types.NewParser(data.ModulePath, &data.TypeTable)
+				ref, err := parser.Parse(reference.Type)
+				if err != nil {
+					return
+				}
+				typ := semanticTypeExpr(&data.TypeTable, ref, expr.Span)
+				s.normalizeSourceTypeNames(&typ)
+				switch check.ObjectKind(reference.Kind) {
+				case check.ObjectFunc:
+					expr.FunctionModule, expr.FunctionID, expr.Type = data.ModulePath, "fn."+reference.Name, &typ
+				case check.ObjectConst:
+					literalType := semanticTypeExpr(&data.TypeTable, types.View(&data.TypeTable, ref).Underlying(), expr.Span)
+					value := ast.Expression{Kind: ast.ExprLiteral, Literal: reference.Value, Type: &literalType, Span: expr.Span}
+					if reference.Imaginary != "" {
+						realType := ast.TypeExpr{Kind: ast.TypeName, Name: "Float64", Span: expr.Span}
+						value.Type = &realType
+						imaginary := ast.Expression{Kind: ast.ExprLiteral, Literal: reference.Imaginary + "i", Type: &literalType, Span: expr.Span}
+						realPart := value
+						value = ast.Expression{Kind: ast.ExprBinary, Left: &realPart, Right: &imaginary, Operator: "+", Span: expr.Span}
+					}
+					if !reference.Untyped {
+						operand := value
+						value = ast.Expression{Kind: ast.ExprConvert, Operand: &operand, Type: &typ, Span: expr.Span}
+					}
+					value.NodeID = expr.NodeID
+					*expr = value
+				case check.ObjectVar:
+					if token.IsExportedName(reference.Name) {
+						return
+					}
+					pointer := ast.TypeExpr{Kind: ast.TypePointer, Elem: &typ, Span: expr.Span}
+					signature := ast.TypeExpr{Kind: ast.TypeFunc, Results: []ast.Field{{Type: pointer}}, Span: expr.Span}
+					callee := ast.Expression{Kind: ast.ExprIdent, Name: "_generic_global_address_" + reference.Name, FunctionModule: data.ModulePath, FunctionID: "fn._generic_global_address_" + reference.Name, Type: &signature, Span: expr.Span}
+					call := ast.Expression{Kind: ast.ExprCall, Callee: &callee, Type: &pointer, Span: expr.Span}
+					*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprDeref, Operand: &call, Type: &typ, Span: expr.Span}
+				}
+			})
+			ast.WalkTypes(&bound, func(typ *ast.TypeExpr) {
+				reference, found := referenceByNode[typ.NodeID]
+				if !found || check.ObjectKind(reference.Kind) != check.ObjectImport || typ.Kind != ast.TypeName || typ.Span.Start != reference.Span.Start {
+					return
+				}
+				typ.Name = strings.Replace(typ.Name, reference.Name+".", importAliases[reference.Name]+".", 1)
+			})
+			ast.WalkExpressions(&bound, func(expr *ast.Expression) { expr.NodeID = 0 })
 			if path := strings.TrimSpace(decl.Span.Start.File); path != "" {
 				templateFiles[path] = struct{}{}
 			}
@@ -111,15 +210,17 @@ func (s *genericSpecializer) collectImportedGenerics(program ast.Program, depend
 			})
 			generic := genericDecl{
 				decl: decl, file: file, importAlias: alias, namedTypes: namedTypes,
-				references: references, referenceOffsets: referenceOffsets,
+				imports: templateImports,
 			}
 			switch template.Kind {
 			case "function":
 				generic.typeParams = decl.Func.TypeParams
 				s.functions[alias+"."+template.Name] = generic
+				s.functions[data.ModulePath+"."+template.Name] = generic
 			case "type":
 				generic.typeParams = decl.Type.TypeParams
 				s.types[alias+"."+template.Name] = generic
+				s.types[data.ModulePath+"."+template.Name] = generic
 			case "method":
 				parts := strings.SplitN(template.Name, ".", 2)
 				if len(parts) != 2 {
@@ -127,6 +228,10 @@ func (s *genericSpecializer) collectImportedGenerics(program ast.Program, depend
 				}
 				owner := alias + "." + parts[0]
 				s.methods[owner] = append(s.methods[owner], generic)
+				canonicalOwner := data.ModulePath + "." + parts[0]
+				if canonicalOwner != owner {
+					s.methods[canonicalOwner] = append(s.methods[canonicalOwner], generic)
+				}
 			}
 		}
 		for _, source := range data.SourceFiles {
@@ -156,7 +261,27 @@ func (s *genericSpecializer) collectImportedGenerics(program ast.Program, depend
 	}
 	for modulePath, data := range dependencies {
 		if !collected[modulePath] {
-			collect(strings.TrimSpace(data.Package), data, "")
+			_, alias := specializationNames("import", modulePath, nil)
+			collect(alias, data, "")
+		}
+	}
+	for alias, path := range s.importPaths {
+		for _, template := range dependencies[path].GenericTemplates {
+			switch template.Kind {
+			case "function":
+				if generic, found := s.functions[path+"."+template.Name]; found {
+					s.functions[alias+"."+template.Name] = generic
+				}
+			case "type":
+				if generic, found := s.types[path+"."+template.Name]; found {
+					s.types[alias+"."+template.Name] = generic
+				}
+			case "method":
+				parts := strings.SplitN(template.Name, ".", 2)
+				if len(parts) == 2 {
+					s.methods[alias+"."+parts[0]] = s.methods[path+"."+parts[0]]
+				}
+			}
 		}
 	}
 }

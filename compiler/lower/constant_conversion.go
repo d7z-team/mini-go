@@ -1,16 +1,14 @@
 package lower
 
 import (
-	"encoding/json"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/types"
-	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target string) (json.RawMessage, string, bool) {
+func (l *lowerer) convertConstValue(raw *constant.Value, sourceType, target string) (*constant.Value, string, bool) {
 	if target == "Any" {
 		// Interface conversion must retain the operand's dynamic type at runtime.
 		return nil, "", false
@@ -25,10 +23,10 @@ func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target stri
 		if !ok {
 			return nil, "", false
 		}
-		return boolRaw(value), target, true
+		return booleanConstant(value), target, true
 	case "String":
 		if value, ok := l.constString(raw, sourceType); ok {
-			return bytecode.EncodeStringConstant(value), target, true
+			return stringConstant(value), target, true
 		}
 		value, ok := l.constExactInteger(raw, sourceType)
 		if !ok {
@@ -40,20 +38,20 @@ func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target stri
 				r = rune(candidate)
 			}
 		}
-		return bytecode.EncodeStringConstant(string(r)), target, true
+		return stringConstant(string(r)), target, true
 	case "Float32", "Float64":
 		value, ok := l.constExactRational(raw, sourceType)
 		if !ok {
 			return nil, "", false
 		}
-		out, ok := l.rationalRawForType(value, targetKind, false)
+		out, ok := l.rationalConstantForType(value, targetKind, false)
 		return out, target, ok
 	case "Complex64", "Complex128":
 		value, ok := l.constExactComplex(raw, sourceType)
 		if !ok {
 			return nil, "", false
 		}
-		out, ok := l.complexRawForType(value, targetKind, false)
+		out, ok := l.complexConstantForType(value, targetKind, false)
 		return out, target, ok
 	default:
 		if isUnsignedIntegerType(targetKind) {
@@ -71,11 +69,7 @@ func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target stri
 			if !l.constRepresentableAsUnsignedInteger(value, targetKind) {
 				return nil, "", false
 			}
-			encoded, err := json.Marshal(strings.TrimPrefix(value, "+"))
-			if err != nil {
-				return nil, "", false
-			}
-			return json.RawMessage(encoded), target, true
+			return constant.Scalar(value), target, true
 		}
 		if isSignedIntegerType(targetKind) {
 			value, ok := l.constExactInteger(raw, sourceType)
@@ -92,40 +86,22 @@ func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target stri
 			if !l.constRepresentableAsSignedInteger(value, targetKind) {
 				return nil, "", false
 			}
-			raw, ok := l.exactIntegerRawForType(value, target)
+			raw, ok := l.integerConstantForType(value, target)
 			return raw, target, ok
 		}
 		if sourceType == target {
-			return append(json.RawMessage(nil), raw...), target, true
+			return raw, target, true
 		}
 		return nil, "", false
 	}
 }
 
-func (l *lowerer) exactIntegerRawForType(value, typ string) (json.RawMessage, bool) {
-	value, ok := constant.NormalizeSignedDecimal(value)
+func (l *lowerer) integerConstantForType(text, typ string) (*constant.Value, bool) {
+	value, ok := constant.Integer(text, typ, false)
 	if !ok {
 		return nil, false
 	}
-	kind := l.underlyingConstType(typ)
-	if isUnsignedIntegerType(kind) {
-		if strings.HasPrefix(value, "-") {
-			return nil, false
-		}
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return nil, false
-		}
-		return json.RawMessage(encoded), true
-	}
-	if _, ok := constant.SignedDecimalInt64(value); ok {
-		return json.RawMessage(value), true
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return nil, false
-	}
-	return json.RawMessage(encoded), true
+	return value.Ref(), true
 }
 
 func (l *lowerer) constRepresentableAsSignedInteger(value, target string) bool {

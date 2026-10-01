@@ -1,16 +1,16 @@
 package emit
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func TestLowerProducesExecutableInstructions(t *testing.T) {
-	left := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`2`)}
-	right := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`3`)}
+	left := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`2`)}
+	right := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`3`)}
 	artifact, err := lowerTestProgram(t, hir.Program{
 		ModulePath: "example/module",
 		Package:    "main",
@@ -49,7 +49,7 @@ func TestLowerProducesExecutableInstructions(t *testing.T) {
 }
 
 func TestLowerLogicalBinaryUsesShortCircuitControlFlow(t *testing.T) {
-	left := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Bool"), Value: json.RawMessage(`false`)}
+	left := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Bool"), Value: constant.Scalar(`false`)}
 	right := hir.Expression{Kind: hir.ExprCallDirect, Function: "fn.fail", ResultCount: 1}
 	artifact, err := lowerTestProgram(t, hir.Program{
 		ModulePath: "example/module",
@@ -60,7 +60,7 @@ func TestLowerLogicalBinaryUsesShortCircuitControlFlow(t *testing.T) {
 			Signature: testHIRSignature("function() Bool"),
 			Body: []hir.Statement{{
 				Kind:    hir.StmtReturn,
-				Results: []hir.Expression{{Kind: hir.ExprLiteral, Type: testHIRType("Bool"), Value: json.RawMessage(`true`)}},
+				Results: []hir.Expression{{Kind: hir.ExprLiteral, Type: testHIRType("Bool"), Value: constant.Scalar(`true`)}},
 			}},
 		}, {
 			ID:        "fn.main",
@@ -103,8 +103,8 @@ func TestLowerBuiltinLenCapExpressions(t *testing.T) {
 		Kind: hir.ExprSequence,
 		Type: testHIRType("Slice<Int64>"),
 		Elements: []hir.Expression{
-			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)},
-			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`2`)},
+			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)},
+			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`2`)},
 		},
 	}
 	artifact, err := lowerTestProgram(t, hir.Program{
@@ -144,11 +144,11 @@ func TestLowerBuiltinAppendDeleteExpressions(t *testing.T) {
 		Kind: hir.ExprSequence,
 		Type: testHIRType("Slice<Int64>"),
 		Elements: []hir.Expression{
-			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)},
+			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)},
 		},
 	}
-	key := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)}
-	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`2`)}
+	key := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)}
+	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`2`)}
 	m := hir.Expression{
 		Kind:    hir.ExprMap,
 		Type:    testHIRType("Map<Int64, Int64>"),
@@ -174,8 +174,8 @@ func TestLowerBuiltinAppendDeleteExpressions(t *testing.T) {
 					Kind:    hir.ExprAppend,
 					Operand: &array,
 					Args: []hir.Expression{
-						{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`2`)},
-						{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`3`)},
+						{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`2`)},
+						{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`3`)},
 					},
 				}},
 			}},
@@ -199,8 +199,8 @@ func TestLowerBuiltinAppendDeleteExpressions(t *testing.T) {
 }
 
 func TestLowerMapIndexOKExpression(t *testing.T) {
-	key := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("String"), Value: json.RawMessage(`"k"`)}
-	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`42`)}
+	key := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("String"), Value: constant.String("k", "String", false).Ref()}
+	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`42`)}
 	m := hir.Expression{
 		Kind:    hir.ExprMap,
 		Type:    testHIRType("Map<String, Int64>"),
@@ -240,7 +240,7 @@ func TestLowerBuiltinAppendEllipsisPayload(t *testing.T) {
 		Kind: hir.ExprSequence,
 		Type: testHIRType("Slice<Int64>"),
 		Elements: []hir.Expression{
-			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)},
+			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)},
 		},
 	}
 	artifact, err := lowerTestProgram(t, hir.Program{
@@ -281,13 +281,13 @@ func TestLowerBuiltinAppendEllipsisPayload(t *testing.T) {
 }
 
 func TestLowerBuiltinClearCopyExpressions(t *testing.T) {
-	key := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)}
-	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`2`)}
+	key := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)}
+	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`2`)}
 	array := hir.Expression{
 		Kind: hir.ExprSequence,
 		Type: testHIRType("Slice<Int64>"),
 		Elements: []hir.Expression{
-			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)},
+			{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)},
 		},
 	}
 	m := hir.Expression{

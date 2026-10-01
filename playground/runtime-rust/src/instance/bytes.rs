@@ -232,22 +232,9 @@ impl Instance {
                 ));
             }
         };
-        let new_length = length
-            .checked_add(source.len())
-            .filter(|length| *length <= self.limits.max_sequence_elements)
-            .ok_or_else(|| {
-                RuntimeError::new("value_limit", "append", "slice length exceeds limit")
-            })?;
+        let (new_length, new_capacity) =
+            self.reserve_slice_append(length, capacity, source.len())?;
         if new_length > capacity {
-            let new_capacity = new_length.max(capacity.saturating_mul(2));
-            if new_capacity > self.limits.max_sequence_elements {
-                return Err(RuntimeError::new(
-                    "value_limit",
-                    "append",
-                    "slice capacity exceeds limit",
-                ));
-            }
-            self.charge_guest((new_capacity - capacity) as u64 * 16)?;
             let mut bytes = self.read_byte_range(&value, 0, length)?;
             bytes.extend_from_slice(source);
             return self.make_bytes(value.typ, new_length, new_capacity, &bytes);
@@ -265,6 +252,60 @@ impl Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_growth_rejection_preserves_both_backing_kinds() {
+        for element in [wire::PrimitiveUint8, wire::PrimitiveInt] {
+            let program = test_helpers::program_with_artifact(|_| {});
+            let mut vm = Instance::new(
+                program,
+                ExecutionLimits {
+                    max_sequence_elements: 3,
+                    ..ExecutionLimits::default()
+                },
+            )
+            .unwrap();
+            let typ = TypeIdentity::Primitive(element);
+            let initial = if element == wire::PrimitiveUint8 {
+                Value {
+                    typ: typ.clone(),
+                    data: Data::Unsigned(7),
+                }
+            } else {
+                Value::int(7)
+            };
+            let slice = vm
+                .make_slice(
+                    TypeIdentity::Slice(Arc::new(typ)),
+                    1,
+                    2,
+                    vec![initial.clone()],
+                )
+                .unwrap();
+            let before = vm.heap_stats();
+            let error = vm
+                .append_values(slice.clone(), vec![initial.clone(), initial.clone()])
+                .unwrap_err();
+            assert_eq!(error.code, "value_limit");
+            assert_eq!(
+                vm.heap_stats().total_allocated_bytes,
+                before.total_allocated_bytes
+            );
+            let Data::Slice(header) = &slice.data else {
+                panic!("slice header")
+            };
+            assert_eq!((header.length, header.capacity), (1, 2));
+            assert!(matches!(
+                vm.slice_values(&slice).unwrap()[0].data,
+                Data::Integer(7) | Data::Unsigned(7)
+            ));
+            // Spare capacity remains usable after the failed growth.
+            let appended = vm.append_values(slice.clone(), vec![initial]).unwrap();
+            assert_eq!(vm.slice_values(&appended).unwrap().len(), 2);
+            assert_eq!(vm.slice_values(&slice).unwrap().len(), 1);
+            vm.close().unwrap();
+        }
+    }
 
     #[test]
     fn byte_reads_own_visible_range_for_compact_and_array_backing() {

@@ -8,7 +8,7 @@ import (
 )
 
 func appendValue(module *moduleInstance, object vmValue, values []vmValue, expand bool) (vmValue, error) {
-	if module.isSliceType(object.Type) && module.sameRuntimeType(module.arrayElemType(object.Type), "Uint8") {
+	if module.isSliceType(object.Type) && module.sameRuntimeType(module.sequenceElementType(object.Type), "Uint8") {
 		var bytes []byte
 		expandedBytes := false
 		if expand {
@@ -68,8 +68,7 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 	if !module.isSliceType(object.Type) {
 		return vmValue{}, fmt.Errorf("cannot append to %s", object.Type)
 	}
-	elemType := module.arrayElemType(object.Type)
-	valueCount := len(values)
+	elemType := module.sequenceElementType(object.Type)
 	normalizedValues := make([]vmValue, len(values))
 	for i, value := range values {
 		normalized, err := module.coerceAssignableValue(value, elemType)
@@ -86,22 +85,9 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 	if source != nil {
 		oldLen, oldCap = source.Len, source.Cap
 	}
-	newLength := int64(oldLen) + int64(valueCount)
-	newCapacity := int64(oldCap)
-	if newLength > newCapacity {
-		newCapacity = newLength
-		if doubled := int64(oldCap) * 2; doubled > newCapacity {
-			newCapacity = doubled
-		}
-	}
-	newLen, newCap, err := module.vm.checkCollectionSize(newLength, newCapacity)
+	newLen, newCap, err := module.vm.reserveSliceAppend(oldLen, oldCap, len(values))
 	if err != nil {
 		return vmValue{}, err
-	}
-	if module.vm != nil && newCap > oldCap {
-		if err := module.vm.chargeAllocationBytes(int64(newCap-oldCap) * ir.RuntimeSlotBytes); err != nil {
-			return vmValue{}, err
-		}
 	}
 	if source == nil && newLen == 0 {
 		return newSliceHeaderValue(object.Type, nil, 0, 0, 0), nil
@@ -129,7 +115,7 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 }
 
 func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmValue, error) {
-	if !module.isSliceType(object.Type) || !module.sameRuntimeType(module.arrayElemType(object.Type), "Uint8") {
+	if !module.isSliceType(object.Type) || !module.sameRuntimeType(module.sequenceElementType(object.Type), "Uint8") {
 		return vmValue{}, fmt.Errorf("expected byte slice, got %s", object.Type)
 	}
 	source, ok := object.Data.(*vmSlice)
@@ -140,18 +126,9 @@ func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmV
 	if source != nil {
 		oldLen, oldCap = source.Len, source.Cap
 	}
-	length, capacity := int64(oldLen)+int64(len(bytes)), int64(oldCap)
-	if length > capacity {
-		capacity = max(length, int64(oldCap)*2)
-	}
-	newLen, newCap, err := module.vm.checkCollectionSize(length, capacity)
+	newLen, newCap, err := module.vm.reserveSliceAppend(oldLen, oldCap, len(bytes))
 	if err != nil {
 		return vmValue{}, err
-	}
-	if module.vm != nil && newCap > oldCap {
-		if err := module.vm.chargeAllocationBytes(int64(newCap-oldCap) * ir.RuntimeSlotBytes); err != nil {
-			return vmValue{}, err
-		}
 	}
 	if source == nil && newLen == 0 {
 		return newSliceHeaderValue(object.Type, nil, 0, 0, 0), nil
@@ -178,6 +155,25 @@ func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmV
 	}
 	result.Data.(*vmSlice).writeBytes(oldLen, bytes)
 	return result, nil
+}
+
+// reserveSliceAppend validates growth and charges the added logical slots before
+// either the byte or value backing is changed.
+func (vm *vm) reserveSliceAppend(length, capacity, added int) (int, int, error) {
+	newLength, newCapacity := int64(length)+int64(added), int64(capacity)
+	if newLength > newCapacity {
+		newCapacity = max(newLength, int64(capacity)*2)
+	}
+	newLen, newCap, err := vm.checkCollectionSize(newLength, newCapacity)
+	if err != nil {
+		return 0, 0, err
+	}
+	if newCap > capacity {
+		if err := vm.chargeAllocationBytes(int64(newCap-capacity) * ir.RuntimeSlotBytes); err != nil {
+			return 0, 0, err
+		}
+	}
+	return newLen, newCap, nil
 }
 
 func deleteValue(module *moduleInstance, object, key vmValue) error {
@@ -233,7 +229,7 @@ func clearValue(module *moduleInstance, object vmValue) error {
 		if data == nil {
 			return nil
 		}
-		elemType := module.arrayElemType(object.Type)
+		elemType := module.sequenceElementType(object.Type)
 		for i := 0; i < data.Len; i++ {
 			var zero vmValue
 			if module != nil {
@@ -251,7 +247,7 @@ func clearValue(module *moduleInstance, object vmValue) error {
 		if module.isSliceType(object.Type) {
 			return fmt.Errorf("invalid slice backing for %s", object.Type)
 		}
-		elemType := module.arrayElemType(object.Type)
+		elemType := module.sequenceElementType(object.Type)
 		for i := range data.Len {
 			var zero vmValue
 			if module != nil {
@@ -290,7 +286,7 @@ func copyValue(module *moduleInstance, dst, src vmValue) (vmValue, error) {
 	if !module.isSliceType(dst.Type) {
 		return vmValue{}, fmt.Errorf("copy destination must be array or slice, got %s", dst.Type)
 	}
-	elemType := module.arrayElemType(dst.Type)
+	elemType := module.sequenceElementType(dst.Type)
 	dstSlice, ok := dst.Data.(*vmSlice)
 	if !ok {
 		return vmValue{}, fmt.Errorf("copy destination must be slice, got %s", dst.Type)
@@ -301,14 +297,18 @@ func copyValue(module *moduleInstance, dst, src vmValue) (vmValue, error) {
 	}
 	switch data := src.Data.(type) {
 	case *vmSlice:
-		if !module.sameRuntimeType(module.arrayElemType(src.Type), elemType) {
-			return vmValue{}, fmt.Errorf("copy element 0: %s is not %s", module.arrayElemType(src.Type), elemType)
+		if !module.sameRuntimeType(module.sequenceElementType(src.Type), elemType) {
+			return vmValue{}, fmt.Errorf("copy element 0: %s is not %s", module.sequenceElementType(src.Type), elemType)
 		}
 		srcLen := 0
 		if data != nil {
 			srcLen = data.Len
 		}
 		count := min(dstLen, srcLen)
+		if count > 0 && dstSlice.ByteBacked && data.ByteBacked {
+			dstSlice.copyBytesFrom(data, count)
+			return newVMValue("Int", int64(count)), nil
+		}
 		copied := make([]vmValue, count)
 		for i := 0; i < count; i++ {
 			normalized, err := module.coerceAssignableValue(data.valueAt(i), elemType)
@@ -326,6 +326,10 @@ func copyValue(module *moduleInstance, dst, src vmValue) (vmValue, error) {
 		return newVMValue("Int", int64(count)), nil
 	case string:
 		count := min(dstLen, len(data))
+		if dstSlice != nil && dstSlice.ByteBacked && module.sameRuntimeType(elemType, "Uint8") {
+			dstSlice.writeBytes(0, []byte(data[:count]))
+			return newVMValue("Int", int64(count)), nil
+		}
 		for i := 0; i < count; i++ {
 			normalized, err := module.coerceAssignableValue(newVMValue("Uint8", uint64(data[i])), elemType)
 			if err != nil {

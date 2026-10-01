@@ -30,6 +30,7 @@ For information about UTF-8 strings in Go, see [https://blog.golang.org/strings]
 - [func ContainsRune](#func-containsrune)
 - [func Count](#func-count)
 - [func Cut](#func-cut)
+- [func CutLast](#func-cutlast)
 - [func CutPrefix](#func-cutprefix)
 - [func CutSuffix](#func-cutsuffix)
 - [func EqualFold](#func-equalfold)
@@ -158,6 +159,14 @@ func Cut(s string, sep string) (string, string, bool)
 ```
 
 Cut slices s around the first instance of sep, returning the text before and after sep. The found result reports whether sep appears in s. If sep does not appear in s, cut returns s, "", false.
+
+### func CutLast
+
+```go
+func CutLast(s, sep string) (before, after string, found bool)
+```
+
+CutLast slices s around the last instance of sep. If sep is absent, it returns s, "", false.
 
 ### func CutPrefix
 

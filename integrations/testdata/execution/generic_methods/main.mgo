@@ -1,0 +1,67 @@
+package main
+
+import "example/lib"
+
+type Inner struct { X int; Y int; F func(int) int }
+type Outer struct { Inner; Z int }
+type Embedded struct { lib.Box }
+
+func Identity[T any](x T) T { return x }
+type Function func(int) int
+
+func PromotedOrder() int {
+	order := 0
+	next := func(x int) int { order = order*10+x; return x }
+	v := Outer{X: next(1), Z: next(2), Y: next(3), F: Identity}
+	if v.X != 1 || v.Y != 3 || v.Z != 2 || v.F(7) != 7 { panic("fields") }
+	return order
+}
+
+func Contexts() int {
+	f := Function(Identity)
+	ch := make(chan func(int) int, 2)
+	ch <- Identity
+	select { case ch <- Identity: default: panic("send") }
+	g, h := <-ch, <-ch
+	return f(1)+g(2)+h(3)
+}
+
+func ImportedMethods() int {
+	b := lib.Box{Value: 4}
+	secret := b.Secret[int]
+	if int(secret(2)) != 9 { panic("private method value signature") }
+	var unicodeMethod interface{ Ᲊ() int } = b
+	if unicodeMethod.Ᲊ() != 4 { panic("Unicode interface method") }
+	f := b.Add[int]
+	var g func(int) int = b.Echo
+	e := lib.Box.Echo[int]
+	if f(3) != 7 || b.Value != 7 || g(5) != 5 || e(b,9) != 9 { panic("methods") }
+	p := lib.Pair[int]{Value: 12}
+	return p.Map(func(v int) int { return v+1 })
+}
+
+func CapturedReceiver() int {
+	count := 0
+	var b lib.Box
+	get := func() *lib.Box { count++; return &b }
+	f := get().Add[int]
+	f(2); f(3)
+	if count != 1 || b.Value != 5 { panic("receiver") }
+	return b.Value
+}
+
+func DefinitionState() int {
+	if !lib.IsPrivate(lib.Constant(1)) || !lib.Exact(1) { panic("constant identity and exact values") }
+	if lib.First(1) != 2 || lib.Other(1) != 3 || lib.Shadow(1) != 11 { panic("definition bindings") }
+	if int(lib.Private(2)) != 9 { panic("private type and constant") }
+	if lib.Imported(1) != 11 { panic("definition imports") }
+	lib.Set(2)
+	if lib.Apply(4) != 9 || lib.Count() != 6 { panic("definition state") }
+	return lib.Count()
+}
+
+func PromotedMethod() int {
+	f := Embedded.Echo[int]
+	if f(Embedded{}, 3) != 3 { panic("promoted expression") }
+	return Embedded{}.Echo(8)
+}

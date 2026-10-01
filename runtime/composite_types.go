@@ -15,7 +15,7 @@ func (m *moduleInstance) sliceValues(value vmValue) ([]vmValue, bool) {
 	return sliceValues(value)
 }
 
-func (m *moduleInstance) arrayElemType(typ any) string {
+func (m *moduleInstance) sequenceElementType(typ any) string {
 	runtimeType := m.resolvedRuntimeType(typ)
 	if elem, ok := runtimeType.SliceElem(); ok {
 		return elem.String()
@@ -30,12 +30,7 @@ func (m *moduleInstance) arrayElemType(typ any) string {
 }
 
 func (m *moduleInstance) isArrayType(typ any) bool {
-	switch m.resolvedRuntimeType(typ).ShapeKind() {
-	case types.Slice, types.Array:
-		return true
-	default:
-		return false
-	}
+	return m.resolvedRuntimeType(typ).ShapeKind() == types.Array
 }
 
 func (m *moduleInstance) isSliceType(typ any) bool {

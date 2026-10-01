@@ -11,11 +11,51 @@ import { exerciseRPC } from "./rpc_scenario.js";
 const fixtures = process.env.MINIGO_WASM_FIXTURES;
 if (!fixtures) throw new Error("MINIGO_WASM_FIXTURES is required");
 const load = (name) => readFile(path.join(fixtures, `${name}.json`));
+
+test("Node runtime honors explicit memory and patch loading budgets", async () => {
+  const image = await load("answer");
+  const vm = await MiniGo.create(image, {
+    limits: { maxHeapBytes: 512 * 1024 * 1024 },
+    load: { maxImageBytes: image.byteLength },
+  });
+  try {
+    await assert.rejects(vm.patch(new Uint8Array(image.byteLength + 1)), { code: "load_limit" });
+    const call = vm.start("default");
+    assert.equal((await call.result).roots[0].data.Integer, 42n);
+    await call.settled;
+  } finally {
+    await vm.close();
+  }
+});
 const providerModule = new URL("./provider.js", import.meta.url);
+
+test("Node worker applies the configured provider result budget", async (t) => {
+  for (const inWorker of [false, true]) {
+    for (const maxFfiResultBytes of [1, 5 * 1024 * 1024]) {
+      const size = maxFfiResultBytes === 1 ? 2 : 4 * 1024 * 1024 + 1;
+      const module = new URL(providerModule);
+      module.searchParams.set("resultBytes", String(size));
+      const vm = await MiniGo.create(await load("host-result"), {
+        limits: { maxFfiResultBytes, maxSequenceElements: 8 * 1024 * 1024 },
+        ...(inWorker ? { providerModule: module } : { provider: () => new Uint8Array(size) }),
+      });
+      t.after(() => vm.terminate());
+      const call = vm.start("default");
+      const result = await call.result;
+      await call.settled;
+      assert.equal(result.roots[2].data.Integer, maxFfiResultBytes === 1 ? 2n : 0n);
+      if (maxFfiResultBytes !== 1) {
+        const data = result.roots[0].data;
+        assert.equal(Number("String" in data ? data.String.length : data.Slice.length), size);
+      }
+      await vm.close();
+    }
+  }
+});
 
 test("Node worker: default and full-width finite step budgets", async (t) => {
   for (const maxSteps of [0, 9223372036854775807n]) {
-    const vm = await MiniGo.create(await load("answer"), { maxSteps });
+    const vm = await MiniGo.create(await load("answer"), { limits: { maxSteps }, load: undefined });
     t.after(() => vm.terminate());
     const call = vm.start("default");
     assert.equal((await call.result).roots[0].data.Integer, 42n);
@@ -28,7 +68,7 @@ test(
   "Node worker: queued cancellation preserves the paused foreground call",
   { timeout: 30_000 },
   async (t) => {
-    const vm = await MiniGo.create(await load("loop"), { maxSteps: -1 });
+    const vm = await MiniGo.create(await load("loop"), { limits: { maxSteps: -1 } });
     t.after(() => vm.terminate());
     const first = vm.start("default");
     // stats travels behind start and lets the worker publish its first driver turn.
@@ -49,7 +89,10 @@ test(
   { timeout: 30_000 },
   async (t) => {
     for (const name of ["answer", "timer", "background", "host"]) {
-      const vm = await MiniGo.create(await load(name), { providerModule, maxSteps: -1 });
+      const vm = await MiniGo.create(await load(name), {
+        providerModule,
+        limits: { maxSteps: -1 },
+      });
       t.after(() => vm.terminate());
       const calls = Array.from({ length: 4 }, () => vm.start("default"));
       for (const call of calls) {

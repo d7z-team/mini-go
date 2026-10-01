@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -143,7 +142,7 @@ func (l *lowerer) validateConstantArithmetic(expr ast.Expression, scope *funcSco
 	return true
 }
 
-func (l *lowerer) constantNumericZero(raw json.RawMessage, typ string) bool {
+func (l *lowerer) constantNumericZero(raw *constant.Value, typ string) bool {
 	if !isNumericType(l.underlyingConstType(typ)) {
 		return false
 	}
@@ -151,7 +150,7 @@ func (l *lowerer) constantNumericZero(raw json.RawMessage, typ string) bool {
 	return ok && value.realPart.IsZero() && value.imaginaryPart.IsZero()
 }
 
-func (l *lowerer) constantShiftCountNegative(raw json.RawMessage, typ string) (bool, bool) {
+func (l *lowerer) constantShiftCountNegative(raw *constant.Value, typ string) (bool, bool) {
 	if !isIntegerType(l.underlyingConstType(typ)) {
 		return false, false
 	}
@@ -162,7 +161,7 @@ func (l *lowerer) constantShiftCountNegative(raw json.RawMessage, typ string) (b
 	return strings.HasPrefix(value, "-"), true
 }
 
-func (l *lowerer) constantShiftCountTooLarge(raw json.RawMessage, typ string) (bool, bool) {
+func (l *lowerer) constantShiftCountTooLarge(raw *constant.Value, typ string) (bool, bool) {
 	if !isIntegerType(l.underlyingConstType(typ)) {
 		return false, false
 	}

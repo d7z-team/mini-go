@@ -1,9 +1,27 @@
 import test from "node:test";
+import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import * as tools from "@d7z-team/mini-go/tools";
 import { exerciseTools } from "./tools_scenario.js";
 import { createBrowserPage } from "./browser_helpers.js";
 import { exerciseCompilerWorkload } from "./compiler_workloads_scenario.js";
+
+test(
+  "compiler host budgets reject exhausted execution and loading",
+  { timeout: 600_000 },
+  async () => {
+    for (const [options, code] of [
+      [{ limits: { maxSteps: 1 } }, "step_limit"],
+      [{ limits: { maxHeapBytes: 1 } }, "allocation_limit"],
+      [{ load: { maxImageBytes: 1 } }, "load_limit"],
+    ]) {
+      await assert.rejects(
+        tools.createLanguageService(undefined, { ...options, timeoutMs: 300_000 }),
+        { code },
+      );
+    }
+  },
+);
 
 const workloads = JSON.parse(
   await readFile(new URL("../../../../testdata/language/workloads.json", import.meta.url), "utf8"),

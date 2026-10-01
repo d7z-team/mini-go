@@ -26,6 +26,7 @@ type Config struct {
 	Target         target.Target
 	Cache          cache.Backend
 	Optimization   compiler.OptimizationLevel
+	Limits         compiler.Limits
 	Symbols        bool
 	TransientCache cache.TransientConfig
 }
@@ -89,6 +90,7 @@ func New(config Config) (*Engine, error) {
 	frontend, err := compiler.New(compiler.Options{
 		Sources: sources, Target: config.Target, Cache: compiledCache,
 		Optimization:     config.Optimization,
+		Limits:           config.Limits,
 		Symbols:          config.Symbols,
 		TransientCache:   config.TransientCache,
 		HostCapabilities: hostCapabilitiesByPackage(config.Libraries),

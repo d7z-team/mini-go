@@ -11,13 +11,16 @@ import (
 	"strings"
 )
 
-func buildGoSnapshot() (snapshot, error) {
+func buildGoSnapshot(referenceVersion string) (snapshot, error) {
 	paths, err := packagePaths()
 	if err != nil {
 		return snapshot{}, err
 	}
-	out := snapshot{Schema: schema, Version: version, GoVersion: goVersion}
+	out := snapshot{Schema: schema, Version: version, GoVersion: referenceVersion}
 	for _, path := range paths {
+		if (path == "encoding/json") != (referenceVersion == jsonGoVersion) {
+			continue
+		}
 		buildPackage, err := build.Default.Import(path, "", build.FindOnly)
 		if err != nil || !buildPackage.Goroot {
 			continue
@@ -105,7 +108,7 @@ func goTypeMembers(typ gotypes.Type, owner *gotypes.Package) ([]apiField, []apiF
 			continue
 		}
 		signature := method.Type().(*gotypes.Signature)
-		methods = append(methods, apiField{Name: method.Name(), Type: goSignature(signature, owner, false), Variadic: signature.Variadic()})
+		methods = append(methods, apiField{Name: method.Name(), Type: goSignature(signature, owner, false), Variadic: signature.Variadic(), TypeParams: goTypeParameters(signature.TypeParams(), owner)})
 	}
 	sort.Slice(methods, func(i, j int) bool { return methods[i].Name < methods[j].Name })
 	return fields, methods
@@ -115,17 +118,23 @@ func goType(typ gotypes.Type, owner *gotypes.Package) string {
 	switch value := typ.(type) {
 	case *gotypes.Basic:
 		return canonicalBasic(value.Name())
-	case *gotypes.Alias:
-		if object := value.Obj(); object.Pkg() != nil {
-			return object.Pkg().Path() + "." + object.Name()
-		}
-		return canonicalBasic(value.Obj().Name())
-	case *gotypes.Named:
+	case interface {
+		Obj() *gotypes.TypeName
+		TypeArgs() *gotypes.TypeList
+	}:
 		object := value.Obj()
 		if object.Pkg() == nil {
 			return canonicalBasic(object.Name())
 		}
-		return object.Pkg().Path() + "." + object.Name()
+		name := object.Pkg().Path() + "." + object.Name()
+		if value.TypeArgs().Len() == 0 {
+			return name
+		}
+		parts := []string{name}
+		for index := 0; index < value.TypeArgs().Len(); index++ {
+			parts = append(parts, goType(value.TypeArgs().At(index), owner))
+		}
+		return "Instance<" + strings.Join(parts, ", ") + ">"
 	case *gotypes.Pointer:
 		return "Ptr<" + goType(value.Elem(), owner) + ">"
 	case *gotypes.Slice:

@@ -66,7 +66,9 @@ pub struct ExecutionLimits {
     pub max_dynamic_types: usize,
     pub max_dynamic_type_bytes: u64,
     pub max_objects: usize,
+    /// Arena storage accounting, independent of process RSS.
     pub max_heap_bytes: u64,
+    /// Logical live guest data and allocations since the last census.
     pub max_allocated_bytes: u64,
     pub max_string_bytes: usize,
     /// Scope instruction budget: 0 uses the default, -1 is unlimited.
@@ -116,19 +118,6 @@ impl ExecutionLimits {
             self.max_steps = Self::default().max_steps;
         }
         Ok(self)
-    }
-    /// Resource envelope for a persistent, precompiled compiler guest.
-    pub fn compiler() -> Self {
-        Self {
-            max_heap_bytes: 128 << 20,
-            max_objects: 500_000,
-            max_sequence_elements: 4 << 20,
-            max_dynamic_types: 16_384,
-            max_dynamic_type_bytes: 64 << 20,
-            max_ffi_bytes: 64 << 20,
-            max_ffi_result_bytes: 64 << 20,
-            ..Self::default()
-        }
     }
 }
 

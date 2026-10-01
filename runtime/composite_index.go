@@ -40,7 +40,7 @@ func makeSliceValue(module *moduleInstance, typ any, length, capacity vmValue) (
 			return vmValue{}, err
 		}
 	}
-	elemType := module.arrayElemType(typeText)
+	elemType := module.sequenceElementType(typeText)
 	if module.sameRuntimeType(elemType, "Uint8") {
 		return newByteSliceHeaderValue(runtimeType, make([]byte, capacityInt), lengthValue, capacityInt), nil
 	}
@@ -134,7 +134,7 @@ func (m *moduleInstance) projectElementValue(value vmValue, container vmType) (v
 	if value.Type.Ref.Kind == types.Primitive || value.Type.Ref.Kind == types.Any {
 		return value, nil
 	}
-	target := m.arrayElemType(container)
+	target := m.sequenceElementType(container)
 	if m.isMapType(container) {
 		_, target, _ = m.mapKeyValueTypes(container)
 	}

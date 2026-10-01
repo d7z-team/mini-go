@@ -1,9 +1,8 @@
 package lower
 
 import (
-	"encoding/json"
-
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 )
 
@@ -126,7 +125,7 @@ func (l *lowerer) lowerStatement(stmt ast.Statement, scope *funcScope) ([]ir.Sta
 		var expr ir.Expression
 		var ok bool
 		if isNilLiteral(*stmt.Expr) {
-			expr = ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Any"), Value: json.RawMessage("null")}
+			expr = ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Any"), Value: constant.Scalar("null")}
 			ok = true
 		} else {
 			expr, ok = l.lowerExpression(*stmt.Expr, scope)

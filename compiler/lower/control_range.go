@@ -1,12 +1,12 @@
 package lower
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 )
@@ -52,12 +52,12 @@ func (l *lowerer) lowerRangeWithLabel(stmt ast.Statement, scope *funcScope, user
 	objectRef := ir.Expression{Kind: ir.ExprLocal, Local: objectLocal, Type: l.hirType(objectType)}
 	indexRef := ir.Expression{Kind: ir.ExprLocal, Local: indexLocal, Type: l.hirType("Int")}
 	lenRef := ir.Expression{Kind: ir.ExprLocal, Local: lenLocal, Type: l.hirType("Int")}
-	zero := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(`0`)}
-	one := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(`1`)}
+	zero := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(`0`)}
+	one := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(`1`)}
 	length := ir.Expression{Kind: ir.ExprLen, Operand: &objectRef}
 	evaluateObject := true
 	if n, _, array := l.arrayTypeInfo(elementContainer); array {
-		length = ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(strconv.FormatInt(n, 10))}
+		length = ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(strconv.FormatInt(n, 10))}
 		if (stmt.Value == nil || stmt.Value.Kind == ast.ExprIdent && stmt.Value.Name == "_") && !check.ContainsNonConstantLenOperand(*stmt.Range) {
 			evaluateObject = false
 		}
@@ -138,8 +138,8 @@ func (l *lowerer) lowerIntegerRange(stmt ast.Statement, scope *funcScope, object
 	indexLocal := l.newSyntheticLocal(rangeScope, "range.integer.index", "Int")
 	objectRef := ir.Expression{Kind: ir.ExprLocal, Local: objectLocal, Type: l.hirType("Int")}
 	indexRef := ir.Expression{Kind: ir.ExprLocal, Local: indexLocal, Type: l.hirType("Int")}
-	zero := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(`0`)}
-	one := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(`1`)}
+	zero := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(`0`)}
+	one := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(`1`)}
 	limit := object
 	if strings.TrimSpace(objectType) != "Int" {
 		limit = ir.Expression{Kind: ir.ExprConvert, Type: l.hirType("Int"), Operand: &object}

@@ -9,6 +9,9 @@ import (
 )
 
 func (a *analyzer) predeclareFunctionSignature(decl *ast.FuncDecl, scope ScopeID) {
+	previousModule := a.definitionModule
+	a.definitionModule = decl.DefinitionModule
+	defer func() { a.definitionModule = previousModule }()
 	if len(decl.TypeParams) != 0 {
 		scope = a.newScope(ScopeType, decl.NodeID, scope)
 		a.declareTypeParams(decl.TypeParams, scope)
@@ -40,6 +43,7 @@ func (a *analyzer) predeclareMethodSignature(decl *ast.FuncDecl, scope ScopeID) 
 	}
 	scope = a.newScope(ScopeType, decl.NodeID, scope)
 	a.declareReceiverTypeParams(decl.Receiver, scope)
+	a.declareTypeParams(decl.TypeParams, scope)
 	a.analyzeType(&decl.Receiver.Type, scope)
 	for i := range decl.Params {
 		a.analyzeType(&decl.Params[i].Type, scope)
@@ -55,6 +59,18 @@ func (a *analyzer) predeclareMethodSignature(decl *ast.FuncDecl, scope ScopeID) 
 	owner := receiver
 	if elem, ok := a.info.Relations.View(receiver).Elem(); ok && a.info.Relations.View(receiver).Shape() == types.Pointer {
 		owner = elem
+	}
+	if len(decl.TypeParams) != 0 {
+		typ := a.storeFunctionType(decl.NodeID, "method", signature)
+		a.declare(scope, ObjectFunc, decl.Name, decl.NodeID, typ, false, false)
+		object, _ := a.info.Lookup(scope, decl.Name)
+		a.info.GenericDecls[object.ID] = a.typeParamObjects(decl.TypeParams)
+		a.info.Functions[decl.NodeID] = object.ID
+		a.info.GenericMethods = append(a.info.GenericMethods, GenericMethod{
+			Object: object.ID,
+			Method: types.Method{Name: decl.Name, Receiver: receiver, Signature: signature, ModulePath: a.info.ModulePath},
+		})
+		return
 	}
 	node, ok := a.info.TypeTable.Node(owner)
 	if !ok || node.Kind != types.Named {
@@ -168,7 +184,7 @@ func (a *analyzer) analyzeDecl(decl *ast.Decl, scope ScopeID, local bool) {
 			}
 		}
 	case ast.DeclFunc:
-		objectID := ObjectID("")
+		objectID := a.info.Functions[decl.Func.NodeID]
 		if decl.Func.Receiver == nil {
 			if object, ok := a.info.Lookup(scope, decl.Func.Name); ok && object.Kind == ObjectFunc {
 				objectID = object.ID
@@ -179,9 +195,13 @@ func (a *analyzer) analyzeDecl(decl *ast.Decl, scope ScopeID, local bool) {
 }
 
 func (a *analyzer) analyzeFunc(decl *ast.FuncDecl, parent ScopeID, objectID ObjectID) {
+	previousModule := a.definitionModule
+	if decl.DefinitionModule != "" {
+		a.definitionModule = decl.DefinitionModule
+	}
 	scope := a.newScope(ScopeFunction, decl.NodeID, parent)
-	a.declareTypeParams(decl.TypeParams, scope)
 	a.declareReceiverTypeParams(decl.Receiver, scope)
+	a.declareTypeParams(decl.TypeParams, scope)
 	if decl.Receiver != nil {
 		a.analyzeField(decl.Receiver, scope, true)
 	}
@@ -207,6 +227,7 @@ func (a *analyzer) analyzeFunc(decl *ast.FuncDecl, parent ScopeID, objectID Obje
 	a.resultTypes = signature.Results
 	a.analyzeBlock(&decl.Body, scope, false)
 	a.resultTypes = previousResults
+	a.definitionModule = previousModule
 }
 
 func (a *analyzer) storeFunctionType(nodeID ast.NodeID, role string, signature types.FunctionSignature) types.TypeRef {
@@ -250,6 +271,10 @@ func (a *analyzer) declareTypeParams(params []ast.TypeParam, scope ScopeID) {
 	for i := range params {
 		param := &params[i]
 		if param.Name == "_" {
+			continue
+		}
+		if _, exists := a.info.Scopes[scope].Objects[param.Name]; exists {
+			a.addDiagnostic("semantic.scope.duplicate", "type parameter redeclares a receiver parameter", param.Span)
 			continue
 		}
 		id := types.TypeID("typeparam." + strconv.FormatUint(uint64(param.NodeID), 10))
@@ -299,6 +324,33 @@ func (a *analyzer) declareReceiverTypeParams(receiver *ast.Field, scope ScopeID)
 		ref := types.TypeRef{Kind: types.TypeParameter, Node: id}
 		_ = a.info.TypeTable.Add(types.TypeNode{ID: id, Kind: types.TypeParameter, Name: arg.Name, Constraint: types.AnyType()})
 		a.declare(scope, ObjectTypeParam, arg.Name, arg.NodeID, ref, false, false)
+	}
+	if typ.Base == nil {
+		return
+	}
+	owner, ok := a.info.Lookup(scope, typ.Base.Name)
+	if !ok {
+		return
+	}
+	params := a.info.GenericDecls[owner.ID]
+	if len(params) != len(typ.TypeArgs) {
+		return
+	}
+	bindings := make(map[types.TypeRef]types.TypeRef, len(params))
+	for i, id := range params {
+		if object, ok := a.info.Lookup(scope, typ.TypeArgs[i].Name); ok {
+			bindings[a.info.Objects[id].Type] = object.Type
+		}
+	}
+	cache := make(map[types.TypeID]types.TypeRef)
+	for _, id := range params {
+		original := a.info.Objects[id].Type
+		constraint, _ := a.info.Relations.View(original).Constraint()
+		constraint, ok := a.substituteType(constraint, bindings, "receiver."+strconv.FormatUint(uint64(receiver.NodeID), 10), cache)
+		if node, found := a.info.TypeTable.Node(bindings[original]); ok && found {
+			node.Constraint = constraint
+			_ = a.info.TypeTable.Replace(node)
+		}
 	}
 }
 

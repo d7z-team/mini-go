@@ -1,10 +1,10 @@
 package optimize
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
@@ -13,11 +13,11 @@ func TestApplyFoldsConstantBranchAndPreservesSelectedSourcePoints(t *testing.T) 
 	program := hir.Program{Functions: []hir.Function{{
 		ID: "fn.main",
 		Body: []hir.Statement{
-			{Kind: hir.StmtJumpIf, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`true`)}, Label: "then", SourcePoints: []hir.Location{{File: "main.mgo", Line: 1, Column: 1}}},
-			{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`0`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 2, Column: 2}}},
+			{Kind: hir.StmtJumpIf, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)}, Label: "then", SourcePoints: []hir.Location{{File: "main.mgo", Line: 1, Column: 1}}},
+			{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`0`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 2, Column: 2}}},
 			{Kind: hir.StmtJump, Label: "end"},
 			{Kind: hir.StmtLabel, Label: "then"},
-			{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`1`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 3, Column: 2}}},
+			{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 3, Column: 2}}},
 			{Kind: hir.StmtLabel, Label: "end"},
 			{Kind: hir.StmtReturn},
 		},
@@ -71,7 +71,7 @@ func TestBranchFallthroughPreservesComparisonAndOtherLabelEntries(t *testing.T) 
 func TestConstantBranchRespectsNegatedPolarity(t *testing.T) {
 	for _, value := range []string{"true", "false"} {
 		body, _ := foldConstantBranches([]hir.Statement{
-			{Kind: hir.StmtJumpIf, Label: "target", BranchNegated: true, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(value)}},
+			{Kind: hir.StmtJumpIf, Label: "target", BranchNegated: true, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(value)}},
 			{Kind: hir.StmtReturn},
 		}, nil)
 		if value == "false" && (body[0].Kind != hir.StmtJump || body[0].BranchNegated) || value == "true" && body[0].Kind != hir.StmtReturn {
@@ -103,14 +103,14 @@ func TestApplyMarksOnlyLogicalDirectTailCalls(t *testing.T) {
 func TestApplyLevelsHaveDistinctDeterministicPipelines(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{
 		{ID: "fn.main", Body: []hir.Statement{
-			{Kind: hir.StmtStoreLocal, Local: "local.condition", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`true`)}},
+			{Kind: hir.StmtStoreLocal, Local: "local.condition", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)}},
 			{Kind: hir.StmtJumpIf, Label: "then", Expr: hir.Expression{Kind: hir.ExprLocal, Local: "local.condition"}},
 			{Kind: hir.StmtReturn},
 			{Kind: hir.StmtLabel, Label: "then"},
 			{Kind: hir.StmtReturn},
 		}},
 		{ID: "fn.constant", Body: []hir.Statement{
-			{Kind: hir.StmtJumpIf, Label: "then", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`true`)}},
+			{Kind: hir.StmtJumpIf, Label: "then", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)}},
 			{Kind: hir.StmtReturn},
 			{Kind: hir.StmtLabel, Label: "then"},
 			{Kind: hir.StmtReturn},
@@ -149,7 +149,7 @@ func TestApplyRejectsUnknownLevel(t *testing.T) {
 }
 
 func TestFullOptimizationPropagatesSingleResultBooleanWithoutRemovingRebind(t *testing.T) {
-	store := hir.Statement{Kind: hir.StmtStoreResults, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`false`)}, Targets: []hir.StoreTarget{{Kind: "local", Local: "flag", Rebind: true}}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 2}}}
+	store := hir.Statement{Kind: hir.StmtStoreResults, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`false`)}, Targets: []hir.StoreTarget{{Kind: "local", Local: "flag", Rebind: true}}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 2}}}
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
 		store,
 		{Kind: hir.StmtJumpIf, Expr: hir.Expression{Kind: hir.ExprLocal, Local: "flag"}, Label: "unreachable", SourcePoints: []hir.Location{{File: "main.mgo", Line: 3}}},
@@ -179,11 +179,11 @@ func TestFullOptimizationPropagatesSingleResultBooleanWithoutRemovingRebind(t *t
 
 func TestFullOptimizationFoldsPureBooleanAndDropsUnusedPureStore(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
-		{Kind: hir.StmtStoreLocal, Local: "local.unused", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`true`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 1}}},
+		{Kind: hir.StmtStoreLocal, Local: "local.unused", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 1}}},
 		{Kind: hir.StmtJumpIf, Label: "done", Expr: hir.Expression{
 			Kind: hir.ExprBinary, Operator: "&&",
-			Left:  &hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`true`)},
-			Right: &hir.Expression{Kind: hir.ExprUnary, Operator: "!", Operand: &hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`false`)}},
+			Left:  &hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)},
+			Right: &hir.Expression{Kind: hir.ExprUnary, Operator: "!", Operand: &hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`false`)}},
 		}},
 		{Kind: hir.StmtReturn},
 		{Kind: hir.StmtLabel, Label: "done"},
@@ -218,8 +218,8 @@ func TestFullOptimizationKeepsObservableStores(t *testing.T) {
 
 func TestFullOptimizationEliminatesDeadStoresByControlFlowLiveness(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
-		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`1`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 1}}},
-		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`2`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 2}}},
+		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 1}}},
+		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`2`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 2}}},
 		{Kind: hir.StmtStoreLocal, Local: "local.copy", Expr: hir.Expression{Kind: hir.ExprLocal, Local: "local.value"}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 3}}},
 		{Kind: hir.StmtReturn},
 	}}}}
@@ -235,10 +235,10 @@ func TestFullOptimizationEliminatesDeadStoresByControlFlowLiveness(t *testing.T)
 
 func TestFullOptimizationRetainsStoresLiveOnBranchesAndLoops(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
-		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`1`)}},
+		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}},
 		{Kind: hir.StmtLabel, Label: "loop"},
 		{Kind: hir.StmtJumpIf, Label: "done", Expr: hir.Expression{Kind: hir.ExprLocal, Local: "local.condition"}},
-		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`2`)}},
+		{Kind: hir.StmtStoreLocal, Local: "local.value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`2`)}},
 		{Kind: hir.StmtJump, Label: "loop"},
 		{Kind: hir.StmtLabel, Label: "done"},
 		{Kind: hir.StmtReturn, Results: []hir.Expression{{Kind: hir.ExprLocal, Local: "local.value"}}},
@@ -260,8 +260,8 @@ func TestFullOptimizationRetainsStoresLiveOnBranchesAndLoops(t *testing.T) {
 
 func TestFullOptimizationRetainsNamedResultsAcrossPanic(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", ResultLocals: []string{"result"}, Body: []hir.Statement{
-		{Kind: hir.StmtStoreLocal, Local: "result", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`7`)}},
-		{Kind: hir.StmtPanic, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`1`)}},
+		{Kind: hir.StmtStoreLocal, Local: "result", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`7`)}},
+		{Kind: hir.StmtPanic, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}},
 	}}}}
 	optimized, err := Apply(program, LevelFull)
 	if err != nil {
@@ -275,11 +275,11 @@ func TestFullOptimizationRetainsNamedResultsAcrossPanic(t *testing.T) {
 
 func TestFullOptimizationRetainsEscapedAndReboundLocals(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
-		{Kind: hir.StmtStoreLocal, Local: "local.addressed", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`1`)}},
+		{Kind: hir.StmtStoreLocal, Local: "local.addressed", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}},
 		{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprAddressOf, Local: "local.addressed"}},
-		{Kind: hir.StmtStoreLocal, Local: "local.captured", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`2`)}},
+		{Kind: hir.StmtStoreLocal, Local: "local.captured", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`2`)}},
 		{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprFunction, Captures: []hir.CaptureTarget{{Local: "local.captured"}}}},
-		{Kind: hir.StmtStoreLocal, Local: "local.rebound", Rebind: true, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`3`)}},
+		{Kind: hir.StmtStoreLocal, Local: "local.rebound", Rebind: true, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`3`)}},
 		{Kind: hir.StmtReturn},
 	}}}}
 	optimized, err := Apply(program, LevelFull)
@@ -351,7 +351,7 @@ func FuzzApplyDeterministic(f *testing.F) {
 			case 1:
 				body = append(body, hir.Statement{Kind: hir.StmtJump, Label: label})
 			case 2:
-				body = append(body, hir.Statement{Kind: hir.StmtJumpIf, Label: label, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`true`)}})
+				body = append(body, hir.Statement{Kind: hir.StmtJumpIf, Label: label, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)}})
 			case 3:
 				body = append(body, hir.Statement{Kind: hir.StmtExpr, SourcePoints: []hir.Location{{File: "f.mgo", Line: index + 1}}})
 			case 4:
@@ -359,7 +359,7 @@ func FuzzApplyDeterministic(f *testing.F) {
 			case 5:
 				body = append(body, hir.Statement{Kind: hir.StmtPanic})
 			case 6:
-				body = append(body, hir.Statement{Kind: hir.StmtStoreLocal, Local: local, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`1`)}})
+				body = append(body, hir.Statement{Kind: hir.StmtStoreLocal, Local: local, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}})
 			case 7:
 				body = append(body, hir.Statement{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprLocal, Local: local}})
 			}

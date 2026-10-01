@@ -1,16 +1,16 @@
 package lower
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/constant"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
+	"github.com/d7z-team/mini-go/compiler/types"
 )
 
-func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (json.RawMessage, string, bool) {
+func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (*constant.Value, string, bool) {
 	if expr.Callee == nil || expr.Callee.Kind != ast.ExprIdent {
 		return nil, "", false
 	}
@@ -28,7 +28,7 @@ func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (
 				if expr.Callee.Name == "cap" {
 					return nil, "", false
 				}
-				return json.RawMessage(strconv.FormatInt(int64(len([]byte(text))), 10)), "Int", true
+				return constant.Scalar(strconv.FormatInt(int64(len([]byte(text))), 10)), "Int", true
 			}
 		}
 		typ := l.resolveSourceTypePtr(arg.Type, nil)
@@ -45,7 +45,7 @@ func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (
 		if length < 0 {
 			return nil, "", false
 		}
-		return json.RawMessage(strconv.FormatInt(length, 10)), "Int", true
+		return constant.Scalar(strconv.FormatInt(length, 10)), "Int", true
 	case "complex":
 		if len(expr.Args) != 2 {
 			return nil, "", false
@@ -70,7 +70,7 @@ func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (
 		if l.underlyingConstType(leftType) == "Float32" && l.underlyingConstType(rightType) == "Float32" {
 			typ = "Complex64"
 		}
-		out, ok := l.complexRawForType(exactComplex{realPart: left, imaginaryPart: right}, typ, l.untypedConstExpression(expr, scope))
+		out, ok := l.complexConstantForType(exactComplex{realPart: left, imaginaryPart: right}, typ, l.untypedConstExpression(expr, scope))
 		return out, typ, ok
 	case "real", "imag":
 		if len(expr.Args) != 1 {
@@ -92,7 +92,7 @@ func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (
 		if l.underlyingConstType(typ) == "Complex64" {
 			resultType = "Float32"
 		}
-		raw, ok = l.rationalRawForType(out, resultType, l.untypedConstExpression(expr, scope))
+		raw, ok = l.rationalConstantForType(out, resultType, l.untypedConstExpression(expr, scope))
 		return raw, resultType, ok
 	case "min", "max":
 		return l.constMinMaxValue(expr, scope)
@@ -101,7 +101,7 @@ func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (
 	}
 }
 
-func (l *lowerer) constMinMaxValue(expr ast.Expression, scope *funcScope) (json.RawMessage, string, bool) {
+func (l *lowerer) constMinMaxValue(expr ast.Expression, scope *funcScope) (*constant.Value, string, bool) {
 	if len(expr.Args) == 0 || expr.Ellipsis {
 		return nil, "", false
 	}
@@ -148,10 +148,10 @@ func (l *lowerer) constMinMaxValue(expr ast.Expression, scope *funcScope) (json.
 		if !ok {
 			return nil, "", false
 		}
-		raw, ok := exactRationalRaw(value)
+		raw, ok := exactRationalConstant(value)
 		return raw, target, ok
 	}
-	return append(json.RawMessage(nil), selected.Value...), selected.Type, true
+	return selected.Value, selected.Type, true
 }
 
 func (l *lowerer) constOrderedCompare(operator string, left, right constantValue) (bool, bool) {
@@ -208,47 +208,21 @@ func normalizeConstUint(value uint64, typ string) uint64 {
 	}
 }
 
-func complexRaw(value complex128) (json.RawMessage, bool) {
-	raw, err := json.Marshal(struct {
-		Real float64 `json:"real"`
-		Imag float64 `json:"imag"`
-	}{Real: real(value), Imag: imag(value)})
-	if err != nil {
-		return nil, false
-	}
-	return json.RawMessage(raw), true
+func complexConstant(value complex128) (*constant.Value, bool) {
+	return &constant.Value{Real: strconv.FormatFloat(real(value), 'g', -1, 64), Imag: strconv.FormatFloat(imag(value), 'g', -1, 64), Type: "Complex128"}, true
 }
 
 func (l *lowerer) underlyingConstType(typ string) string {
-	typ = strings.TrimSpace(typ)
-	seen := map[string]struct{}{}
-	for i := 0; i < 32; i++ {
-		if typ == "" {
-			return ""
-		}
-		if _, ok := seen[typ]; ok {
-			return typ
-		}
-		seen[typ] = struct{}{}
-		if alias, ok := l.typeAliases[typ]; ok && strings.TrimSpace(alias) != "" {
-			typ = strings.TrimSpace(alias)
-			continue
-		}
-		if decl, ok := l.typeDecls[typ]; ok {
-			next := l.resolveSourceType(decl)
-			if strings.TrimSpace(next) != "" && next != typ {
-				typ = next
-				continue
-			}
-		}
-		if export, ok := l.importedTypeInfo(typ); ok {
-			next := l.resolveType(export.Underlying)
-			if strings.TrimSpace(next) != "" && next != typ {
-				typ = next
-				continue
-			}
-		}
+	if _, ok := types.PrimitiveByName(typ); ok {
 		return typ
+	}
+	ref, ok := l.typeRef(typ)
+	if !ok {
+		return typ
+	}
+	underlying := l.typeTable.Underlying(ref)
+	if underlying.Kind == types.Primitive {
+		return types.PrimitiveName(underlying.Primitive)
 	}
 	return typ
 }

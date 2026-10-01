@@ -12,6 +12,24 @@ import "sort"
 // are case-sensitive.
 type Values map[string][]string
 
+// Clone creates a deep copy of the values, preserving nil maps and slices.
+func (v Values) Clone() Values {
+	if v == nil {
+		return nil
+	}
+	result := make(Values, len(v))
+	for key, values := range v {
+		if values == nil {
+			result[key] = nil
+			continue
+		}
+		cloned := make([]string, len(values))
+		copy(cloned, values)
+		result[key] = cloned
+	}
+	return result
+}
+
 // Get gets the first value associated with the given key.
 // If there are no values associated with the key, Get returns
 // the empty string. To access multiple values, use the map

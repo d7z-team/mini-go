@@ -1,9 +1,9 @@
 package emit
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
@@ -33,7 +33,7 @@ func TestLowerProducesFunctionSpawnInstructions(t *testing.T) {
 }
 
 func TestLowerProducesImportAndPanicInstructions(t *testing.T) {
-	message := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("String"), Value: json.RawMessage(`"failed"`)}
+	message := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("String"), Value: constant.String("failed", "String", false).Ref()}
 	artifact, err := lowerTestProgram(t, hir.Program{
 		ModulePath: "example/module",
 		Package:    "main",

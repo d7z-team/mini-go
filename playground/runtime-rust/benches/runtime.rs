@@ -210,7 +210,7 @@ fn compiler_session_workload() {
 
 #[cfg(feature = "compiler")]
 fn compiler_workloads() {
-    use mini_go::loader::{DecodedImage, LoadLimits};
+    use mini_go::loader::DecodedImage;
     let external_image = std::env::var_os("MINIGO_BENCH_IMAGE")
         .map(|path| std::fs::read(path).expect("read compiler benchmark image"));
     let live_bytes = LIVE_BYTES.load(Ordering::Relaxed);
@@ -223,7 +223,7 @@ fn compiler_workloads() {
                 external_image
                     .as_deref()
                     .unwrap_or(include_bytes!("../assets/compiler.json.gz")),
-                LoadLimits::compiler(),
+                mini_go::compiler::CompilerOptions::default().load,
             )
             .unwrap(),
         )
@@ -248,8 +248,9 @@ fn compiler_workloads() {
     if std::env::var_os("MINIGO_BENCH_COLD").is_some() {
         let workload =
             std::env::var("MINIGO_BENCH_COLD_WORKLOAD").unwrap_or_else(|_| "declarations".into());
-        let prepare = workload == "rpc-prepare";
-        let source = match workload.as_str() {
+        let prepare = workload.ends_with("-prepare");
+        let source_name = workload.strip_suffix("-prepare").unwrap_or(&workload);
+        let source = match source_name {
             "declarations" => {
                 let mut source = String::from("package main\nfunc Main() int { return F99(1) }\n");
                 for index in 0..100 {
@@ -265,7 +266,7 @@ fn compiler_workloads() {
                     "../../../testdata/language/workloads.json"
                 )).unwrap();
                 workloads.as_array().unwrap().iter()
-                    .find(|item| item["Name"] == if name == "rpc-prepare" { "rpc" } else { name })
+                    .find(|item| item["Name"] == name)
                     .unwrap_or_else(|| panic!("unknown cold benchmark workload {name}"))["Source"]
                     .as_str().unwrap().to_owned()
             }
@@ -277,8 +278,8 @@ fn compiler_workloads() {
         } else {
             json!({"Format":"mini-go-tools","Version":3,"Operation":"workspace/open","Root":"probe","Packages":packages})
         };
-        let name = if workload == "rpc-prepare" {
-            "compiler-default-cold-rpc-prepare".to_owned()
+        let name = if prepare {
+            format!("compiler-default-cold-{workload}")
         } else {
             format!("compiler-tools-cold-{workload}")
         };
@@ -287,7 +288,11 @@ fn compiler_workloads() {
             if profile && timing_only {
                 break;
             }
-            let mut vm = Instance::new(program.clone(), ExecutionLimits::compiler()).unwrap();
+            let mut vm = Instance::new(
+                program.clone(),
+                mini_go::compiler::CompilerOptions::default().limits,
+            )
+            .unwrap();
             if profile {
                 vm.start_profile(1, 100_000).unwrap();
             }
@@ -330,7 +335,11 @@ fn compiler_workloads() {
     }
     let packages = json!([{"Namespace":"module:probe","ModulePath":"probe","Files":[{"Path":"main.mgo","Text":"package main\nfunc Main() int { return 42 }\n"}]}]);
     for entry in ["default", "tools"] {
-        let mut vm = Instance::new(program.clone(), ExecutionLimits::compiler()).unwrap();
+        let mut vm = Instance::new(
+            program.clone(),
+            mini_go::compiler::CompilerOptions::default().limits,
+        )
+        .unwrap();
         let (session, revision) = if entry == "tools" {
             let response = compiler_request(
                 &mut vm,

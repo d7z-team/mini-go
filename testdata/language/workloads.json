@@ -1,5 +1,9 @@
 [
   {
+    "Name": "generic-methods",
+    "Source": "package sample\ntype Ω[T any] struct { X T }\ntype Box struct { Ω[int] }\nfunc (b Box) Echo[T any](v T) T { return v }\nfunc Identity[T any](v T) T { return v }\nfunc Main() int { 𐗀 := Box{X: 42}; var f func(int) int = 𐗀.Echo; ch := make(chan func(int) int, 1); ch <- Identity; return (<-ch)(f(𐗀.X)) }\n"
+  },
+  {
     "Name": "pure",
     "Source": "package sample\nfunc Answer() int { return 42 }\n"
   },

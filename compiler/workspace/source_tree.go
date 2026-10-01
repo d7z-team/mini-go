@@ -131,12 +131,3 @@ func newTreeSourceSet(modulePath string, files []TreeFile) (MemorySourceSet, err
 	}
 	return NewMemorySourceSet(out)
 }
-
-func ignoredPackagePath(name string) bool {
-	for _, element := range strings.Split(name, "/") {
-		if strings.HasPrefix(element, ".") || strings.HasPrefix(element, "_") {
-			return true
-		}
-	}
-	return false
-}

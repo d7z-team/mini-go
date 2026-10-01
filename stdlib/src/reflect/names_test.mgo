@@ -1,0 +1,40 @@
+package reflect_test
+
+import (
+	"reflect"
+	"testing"
+)
+
+type unicodeNames struct {
+	Ᲊ int
+}
+
+func (unicodeNames) Echo[T any](value T) T {
+	return value
+}
+
+func (unicodeNames) Ω() int {
+	return 42
+}
+
+func TestUnicodeNamesAndConcreteMethods(t *testing.T) {
+	value := unicodeNames{Ᲊ: 17}
+	typ := reflect.TypeOf(value)
+	field := typ.Field(0)
+	if field.Name != "Ᲊ" || field.PkgPath != "" || !reflect.ValueOf(value).Field(0).CanInterface() {
+		t.Fatal("Unicode exported field")
+	}
+	if typ.NumMethod() != 1 || typ.Method(0).Name != "Ω" {
+		t.Fatal("concrete method set")
+	}
+	result := reflect.ValueOf(value).MethodByName("Ω").Call(nil)
+	if result[0].Int() != 42 {
+		t.Fatal("Unicode method invocation")
+	}
+	dynamic := reflect.StructOf([]reflect.StructField{{Name: "Ᲊ", Type: reflect.TypeOf(0)}})
+	instance := reflect.New(dynamic).Elem()
+	instance.FieldByName("Ᲊ").SetInt(23)
+	if instance.Field(0).Int() != 23 {
+		t.Fatal("Unicode dynamic field")
+	}
+}

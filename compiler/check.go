@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/parser"
@@ -90,6 +91,19 @@ func DependencyExports(info *check.ProgramInfo) []check.DependencyExport {
 					ModulePath: firstNonEmpty(method.ModulePath, info.ModulePath),
 				})
 			}
+			for _, generic := range info.GenericMethods {
+				receiver := generic.Method.Receiver
+				if receiver.Kind == types.Pointer {
+					receiver, _ = info.Relations.View(receiver).Elem()
+				}
+				if instance, ok := info.TypeTable.Node(receiver); ok && instance.Kind == types.Instance {
+					receiver = instance.Base
+				}
+				if !info.Relations.Identical(receiver, object.Type).OK {
+					continue
+				}
+				export.Methods = append(export.Methods, genericMethodDependency(info, generic))
+			}
 		default:
 			continue
 		}
@@ -99,4 +113,23 @@ func DependencyExports(info *check.ProgramInfo) []check.DependencyExport {
 		out = append(out, export)
 	}
 	return out
+}
+
+// Generic parameter names must not shadow canonical primitive names such as
+// Int at the dependency text boundary. The source AST retains the user's names.
+func genericMethodDependency(info *check.ProgramInfo, generic check.GenericMethod) check.DependencyTypeMethod {
+	table := types.NewTable(info.TypeTable.Nodes...)
+	params := info.GenericDecls[generic.Object]
+	for i, id := range params {
+		node, _ := table.Node(info.Objects[id].Type)
+		node.Name = "_method_parameter_" + strconv.Itoa(i)
+		_ = table.Replace(node)
+	}
+	method := check.DependencyTypeMethod{Name: generic.Method.Name, Receiver: types.FormatWithTable(table, generic.Method.Receiver), Signature: types.FormatSignature(table, generic.Method.Signature), Variadic: generic.Method.Signature.Variadic, ModulePath: info.ModulePath}
+	for _, id := range params {
+		param, _ := table.Node(info.Objects[id].Type)
+		constraint := types.View(table, param.Constraint).Underlying()
+		method.TypeParams = append(method.TypeParams, check.DependencyTypeParameter{Name: info.Objects[id].Name, Binding: param.Name, Constraint: types.FormatWithTable(table, constraint)})
+	}
+	return method
 }

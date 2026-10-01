@@ -8,7 +8,7 @@ import (
 
 func (a *analyzer) validateResolvedIdentifiers(program *ast.Program) {
 	ast.WalkExpressions(program, func(expr *ast.Expression) {
-		if expr.Kind != ast.ExprIdent {
+		if expr.Kind != ast.ExprIdent || expr.FunctionID != "" {
 			return
 		}
 		if expr.Name == "_" || expr.Name == "type" && expr.Type != nil && expr.Type.Kind != ast.TypeInvalid {

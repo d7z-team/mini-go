@@ -16,6 +16,10 @@ func (s *genericSpecializer) rewriteGenericFunctionValue(expr *ast.Expression, t
 	if expr.Kind == ast.ExprIndex || expr.Kind == ast.ExprIndexList {
 		name, explicit = genericInstantiation(*expr, substitutions)
 	}
+	methodName, receiver, methodArgs := s.prepareGenericMethod(*expr, substitutions)
+	if methodName != "" {
+		name, explicit = methodName, methodArgs
+	}
 	generic, ok := s.functions[name]
 	if !ok || len(explicit) > len(generic.typeParams) {
 		return
@@ -25,6 +29,9 @@ func (s *genericSpecializer) rewriteGenericFunctionValue(expr *ast.Expression, t
 		bindings[generic.typeParams[i].Name] = explicit[i]
 	}
 	pattern := ast.TypeExpr{Kind: ast.TypeFunc, Params: generic.decl.Func.Params, Results: generic.decl.Func.Results, Span: expr.Span}
+	if receiver != nil {
+		pattern.Params = pattern.Params[1:]
+	}
 	if !s.inferGenericType(pattern, target, generic.typeParams, bindings) || !s.inferConstraintBindings(generic, bindings) {
 		return
 	}
@@ -41,11 +48,15 @@ func (s *genericSpecializer) rewriteGenericFunctionValue(expr *ast.Expression, t
 		return
 	}
 
-	*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprIdent, Name: generated, Type: &target, Span: expr.Span}
+	if methodName != "" {
+		s.bindMethodValue(expr, generated, receiver)
+	} else {
+		*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprIdent, Name: generated, Type: &target, Span: expr.Span}
+	}
 }
 
 func (s *genericSpecializer) rewriteSemanticCallArgumentContexts(expr *ast.Expression, substitutions map[string]ast.TypeExpr) {
-	if expr == nil || expr.Callee == nil {
+	if expr == nil || expr.Callee == nil || s.activeAlias != "" {
 		return
 	}
 	if _, generic := s.functions[genericCalleeName(*expr.Callee)]; generic {
@@ -104,7 +115,11 @@ func (s *genericSpecializer) rewriteCompositeFunctionValues(expr *ast.Expression
 		}
 		for i := range expr.Items {
 			if expr.Items[i].Key != nil {
-				s.rewriteGenericFunctionValue(&expr.Items[i].Value, fields[expr.Items[i].Key.Name], substitutions)
+				fieldType := fields[expr.Items[i].Key.Name]
+				if composite, ok := s.info.Composites[expr.NodeID]; ok && i < len(composite.Initializers) && composite.Initializers[i].Type.Valid() {
+					fieldType = s.sourceTypeExpr(composite.Initializers[i].Type, expr.Items[i].Value.Span)
+				}
+				s.rewriteGenericFunctionValue(&expr.Items[i].Value, fieldType, substitutions)
 			} else if i < len(target.Fields) {
 				s.rewriteGenericFunctionValue(&expr.Items[i].Value, target.Fields[i].Type, substitutions)
 			}
@@ -118,5 +133,6 @@ func (s *genericSpecializer) setGeneratedCallResult(expr *ast.Expression, genera
 		return
 	}
 	target := cloneGenericType(decl.Results[0].Type)
+	s.canonicalizeTypeImports(&target)
 	expr.Type = &target
 }

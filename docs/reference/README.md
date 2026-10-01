@@ -68,3 +68,4 @@
 - [`unicode`](packages/unicode.md) - Package unicode provides data and functions to test some properties of Unicode code points.
 - [`unicode/utf16`](packages/unicode/utf16.md) - Package utf16 implements encoding and decoding of UTF-16 sequences.
 - [`unicode/utf8`](packages/unicode/utf8.md) - Package utf8 implements functions and constants to support text encoded in UTF-8.
+- [`uuid`](packages/uuid.md) - Package uuid provides support for generating and manipulating UUIDs.

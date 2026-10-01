@@ -39,7 +39,7 @@ func TestLowerNilLiteral(t *testing.T) {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
 	literal := fn.Body[0].Results[0]
-	if literal.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, literal.Type) != "Any" || string(literal.Value) != "null" {
+	if literal.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, literal.Type) != "Any" || string(literal.Value.JSON()) != "null" {
 		t.Fatalf("expected nil literal to lower as Any null, got %#v", literal)
 	}
 }

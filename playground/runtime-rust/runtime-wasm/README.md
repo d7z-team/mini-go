@@ -142,14 +142,28 @@ const vm = await MiniGo.create(image, {
 HostValue 使用显式类型；64 位整数及浮点位模式使用 BigInt，字节使用 Uint8Array。
 `values.int/bool/string/bytes` 构造常用输入。输入会复制，返回快照独立拥有数据并保留别名和循环。
 
-通过 `maxSteps`、`maxHeapBytes` 和 `maxPendingCalls` 限制执行。
-镜像加载、FFI 和快照也受各自预算约束。guest 计费不代表全部 JS、网络或进程内存。
+通过 `limits` 设置执行预算，通过 `load` 设置镜像加载预算。例如：
 
-每个 scope 默认 1 亿步，热更新不重置预算。`maxSteps` 缺省或 0 使用默认值，
-`UNLIMITED_STEPS`（-1）放开累计步数，正数设置预算；超出安全整数的值使用 bigint，最大为有符号 64 位整数。
-无限模式仍保留取消和其他限额。
+```typescript
+const vm = await MiniGo.create(image, {
+  limits: { maxSteps: -1, maxHeapBytes: 128 * 1024 * 1024 },
+  load: { maxImageBytes: 64 * 1024 * 1024 },
+});
+```
 
-`stats()` 提供 VM 步数、分配与 WASM 线性内存观测。
+| 默认预算 | runtime | 编译服务 tools |
+| --- | --- | --- |
+| scope 累计步数 | 1 亿 | 不限 |
+| guest heap | 32 MiB | 128 MiB |
+| 镜像 / 单 artifact | 32 / 16 MiB | 64 / 64 MiB |
+
+`limits` 控制执行资源，`load` 控制加载与热更新。显式正数可收紧或提高预算；
+`maxFfiResultBytes` 同时约束主线程 provider 与 Worker provider 的返回值。
+完整字段见分发包的类型声明；guest 计费不等于 JS、网络或进程内存。
+
+`limits.maxSteps` 省略或 0 使用所属入口默认值，`UNLIMITED_STEPS`（-1）不限累计步数；
+超出安全整数的值使用 bigint，最大为有符号 64 位整数。热更新不重置 scope 预算，
+不限步数仍保留统计、调度、取消和其他限额。`stats()` 返回步数、分配与 WASM 线性内存观测。
 
 ## 编译器与语言工具
 
@@ -179,18 +193,20 @@ try {
 `update` 按序提交文档编辑，`analyze` 发布快照，`query` 查询该快照，`prepare` 返回镜像、符号和源码。
 文件树可通过 `language.sources(trees, signal)` 装配为 Packages；Data 使用 base64 保存文件字节和二进制资源。
 
-编译器在 WASM VM 中执行，首次分析包含完整 import 依赖。频繁编辑时复用会话并用 `update` 提交变化；
-较大工作区可能触发预算或请求期限。仅执行脚本的应用可由 Go 预先编译镜像。
-自行通过 runtime 加载 compiler 镜像时设置 `workload: "compiler"`。
-性能测量见[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能)。
+### 会话配置与恢复
+
+编译器在 WASM VM 中执行，首次分析包含 import 依赖。频繁编辑时复用会话并用 `update` 提交变化；
+仅执行脚本的应用可预先编译镜像。编译服务同样使用前述 `limits` 和 `load`，例如
+`createLanguageService(image, { limits: { maxHeapBytes: 256 * 1024 * 1024 }, timeoutMs: 60_000 })`。
+预算在创建时复制，Worker 重建和会话升级沿用该配置。
 
 默认只允许编辑根工作区，`Editable` 可授权额外源码根。请求支持 AbortSignal；取消、Worker 丢失或
 未确认请求失败后，下一次请求从最后成功交付的输入重建，旧 snapshot 失效。
 
-tools 请求默认 30 秒，可通过 `createLanguageService(image, { timeoutMs })` 配置；
-`timeoutMs` 是 1 到 2,147,483,647 的整数毫秒，作用于初始化、请求和升级。
-排队和恢复计入同一预算，请求中的 `Deadline` 可进一步缩短期限；取消最多给予 2 秒清理时间。队列、输入和响应均有界，
-超出限额的请求会失败；宿主还需为编译器镜像和 VM 保留内存。
+tools 的 `timeoutMs` 默认 30 秒，接受 1 到 2,147,483,647 的整数毫秒。
+初始化、请求和升级各自使用该期限，排队和恢复计入本次操作预算；`Deadline` 可进一步缩短期限。
+取消最多给予 guest 2 秒清理时间。较大工作区需同时评估内存与请求期限，测量方法见
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能)。
 
 `upgrade(image, signal)` 在候选会话恢复并分析成功后切换，失败保留当前会话。
 返回的 `cleanupError` 表示切换后旧 Worker 的清理异常，新会话仍有效。使用结束后调用 `dispose()` 释放 Worker。

@@ -27,6 +27,11 @@ func (l *lowerer) typeConversionCallTarget(expr ast.Expression, scope *funcScope
 }
 
 func (l *lowerer) resolveNamedTypeArgument(expr ast.Expression, scope *funcScope) (string, bool) {
+	if l.semantic != nil {
+		if info, ok := l.semantic.Exprs[expr.NodeID]; ok && info.Mode == check.ExprType && info.Type.Valid() && l.semantic.TypeExact(info.Type) {
+			return l.formatSemanticType(info.Type), true
+		}
+	}
 	switch expr.Kind {
 	case ast.ExprIdent:
 		name := strings.TrimSpace(expr.Name)

@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/cache"
@@ -123,6 +124,41 @@ func compileParsedPackageWithLimits(ctx context.Context, parsed workspace.OwnedP
 	// Runtime exports contain concrete declarations. Source analysis also needs
 	// the signatures of generic templates, including file-scoped dot imports.
 	options.Dependencies = append([]check.DependencyPackage(nil), options.Dependencies...)
+	// Checked templates can refer to values in their own dependency closure.
+	// Keep that metadata available; file imports still control source visibility.
+	dependencyArtifacts := make(map[string]ir.Artifact, len(packageDependencies))
+	for path, data := range packageDependencies {
+		dependencyArtifacts[path] = ir.Artifact{TypeTable: data.TypeTable, Constants: data.Constants, Exports: data.Exports}
+	}
+	dependencyPaths := make([]string, 0, len(packageDependencies))
+	for path := range packageDependencies {
+		dependencyPaths = append(dependencyPaths, path)
+	}
+	sort.Strings(dependencyPaths)
+	for _, path := range dependencyPaths {
+		index := -1
+		for i := range options.Dependencies {
+			if options.Dependencies[i].ModulePath == path {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			index = len(options.Dependencies)
+			options.Dependencies = append(options.Dependencies, check.DependencyPackage{ModulePath: path})
+		}
+		dependency := &options.Dependencies[index]
+		dependency.Members = append([]check.DependencyExport(nil), dependency.Members...)
+		for _, export := range packageDependencies[path].Exports {
+			found := false
+			for _, member := range dependency.Members {
+				found = found || member.Name == export.Name
+			}
+			if !found {
+				dependency.Members = append(dependency.Members, dependencyExportInfo(path, dependencyArtifacts[path], export, dependencyArtifacts))
+			}
+		}
+	}
 	for i := range options.Dependencies {
 		dependency := &options.Dependencies[i]
 		dependency.Members = append([]check.DependencyExport(nil), dependency.Members...)
@@ -130,6 +166,21 @@ func compileParsedPackageWithLimits(ctx context.Context, parsed workspace.OwnedP
 		data := dependencies[path]
 		for _, template := range data.GenericTemplates {
 			switch template.Kind {
+			case "method":
+				if len(template.TypeParams) == 0 {
+					continue
+				}
+				owner := genericReceiverName(template.Decl.Func.Receiver.Type)
+				method := check.DependencyTypeMethod{Name: template.Decl.Func.Name, Receiver: template.Receiver, Signature: template.Type, ModulePath: path}
+				for _, param := range template.TypeParams {
+					method.TypeParams = append(method.TypeParams, check.DependencyTypeParameter{Name: param.Name, Binding: param.Binding, Constraint: param.Constraint})
+				}
+				for j := range dependency.Members {
+					if dependency.Members[j].Kind == check.ObjectType && dependency.Members[j].Name == owner {
+						dependency.Members[j].Methods = append(dependency.Members[j].Methods, method)
+						break
+					}
+				}
 			case "function":
 				params := make([]string, len(template.Decl.Func.TypeParams))
 				for i, param := range template.Decl.Func.TypeParams {

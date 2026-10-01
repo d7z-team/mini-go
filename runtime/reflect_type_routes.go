@@ -333,7 +333,7 @@ func reflectValueSliceBounds(ctx intrinsicContext, args []vmValue, full bool) ([
 	if module == nil {
 		return reflectValueError("reflect: Slice requires module context"), nil
 	}
-	if module.isArrayType(current.Type) && !module.isSliceType(current.Type) && !reflectBoolField(fields.get("addressable")) {
+	if module.isArrayType(current.Type) && !reflectBoolField(fields.get("addressable")) {
 		return reflectValueError("reflect: Slice of unaddressable array Value"), nil
 	}
 	_, isString := current.Data.(string)

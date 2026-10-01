@@ -23,6 +23,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Bassa_Vah](#var-bassa_vah)
 - [var Batak](#var-batak)
 - [var Bengali](#var-bengali)
+- [var Beria_Erfe](#var-beria_erfe)
 - [var Bhaiksuki](#var-bhaiksuki)
 - [var Bidi_Control](#var-bidi_control)
 - [var Bopomofo](#var-bopomofo)
@@ -69,6 +70,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Extender](#var-extender)
 - [var FoldCategory](#var-foldcategory)
 - [var FoldScript](#var-foldscript)
+- [var Garay](#var-garay)
 - [var Georgian](#var-georgian)
 - [var Glagolitic](#var-glagolitic)
 - [var Gothic](#var-gothic)
@@ -78,6 +80,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Gujarati](#var-gujarati)
 - [var Gunjala_Gondi](#var-gunjala_gondi)
 - [var Gurmukhi](#var-gurmukhi)
+- [var Gurung_Khema](#var-gurung_khema)
 - [var Han](#var-han)
 - [var Hangul](#var-hangul)
 - [var Hanifi_Rohingya](#var-hanifi_rohingya)
@@ -89,6 +92,9 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Hyphen](#var-hyphen)
 - [var IDS_Binary_Operator](#var-ids_binary_operator)
 - [var IDS_Trinary_Operator](#var-ids_trinary_operator)
+- [var IDS_Unary_Operator](#var-ids_unary_operator)
+- [var ID_Compat_Math_Continue](#var-id_compat_math_continue)
+- [var ID_Compat_Math_Start](#var-id_compat_math_start)
 - [var Ideographic](#var-ideographic)
 - [var Imperial_Aramaic](#var-imperial_aramaic)
 - [func In](#func-in)
@@ -122,6 +128,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Khmer](#var-khmer)
 - [var Khojki](#var-khojki)
 - [var Khudawadi](#var-khudawadi)
+- [var Kirat_Rai](#var-kirat_rai)
 - [var L](#var-l)
 - [var LC](#var-lc)
 - [var Lao](#var-lao)
@@ -165,6 +172,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Miao](#var-miao)
 - [var Mn](#var-mn)
 - [var Modi](#var-modi)
+- [var Modifier_Combining_Mark](#var-modifier_combining_mark)
 - [var Mongolian](#var-mongolian)
 - [var Mro](#var-mro)
 - [var Multani](#var-multani)
@@ -185,6 +193,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Nyiakeng_Puachue_Hmong](#var-nyiakeng_puachue_hmong)
 - [var Ogham](#var-ogham)
 - [var Ol_Chiki](#var-ol_chiki)
+- [var Ol_Onal](#var-ol_onal)
 - [var Old_Hungarian](#var-old_hungarian)
 - [var Old_Italic](#var-old_italic)
 - [var Old_North_Arabian](#var-old_north_arabian)
@@ -245,6 +254,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Sharada](#var-sharada)
 - [var Shavian](#var-shavian)
 - [var Siddham](#var-siddham)
+- [var Sidetic](#var-sidetic)
 - [var SignWriting](#var-signwriting)
 - [func SimpleFold](#func-simplefold)
 - [var Sinhala](#var-sinhala)
@@ -261,6 +271,7 @@ Package unicode provides data and functions to test some properties of Unicode c
   - [SpecialCase.ToTitle](#func-specialcasetotitle)
   - [SpecialCase.ToUpper](#func-specialcasetoupper)
 - [var Sundanese](#var-sundanese)
+- [var Sunuwar](#var-sunuwar)
 - [var Syloti_Nagri](#var-syloti_nagri)
 - [var Symbol](#var-symbol)
 - [var Syriac](#var-syriac)
@@ -269,6 +280,7 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [var Tai_Le](#var-tai_le)
 - [var Tai_Tham](#var-tai_tham)
 - [var Tai_Viet](#var-tai_viet)
+- [var Tai_Yo](#var-tai_yo)
 - [var Takri](#var-takri)
 - [var Tamil](#var-tamil)
 - [var Tangsa](#var-tangsa)
@@ -286,7 +298,10 @@ Package unicode provides data and functions to test some properties of Unicode c
 - [func ToLower](#func-tolower)
 - [func ToTitle](#func-totitle)
 - [func ToUpper](#func-toupper)
+- [var Todhri](#var-todhri)
+- [var Tolong_Siki](#var-tolong_siki)
 - [var Toto](#var-toto)
+- [var Tulu_Tigalari](#var-tulu_tigalari)
 - [var TurkishCase](#var-turkishcase)
 - [var Ugaritic](#var-ugaritic)
 - [var Unified_Ideograph](#var-unified_ideograph)
@@ -379,7 +394,7 @@ If the Delta field of a [CaseRange](unicode.md#type-caserange) is UpperLower, it
 ### const Version
 
 ```go
-const Version = "15.0.0"
+const Version = "17.0.0"
 ```
 
 Version is the Unicode edition from which the tables are derived.
@@ -490,13 +505,21 @@ var Bengali = _Bengali
 
 Batak is the set of Unicode characters in script Batak.
 
+### var Beria_Erfe
+
+```go
+var Beria_Erfe = _Beria_Erfe
+```
+
+Bengali is the set of Unicode characters in script Bengali.
+
 ### var Bhaiksuki
 
 ```go
 var Bhaiksuki = _Bhaiksuki
 ```
 
-Bengali is the set of Unicode characters in script Bengali.
+Beria\_Erfe is the set of Unicode characters in script Beria\_Erfe.
 
 ### var Bidi_Control
 
@@ -943,13 +966,21 @@ var FoldScript = map[string]*RangeTable{
 
 FoldScript maps a script name to a table of code points outside the script that are equivalent under simple case folding to code points inside the script. If there is no entry for a script name, there are no such points.
 
+### var Garay
+
+```go
+var Garay = _Garay
+```
+
+Ethiopic is the set of Unicode characters in script Ethiopic.
+
 ### var Georgian
 
 ```go
 var Georgian = _Georgian
 ```
 
-Ethiopic is the set of Unicode characters in script Ethiopic.
+Garay is the set of Unicode characters in script Garay.
 
 ### var Glagolitic
 
@@ -1017,13 +1048,21 @@ var Gurmukhi = _Gurmukhi
 
 Gunjala\_Gondi is the set of Unicode characters in script Gunjala\_Gondi.
 
+### var Gurung_Khema
+
+```go
+var Gurung_Khema = _Gurung_Khema
+```
+
+Gurmukhi is the set of Unicode characters in script Gurmukhi.
+
 ### var Han
 
 ```go
 var Han = _Han
 ```
 
-Gurmukhi is the set of Unicode characters in script Gurmukhi.
+Gurung\_Khema is the set of Unicode characters in script Gurung\_Khema.
 
 ### var Hangul
 
@@ -1105,13 +1144,37 @@ var IDS_Trinary_Operator = _IDS_Trinary_Operator
 
 IDS\_Binary\_Operator is the set of Unicode characters with property IDS\_Binary\_Operator.
 
+### var IDS_Unary_Operator
+
+```go
+var IDS_Unary_Operator = _IDS_Unary_Operator
+```
+
+IDS\_Trinary\_Operator is the set of Unicode characters with property IDS\_Trinary\_Operator.
+
+### var ID_Compat_Math_Continue
+
+```go
+var ID_Compat_Math_Continue = _ID_Compat_Math_Continue
+```
+
+IDS\_Unary\_Operator is the set of Unicode characters with property IDS\_Unary\_Operator.
+
+### var ID_Compat_Math_Start
+
+```go
+var ID_Compat_Math_Start = _ID_Compat_Math_Start
+```
+
+ID\_Compat\_Math\_Continue is the set of Unicode characters with property ID\_Compat\_Math\_Continue.
+
 ### var Ideographic
 
 ```go
 var Ideographic = _Ideographic
 ```
 
-IDS\_Trinary\_Operator is the set of Unicode characters with property IDS\_Trinary\_Operator.
+ID\_Compat\_Math\_Start is the set of Unicode characters with property ID\_Compat\_Math\_Start.
 
 ### var Imperial_Aramaic
 
@@ -1241,6 +1304,14 @@ var Khudawadi = _Khudawadi
 
 Khojki is the set of Unicode characters in script Khojki.
 
+### var Kirat_Rai
+
+```go
+var Kirat_Rai = _Kirat_Rai
+```
+
+Khudawadi is the set of Unicode characters in script Khudawadi.
+
 ### var L
 
 ```go
@@ -1263,7 +1334,7 @@ Nd is the set of Unicode characters in category Nd (Number, decimal digit).
 var Lao = _Lao
 ```
 
-Khudawadi is the set of Unicode characters in script Khudawadi.
+Kirat\_Rai is the set of Unicode characters in script Kirat\_Rai.
 
 ### var Latin
 
@@ -1541,6 +1612,14 @@ var Modi = _Modi
 
 Miao is the set of Unicode characters in script Miao.
 
+### var Modifier_Combining_Mark
+
+```go
+var Modifier_Combining_Mark = _Modifier_Combining_Mark
+```
+
+Logical\_Order\_Exception is the set of Unicode characters with property Logical\_Order\_Exception.
+
 ### var Mongolian
 
 ```go
@@ -1659,7 +1738,7 @@ Nl is the set of Unicode characters in category Nl (Number, letter).
 var Noncharacter_Code_Point = _Noncharacter_Code_Point
 ```
 
-Logical\_Order\_Exception is the set of Unicode characters with property Logical\_Order\_Exception.
+Modifier\_Combining\_Mark is the set of Unicode characters with property Modifier\_Combining\_Mark.
 
 ### var Number
 
@@ -1701,13 +1780,21 @@ var Ol_Chiki = _Ol_Chiki
 
 Ogham is the set of Unicode characters in script Ogham.
 
+### var Ol_Onal
+
+```go
+var Ol_Onal = _Ol_Onal
+```
+
+Ol\_Chiki is the set of Unicode characters in script Ol\_Chiki.
+
 ### var Old_Hungarian
 
 ```go
 var Old_Hungarian = _Old_Hungarian
 ```
 
-Ol\_Chiki is the set of Unicode characters in script Ol\_Chiki.
+Ol\_Onal is the set of Unicode characters in script Ol\_Onal.
 
 ### var Old_Italic
 
@@ -2009,9 +2096,13 @@ var Properties = map[string]*RangeTable{
 	"Hyphen": Hyphen,
 	"IDS_Binary_Operator": IDS_Binary_Operator,
 	"IDS_Trinary_Operator": IDS_Trinary_Operator,
+	"IDS_Unary_Operator": IDS_Unary_Operator,
+	"ID_Compat_Math_Continue": ID_Compat_Math_Continue,
+	"ID_Compat_Math_Start": ID_Compat_Math_Start,
 	"Ideographic": Ideographic,
 	"Join_Control": Join_Control,
 	"Logical_Order_Exception": Logical_Order_Exception,
+	"Modifier_Combining_Mark": Modifier_Combining_Mark,
 	"Noncharacter_Code_Point": Noncharacter_Code_Point,
 	"Other_Alphabetic": Other_Alphabetic,
 	"Other_Default_Ignorable_Code_Point": Other_Default_Ignorable_Code_Point,
@@ -2156,6 +2247,7 @@ var Scripts = map[string]*RangeTable{
 	"Bassa_Vah": Bassa_Vah,
 	"Batak": Batak,
 	"Bengali": Bengali,
+	"Beria_Erfe": Beria_Erfe,
 	"Bhaiksuki": Bhaiksuki,
 	"Bopomofo": Bopomofo,
 	"Brahmi": Brahmi,
@@ -2184,6 +2276,7 @@ var Scripts = map[string]*RangeTable{
 	"Elbasan": Elbasan,
 	"Elymaic": Elymaic,
 	"Ethiopic": Ethiopic,
+	"Garay": Garay,
 	"Georgian": Georgian,
 	"Glagolitic": Glagolitic,
 	"Gothic": Gothic,
@@ -2192,6 +2285,7 @@ var Scripts = map[string]*RangeTable{
 	"Gujarati": Gujarati,
 	"Gunjala_Gondi": Gunjala_Gondi,
 	"Gurmukhi": Gurmukhi,
+	"Gurung_Khema": Gurung_Khema,
 	"Han": Han,
 	"Hangul": Hangul,
 	"Hanifi_Rohingya": Hanifi_Rohingya,
@@ -2214,6 +2308,7 @@ var Scripts = map[string]*RangeTable{
 	"Khmer": Khmer,
 	"Khojki": Khojki,
 	"Khudawadi": Khudawadi,
+	"Kirat_Rai": Kirat_Rai,
 	"Lao": Lao,
 	"Latin": Latin,
 	"Lepcha": Lepcha,
@@ -2251,6 +2346,7 @@ var Scripts = map[string]*RangeTable{
 	"Nyiakeng_Puachue_Hmong": Nyiakeng_Puachue_Hmong,
 	"Ogham": Ogham,
 	"Ol_Chiki": Ol_Chiki,
+	"Ol_Onal": Ol_Onal,
 	"Old_Hungarian": Old_Hungarian,
 	"Old_Italic": Old_Italic,
 	"Old_North_Arabian": Old_North_Arabian,
@@ -2276,12 +2372,14 @@ var Scripts = map[string]*RangeTable{
 	"Sharada": Sharada,
 	"Shavian": Shavian,
 	"Siddham": Siddham,
+	"Sidetic": Sidetic,
 	"SignWriting": SignWriting,
 	"Sinhala": Sinhala,
 	"Sogdian": Sogdian,
 	"Sora_Sompeng": Sora_Sompeng,
 	"Soyombo": Soyombo,
 	"Sundanese": Sundanese,
+	"Sunuwar": Sunuwar,
 	"Syloti_Nagri": Syloti_Nagri,
 	"Syriac": Syriac,
 	"Tagalog": Tagalog,
@@ -2289,6 +2387,7 @@ var Scripts = map[string]*RangeTable{
 	"Tai_Le": Tai_Le,
 	"Tai_Tham": Tai_Tham,
 	"Tai_Viet": Tai_Viet,
+	"Tai_Yo": Tai_Yo,
 	"Takri": Takri,
 	"Tamil": Tamil,
 	"Tangsa": Tangsa,
@@ -2299,7 +2398,10 @@ var Scripts = map[string]*RangeTable{
 	"Tibetan": Tibetan,
 	"Tifinagh": Tifinagh,
 	"Tirhuta": Tirhuta,
+	"Todhri": Todhri,
+	"Tolong_Siki": Tolong_Siki,
 	"Toto": Toto,
+	"Tulu_Tigalari": Tulu_Tigalari,
 	"Ugaritic": Ugaritic,
 	"Vai": Vai,
 	"Vithkuqi": Vithkuqi,
@@ -2345,13 +2447,21 @@ var Siddham = _Siddham
 
 Shavian is the set of Unicode characters in script Shavian.
 
+### var Sidetic
+
+```go
+var Sidetic = _Sidetic
+```
+
+Siddham is the set of Unicode characters in script Siddham.
+
 ### var SignWriting
 
 ```go
 var SignWriting = _SignWriting
 ```
 
-Siddham is the set of Unicode characters in script Siddham.
+Sidetic is the set of Unicode characters in script Sidetic.
 
 ### var Sinhala
 
@@ -2433,13 +2543,21 @@ var Sundanese = _Sundanese
 
 Soyombo is the set of Unicode characters in script Soyombo.
 
+### var Sunuwar
+
+```go
+var Sunuwar = _Sunuwar
+```
+
+Sundanese is the set of Unicode characters in script Sundanese.
+
 ### var Syloti_Nagri
 
 ```go
 var Syloti_Nagri = _Syloti_Nagri
 ```
 
-Sundanese is the set of Unicode characters in script Sundanese.
+Sunuwar is the set of Unicode characters in script Sunuwar.
 
 ### var Symbol
 
@@ -2495,13 +2613,21 @@ var Tai_Viet = _Tai_Viet
 
 Tai\_Tham is the set of Unicode characters in script Tai\_Tham.
 
+### var Tai_Yo
+
+```go
+var Tai_Yo = _Tai_Yo
+```
+
+Tai\_Viet is the set of Unicode characters in script Tai\_Viet.
+
 ### var Takri
 
 ```go
 var Takri = _Takri
 ```
 
-Tai\_Viet is the set of Unicode characters in script Tai\_Viet.
+Tai\_Yo is the set of Unicode characters in script Tai\_Yo.
 
 ### var Tamil
 
@@ -2589,13 +2715,37 @@ Tifinagh is the set of Unicode characters in script Tifinagh.
 var Title = _Lt
 ```
 
+### var Todhri
+
+```go
+var Todhri = _Todhri
+```
+
+Tirhuta is the set of Unicode characters in script Tirhuta.
+
+### var Tolong_Siki
+
+```go
+var Tolong_Siki = _Tolong_Siki
+```
+
+Todhri is the set of Unicode characters in script Todhri.
+
 ### var Toto
 
 ```go
 var Toto = _Toto
 ```
 
-Tirhuta is the set of Unicode characters in script Tirhuta.
+Tolong\_Siki is the set of Unicode characters in script Tolong\_Siki.
+
+### var Tulu_Tigalari
+
+```go
+var Tulu_Tigalari = _Tulu_Tigalari
+```
+
+Toto is the set of Unicode characters in script Toto.
 
 ### var TurkishCase
 
@@ -2611,7 +2761,7 @@ TurkishCase provides Turkish-specific case mappings.
 var Ugaritic = _Ugaritic
 ```
 
-Toto is the set of Unicode characters in script Toto.
+Tulu\_Tigalari is the set of Unicode characters in script Tulu\_Tigalari.
 
 ### var Unified_Ideograph
 

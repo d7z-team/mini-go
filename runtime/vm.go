@@ -221,9 +221,11 @@ type GuestProfileOptions struct {
 type Limits struct {
 	// MaxSteps is the shared scope instruction budget: 0 defaults to 100 million,
 	// UnlimitedSteps disables it, and positive values set a finite budget.
-	MaxSteps              int64
-	MaxCallDepth          int
-	MaxTasks              int
+	MaxSteps     int64
+	MaxCallDepth int
+	MaxTasks     int
+	// MaxAllocatedBytes bounds logical live guest data and allocations since
+	// the last census, not cumulative allocation traffic or process RSS.
 	MaxAllocatedBytes     int64
 	MaxStringBytes        int
 	MaxCollectionElements int

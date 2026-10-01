@@ -176,10 +176,20 @@ func allocateSlots(code *ir.SlotCode) error {
 		}
 	}
 	sort.SliceStable(intervals, func(i, j int) bool { return intervals[i].first < intervals[j].first })
+	// Endpoints are known in advance. A second sorted sweep releases expired
+	// intervals without rescanning every live interval for each definition.
+	ending := intervals
+	for i := 1; i < len(intervals); i++ {
+		if intervals[i-1].last > intervals[i].last {
+			ending = append([]interval(nil), intervals...)
+			sort.SliceStable(ending, func(i, j int) bool { return ending[i].last < ending[j].last })
+			break
+		}
+	}
+	expired := 0
 	remap := make([]uint32, len(intervals))
 	var physical []types.TypeRef
 	free := make(map[types.TypeRef][]uint32)
-	var active []interval
 	for _, life := range intervals {
 		if life.last < 0 {
 			continue
@@ -187,16 +197,14 @@ func allocateSlots(code *ir.SlotCode) error {
 		if life.first == count {
 			return fmt.Errorf("slot %d used without definition", life.slot)
 		}
-		retained := active[:0]
-		for _, previous := range active {
-			if previous.last < life.first {
+		for expired < len(ending) && ending[expired].last < life.first {
+			previous := ending[expired]
+			expired++
+			if previous.last >= 0 {
 				typ := code.Types[previous.slot]
 				free[typ] = append(free[typ], remap[previous.slot])
-			} else {
-				retained = append(retained, previous)
 			}
 		}
-		active = retained
 		typ := code.Types[life.slot]
 		available := free[typ]
 		if len(available) == 0 {
@@ -206,7 +214,6 @@ func allocateSlots(code *ir.SlotCode) error {
 			remap[life.slot] = available[len(available)-1]
 			free[typ] = available[:len(available)-1]
 		}
-		active = append(active, life)
 		block := &blocks[owners[life.last]]
 		// A linear interval can end at a loop back edge while its value is
 		// still live in the successor. Keep that root until overwritten.

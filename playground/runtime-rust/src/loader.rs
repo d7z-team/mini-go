@@ -51,18 +51,6 @@ impl Default for LoadLimits {
     }
 }
 
-impl LoadLimits {
-    /// Bounded image envelope for the compiler and its embedded source bundle.
-    pub fn compiler() -> Self {
-        Self {
-            max_image_bytes: 64 << 20,
-            max_artifact_bytes: 64 << 20,
-            max_packages: 2048,
-            max_type_nodes: 200_000,
-        }
-    }
-}
-
 /// A decoded package graph, not yet a prepared executable. Its identity and
 /// type references have been checked, but this does not validate instructions.
 pub struct DecodedImage {

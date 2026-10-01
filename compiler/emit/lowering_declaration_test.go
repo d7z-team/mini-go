@@ -1,9 +1,9 @@
 package emit
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
@@ -16,7 +16,7 @@ func TestLowerProducesDeclaredConstants(t *testing.T) {
 			ID:    "const.answer",
 			Name:  "answer",
 			Type:  testHIRType("Int64"),
-			Value: json.RawMessage(`42`),
+			Value: constant.Scalar(`42`),
 		}},
 		Functions: []hir.Function{{
 			ID:        "fn.main",
@@ -42,7 +42,7 @@ func TestLowerProducesDeclaredConstants(t *testing.T) {
 }
 
 func TestLowerProducesTypeInstructions(t *testing.T) {
-	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`42`)}
+	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`42`)}
 	asAny := hir.Expression{Kind: hir.ExprConvert, Type: testHIRType("Any"), Operand: &value}
 	asInt := hir.Expression{Kind: hir.ExprTypeAssert, Type: testHIRType("Int64"), Operand: &asAny}
 	artifact, err := lowerTestProgram(t, hir.Program{
@@ -71,7 +71,7 @@ func TestLowerProducesTypeInstructions(t *testing.T) {
 }
 
 func TestLowerProducesGlobalInstructions(t *testing.T) {
-	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`42`)}
+	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`42`)}
 	artifact, err := lowerTestProgram(t, hir.Program{
 		ModulePath: "example/module",
 		Package:    "main",
@@ -109,8 +109,8 @@ func TestLowerProducesGlobalInstructions(t *testing.T) {
 }
 
 func TestLowerProducesUpvalueClosureInstructions(t *testing.T) {
-	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`41`)}
-	one := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)}
+	value := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`41`)}
+	one := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)}
 	current := hir.Expression{Kind: hir.ExprUpvalue, Upvalue: "up.x"}
 	next := hir.Expression{
 		Kind:     hir.ExprBinary,

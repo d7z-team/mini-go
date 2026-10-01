@@ -165,9 +165,7 @@ impl Instance {
                 .types
                 .declared_methods(&typ)?
                 .into_iter()
-                .filter(|(_, method)| {
-                    interface || method.name.chars().next().is_some_and(char::is_uppercase)
-                })
+                .filter(|(_, method)| interface || crate::types::names::is_exported(&method.name))
                 .nth(index)
                 .ok_or_else(|| {
                     RuntimeError::new("reflect", id, "reflect: Method index out of range")
@@ -214,7 +212,7 @@ impl Instance {
             let callable_type = self.reflect_type(&callable_type)?;
             let signature = self.reflect_type(&signature)?;
             let receiver = self.reflect_type(&receiver)?;
-            let exported = method.name.chars().next().is_some_and(char::is_uppercase);
+            let exported = crate::types::names::is_exported(&method.name);
             self.reflect_struct(
                 "Method",
                 [

@@ -15,10 +15,10 @@ type genericDecl struct {
 	decl             ast.Decl
 	file             string
 	typeParams       []ast.TypeParam
+	receiverBindings map[string]ast.TypeExpr
+	imports          []ast.ImportDecl
 	importAlias      string
 	namedTypes       map[string]ast.TypeExpr
-	references       map[ast.NodeID]string
-	referenceOffsets map[int]string
 }
 
 type genericMethod struct {
@@ -32,33 +32,32 @@ type genericTypeInstance struct {
 }
 
 type specializedDecl struct {
-	decl ast.Decl
-	file string
+	decl    ast.Decl
+	file    string
+	imports []ast.ImportDecl
 }
 
 type genericSpecializer struct {
-	info                   *check.ProgramInfo
-	functions              map[string]genericDecl
-	types                  map[string]genericDecl
-	methods                map[string][]genericDecl
-	generated              map[string]string
-	activeDecl             map[string]string
-	output                 []specializedDecl
-	diagnostics            *source.DiagnosticCollector
-	maxInstances           int
-	instances              int
-	importPaths            map[string]string
-	importedFiles          map[string]ast.File
-	typeDefs               map[string]ast.TypeExpr
-	methodSets             map[string]map[string]genericMethod
-	generatedFunc          map[string]ast.FuncDecl
-	typeInstances          map[string]genericTypeInstance
-	valueTypes             map[check.ObjectID]ast.TypeExpr
-	activeAlias            string
-	activeNamedTypes       map[string]ast.TypeExpr
-	activeReferences       map[ast.NodeID]string
-	activeReferenceOffsets map[int]string
-	resultTypes            []ast.TypeExpr
+	info             *check.ProgramInfo
+	functions        map[string]genericDecl
+	types            map[string]genericDecl
+	methods          map[string][]genericDecl
+	generated        map[string]string
+	activeDecl       map[string]string
+	output           []specializedDecl
+	diagnostics      *source.DiagnosticCollector
+	maxInstances     int
+	instances        int
+	importPaths      map[string]string
+	importedFiles    map[string]ast.File
+	typeDefs         map[string]ast.TypeExpr
+	methodSets       map[string]map[string]genericMethod
+	generatedFunc    map[string]ast.FuncDecl
+	typeInstances    map[string]genericTypeInstance
+	valueTypes       map[check.ObjectID]ast.TypeExpr
+	activeAlias      string
+	activeNamedTypes map[string]ast.TypeExpr
+	resultTypes      []ast.TypeExpr
 }
 
 // Apply removes generic declarations by validating and materializing every
@@ -105,7 +104,7 @@ func Required(checked check.CheckedProgram, dependencies map[string]cache.Packag
 	// Inference and function-value contexts can precede Instance facts. The
 	// selected package member and dot-import object still identify the template.
 	for _, selection := range checked.Info.Selections {
-		if selection.Kind == check.SelectionPackageMember && templates[selection.ModulePath][selection.Name] {
+		if templates[selection.ModulePath][selection.Name] || selection.Object != "" && len(checked.Info.GenericDecls[selection.Object]) != 0 {
 			return true
 		}
 	}
@@ -126,10 +125,10 @@ func Required(checked check.CheckedProgram, dependencies map[string]cache.Packag
 }
 
 func ApplyWithLimits(checked check.CheckedProgram, dependencies map[string]cache.PackageData, limits Limits) (ast.Program, []source.Diagnostic, error) {
-	if limits.MaxSpecializations <= 0 || limits.MaxSpecializations > defaultMaxSpecializations {
+	if limits.MaxSpecializations <= 0 {
 		limits.MaxSpecializations = defaultMaxSpecializations
 	}
-	if limits.MaxDiagnostics <= 0 || limits.MaxDiagnostics > defaultMaxDiagnostics {
+	if limits.MaxDiagnostics <= 0 {
 		limits.MaxDiagnostics = defaultMaxDiagnostics
 	}
 	program := checked.Program
@@ -147,7 +146,7 @@ func ApplyWithLimits(checked check.CheckedProgram, dependencies map[string]cache
 		diagnostics:   source.NewDiagnosticCollector(limits.MaxDiagnostics),
 		maxInstances:  limits.MaxSpecializations,
 	}
-	s.bindDotImports(&out)
+	s.bindSourceImports(&out)
 	s.collectImportedGenerics(out, dependencies)
 	localTypes := make(map[string]ast.TypeExpr)
 	for i := range out.Files {
@@ -184,7 +183,7 @@ func ApplyWithLimits(checked check.CheckedProgram, dependencies map[string]cache
 		for j := range out.Files[i].Decls {
 			decl := out.Files[i].Decls[j]
 			if decl.Kind == ast.DeclFunc && decl.Func.Receiver != nil {
-				if receiver := genericReceiverName(decl.Func.Receiver.Type); s.types[receiver].decl.Kind != "" {
+				if receiver := genericReceiverName(decl.Func.Receiver.Type); s.types[receiver].decl.Kind != "" || len(decl.Func.TypeParams) != 0 {
 					s.methods[receiver] = append(s.methods[receiver], genericDecl{decl: decl, namedTypes: localTypes})
 				}
 			}
@@ -203,6 +202,7 @@ func ApplyWithLimits(checked check.CheckedProgram, dependencies map[string]cache
 		}
 		out.Files[i].Decls = kept
 	}
+	s.appendTemplateGlobalAccessors(&out, program)
 	if len(out.Files) != 0 {
 		for _, generated := range s.output {
 			decl := generated.decl
@@ -214,6 +214,16 @@ func ApplyWithLimits(checked check.CheckedProgram, dependencies map[string]cache
 				}
 			}
 			out.Files[owner].Decls = append(out.Files[owner].Decls, decl)
+			for _, imported := range generated.imports {
+				found := false
+				for _, existing := range out.Files[owner].Decls {
+					found = found || existing.Kind == ast.DeclImport && existing.Import.Alias == imported.Alias && existing.Import.Path == imported.Path
+				}
+				if !found {
+					copied := imported
+					out.Files[owner].Decls = append(out.Files[owner].Decls, ast.Decl{Kind: ast.DeclImport, Import: &copied})
+				}
+			}
 		}
 	}
 	fileKeys := make([]string, 0, len(s.importedFiles))
@@ -271,7 +281,14 @@ func (s *genericSpecializer) instantiateFunction(name string, args []ast.TypeExp
 	if !s.validateTypeArgs(name, generic, args, span) {
 		return ""
 	}
-	key, generatedName := specializationNames("function", name, args)
+	identityName := name
+	for alias, path := range s.importPaths {
+		if strings.HasPrefix(name, alias+".") {
+			identityName = path + strings.TrimPrefix(name, alias)
+			break
+		}
+	}
+	key, generatedName := specializationNames("function", identityName, args)
 	if existing := s.generated[key]; existing != "" {
 		return existing
 	}
@@ -286,23 +303,23 @@ func (s *genericSpecializer) instantiateFunction(name string, args []ast.TypeExp
 	s.activeDecl["function:"+name] = key
 	decl := cloneGenericDecl(generic.decl)
 	substitutions := bindTypeArgs(generic.typeParams, args)
+	for param, typ := range generic.receiverBindings {
+		substitutions[param] = typ
+	}
 	decl.Func.Name = generatedName
 	decl.Func.TypeParams = nil
+	if generic.importAlias != "" {
+		decl.Func.DefinitionModule = s.importPaths[generic.importAlias]
+	}
 	previousAlias := s.activeAlias
 	previousNamedTypes := s.activeNamedTypes
-	previousReferences := s.activeReferences
-	previousReferenceOffsets := s.activeReferenceOffsets
 	s.activeAlias = generic.importAlias
 	s.activeNamedTypes = generic.namedTypes
-	s.activeReferences = generic.references
-	s.activeReferenceOffsets = generic.referenceOffsets
 	s.rewriteDecl(&decl, substitutions)
 	s.activeAlias = previousAlias
 	s.activeNamedTypes = previousNamedTypes
-	s.activeReferences = previousReferences
-	s.activeReferenceOffsets = previousReferenceOffsets
 	s.generatedFunc[generatedName] = *decl.Func
-	s.output = append(s.output, specializedDecl{decl: decl, file: generic.file})
+	s.output = append(s.output, specializedDecl{decl: decl, file: generic.file, imports: generic.imports})
 	delete(s.activeDecl, "function:"+name)
 	return generatedName
 }
@@ -323,7 +340,14 @@ func (s *genericSpecializer) instantiateType(name string, args []ast.TypeExpr, s
 	if !s.validateTypeArgs(name, generic, args, span) {
 		return ""
 	}
-	key, generatedName := specializationNames("type", name, args)
+	identityName := name
+	for alias, path := range s.importPaths {
+		if strings.HasPrefix(name, alias+".") {
+			identityName = path + strings.TrimPrefix(name, alias)
+			break
+		}
+	}
+	key, generatedName := specializationNames("type", identityName, args)
 	if existing := s.generated[key]; existing != "" {
 		return existing
 	}
@@ -343,32 +367,27 @@ func (s *genericSpecializer) instantiateType(name string, args []ast.TypeExpr, s
 	decl.Type.TypeParams = nil
 	previousAlias := s.activeAlias
 	previousNamedTypes := s.activeNamedTypes
-	previousReferences := s.activeReferences
-	previousReferenceOffsets := s.activeReferenceOffsets
 	s.activeAlias = generic.importAlias
 	s.activeNamedTypes = generic.namedTypes
-	s.activeReferences = generic.references
-	s.activeReferenceOffsets = generic.referenceOffsets
 	s.rewriteDecl(&decl, substitutions)
 	s.typeDefs[generatedName] = decl.Type.Type
-	s.output = append(s.output, specializedDecl{decl: decl, file: generic.file})
+	s.output = append(s.output, specializedDecl{decl: decl, file: generic.file, imports: generic.imports})
 	for _, methodTemplate := range s.methods[name] {
+		if len(methodTemplate.decl.Func.TypeParams) != 0 {
+			continue
+		}
 		method := cloneGenericDecl(methodTemplate.decl)
 		pointer := method.Func.Receiver != nil && method.Func.Receiver.Type.Kind == ast.TypePointer
 		substituteReceiverTypeParams(method.Func.Receiver, generic.typeParams, args, substitutions)
 		s.activeAlias = methodTemplate.importAlias
 		s.activeNamedTypes = methodTemplate.namedTypes
-		s.activeReferences = methodTemplate.references
-		s.activeReferenceOffsets = methodTemplate.referenceOffsets
 		s.rewriteDecl(&method, substitutions)
 		setSpecializedReceiver(method.Func.Receiver, generatedName)
 		s.registerMethod(generatedName, *method.Func, pointer)
-		s.output = append(s.output, specializedDecl{decl: method, file: methodTemplate.file})
+		s.output = append(s.output, specializedDecl{decl: method, file: methodTemplate.file, imports: methodTemplate.imports})
 	}
 	s.activeAlias = previousAlias
 	s.activeNamedTypes = previousNamedTypes
-	s.activeReferences = previousReferences
-	s.activeReferenceOffsets = previousReferenceOffsets
 	delete(s.activeDecl, "type:"+name)
 	return generatedName
 }

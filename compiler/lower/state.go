@@ -1,9 +1,8 @@
 package lower
 
 import (
-	"encoding/json"
-
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/source"
@@ -53,7 +52,7 @@ type lowerer struct {
 
 type constantValue struct {
 	Type    string
-	Value   json.RawMessage
+	Value   *constant.Value
 	Untyped bool
 }
 
@@ -110,7 +109,7 @@ type moduleExportInfo struct {
 	Kind       check.ObjectKind
 	Type       string
 	Underlying string
-	Value      json.RawMessage
+	Value      *constant.Value
 	Fields     []check.DependencyTypeField
 	Methods    []check.DependencyTypeMethod
 	Variadic   bool

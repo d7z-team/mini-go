@@ -116,10 +116,10 @@ func normalizeLimits(limits Limits) Limits {
 	if limits.MaxNesting <= 0 || limits.MaxNesting > DefaultMaxNesting {
 		limits.MaxNesting = DefaultMaxNesting
 	}
-	if limits.MaxDiagnostics <= 0 || limits.MaxDiagnostics > DefaultMaxDiagnostics {
+	if limits.MaxDiagnostics <= 0 {
 		limits.MaxDiagnostics = DefaultMaxDiagnostics
 	}
-	if limits.MaxASTNodes <= 0 || limits.MaxASTNodes > ast.DefaultMaxNodes {
+	if limits.MaxASTNodes <= 0 {
 		limits.MaxASTNodes = ast.DefaultMaxNodes
 	}
 	return limits

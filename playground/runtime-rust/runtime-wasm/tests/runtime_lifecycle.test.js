@@ -11,7 +11,7 @@ const stepLimits = JSON.parse(
 );
 for (const vector of stepLimits) {
   test(`shared step limit ${vector.input}`, async (t) => {
-    const options = { maxSteps: BigInt(vector.input) };
+    const options = { limits: { maxSteps: BigInt(vector.input) } };
     if (vector.error) await assert.rejects(harness(t, options), /maxSteps/);
     else await harness(t, options);
   });
@@ -37,7 +37,16 @@ async function harness(t, options = {}) {
       if (worker.rejectLifecycle && message.kind === "close") throw new Error("send failed");
       if (worker.rejectStart && message.kind === "start") throw new Error("send failed");
       sent.push(message);
-      if (message.kind === "create") queueMicrotask(() => receive({ kind: "ready" }));
+      if (message.kind === "create")
+        queueMicrotask(() => {
+          receive({
+            kind: "limits",
+            maxInputBytes: 8 * 1024 * 1024,
+            maxHostResultBytes: 4 * 1024 * 1024,
+            maxImageBytes: 32 * 1024 * 1024,
+          });
+          receive({ kind: "ready" });
+        });
       if (message.kind === "close" && !worker.holdClose)
         queueMicrotask(() => receive({ kind: "closed" }));
     },
@@ -122,13 +131,66 @@ for (const failed of [false, true]) {
   });
 }
 
+test("provider replies during initialization use the resolved Rust budget", async () => {
+  for (const maxHostResultBytes of [1, 2]) {
+    let receive;
+    const worker = {
+      listen(onMessage) {
+        receive = onMessage;
+      },
+      terminate() {},
+      send(message) {
+        if (message.kind === "create")
+          queueMicrotask(() => {
+            receive({ kind: "limits", maxInputBytes: 16, maxImageBytes: 16, maxHostResultBytes });
+            receive({ kind: "host", id: 1, route: "init", payload: new Uint8Array() });
+          });
+        else if (message.kind === "hostResult")
+          queueMicrotask(() => {
+            if (message.error) receive({ kind: "fatal", error: { message: message.error } });
+            else {
+              assert.deepEqual(message.payload, Uint8Array.of(1, 2));
+              receive({ kind: "ready" });
+            }
+          });
+        else if (message.kind === "close") queueMicrotask(() => receive({ kind: "closed" }));
+      },
+    };
+    const pending = Runtime.create(
+      new Uint8Array(),
+      { provider: () => Uint8Array.of(1, 2) },
+      () => worker,
+    );
+    if (maxHostResultBytes === 1) await assert.rejects(pending, /host result exceeds limit/);
+    else await (await pending).close();
+  }
+});
+
 test("invalid step budgets reject before constructing a worker", async () => {
   for (const maxSteps of [-2, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 1n << 63n]) {
     await assert.rejects(
-      Runtime.create(new Uint8Array(), { maxSteps }, () => {
+      Runtime.create(new Uint8Array(), { limits: { maxSteps } }, () => {
         assert.fail("worker constructed for invalid budget");
       }),
       /maxSteps/,
+    );
+  }
+});
+
+test("invalid byte and count budgets reject before constructing a worker", async () => {
+  for (const options of [
+    { limits: { maxHeapBytes: 0 } },
+    { limits: { maxHeapBytes: 1n << 64n } },
+    { limits: { maxPendingCalls: -1 } },
+    { limits: { maxSequenceElements: 1n } },
+    { load: { maxImageBytes: Number.MAX_SAFE_INTEGER + 1 } },
+    { load: { maxPackages: 0.5 } },
+  ]) {
+    await assert.rejects(
+      Runtime.create(new Uint8Array(), options, () => {
+        assert.fail("worker constructed for invalid resource budget");
+      }),
+      /invalid/,
     );
   }
 });

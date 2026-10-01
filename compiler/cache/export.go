@@ -19,7 +19,7 @@ import (
 
 const (
 	ExportFormat  = "mini-go-package-export"
-	ExportVersion = 11
+	ExportVersion = 12
 )
 
 type PackageData struct {
@@ -38,18 +38,39 @@ type PackageData struct {
 }
 
 type GenericTemplate struct {
-	DeclID     types.DeclID       `json:"decl_id"`
-	Kind       string             `json:"kind"`
-	Name       string             `json:"name"`
-	Type       string             `json:"type,omitempty"`
-	Decl       ast.Decl           `json:"decl"`
-	References []GenericReference `json:"references,omitempty"`
+	DeclID      types.DeclID           `json:"decl_id"`
+	Kind        string                 `json:"kind"`
+	Name        string                 `json:"name"`
+	Type        string                 `json:"type,omitempty"`
+	Receiver    string                 `json:"receiver,omitempty"`
+	TypeParams  []GenericTypeParameter `json:"type_params,omitempty"`
+	Decl        ast.Decl               `json:"decl"`
+	References  []GenericReference     `json:"references,omitempty"`
+	Expressions []GenericExpression    `json:"expressions,omitempty"`
+}
+
+type GenericExpression struct {
+	Node ast.NodeID    `json:"node"`
+	Type types.TypeRef `json:"type"`
+}
+
+type GenericTypeParameter struct {
+	Name       string `json:"name"`
+	Binding    string `json:"binding"`
+	Constraint string `json:"constraint"`
 }
 
 type GenericReference struct {
-	Node ast.NodeID  `json:"node"`
-	Name string      `json:"name"`
-	Span source.Span `json:"span"`
+	Node       ast.NodeID  `json:"node"`
+	Name       string      `json:"name"`
+	ModulePath string      `json:"module_path,omitempty"`
+	Span       source.Span `json:"span"`
+	Kind       uint8       `json:"kind,omitempty"`
+	Generic    bool        `json:"generic,omitempty"`
+	Type       string      `json:"type,omitempty"`
+	Value      string      `json:"value,omitempty"`
+	Imaginary  string      `json:"imaginary,omitempty"`
+	Untyped    bool        `json:"untyped,omitempty"`
 }
 
 func FromArtifact(artifact ir.Artifact) (PackageData, error) {

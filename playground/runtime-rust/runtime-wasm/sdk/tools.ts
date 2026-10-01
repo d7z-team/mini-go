@@ -1,15 +1,18 @@
 import {
   copyBytes,
+  validateResourceOptions,
   serializeError,
   type Failure,
   type WorkerFactory,
   type WorkerConnection,
   type CompilerResponse,
 } from "./protocol.js";
-import type { Options, Stats } from "./types.js";
+import type { Options, ResourceOptions, Stats } from "./types.js";
 import { deferred } from "./deferred.js";
 
-export interface CompilerOptions extends Pick<Options, "workerUrl" | "wasmUrl" | "signal"> {
+export interface CompilerOptions
+  extends Pick<Options, "workerUrl" | "wasmUrl" | "signal">,
+    ResourceOptions {
   /** Request budget including queueing, initialization and recovery. Defaults to 30 seconds. */
   timeoutMs?: number;
 }
@@ -141,13 +144,16 @@ export class LanguageService {
     image: Uint8Array | ArrayBuffer,
     options: CompilerOptions = {},
   ): Promise<LanguageService> {
+    validateResourceOptions(options);
     const timeoutMs = options.timeoutMs === undefined ? 30_000 : options.timeoutMs;
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)
       throw new ToolsError("invalid_argument", "invalid compiler timeoutMs");
-    if (image.byteLength > MAX_BYTES)
+    if (options.load?.maxImageBytes !== undefined && image.byteLength > options.load.maxImageBytes)
       throw new ToolsError("load_limit", "compiler image too large");
     const service = new LanguageService(factory, copyBytes(image), {
       ...options,
+      limits: options.limits && { ...options.limits },
+      load: options.load && { ...options.load },
       timeoutMs,
       signal: undefined,
       workerUrl: options.workerUrl?.toString(),
@@ -296,6 +302,7 @@ export class LanguageService {
           generation: peer.generation,
           image,
           restore: this.restore,
+          resources: { limits: this.options.limits, load: this.options.load },
           wasmUrl: this.options.wasmUrl?.toString(),
         }),
       );
@@ -313,7 +320,10 @@ export class LanguageService {
   ): Promise<T> {
     if (this.closing) return Promise.reject(new ToolsError("closed", "language service closed"));
     if (signal?.aborted) return Promise.reject(signal.reason);
-    if (this.queue.length + Number(!!this.active) >= 128 || bytes > MAX_BYTES - this.bytes)
+    if (
+      this.queue.length + Number(!!this.active) >= 128 ||
+      bytes > Math.max(MAX_BYTES, this.options.load?.maxImageBytes ?? 0) - this.bytes
+    )
       return Promise.reject(new ToolsError("budget", "language request queue exhausted"));
     if (timeout <= 0)
       return Promise.reject(new ToolsError("deadline", "compiler request deadline"));
@@ -465,7 +475,10 @@ export class LanguageService {
     });
   }
   upgrade(image: Uint8Array | ArrayBuffer, signal?: AbortSignal): Promise<CompilerUpgrade> {
-    if (image.byteLength > MAX_BYTES)
+    if (
+      this.options.load?.maxImageBytes !== undefined &&
+      image.byteLength > this.options.load.maxImageBytes
+    )
       return Promise.reject(new ToolsError("load_limit", "compiler image too large"));
     const bytes = copyBytes(image);
     return this.enqueue(

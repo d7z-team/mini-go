@@ -75,5 +75,21 @@ func EncodeIdentityDependencyTypeMethod(w *identity.Writer, value DependencyType
 	w.Bool(bool(value.Variadic))
 	w.String(string(value.FunctionID))
 	w.String(string(value.ModulePath))
+	w.Bool(value.TypeParams != nil)
+	w.Uint(uint64(len(value.TypeParams)))
+	for i0 := range value.TypeParams {
+		EncodeIdentityDependencyTypeParameter(w, value.TypeParams[i0])
+	}
+	w.LeaveStructure()
+}
+
+// EncodeIdentityDependencyTypeParameter writes the compiler identity schema fields.
+func EncodeIdentityDependencyTypeParameter(w *identity.Writer, value DependencyTypeParameter) {
+	if !w.EnterStructure() {
+		return
+	}
+	w.String(string(value.Name))
+	w.String(string(value.Binding))
+	w.String(string(value.Constraint))
 	w.LeaveStructure()
 }

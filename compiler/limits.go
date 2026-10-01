@@ -29,7 +29,7 @@ func (input Limits) cacheHash() string {
 const DefaultMaxSpecializations = 100_000
 
 // Limits bounds source-controlled compiler work. Zero values select defaults;
-// non-zero values may only tighten a default.
+// Positive capacities override defaults; syntax depth retains its structural ceiling.
 type Limits struct {
 	MaxPackages         int
 	MaxFiles            int
@@ -54,31 +54,31 @@ func boundedDiagnostics(diagnostics []source.Diagnostic, limit int) []source.Dia
 }
 
 func normalizeCompilerLimits(limits Limits) Limits {
-	if limits.MaxPackages <= 0 || limits.MaxPackages > workspace.DefaultMaxPackages {
+	if limits.MaxPackages <= 0 {
 		limits.MaxPackages = workspace.DefaultMaxPackages
 	}
-	if limits.MaxFiles <= 0 || limits.MaxFiles > workspace.DefaultMaxFiles {
+	if limits.MaxFiles <= 0 {
 		limits.MaxFiles = workspace.DefaultMaxFiles
 	}
-	if limits.MaxTotalSourceBytes <= 0 || limits.MaxTotalSourceBytes > workspace.DefaultMaxTotalSourceBytes {
+	if limits.MaxTotalSourceBytes <= 0 {
 		limits.MaxTotalSourceBytes = workspace.DefaultMaxTotalSourceBytes
 	}
-	if limits.MaxSourceBytes <= 0 || limits.MaxSourceBytes > scanner.DefaultMaxSourceBytes {
+	if limits.MaxSourceBytes <= 0 {
 		limits.MaxSourceBytes = scanner.DefaultMaxSourceBytes
 	}
-	if limits.MaxTokens <= 0 || limits.MaxTokens > scanner.DefaultMaxTokens {
+	if limits.MaxTokens <= 0 {
 		limits.MaxTokens = scanner.DefaultMaxTokens
 	}
 	if limits.MaxSyntaxDepth <= 0 || limits.MaxSyntaxDepth > parser.DefaultMaxNesting {
 		limits.MaxSyntaxDepth = parser.DefaultMaxNesting
 	}
-	if limits.MaxASTNodes <= 0 || limits.MaxASTNodes > ast.DefaultMaxNodes {
+	if limits.MaxASTNodes <= 0 {
 		limits.MaxASTNodes = ast.DefaultMaxNodes
 	}
-	if limits.MaxDiagnostics <= 0 || limits.MaxDiagnostics > workspace.DefaultMaxDiagnostics {
+	if limits.MaxDiagnostics <= 0 {
 		limits.MaxDiagnostics = workspace.DefaultMaxDiagnostics
 	}
-	if limits.MaxSpecializations <= 0 || limits.MaxSpecializations > DefaultMaxSpecializations {
+	if limits.MaxSpecializations <= 0 {
 		limits.MaxSpecializations = DefaultMaxSpecializations
 	}
 	return limits

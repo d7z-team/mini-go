@@ -807,7 +807,7 @@ impl Instance {
                         let field = node.fields.get(index).ok_or_else(|| {
                             RuntimeError::new("reflect", id, "reflect: field index out of range")
                         })?;
-                        let exported = field.name.chars().next().is_some_and(char::is_uppercase);
+                        let exported = crate::types::names::is_exported(&field.name);
                         view.interfaceable = accessible && exported;
                         view.embedded_read_only = accessible && !exported && field.embedded;
                         accessible &= exported || field.embedded;

@@ -1,0 +1,31 @@
+package lib
+
+var counter int
+const offset = 3
+
+func hidden(x int) int { counter += x; return counter }
+func identity[T any](x T) T { return x }
+func Apply[T ~int](x T) T { return identity(T(hidden(int(x))) + offset) }
+func Set[T ~int](x T) { counter = int(x) }
+func Count() int { return counter }
+func Shadow[T ~int](x T) T { hidden := func(x int) int { return x+10 }; return T(hidden(int(x))) }
+
+type privateNumber int
+const privateOffset privateNumber = 7
+const privateFraction = 1.0/3
+const privateComplex = 2+3i
+func Private[T ~int](x T) privateNumber { return privateNumber(x) + privateOffset }
+func Constant[T any](x T) any { return privateOffset }
+func Exact[T any](x T) bool { return privateFraction*3 == 1 && privateComplex == 2+3i }
+func IsPrivate(value any) bool { _, ok := value.(privateNumber); return ok }
+
+type Box struct { Value int }
+func (b *Box) add(x int) int { b.Value += x; return b.Value }
+func (b *Box) Add[T ~int](x T) T { return T(b.add(int(x))) }
+func (b Box) Echo[T any](x T) T { return x }
+func (b Box) Secret[T ~int](x T) privateNumber { return privateNumber(x) + privateOffset }
+func (b Box) Ordinary() int { return b.Value }
+func (b Box) Ᲊ() int { return b.Value }
+
+type Pair[T any] struct { Value T }
+func (p Pair[T]) Map[U any](f func(T) U) U { return f(p.Value) }

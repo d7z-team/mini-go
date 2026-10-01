@@ -6,6 +6,12 @@ import (
 )
 
 func TestUnicodeClassification(t *testing.T) {
+	if unicode.Version != "17.0.0" || !unicode.IsLetter('\U000105C0') || !unicode.IsDigit('\U00011F50') || !unicode.IsUpper('\u1C89') {
+		t.Fatal("Unicode 17 classification")
+	}
+	if unicode.ToLower('\u1C89') != '\u1C8A' || unicode.SimpleFold('\u1C89') != '\u1C8A' {
+		t.Fatal("Unicode 17 case mapping")
+	}
 	if !unicode.IsLetter('A') || !unicode.IsLetter('ñ') || !unicode.IsLetter('Ω') || !unicode.IsLetter('Ж') || !unicode.IsLetter('界') {
 		t.Fatalf("IsLetter should recognize scanner-grade letters")
 	}
@@ -47,5 +53,19 @@ func TestUnicodeCaseMapping(t *testing.T) {
 	}
 	if unicode.MaxASCII != 127 || unicode.MaxLatin1 != 255 || unicode.ReplacementChar != '�' || unicode.MaxRune != '\U0010ffff' {
 		t.Fatalf("unicode constants have wrong values")
+	}
+}
+
+func TestUnicodeTableAliases(t *testing.T) {
+	if unicode.Letter != unicode.Categories["L"] || unicode.Upper != unicode.Categories["Lu"] || unicode.Latin != unicode.Scripts["Latin"] {
+		t.Fatal("table aliases do not share storage")
+	}
+	before := unicode.Letter.R16[0]
+	defer func() {
+		unicode.Letter.R16[0] = before
+	}()
+	unicode.Categories["L"].R16[0].Stride = 7
+	if unicode.Letter.R16[0].Stride != 7 {
+		t.Fatal("category mutation did not reach its alias")
 	}
 }

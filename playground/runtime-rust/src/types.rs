@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 mod dynamic;
+pub(crate) mod names;
 pub use dynamic::{ConstructedField, ConstructedType};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -290,9 +291,7 @@ impl TypeRegistry {
             let Some((source_module, actual)) = actual else {
                 return Ok(false);
             };
-            if !expected.name.chars().next().is_some_and(char::is_uppercase)
-                && source_module != target_module
-            {
+            if !crate::types::names::is_exported(&expected.name) && source_module != target_module {
                 return Ok(false);
             }
             if !self.signature_identical(

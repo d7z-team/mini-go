@@ -2,10 +2,10 @@
 package optimize
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 )
 
@@ -36,7 +36,7 @@ func Apply(program hir.Program, level Level) (hir.Program, error) {
 			logicalFunctions[function.ID] = function
 		}
 	}
-	constants := make(map[string]json.RawMessage, len(program.Constants))
+	constants := make(map[string]*constant.Value, len(program.Constants))
 	for _, constant := range program.Constants {
 		constants[constant.ID] = constant.Value
 	}
@@ -100,7 +100,7 @@ func cloneStatements(statements []hir.Statement) []hir.Statement {
 	return out
 }
 
-func optimizeBody(body []hir.Statement, constants map[string]json.RawMessage) ([]hir.Statement, error) {
+func optimizeBody(body []hir.Statement, constants map[string]*constant.Value) ([]hir.Statement, error) {
 	limit := len(body)*2 + 8
 	for iteration := 0; iteration < limit; iteration++ {
 		if _, err := labelIndexes(body); err != nil {
@@ -136,7 +136,7 @@ func optimizeBody(body []hir.Statement, constants map[string]json.RawMessage) ([
 	return nil, errors.New("control-flow optimization did not converge")
 }
 
-func foldConstantBranches(body []hir.Statement, constants map[string]json.RawMessage) ([]hir.Statement, bool) {
+func foldConstantBranches(body []hir.Statement, constants map[string]*constant.Value) ([]hir.Statement, bool) {
 	out := make([]hir.Statement, 0, len(body))
 	var pending []hir.Location
 	changed := false
@@ -190,24 +190,23 @@ func simplifyBranchFallthrough(body []hir.Statement) ([]hir.Statement, bool) {
 	return out, changed
 }
 
-func constantBool(expression hir.Expression, constants map[string]json.RawMessage) (bool, bool) {
-	var raw json.RawMessage
+func constantBool(expression hir.Expression, constants map[string]*constant.Value) (bool, bool) {
+	var raw *constant.Value
 	switch expression.Kind {
 	case hir.ExprLiteral:
 		raw = expression.Value
 	case hir.ExprConst:
 		raw = expression.Value
-		if len(raw) == 0 {
+		if raw == nil {
 			raw = constants[expression.ConstantID]
 		}
 	default:
 		return false, false
 	}
-	var value bool
-	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+	if raw == nil || raw.Kind() != constant.Boolean {
 		return false, false
 	}
-	return value, true
+	return raw.Text == "true", true
 }
 
 func coalesceLabels(body []hir.Statement) ([]hir.Statement, bool) {

@@ -1,10 +1,10 @@
 package lower
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/types"
@@ -112,11 +112,28 @@ func (l *lowerer) collectDependencyExports(exports []check.DependencyExport) {
 			Kind:       export.Kind,
 			Type:       strings.TrimSpace(export.Type),
 			Underlying: strings.TrimSpace(export.Underlying),
-			Value:      append(json.RawMessage(nil), export.Value...),
 			Fields:     append([]check.DependencyTypeField(nil), export.Fields...),
-			Methods:    append([]check.DependencyTypeMethod(nil), export.Methods...),
 			Variadic:   export.Variadic,
 			Untyped:    export.Untyped,
+		}
+		if info.Kind == check.ObjectConst && len(export.Value) != 0 {
+			ref, err := l.typeParser.Parse(info.Type)
+			if err != nil {
+				l.add("hirgen.dependency.constant", "invalid imported constant type", source.Span{})
+				continue
+			}
+			kind := types.FormatWithTable(l.typeTable, l.typeTable.Underlying(ref))
+			value, ok := constant.FromJSON(export.Value, kind, info.Untyped)
+			if !ok {
+				l.add("hirgen.dependency.constant", "invalid imported constant value", source.Span{})
+				continue
+			}
+			info.Value = value.Ref()
+		}
+		for _, method := range export.Methods {
+			if len(method.TypeParams) == 0 {
+				info.Methods = append(info.Methods, method)
+			}
 		}
 		if l.moduleExports[modulePath] == nil {
 			l.moduleExports[modulePath] = map[string]moduleExportInfo{}

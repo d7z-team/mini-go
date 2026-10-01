@@ -2,8 +2,7 @@
 package hir
 
 import (
-	"encoding/json"
-
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
@@ -36,7 +35,7 @@ type Constant struct {
 	ID      string
 	Name    string
 	Type    types.TypeRef
-	Value   json.RawMessage
+	Value   *constant.Value
 	Untyped bool
 }
 
@@ -231,7 +230,7 @@ type Expression struct {
 	Type        types.TypeRef
 	Untyped     bool
 	ConstantID  string
-	Value       json.RawMessage
+	Value       *constant.Value
 	Local       string
 	Locals      []string
 	Upvalue     string

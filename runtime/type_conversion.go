@@ -202,7 +202,7 @@ func (m *moduleInstance) convertSliceToArrayPointer(value vmValue, target vmType
 	if !m.isSliceType(value.Type) {
 		return vmValue{}, false, nil
 	}
-	sourceElem := m.arrayElemType(value.Type)
+	sourceElem := m.sequenceElementType(value.Type)
 	elemType := elem.String()
 	if !m.sameRuntimeType(sourceElem, elemType) {
 		return vmValue{}, true, fmt.Errorf("cannot convert %s to %s: element types differ", value.Type, target)
@@ -247,7 +247,7 @@ func (m *moduleInstance) convertSliceToArray(value vmValue, target vmType) (vmVa
 	if !m.isSliceType(value.Type) {
 		return vmValue{}, false, nil
 	}
-	sourceElem := m.arrayElemType(value.Type)
+	sourceElem := m.sequenceElementType(value.Type)
 	elemType := elem.String()
 	if !m.sameRuntimeType(sourceElem, elemType) {
 		return vmValue{}, true, fmt.Errorf("cannot convert %s to %s: element types differ", value.Type, target)

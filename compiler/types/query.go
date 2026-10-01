@@ -3,6 +3,8 @@ package types
 import (
 	"errors"
 	"sort"
+
+	"github.com/d7z-team/mini-go/compiler/token"
 )
 
 func (t *TypeTable) Underlying(ref TypeRef) TypeRef {
@@ -134,7 +136,7 @@ type waitableInfo struct {
 }
 
 func methodKey(method Method) string {
-	if method.ModulePath == "" || method.Name == "" || method.Name[0] >= 'A' && method.Name[0] <= 'Z' {
+	if method.ModulePath == "" || method.Name == "" || token.IsExportedName(method.Name) {
 		return method.Name
 	}
 	return method.ModulePath + ":" + method.Name

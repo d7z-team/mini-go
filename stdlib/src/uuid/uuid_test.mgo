@@ -1,0 +1,73 @@
+package uuid_test
+
+import (
+	"testing"
+	"uuid"
+)
+
+func TestUUIDText(t *testing.T) {
+	canonical := "f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
+	want := uuid.MustParse(canonical)
+	for _, text := range []string{canonical, "{" + canonical + "}", "urn:uuid:" + canonical, "F81D4FAE7DEC11D0A76500A0C91E6BF6"} {
+		got, err := uuid.Parse(text)
+		if err != nil || got != want || got.String() != canonical {
+			t.Fatalf("Parse(%q): %v %v", text, got, err)
+		}
+	}
+	for _, text := range []string{"", "invalid", "urn:UUID:" + canonical, "[" + canonical + "]", "g81d4fae-7dec-11d0-a765-00a0c91e6bf6"} {
+		value := want
+		if err := value.UnmarshalText([]byte(text)); err == nil || value != want {
+			t.Fatalf("invalid input changed receiver: %q", text)
+		}
+	}
+	text, err := want.AppendText([]byte("prefix:"))
+	if err != nil || string(text) != "prefix:" + canonical {
+		t.Fatal("AppendText", string(text), err)
+	}
+	text, err = want.MarshalText()
+	var decoded uuid.UUID
+	if err != nil || decoded.UnmarshalText(text) != nil || decoded != want {
+		t.Fatal("text round trip")
+	}
+	if uuid.Nil().String() != "00000000-0000-0000-0000-000000000000" || uuid.Max().String() != "ffffffff-ffff-ffff-ffff-ffffffffffff" {
+		t.Fatal("sentinels")
+	}
+	if want.Compare(want) != 0 || uuid.Nil().Compare(want) != -1 || uuid.Max().Compare(want) != 1 {
+		t.Fatal("Compare")
+	}
+}
+
+func TestUUIDConcurrentGeneration(t *testing.T) {
+	results := make(chan uuid.UUID, 24)
+	for range 4 {
+		go func() {
+			for range 6 {
+				results <- uuid.NewV7()
+			}
+		}()
+	}
+	seen := make(map[uuid.UUID]bool)
+	for range 24 {
+		value := <-results
+		if seen[value] || value[6] >> 4 != 7 || value[8] >> 6 != 2 {
+			t.Fatal("concurrent UUID generation", value)
+		}
+		seen[value] = true
+	}
+}
+
+func TestUUIDVersions(t *testing.T) {
+	for _, u := range []uuid.UUID{uuid.New(), uuid.NewV4()} {
+		if u[6] >> 4 != 4 || u[8] >> 6 != 2 {
+			t.Fatal("version or variant", u)
+		}
+	}
+	previous := uuid.NewV7()
+	for range 20 {
+		next := uuid.NewV7()
+		if next[6] >> 4 != 7 || next[8] >> 6 != 2 || previous.Compare(next) >= 0 {
+			t.Fatal("v7 order or layout", previous, next)
+		}
+		previous = next
+	}
+}

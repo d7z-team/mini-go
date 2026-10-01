@@ -1,11 +1,11 @@
 package lower
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 )
 
@@ -229,7 +229,7 @@ func (l *lowerer) lowerBuiltinCall(expr ast.Expression, scope *funcScope) (ir.Ex
 				l.add("hirgen.builtin.arg_count", "make channel requires optional capacity", expr.Span)
 				return ir.Expression{}, false
 			}
-			capacity := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(`0`)}
+			capacity := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(`0`)}
 			if len(expr.Args) == 2 {
 				var ok bool
 				capacity, ok = l.lowerMakeIntegerArgument(expr.Args[1], scope)

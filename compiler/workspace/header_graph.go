@@ -126,23 +126,23 @@ func (l *Loader) loadHeadersForRoots(roots []string) (HeaderGraph, error) {
 		}
 		for _, files := range [][]source.File{pkg.Files, pkg.TestFiles} {
 			for _, file := range files {
+				if fileCount == limits.MaxFiles {
+					collector.Add(workspaceDiagnostic("compiler.limit.files", "source graph exceeds file limit"))
+					return false
+				}
 				fileCount++
-				sourceBytes += len(file.Text)
 				if len(file.Text) > limits.MaxSourceBytes {
 					diagnostic := workspaceDiagnostic("scanner.source.limit", "source file exceeds scanner byte limit")
 					diagnostic.Primary, _ = file.Span(0, len(file.Text))
 					collector.Add(diagnostic)
 					return false
 				}
+				if len(file.Text) > limits.MaxTotalSourceBytes-sourceBytes {
+					collector.Add(workspaceDiagnostic("compiler.limit.source_bytes", "source graph exceeds total byte limit"))
+					return false
+				}
+				sourceBytes += len(file.Text)
 			}
-		}
-		if fileCount > limits.MaxFiles {
-			collector.Add(workspaceDiagnostic("compiler.limit.files", "source graph exceeds file limit"))
-			return false
-		}
-		if sourceBytes > limits.MaxTotalSourceBytes {
-			collector.Add(workspaceDiagnostic("compiler.limit.source_bytes", "source graph exceeds total byte limit"))
-			return false
 		}
 		for i := range diagnostics {
 			diagnostics[i].ModulePath = modulePath

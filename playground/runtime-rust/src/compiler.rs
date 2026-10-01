@@ -282,9 +282,38 @@ struct Operation {
     canceled: Option<(&'static str, u64)>,
 }
 
+/// Host-owned resource budgets, preserved across recovery and upgrades.
+#[derive(Clone, Copy)]
+pub struct CompilerOptions {
+    pub limits: ExecutionLimits,
+    pub load: LoadLimits,
+}
+
+impl Default for CompilerOptions {
+    fn default() -> Self {
+        Self {
+            limits: ExecutionLimits {
+                max_steps: crate::instance::UNLIMITED_STEPS,
+                max_heap_bytes: 128 << 20,
+                max_objects: 500_000,
+                max_sequence_elements: 4 << 20,
+                max_dynamic_types: 16_384,
+                max_dynamic_type_bytes: 64 << 20,
+                ..ExecutionLimits::default()
+            },
+            load: LoadLimits {
+                max_packages: 2048,
+                max_type_nodes: 200_000,
+                ..LoadLimits::default()
+            },
+        }
+    }
+}
+
 /// Platform-neutral compiler owner. Each poll executes at most the supplied
 /// instruction budget; external IO and result delivery remain with the caller.
 pub struct CompilerSession {
+    options: CompilerOptions,
     program: Option<Arc<Program>>,
     machine: Option<Instance>,
     control: Control,
@@ -310,25 +339,38 @@ impl CompilerSession {
         image: &[u8],
         generation: u64,
         restore: RestoreState,
+        options: CompilerOptions,
     ) -> Result<Self, RuntimeError> {
-        Self::with_clock(image, generation, restore, Arc::new(SystemClock::default()))
+        Self::with_clock(
+            image,
+            generation,
+            restore,
+            options,
+            Arc::new(SystemClock::default()),
+        )
     }
     pub fn with_clock(
         image: &[u8],
         generation: u64,
         restore: RestoreState,
+        mut options: CompilerOptions,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, RuntimeError> {
         if generation == 0 {
             return Err(failure("invalid_argument", "generation must be positive"));
         }
         restore.encode()?;
+        if options.limits.max_steps == 0 {
+            options.limits.max_steps = crate::instance::UNLIMITED_STEPS;
+        }
+        options.limits = options.limits.normalize()?;
         let decoded = if image.starts_with(&[0x1f, 0x8b]) {
-            DecodedImage::decode_gzip(image, LoadLimits::compiler())?
+            DecodedImage::decode_gzip(image, options.load)?
         } else {
-            DecodedImage::decode(image, LoadLimits::compiler())?
+            DecodedImage::decode(image, options.load)?
         };
         Ok(Self {
+            options,
             program: Some(Arc::new(Program::prepare(decoded)?)),
             machine: None,
             control: Control::default(),
@@ -411,7 +453,7 @@ impl CompilerSession {
                     .as_ref()
                     .expect("open compiler program")
                     .clone(),
-                ExecutionLimits::compiler(),
+                self.options.limits,
                 &self.control,
             )?;
             machine.set_environment(
@@ -715,6 +757,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn execution_budgets_survive_discard_and_recovery() {
+        let image = include_bytes!("../assets/compiler.json.gz");
+        let mut options = CompilerOptions::default();
+        options.limits.max_steps = 1;
+        let mut session =
+            CompilerSession::from_image(image, 1, RestoreState::default(), options).unwrap();
+        for generation in 1..=2 {
+            if generation > 1 {
+                session.set_generation(generation).unwrap();
+            }
+            session
+                .start(json!({"Operation":"hello"}), Duration::from_secs(30))
+                .unwrap();
+            assert_eq!(session.poll(4096).unwrap_err().code, "step_limit");
+            assert_eq!(session.state(), SessionState::Discarded);
+        }
+        options.limits.max_steps = 0;
+        let session =
+            CompilerSession::from_image(image, 1, RestoreState::default(), options).unwrap();
+        assert_eq!(
+            session.options.limits.max_steps,
+            crate::instance::UNLIMITED_STEPS
+        );
+        drop(session);
+
+        options.limits.max_heap_bytes = 1;
+        let mut session =
+            CompilerSession::from_image(image, 1, RestoreState::default(), options).unwrap();
+        let outcome = session
+            .start(json!({"Operation":"hello"}), Duration::from_secs(30))
+            .and_then(|()| session.poll(4096).map(|_| ()));
+        assert_eq!(outcome.unwrap_err().code, "allocation_limit");
+    }
+
+    #[test]
     fn response_frames_validate_lengths_and_preserve_raw_image_bytes() {
         let metadata = serde_json::to_vec(
             &json!({"Format":FORMAT,"Version":VERSION,"ImageJSON":"","SymbolsJSON":""}),
@@ -748,6 +825,7 @@ mod tests {
             include_bytes!("../assets/compiler.json.gz"),
             1,
             RestoreState::default(),
+            CompilerOptions::default(),
         )
         .unwrap();
         let oversized = json!({"Operation":"hello", "Root":"x".repeat(MAX_BYTES)});

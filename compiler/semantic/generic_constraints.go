@@ -82,6 +82,35 @@ func (a *analyzer) instanceTypeSetTerms(ref types.TypeRef) ([]types.TypeRef, boo
 	if !ok || instance.Kind != types.Instance {
 		return nil, false
 	}
+	bindings, ok := a.instanceTypeBindings(instance)
+	if !ok {
+		return nil, false
+	}
+	terms, ok := a.info.Relations.View(instance.Base).TypeSetTerms()
+	if !ok {
+		return nil, false
+	}
+	out := make([]types.TypeRef, 0, len(terms))
+	cache := make(map[types.TypeID]types.TypeRef)
+	for _, term := range terms {
+		resolved, valid := a.substituteType(term.Type, bindings, "constraint."+string(instance.ID), cache)
+		if !valid {
+			return nil, false
+		}
+		out = append(out, resolved)
+	}
+	return out, len(out) != 0
+}
+
+func (a *analyzer) instanceTypeBindings(instance types.TypeNode) (map[types.TypeRef]types.TypeRef, bool) {
+	bindings := make(map[types.TypeRef]types.TypeRef, len(instance.TypeArgs))
+	if export, ok := a.dependency(instance.Base.Named.ModulePath, string(instance.Base.Named.DeclID)); ok && len(export.TypeParams) == len(instance.TypeArgs) {
+		parser := a.dependencyParser(export)
+		for i, name := range export.TypeParams {
+			bindings[parser.Bindings[name]] = instance.TypeArgs[i]
+		}
+		return bindings, true
+	}
 	var params []ObjectID
 	for objectID, candidates := range a.info.GenericDecls {
 		object, exists := a.info.Object(objectID)
@@ -93,7 +122,6 @@ func (a *analyzer) instanceTypeSetTerms(ref types.TypeRef) ([]types.TypeRef, boo
 	if len(params) == 0 || len(params) != len(instance.TypeArgs) {
 		return nil, false
 	}
-	bindings := make(map[types.TypeRef]types.TypeRef, len(params))
 	for i, objectID := range params {
 		object, exists := a.info.Object(objectID)
 		if !exists || !object.Type.Valid() || !instance.TypeArgs[i].Valid() {
@@ -101,23 +129,10 @@ func (a *analyzer) instanceTypeSetTerms(ref types.TypeRef) ([]types.TypeRef, boo
 		}
 		bindings[object.Type] = instance.TypeArgs[i]
 	}
-	terms, ok := a.info.Relations.View(instance.Base).TypeSetTerms()
-	if !ok {
-		return nil, false
-	}
-	out := make([]types.TypeRef, 0, len(terms))
-	cache := make(map[types.TypeID]types.TypeRef)
-	for _, term := range terms {
-		resolved, valid := a.substituteConstraintType(term.Type, bindings, "constraint."+string(instance.ID), cache)
-		if !valid {
-			return nil, false
-		}
-		out = append(out, resolved)
-	}
-	return out, len(out) != 0
+	return bindings, true
 }
 
-func (a *analyzer) substituteConstraintType(ref types.TypeRef, bindings map[types.TypeRef]types.TypeRef, prefix string, cache map[types.TypeID]types.TypeRef) (types.TypeRef, bool) {
+func (a *analyzer) substituteType(ref types.TypeRef, bindings map[types.TypeRef]types.TypeRef, prefix string, cache map[types.TypeID]types.TypeRef) (types.TypeRef, bool) {
 	if replacement, ok := bindings[ref]; ok {
 		return replacement, true
 	}
@@ -132,7 +147,7 @@ func (a *analyzer) substituteConstraintType(ref types.TypeRef, bindings map[type
 		return ref, ok && ref.Valid()
 	}
 	switch node.Kind {
-	case types.Slice, types.Array, types.Map, types.Pointer, types.Waitable, types.Function, types.Tuple, types.Struct, types.Interface:
+	case types.Slice, types.Array, types.Map, types.Pointer, types.Waitable, types.Function, types.Tuple, types.Struct, types.Interface, types.Instance:
 	default:
 		return ref, ref.Valid()
 	}
@@ -141,11 +156,12 @@ func (a *analyzer) substituteConstraintType(ref types.TypeRef, bindings map[type
 	cache[ref.Node] = resolved
 	node.Tuple = append([]types.TypeRef(nil), node.Tuple...)
 	node.Fields = append([]types.Field(nil), node.Fields...)
+	node.TypeArgs = append([]types.TypeRef(nil), node.TypeArgs...)
 	resolve := func(current types.TypeRef) (types.TypeRef, bool) {
 		if !current.Valid() {
 			return current, true
 		}
-		return a.substituteConstraintType(current, bindings, prefix, cache)
+		return a.substituteType(current, bindings, prefix, cache)
 	}
 	if node.Elem, ok = resolve(node.Elem); !ok {
 		return types.TypeRef{}, false
@@ -160,6 +176,17 @@ func (a *analyzer) substituteConstraintType(ref types.TypeRef, bindings map[type
 	}
 	for i := range node.Fields {
 		if node.Fields[i].Type, ok = resolve(node.Fields[i].Type); !ok {
+			return types.TypeRef{}, false
+		}
+	}
+	for i := range node.TypeArgs {
+		if node.TypeArgs[i], ok = resolve(node.TypeArgs[i]); !ok {
+			return types.TypeRef{}, false
+		}
+	}
+	node.Terms = append([]types.TypeTerm(nil), node.Terms...)
+	for i := range node.Terms {
+		if node.Terms[i].Type, ok = resolve(node.Terms[i].Type); !ok {
 			return types.TypeRef{}, false
 		}
 	}

@@ -32,7 +32,7 @@ func LowerUnvalidatedWithSymbols(program hir.Program) (ir.Artifact, ir.PackageSy
 		artifact.Constants = append(artifact.Constants, ir.Constant{
 			ID:      constant.ID,
 			Type:    constant.Type,
-			Value:   constant.Value,
+			Value:   constant.Value.Encode(&artifact.TypeTable, constant.Type, constant.Untyped),
 			Untyped: constant.Untyped,
 		})
 	}

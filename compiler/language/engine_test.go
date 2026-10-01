@@ -25,6 +25,90 @@ func TestCanceledChangeKeepsCommittedSnapshot(t *testing.T) {
 	}
 }
 
+func TestGenericMethodDefinitionAndHover(t *testing.T) {
+	engine, uri := testEngine(t, "package main\ntype Box struct{}\nfunc (b Box) Echo[T any](value T) T { return value }\nfunc Main() int { return Box{}.Echo(1) }\n")
+	use := Position{Line: 3, Character: 31}
+	definitions := engine.Definition(uri, use)
+	if len(definitions) != 1 || definitions[0].Range.Start.Line != 2 {
+		t.Fatalf("method definitions: %+v", definitions)
+	}
+	hover := engine.Hover(uri, use)
+	if hover == nil || !strings.Contains(hover.Contents.Value, "T Any") {
+		t.Fatalf("method hover: %+v", hover)
+	}
+}
+
+func TestPromotedFieldDefinitionUsesDeclaringType(t *testing.T) {
+	text := "package main\ntype Inner[T any] struct{ X T }\ntype Outer struct{ Inner[int] }\nfunc Main() { _ = Outer{X:1}; value := Outer{}; _ = value.X }\n"
+	engine, uri := testEngine(t, text)
+	for _, offset := range []int{strings.Index(text, "X:1"), strings.LastIndex(text, ".X") + 1} {
+		position, err := engine.Snapshot().documents[uri].Index.Position(offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		definitions := engine.Definition(uri, position)
+		if len(definitions) != 1 || definitions[0].Range.Start.Line != 1 || definitions[0].URI != uri {
+			t.Fatalf("promoted field definition at %d: %+v", offset, definitions)
+		}
+		if hover := engine.Hover(uri, position); hover == nil || !strings.Contains(hover.Contents.Value, "X Int") {
+			t.Fatalf("promoted field hover: %+v", hover)
+		}
+	}
+}
+
+func TestImportedPromotedFieldDefinitionAndHover(t *testing.T) {
+	text := "package main\nimport \"example/lib\"\nfunc Main() { _ = lib.Outer{X:1}; value := lib.Outer{}; _ = value.X }\n"
+	set, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{
+		{ModulePath: "example", Files: []source.File{{Path: "main.mgo", Text: text}}},
+		{ModulePath: "example/lib", Files: []source.File{{Path: "lib.mgo", Text: "package lib\ntype Inner[T any] struct{ X T }\ntype Alias = Inner[int]\ntype Outer struct{ Alias }\n"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewEngine(Config{Root: "example", Sources: set, URI: func(module, path string) DocumentURI { return DocumentURI("file:///" + module + "/" + path) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri := DocumentURI("file:///example/main.mgo")
+	for _, offset := range []int{strings.Index(text, "X:1"), strings.LastIndex(text, ".X") + 1} {
+		position, err := engine.Snapshot().documents[uri].Index.Position(offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		definitions := engine.Definition(uri, position)
+		if len(definitions) != 1 || definitions[0].Range.Start.Line != 1 || definitions[0].URI != "file:///example/lib/lib.mgo" {
+			t.Fatalf("imported field definition at %d: %+v", offset, definitions)
+		}
+		if hover := engine.Hover(uri, position); hover == nil || !strings.Contains(hover.Contents.Value, "X Int") {
+			t.Fatalf("imported field hover: %+v", hover)
+		}
+	}
+}
+
+func TestImportedGenericMethodDefinitionAndHover(t *testing.T) {
+	set, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{
+		{ModulePath: "example", Files: []source.File{{Path: "main.mgo", Text: "package main\nimport \"example/lib\"\nfunc Main() int { return lib.Box{}.Echo(1) }\n"}}},
+		{ModulePath: "example/lib", Files: []source.File{{Path: "lib.mgo", Text: "package lib\ntype Box struct{}\nfunc (Box) Echo[Int ~int](value Int) Int { return value }\n"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := NewEngine(Config{Root: "example", Sources: set, URI: func(module, path string) DocumentURI { return DocumentURI("file:///" + module + "/" + path) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri := DocumentURI("file:///example/main.mgo")
+	use := Position{Line: 2, Character: 35}
+	definitions := engine.Definition(uri, use)
+	if len(definitions) != 1 || definitions[0].Range.Start.Line != 2 || definitions[0].URI != "file:///example/lib/lib.mgo" {
+		t.Fatalf("imported method definition: %+v", definitions)
+	}
+	hover := engine.Hover(uri, use)
+	if hover == nil || !strings.Contains(hover.Contents.Value, "Int") || strings.Contains(hover.Contents.Value, "_method_parameter_") {
+		t.Fatalf("imported method hover: %+v", hover)
+	}
+}
+
 func TestSelectionRangesFollowExpressionBlockAndFunction(t *testing.T) {
 	text := "package main\nfunc Main() int {\n\tif true { return (1 + 2) * 3 }; return 0\n}\n"
 	engine, uri := testEngine(t, text)

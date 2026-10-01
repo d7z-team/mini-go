@@ -227,9 +227,6 @@ func validateFuncDecl(decl FuncDecl, span source.Span, add func(string, string, 
 func validateFuncSignature(decl FuncDecl, add func(string, string, source.Span)) {
 	validateTypeParams(decl.TypeParams, add)
 	if decl.Receiver != nil {
-		if len(decl.TypeParams) != 0 {
-			add("ast.method.type_params", "method declarations cannot declare type parameters", decl.Receiver.Span)
-		}
 		if decl.Receiver.Variadic {
 			add("ast.func.receiver.variadic", "method receiver cannot be variadic", decl.Receiver.Span)
 		}

@@ -1,11 +1,36 @@
 package compiler
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/cache"
+	"github.com/d7z-team/mini-go/compiler/scanner"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/workspace"
 )
+
+func TestCompilerSourceCapacityCanBeRaised(t *testing.T) {
+	text := "package main\n/*" + strings.Repeat("x", scanner.DefaultMaxSourceBytes) + "*/\nfunc Main() int { return 42 }\n"
+	sources, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{{
+		ModulePath: "example/main", Files: []source.File{{Path: "main.mgo", Text: text}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := cache.New(cache.NewMemoryBackend())
+	for _, limit := range []int{0, len(text), 0} {
+		result, err := Check(Request{Root: "example/main", Sources: sources, Cache: storage, Limits: Limits{MaxSourceBytes: limit}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if limit == 0 {
+			requireCompileDiagnostic(t, result.Diagnostics, "scanner.source.limit")
+		} else if len(result.Diagnostics) != 0 {
+			t.Fatalf("raised source capacity: %v", result.Diagnostics)
+		}
+	}
+}
 
 func TestCompilerAppliesWorkspaceLimits(t *testing.T) {
 	packages := []workspace.SourcePackage{

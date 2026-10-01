@@ -2,19 +2,22 @@
 package constant
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strconv"
 	"strings"
 
+	"github.com/d7z-team/mini-go/compiler/types"
 	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 // Value is a source-level exact fact. Text is a canonical arbitrary precision
-// number or Go-quoted string and Type is the source type identity.
+// number or raw string bytes and Type is the source type identity.
 type Value struct {
 	Text            string
 	Type            string
 	Untyped         bool
+	IsString        bool `json:",omitempty"`
 	Real            string
 	Imag            string
 	canonicalNumber string
@@ -24,6 +27,9 @@ type Value struct {
 // Rational returns the exact numeric value. Constructor-owned facts are tied
 // to their immutable text; edited or decoded values are parsed normally.
 func (value Value) Rational() (Rational, bool) {
+	if value.IsString {
+		return Rational{}, false
+	}
 	if value.canonicalNumber != "" && value.Text == value.canonicalNumber {
 		if value.numeratorEnd != 0 {
 			return Rational{Numerator: value.Text[:value.numeratorEnd], Denominator: value.Text[value.numeratorEnd+1:]}, true
@@ -64,18 +70,22 @@ const (
 	Number
 	StringValue
 	ComplexValue
+	NilValue
 )
 
 // Kind distinguishes exact values independently of their declared type identity.
 func (value Value) Kind() Kind {
+	if value.IsString {
+		return StringValue
+	}
+	if value.Text == "null" {
+		return NilValue
+	}
 	if value.Imag != "" {
 		return ComplexValue
 	}
 	if value.Text == "true" || value.Text == "false" {
 		return Boolean
-	}
-	if strings.HasPrefix(value.Text, "\"") {
-		return StringValue
 	}
 	if value.Text != "" {
 		return Number
@@ -83,9 +93,27 @@ func (value Value) Kind() Kind {
 	return Invalid
 }
 
-// String constructs an exact string value using Go quoting.
+// String constructs an exact string value without quoting or copying its bytes.
 func String(text, typ string, untyped bool) Value {
-	return Value{Text: strconv.Quote(text), Type: typ, Untyped: untyped}
+	return Value{Text: text, Type: typ, Untyped: untyped, IsString: true}
+}
+
+// Ref returns an independently owned fact for a literal node. Published facts
+// are read-only; a conversion constructs a new fact instead of editing it.
+func (value Value) Ref() *Value { return &value }
+
+// Scalar constructs a compiler-produced boolean, nil, or numeric spelling.
+// Source input must first pass the literal parser or exact numeric constructors.
+func Scalar(text string) *Value { return &Value{Text: text} }
+
+func (value Value) StringValue() (string, bool) { return value.Text, value.IsString }
+
+// ExactText formats a source/display boundary while retaining raw bytes internally.
+func (value Value) ExactText() string {
+	if value.IsString {
+		return strconv.Quote(value.Text)
+	}
+	return value.Text
 }
 
 // Integer constructs an exact integer value from signed decimal text.
@@ -118,15 +146,15 @@ func FromJSON(raw json.RawMessage, typ string, untyped bool) (Value, bool) {
 	}
 	if typ == "Complex64" || typ == "Complex128" {
 		var parts struct {
-			Real string `json:"real"`
-			Imag string `json:"imag"`
+			Real json.RawMessage `json:"real"`
+			Imag json.RawMessage `json:"imag"`
 		}
 		if json.Unmarshal(raw, &parts) != nil {
 			return Value{}, false
 		}
-		realPart, realOK := ParseRationalLiteral(parts.Real)
-		imaginaryPart, imagOK := ParseRationalLiteral(parts.Imag)
-		return Value{Real: realPart.String(), Imag: imaginaryPart.String(), Type: typ, Untyped: untyped}, realOK && imagOK
+		realPart, realOK := FromJSON(parts.Real, "Float64", true)
+		imaginaryPart, imagOK := FromJSON(parts.Imag, "Float64", true)
+		return Value{Real: realPart.Text, Imag: imaginaryPart.Text, Type: typ, Untyped: untyped}, realOK && imagOK
 	}
 	var text string
 	if typ == "String" {
@@ -137,7 +165,12 @@ func FromJSON(raw json.RawMessage, typ string, untyped bool) (Value, bool) {
 		}
 		return String(text, typ, untyped), true
 	}
-	if err := json.Unmarshal(raw, &text); err != nil {
+	trimmed := strings.TrimSpace(string(raw))
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		if json.Unmarshal(raw, &text) != nil {
+			return Value{}, false
+		}
+	} else {
 		var number json.Number
 		if err := json.Unmarshal(raw, &number); err != nil {
 			return Value{}, false
@@ -219,6 +252,9 @@ func ParseIntegerLiteral(text string) (Value, bool) {
 
 // Unary applies a constant unary operator.
 func Unary(operator string, value Value) (Value, bool) {
+	if value.IsString {
+		return Value{}, false
+	}
 	if value.Imag != "" {
 		if operator == "+" {
 			return value, true
@@ -310,12 +346,7 @@ func Binary(operator string, left, right Value) (Value, bool) {
 				comparison = 1
 			}
 		} else if left.Kind() == StringValue && right.Kind() == StringValue {
-			l, le := strconv.Unquote(left.Text)
-			r, re := strconv.Unquote(right.Text)
-			if le != nil || re != nil {
-				return Value{}, false
-			}
-			comparison = strings.Compare(l, r)
+			comparison = strings.Compare(left.Text, right.Text)
 		} else {
 			l, lok := left.Rational()
 			r, rok := right.Rational()
@@ -344,16 +375,11 @@ func Binary(operator string, left, right Value) (Value, bool) {
 	if left.Imag != "" || right.Imag != "" {
 		return complexBinary(operator, left, right)
 	}
-	if operator == "+" && strings.HasPrefix(left.Text, "\"") && strings.HasPrefix(right.Text, "\"") {
-		leftText, leftErr := strconv.Unquote(left.Text)
-		rightText, rightErr := strconv.Unquote(right.Text)
-		if leftErr != nil || rightErr != nil {
-			return Value{}, false
-		}
+	if operator == "+" && left.IsString && right.IsString {
 		if left.Untyped && !right.Untyped {
 			left.Type = right.Type
 		}
-		return String(leftText+rightText, left.Type, left.Untyped && right.Untyped), true
+		return String(left.Text+right.Text, left.Type, left.Untyped && right.Untyped), true
 	}
 	if (operator == "+" || operator == "-" || operator == "*" || operator == "/") &&
 		(!integerType(left.Type) || !integerType(right.Type)) {
@@ -430,6 +456,9 @@ func Binary(operator string, left, right Value) (Value, bool) {
 
 // Int64 returns the exact integer when it is representable by int64.
 func (value Value) Int64() (int64, bool) {
+	if value.IsString {
+		return 0, false
+	}
 	rational, ok := value.Rational()
 	if !ok {
 		return 0, false
@@ -443,6 +472,12 @@ func (value Value) Int64() (int64, bool) {
 
 // JSON returns the canonical artifact representation of value.
 func (value Value) JSON() json.RawMessage {
+	if value.IsString {
+		return bytecode.EncodeStringConstant(value.Text)
+	}
+	if value.Text == "null" {
+		return json.RawMessage("null")
+	}
 	if value.Imag != "" {
 		raw, _ := json.Marshal(struct {
 			Real string `json:"real"`
@@ -453,8 +488,8 @@ func (value Value) JSON() json.RawMessage {
 	if value.Text == "true" || value.Text == "false" {
 		return json.RawMessage(value.Text)
 	}
-	if text, err := strconv.Unquote(value.Text); err == nil {
-		return bytecode.EncodeStringConstant(text)
+	if strings.ContainsAny(value.Text, ".eE") || value.Text == "-0" {
+		return json.RawMessage(value.Text)
 	}
 	if rational, ok := value.Rational(); ok {
 		if integer, integerOK := rational.Integer(); integerOK {
@@ -465,6 +500,76 @@ func (value Value) JSON() json.RawMessage {
 	}
 	raw, _ := json.Marshal(value.Text)
 	return raw
+}
+
+// Encode applies the artifact's numeric representation at the emission boundary.
+// The type and untyped flag belong to the HIR operand, not the shared literal.
+func (value *Value) Encode(table *types.TypeTable, ref types.TypeRef, untyped bool) json.RawMessage {
+	if value == nil {
+		return nil
+	}
+	underlying := table.Underlying(ref)
+	if underlying.Kind == types.Slice && value.IsString {
+		if elem, ok := types.View(table, underlying).Elem(); ok && table.Underlying(elem) == types.Builtin(types.PrimitiveUint8) {
+			return bytecode.EncodeStringConstant(base64.StdEncoding.EncodeToString([]byte(value.Text)))
+		}
+	}
+	primitive := underlying.Primitive
+	if untyped && (primitive == types.PrimitiveFloat32 || primitive == types.PrimitiveFloat64) {
+		if number, ok := value.Rational(); ok {
+			data, _ := json.Marshal(number.Numerator + "/" + number.Denominator)
+			return data
+		}
+	}
+	if untyped && (primitive == types.PrimitiveComplex64 || primitive == types.PrimitiveComplex128) {
+		r, rok := ParseRationalLiteral(value.Real)
+		i, iok := ParseRationalLiteral(value.Imag)
+		if rok && iok {
+			data, _ := json.Marshal(struct {
+				Real string `json:"real"`
+				Imag string `json:"imag"`
+			}{r.Numerator + "/" + r.Denominator, i.Numerator + "/" + i.Denominator})
+			return data
+		}
+	}
+	if !untyped && (primitive == types.PrimitiveFloat32 || primitive == types.PrimitiveFloat64) {
+		if value.Text == "-0" {
+			return json.RawMessage("-0")
+		}
+		number, ok := value.Rational()
+		bits := 64
+		if primitive == types.PrimitiveFloat32 {
+			bits = 32
+		}
+		if ok {
+			converted, valid := RationalFloat(number, bits)
+			if valid {
+				return json.RawMessage(strconv.FormatFloat(converted, 'g', -1, 64))
+			}
+		}
+	}
+	if !untyped && (primitive == types.PrimitiveComplex64 || primitive == types.PrimitiveComplex128) {
+		realPart, realOK := ParseRationalLiteral(value.Real)
+		imagPart, imagOK := ParseRationalLiteral(value.Imag)
+		bits := 64
+		if primitive == types.PrimitiveComplex64 {
+			bits = 32
+		}
+		r, rok := RationalFloat(realPart, bits)
+		i, iok := RationalFloat(imagPart, bits)
+		if realOK && imagOK && rok && iok {
+			data, _ := json.Marshal(struct {
+				Real float64 `json:"real"`
+				Imag float64 `json:"imag"`
+			}{r, i})
+			return data
+		}
+	}
+	if (primitive >= types.PrimitiveUint && primitive <= types.PrimitiveUintptr) && value.Kind() == Number {
+		data, _ := json.Marshal(value.Text)
+		return data
+	}
+	return value.JSON()
 }
 
 func integerType(typ string) bool {

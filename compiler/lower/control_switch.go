@@ -252,7 +252,7 @@ func (l *lowerer) switchCaseConstantKey(value ast.Expression, tagType string, sc
 	if keyType == "" {
 		keyType = l.resolveType(sourceType)
 	}
-	return keyType + ":" + string(raw), true
+	return keyType + ":" + string(raw.JSON()), true
 }
 
 func (l *lowerer) lowerTypeSwitchWithLabel(stmt ast.Statement, scope *funcScope, userLabel string) ([]ir.Statement, bool) {

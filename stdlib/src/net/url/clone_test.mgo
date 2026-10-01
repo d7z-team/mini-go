@@ -1,0 +1,32 @@
+package url_test
+
+import (
+	"net/url"
+	"testing"
+)
+
+func TestClone(t *testing.T) {
+	var empty *url.URL
+	if empty.Clone() != nil || url.Values(nil).Clone() != nil {
+		t.Fatal("nil clone")
+	}
+	original := &url.URL{Scheme: "https", Host: "example.com", Path: "/a", User: url.UserPassword("name", "secret")}
+	cloned := original.Clone()
+	if cloned == original || cloned.User == original.User || cloned.String() != original.String() {
+		t.Fatal("URL deep copy")
+	}
+	cloned.Path = "/b"
+	if original.Path != "/a" {
+		t.Fatal("URL alias")
+	}
+	values := url.Values{"key": {"a", "b"}, "nil": nil, "empty": {}}
+	copy := values.Clone()
+	copy["key"][0] = "changed"
+	if values["key"][0] != "a" || copy["nil"] != nil || copy["empty"] == nil {
+		t.Fatal("Values copy shape")
+	}
+	copy["new"] = []string{"new"}
+	if values.Has("new") {
+		t.Fatal("map alias")
+	}
+}

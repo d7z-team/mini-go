@@ -60,14 +60,12 @@ pub(crate) fn encode(value: &impl Serialize) -> Result<JsValue, JsValue> {
         )
         .map_err(error)
 }
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct Options {
     capabilities: Vec<String>,
-    workload: Workload,
-    max_steps: Option<i64>,
-    max_heap_bytes: Option<u64>,
-    max_pending_calls: usize,
+    limits: Option<limits::ExecutionOptions>,
+    load: Option<limits::ImageOptions>,
     rpc: bool,
     rpc_options: RpcOptions,
     symbols: Option<Vec<u8>>,
@@ -98,28 +96,7 @@ impl RpcOptions {
     }
 }
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum Workload {
-    #[default]
-    Runtime,
-    Compiler,
-}
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            capabilities: vec![],
-            workload: Workload::Runtime,
-            max_steps: None,
-            max_heap_bytes: None,
-            max_pending_calls: 128,
-            rpc: false,
-            rpc_options: RpcOptions::default(),
-            symbols: None,
-        }
-    }
-}
-
+mod limits;
 #[wasm_bindgen]
 pub struct WasmVm {
     machine: Option<Machine>,
@@ -131,6 +108,8 @@ pub struct WasmVm {
     closing: bool,
     init_error: Option<RuntimeError>,
     max_host_result_bytes: usize,
+    max_input_bytes: usize,
+    load: runtime::LoadOptions,
     debug_session: Option<runtime::dap::DebugSession>,
     #[cfg(feature = "rpc")]
     network: Option<Arc<network::RpcNetwork>>,
@@ -144,40 +123,26 @@ impl WasmVm {
     pub fn new(image: &[u8], options: JsValue) -> Result<WasmVm, JsValue> {
         let options: Options = serde_wasm_bindgen::from_value(options).map_err(error)?;
         options.rpc_options.validate().map_err(error)?;
-        let (mut limits, load) = match options.workload {
-            Workload::Compiler => (
-                runtime::Limits::compiler(),
-                runtime::LoadOptions::compiler(),
-            ),
-            Workload::Runtime => (
-                runtime::Limits {
-                    max_heap_bytes: 32 << 20,
-                    max_ffi_bytes: 8 << 20,
-                    max_ffi_result_bytes: 4 << 20,
-                    ..Default::default()
-                },
-                runtime::LoadOptions {
-                    max_image_bytes: 32 << 20,
-                    max_artifact_bytes: 16 << 20,
-                    ..Default::default()
-                },
-            ),
-        };
-        if let Some(steps) = options.max_steps {
-            limits.max_steps = steps;
-        }
-        if let Some(bytes) = options.max_heap_bytes {
-            limits.max_heap_bytes = bytes;
-        }
-        limits.max_pending_calls = options.max_pending_calls;
-        let limits = limits.normalize().map_err(error)?;
-        if options.max_pending_calls == 0
-            || options.max_pending_calls > 4096
-            || limits.max_heap_bytes > 256 << 20
-            || limits.max_heap_bytes == 0
-        {
-            return Err(error("invalid WASM limits"));
-        }
+        let limits = options
+            .limits
+            .unwrap_or_default()
+            .apply(runtime::Limits {
+                max_heap_bytes: 32 << 20,
+                max_ffi_bytes: 8 << 20,
+                max_ffi_result_bytes: 4 << 20,
+                max_pending_calls: 128,
+                ..Default::default()
+            })
+            .map_err(error)?;
+        let load = options
+            .load
+            .unwrap_or_default()
+            .apply(runtime::LoadOptions {
+                max_image_bytes: 32 << 20,
+                max_artifact_bytes: 16 << 20,
+                ..Default::default()
+            })
+            .map_err(error)?;
         let decoded = if image.starts_with(&[0x1f, 0x8b]) {
             runtime::loader::DecodedImage::decode_gzip(image, load)
         } else {
@@ -194,7 +159,7 @@ impl WasmVm {
                 .map_err(error)?;
         }
         let program = Arc::new(program);
-        let mailbox = mailbox::Mailbox::new(options.capabilities, options.max_pending_calls);
+        let mailbox = mailbox::Mailbox::new(options.capabilities, limits.max_pending_calls);
         let bridge: Arc<dyn Bridge> = Arc::new(mailbox.clone());
         #[cfg(feature = "rpc")]
         let mut bridge = bridge;
@@ -231,12 +196,27 @@ impl WasmVm {
             closing: false,
             init_error: None,
             max_host_result_bytes: limits.max_ffi_result_bytes,
+            max_input_bytes: limits.max_ffi_bytes,
+            load,
             debug_session: None,
             #[cfg(feature = "rpc")]
             network,
             #[cfg(feature = "rpc")]
             host,
         })
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn max_input_bytes(&self) -> usize {
+        self.max_input_bytes
+    }
+    #[wasm_bindgen(getter)]
+    pub fn max_host_result_bytes(&self) -> usize {
+        self.max_host_result_bytes
+    }
+    #[wasm_bindgen(getter)]
+    pub fn max_image_bytes(&self) -> usize {
+        self.load.max_image_bytes
     }
 
     /// One bounded VM batch. The JS driver yields between tasks, not microtasks.
@@ -557,8 +537,7 @@ impl WasmVm {
             .instance
             .as_ref()
             .ok_or_else(|| error("initialization pending"))?;
-        let program =
-            Arc::new(Program::load(image, runtime::LoadOptions::default()).map_err(error)?);
+        let program = Arc::new(Program::load(image, self.load).map_err(error)?);
         let plan = instance.prepare_patch(program).map_err(error)?;
         instance.apply_patch(plan).map_err(error)?;
         Ok(())

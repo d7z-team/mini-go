@@ -123,7 +123,7 @@ func reflectMakeSlice(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 			return nil, err
 		}
 	}
-	elemType := module.arrayElemType(typ)
+	elemType := module.sequenceElementType(typ)
 	backing := make([]vmValue, capacityValue)
 	for i := range backing {
 		backing[i] = reflectZeroValue(module, elemType)

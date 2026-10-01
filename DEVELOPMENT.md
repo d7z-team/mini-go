@@ -5,7 +5,7 @@
 
 [日常工作流](#日常工作流) · [生成](#生成与派生物) · [测试](#测试组织) ·
 [Rust](#rust-验证) · [WASM](#wasm-与-typescript) · [性能](#缓存与性能) ·
-[协议](#协议维护) · [发布](#rust-与-npm-发布) · [编辑器](#编辑器扩展)
+[协议](#协议维护) · [CI](#ci) · [发布](#rust-与-npm-发布) · [编辑器](#编辑器扩展)
 
 ## 开发环境
 
@@ -47,16 +47,6 @@ make lint test build
 受限环境可设置 `GOFLAGS=-p=1`、`GOMAXPROCS`、`CARGO_BUILD_JOBS` 和 `RUST_TEST_THREADS`。
 交付前运行 `git diff --check`，核对生成输入与产物，并记录实际验证结果。
 
-### CI 变更判断
-
-[publish.yml](.github/workflows/publish.yml) 统一编排 Go、Rust 和发布；
-[changes.yml](.github/workflows/changes.yml) 为 CI 与全仓 Go fuzz 判断改动范围。
-PR 对比合并基点，其他事件对比当前历史上最近一次成功运行；没有可靠基线时执行完整检查。
-因此，失败后的文档提交仍可能触发代码验证。
-
-分类规则及测试位于 [.github/scripts](.github/scripts/)，运行 `make test-scripts`。
-本地边界检查、打包和版本脚本位于 [scripts](scripts/)，独立于 GitHub 环境。
-
 ## 生成与派生物
 
 根 [generate.go](generate.go) 是统一生成入口：
@@ -69,6 +59,7 @@ PR 对比合并基点，其他事件对比当前历史上最近一次成功运�
 | bytecode 模型与工具 DTO | [spec](spec/README.md) 契约和 Rust 描述 |
 | 共享源码与行为预期 | 预编译镜像、差分数据和 manifest |
 | compiler 词法与类型事实 | VS Code grammar |
+| 固定 Go 1.27.1 Unicode 源数据 | 标准库 Unicode 17 表与嵌入资源、Go 词法表、Rust 名称表 |
 
 ```bash
 make generate
@@ -79,8 +70,20 @@ make doc
 同步更新所属 version/domain；生成器重构应比较产物并验证编解码。派生物从事实源更新，
 移植源码保留版权与许可证。
 
-opcode 的输入输出数量以 [opcode_contract.go](runtime/bytecode/opcode_contract.go) 为事实源。
-新增 opcode 时同步声明数量规则，生成 Rust 契约，并测试有效和无效操作数。
+Unicode 数据位于 `cmd/mini-go-dev/data/unicode/`，生成时核对固定 SHA-256，离线生成且不读取宿主字符表。
+所选标准库 API 对照 Go 1.27.1；`encoding/json` 的 v1 契约单独对照 Go 1.26.6。
+日常测试直接验证仓库中的压缩参考文件。需要更新外部参考时，在仓库根运行：
+
+```bash
+GOTOOLCHAIN=go1.27.1 go run ./cmd/mini-go-dev core-api snapshot
+GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev core-api snapshot -json-v1
+GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev core-api verify
+```
+
+正常 `make generate` 不刷新 API 参考；宿主和 CI 继续使用 Go 1.26。
+
+新增 opcode 时更新 [opcode_contract.go](runtime/bytecode/opcode_contract.go) 的操作数契约，
+生成 Rust 描述，并覆盖有效和无效输入。
 
 独立运行消费方测试前，可补齐缺失的本地镜像：
 
@@ -89,9 +92,8 @@ make artifacts       # runtime、stdlib 和 compiler 镜像
 make compiler-image  # 仅 compiler 镜像
 ```
 
-这两个目标先只读验证 compiler identity，再补齐缺失文件；修改输入后使用 `make generate` 更新已有产物。
-CI 完整生成后检查 Git 差异，保证生成结果与提交一致。单独的身份检查不替代完整生成一致性验证。
-手写文档按 [文档职责](AGENTS.md#文档职责) 维护；调查、设计、实验和实施记录保存在 `/tmp`。
+这两个目标只在 identity 匹配时补齐缺失文件；修改输入后使用 `make generate` 更新产物，
+并检查完整生成的 Git 差异。手写文档按[文档职责](AGENTS.md#文档职责)维护。
 
 ### 生成预编译示例
 
@@ -113,12 +115,8 @@ go run ./cmd/mini-go-dev runtime-blocks -out /tmp/blocks path/to/block.mgo
 | 跨 compiler/runtime 集成 | [integrations](integrations/README.md) |
 | 多后端共同消费的输入和预期 | [testdata](testdata/README.md) |
 
-测试验证结果、诊断、协议、缓存不变量和资源终态，并回收实例、连接、后台任务与子进程。
-runtime 状态机优先使用最小 bytecode Program 和精确 `PollSteps`；跨层语义再编译源码。
-复杂构造集中在所属测试辅助文件，跨语言命令由 Makefile 编排。
-
-重型 compiler、stdlib 和集成测试复用默认缓存或 `MINIGO_CACHE`；
-缓存契约、故障注入和阶段单元测试使用隔离 backend。
+测试设计与资源回收约定见 [AGENTS.md](AGENTS.md#测试规范)。重型测试复用默认缓存或 `MINIGO_CACHE`；
+缓存契约和故障注入使用隔离 backend。跨语言命令由 Makefile 编排。
 
 ### Rust 验证
 
@@ -134,12 +132,8 @@ API 见 [Rust 使用指南](playground/runtime-rust/USAGE.md)。
 
 `test-rust` 启用 `language-server,rpc-gateway,stdlib-host`，由 Cargo 自动发现测试。
 局部运行可传 `RUST_TEST_FLAGS='--test compiler_session'` 或直接使用 Cargo。
-跨进程 peer 路径按 Cargo metadata 解析，支持 `CARGO_TARGET_DIR`。
-
-调度、GC、热更新或帧复用改动应覆盖步骤计费、不同并行度、共享状态、等待、初始化、取消和关闭，
-以及 GC/Patch/DAP 安全点。编译会话测试使用 release 模式，重型集成场景显式设置有限的请求预算，
-测试防挂期限覆盖整条场景；功能断言验证结果、状态和资源计费，不以实际完成秒数判断正确性。
-期限边界由可控时钟验证，并发顺序通过事件同步验证。超时报告当前阶段与已有统计信息。
+构建目录可通过 `CARGO_TARGET_DIR` 指定。编译会话测试使用 release 模式；防挂期限覆盖完整场景，
+功能断言验证结果、状态与计费。期限边界使用可控时钟，并发顺序使用事件同步；超时保留阶段与统计信息。
 
 `host-conformance` 是测试用 broker feature，应用宿主接入使用 `stdlib-host`。
 
@@ -176,8 +170,8 @@ make test TEST_PACKAGES='./compiler/bootstrap' TEST_FLAGS='-run TestCompilerImag
 
 普通测试运行固定 seeds；持续变异检查成功不变量和失败后的状态完整性。语法终止性由 compiler
 的确定性 limits 保证。fuzz 默认单 worker，资源充足时通过 `FUZZ_PARALLEL` 调整。
-fuzz 从 Go 包与测试列表自动发现目标，默认范围为全仓；筛选无匹配和发现失败均返回错误。
-`FUZZTIME` 按每个目标计费，列出目标后再估算总时长。定时 CI 每个目标使用 3 分钟，按全仓规模配置任务期限。
+fuzz 从 Go 测试列表自动发现目标，默认范围为全仓。`FUZZTIME` 按每个目标计费，
+先用 `fuzz-list` 核对筛选结果与总时长；CI 配置见 [fuzz.yml](.github/workflows/fuzz.yml)。
 
 Go 自举比较原生与 VM compiler 的检查结果，固定语料进一步比较镜像、hash、符号和诊断；
 Rust 常规测试消费预编译镜像。
@@ -213,7 +207,7 @@ Rust target、node_modules 和 dist 按所属工具管理。
 测试二进制和 profile 输出指定到 `/tmp`，例如 `go test -c -o /tmp/mini-go-runtime.test ./runtime`。
 
 Rust runtime bench 输出 elapsed、steps、steps/s、宿主分配与 guest heap；精确 opcode 计数单独运行。
-`compiler-load` 只测加载和准备，steps 等执行指标为 `null`。测量 compiler 工作负载：
+测量 compiler 工作负载：
 
 ```bash
 MINIGO_BENCH_COMPILER=1 cargo bench --manifest-path playground/runtime-rust/Cargo.toml --bench runtime --features compiler
@@ -225,8 +219,8 @@ MINIGO_BENCH_COMPILER=1 cargo bench --manifest-path playground/runtime-rust/Carg
 
 比较时区分加载、初始化、首次编译、缓存命中与编辑后编译；镜像携带源码不代表已完成分析。
 VM 调度还须分别测量底层循环与公开 Instance，浏览器另计 Worker 往返。
-采样插桩耗时与普通吞吐分开，失败或预算耗尽的请求单列。ISA 改变后同时报告工作量、指令数与耗时，
-不能只比较 steps/s。
+微基准、插桩采样与整体吞吐分别报告，失败或预算耗尽的请求单列。
+ISA 改变后同时比较工作量、指令数与耗时。
 
 ### 观测口径
 
@@ -268,9 +262,17 @@ VM 调度还须分别测量底层循环与公开 Instance，浏览器另计 Work
 成功结果交付后调用 `acknowledge`，未交付结果调用 `abandon`；恢复只重建已确认输入，替换 owner
 使用递增 generation。恢复和分析共用请求剩余期限，相关测试验证快照失效与旧 owner 清理。
 
-响应将 metadata 与 image/symbols 字节分段编码。使用
-`compilerentry.DecodeToolsResponse` 或 Rust `compiler::decode_tools_response` 解码；
-格式事实源见 [compilerentry](compiler/bootstrap/compilerentry/) 和 [工具契约](spec/README.md)。
+响应解码使用 `compilerentry.DecodeToolsResponse` 或 Rust `compiler::decode_tools_response`；
+字段与格式以 [compilerentry](compiler/bootstrap/compilerentry/) 和[工具契约](spec/README.md)为准。
+
+## CI
+
+[publish.yml](.github/workflows/publish.yml) 编排验证与发布；[changes.yml](.github/workflows/changes.yml)
+为主流程和 fuzz 判断改动范围。PR 对比合并基点，其他事件对比最近一次成功运行；没有可靠基线时执行完整检查。
+失败后的文档提交因此仍可能触发代码验证。
+
+CI 分类与发布规则位于 [.github/scripts](.github/scripts/)，本地构建和打包脚本位于 [scripts](scripts/)。
+修改后运行 `make test-scripts`。发布失败后修复并推送，或重跑失败的 job。
 
 ## Rust 与 npm 发布
 
@@ -288,12 +290,9 @@ make release-verify
 并通过独立 Rust、Node 和 Chromium consumer 验证。调试未提交内容可设置
 `RELEASE_FLAGS=--allow-dirty`，生成的 `.dirty` 版本仅供本地验证。
 
-[publish.yml](.github/workflows/publish.yml) 在 main push 的 Go、Rust 检查通过后，通过 job 依赖推进发布，
-验证 WASM 与分发产物后发布同一提交的两端包。PR 只执行验证。
-已有成功基线且代码未变化时可复用检查结果。发布前再次核对 main，避免发布被新提交替代的候选。
-注册表准入与补发规则集中在 [release-plan.mjs](.github/scripts/release-plan.mjs)，
-版本计算和 staging manifest 写入集中在 [release-version.mjs](scripts/release-version.mjs)。
-失败后修复代码并推送，或在该次 CI 中重跑失败的 job。
+main push 在验证通过后发布同一提交的 crate 与 npm 包，PR 只执行验证。
+发布前核对 main，避免发布已被新提交替代的候选。准入规则见
+[release-plan.mjs](.github/scripts/release-plan.mjs)，版本规则见 [release-version.mjs](scripts/release-version.mjs)。
 
 ## 编辑器扩展
 

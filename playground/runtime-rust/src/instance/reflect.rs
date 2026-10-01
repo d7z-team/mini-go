@@ -531,9 +531,7 @@ impl Instance {
             .types
             .declared_methods(typ)?
             .iter()
-            .filter(|(_, method)| {
-                kind == 20 || method.name.chars().next().is_some_and(char::is_uppercase)
-            })
+            .filter(|(_, method)| kind == 20 || crate::types::names::is_exported(&method.name))
             .count();
         let display = self.reflect_display(typ, 0)?;
         let (align, size, bits) = self.reflect_layout(typ, 0)?;
@@ -983,7 +981,7 @@ impl Instance {
                     offset = offset.checked_next_multiple_of(align).ok_or_else(|| {
                         RuntimeError::new("type_limit", id, "field alignment overflow")
                     })?;
-                    let package = if field.name.chars().next().is_some_and(char::is_uppercase) {
+                    let package = if crate::types::names::is_exported(&field.name) {
                         String::new()
                     } else {
                         module.to_owned()

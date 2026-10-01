@@ -205,7 +205,11 @@ func formatRef(ref TypeRef, table *TypeTable, seen map[TypeID]bool) string {
 		}
 		return KindName(node.Kind)
 	case Instance:
-		return formatRef(node.Base, table, seen)
+		parts := []string{formatRef(node.Base, table, seen)}
+		for _, argument := range node.TypeArgs {
+			parts = append(parts, formatRef(argument, table, seen))
+		}
+		return "Instance<" + strings.Join(parts, ", ") + ">"
 	default:
 		if !emptyTypeKey(node.Identity) {
 			return node.Identity.ModulePath + "." + string(node.Identity.DeclID)

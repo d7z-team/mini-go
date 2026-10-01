@@ -124,7 +124,8 @@ export function runWorker(
           const bytes = record.result?.payload;
           if (!(bytes instanceof Uint8Array))
             throw new Error("provider must return Uint8Array or {payload, consumed, discard}");
-          if (bytes.byteLength > 4 * 1024 * 1024) throw new Error("host result exceeds WASM limit");
+          if (bytes.byteLength > vm.max_host_result_bytes)
+            throw new Error("host result exceeds WASM limit");
           vm.complete(action.id, bytes, undefined);
         } catch (error) {
           vm.complete(action.id, new Uint8Array(), String(error));
@@ -270,6 +271,13 @@ export function runWorker(
           socket = await connectRPCSocket(rpcUrl);
         }
         vm = new WasmVm(data.image, options);
+        // Initializers can call the main-thread provider before ready.
+        send({
+          kind: "limits",
+          maxInputBytes: vm.max_input_bytes,
+          maxHostResultBytes: vm.max_host_result_bytes,
+          maxImageBytes: vm.max_image_bytes,
+        });
         if (closing) vm.close();
         if (socket) {
           attachRPCSocket(socket, vm as RpcTransport, schedule, failWorker);

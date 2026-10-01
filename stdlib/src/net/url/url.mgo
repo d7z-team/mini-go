@@ -6,6 +6,19 @@ package url
 
 import "path"
 
+// Clone creates a deep copy of the fields of u.
+func (u *URL) Clone() *URL {
+	if u == nil {
+		return nil
+	}
+	cloned := *u
+	if u.User != nil {
+		user := *u.User
+		cloned.User = &user
+	}
+	return &cloned
+}
+
 // Error reports an error and the operation and URL that caused it.
 type Error struct {
 	// Op is the operation that failed.

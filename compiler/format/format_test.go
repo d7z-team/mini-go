@@ -24,6 +24,21 @@ func TestSourceIsIdempotentAndPreservesCommentsAndLiterals(t *testing.T) {
 	}
 }
 
+func TestGenericMethodsAndPromotedLiteralsRoundTrip(t *testing.T) {
+	text := "package p\ntype Inner struct{X int};type Box[T any] struct{Inner;V T}\nfunc(b Box[T])Map[U any](f func(T)U)U{return f(b.V)}\nfunc Main()int{return Box[int]{X:1,V:2}.Map(func(x int)int{return x})}\n"
+	formatted := format.Source("example", "methods.mgo", text)
+	if len(formatted.Diagnostics) != 0 {
+		t.Fatal(formatted.Diagnostics)
+	}
+	parsed := parser.ParseSource("example", "methods.mgo", formatted.Text)
+	if len(parsed.Diagnostics) != 0 {
+		t.Fatal(parsed.Diagnostics)
+	}
+	if second := format.Source("example", "methods.mgo", formatted.Text); second.Text != formatted.Text {
+		t.Fatal("unstable generic method format")
+	}
+}
+
 func TestSourcePreservesInlineCommentAfterBlockOpen(t *testing.T) {
 	input := "package main\nconst value = 1 // keep declaration inline\ntype mode uint\nconst (\n\tfirst mode = iota // keep grouped inline\n\tsecond             // keep implicit inline\n)\nvar (\n\tdata = []byte(\"x\") // keep var inline\n)\nfunc run(ok bool, value int) {\nif ok { // keep block inline\nreturn\n}\nswitch value {\ncase 1: // keep clause inline\nreturn\n}\n}\n"
 	result := format.Source("example/main", "main.mgo", input)

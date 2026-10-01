@@ -27,5 +27,11 @@ test('generated grammar tokenizes language facts without matching strings and co
             const { tokens } = grammar.tokenizeLine(text, textmate.INITIAL);
             assert(tokens.every(token => !token.scopes.some(scope => scope.startsWith('keyword.') || scope.startsWith('storage.type'))));
         }
+        const method = 'func (b Box) Echo[T ~int](x T) T { return x }';
+        const { tokens } = grammar.tokenizeLine(method, textmate.INITIAL);
+        for (const [word, scope] of [['func', 'keyword.control.mgo'], ['int', 'storage.type.mgo'], ['return', 'keyword.control.mgo']]) {
+            const start = method.indexOf(word);
+            assert(tokens.some(token => token.startIndex <= start && token.endIndex >= start + word.length && token.scopes.includes(scope)), `${word}: ${JSON.stringify(tokens)}`);
+        }
     } finally { registry.dispose(); }
 });

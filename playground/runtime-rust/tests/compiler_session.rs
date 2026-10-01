@@ -6,6 +6,42 @@ use std::time::Duration;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
 
+#[tokio::test]
+async fn host_load_budget_is_preserved_by_upgrade() {
+    use mini_go::compiler::CompilerOptions;
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let image = include_bytes!("../assets/compiler.json.gz");
+        let mut options = CompilerOptions::default();
+        // Check loading separately from execution, then preserve a custom
+        // image envelope and step budget across a successful upgrade.
+        options.load.max_packages = 1;
+        assert!(CompilerSession::new_with_options(image, options, REQUEST_TIMEOUT).await.is_err());
+        options = CompilerOptions::default();
+        options.load.max_image_bytes = 60 << 20;
+        options.limits.max_steps = 5_000_000;
+        let mut session = CompilerSession::new_with_options(image, options, REQUEST_TIMEOUT).await.unwrap();
+        let cancel = Cancellation::default();
+        let generation = session.generation();
+        let oversized = vec![0; options.load.max_image_bytes + 1];
+        assert_eq!(session.upgrade_with_timeout(&oversized, &cancel, REQUEST_TIMEOUT).await.unwrap_err().code, "load_limit");
+        assert_eq!(session.generation(), generation);
+        drop(oversized);
+        session.upgrade_with_timeout(image, &cancel, REQUEST_TIMEOUT).await.unwrap();
+        let outcome = async {
+            session.call_with_timeout(json!({
+            "Operation":"workspace/open", "Root":"sample", "Packages":[{
+                "Namespace":"module:sample", "ModulePath":"sample", "Files":[{
+                    "Path":"main.mgo", "Text":"package sample\nimport \"unicode\"\nfunc Main() bool { return unicode.IsLetter('中') }\n"
+                }]
+            }]
+            }), &cancel, REQUEST_TIMEOUT).await?;
+            session.call_with_timeout(json!({"Operation":"workspace/analyze"}), &cancel, REQUEST_TIMEOUT).await
+        }.await;
+        assert_eq!(outcome.unwrap_err().code, "step_limit");
+        session.close().await.unwrap();
+    }).await.expect("compiler budget test watchdog");
+}
+
 #[derive(Default)]
 struct TestClock(std::sync::atomic::AtomicU64);
 
@@ -42,8 +78,14 @@ async fn compiler_deadlines_share_the_guest_clock_and_preserve_explicit_budgets(
     tokio::time::timeout(TEST_TIMEOUT, async {
         let image = include_bytes!("../assets/compiler.json.gz");
         let clock = Arc::new(TestClock::default());
-        let mut session =
-            CompilerSession::with_clock(image, 1, RestoreState::default(), clock.clone()).unwrap();
+        let mut session = CompilerSession::with_clock(
+            image,
+            1,
+            RestoreState::default(),
+            Default::default(),
+            clock.clone(),
+        )
+        .unwrap();
         for (timeout, request, code) in [
             (
                 Duration::MAX,
@@ -163,6 +205,10 @@ async fn compiler_deadlines_share_the_guest_clock_and_preserve_explicit_budgets(
 }
 
 language_workload_test!(pure_preserves_warm_analysis, "pure");
+language_workload_test!(
+    generic_methods_preserve_analysis_through_edit_and_build,
+    "generic-methods"
+);
 language_workload_test!(typed_view_preserves_warm_analysis, "typed-view");
 language_workload_test!(errors_preserves_warm_analysis, "errors");
 language_workload_test!(ffi_preserves_warm_analysis, "ffi");
@@ -278,18 +324,54 @@ async fn assert_warm_analysis(name: &str) {
         first["Analysis"]["Snapshot"],
         second["Analysis"]["Snapshot"]
     );
-    if name == "rpc" {
+    if name == "generic-methods" {
+        let (line, text) = workload["Source"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .enumerate()
+            .find(|(_, text)| text.contains("X: 42"))
+            .unwrap();
+        let character = text[..text.find("X: 42").unwrap()].encode_utf16().count();
+        let query = json!({"Snapshot":session.snapshot(), "URI":"mini-go://sample/main.mgo", "Position":{"line":line,"character":character}});
+        let definitions = session
+            .call_with_timeout(
+                json!({"Operation":"language/definition","Query":query}),
+                &Cancellation::default(),
+                REQUEST_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert_eq!(definitions["Value"][0]["range"]["start"]["line"], 1);
+        let hover = session
+            .call_with_timeout(
+                json!({"Operation":"language/hover","Query":query}),
+                &Cancellation::default(),
+                REQUEST_TIMEOUT,
+            )
+            .await
+            .unwrap();
+        assert!(
+            hover["Value"]["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains("X Int")
+        );
+    }
+    if matches!(name, "rpc" | "generic-methods") {
         let cancel = Cancellation::default();
         let uri = "mini-go://sample/main.mgo";
+        let (before, after) = if name == "rpc" {
+            ("Signed:41", "Signed:40")
+        } else {
+            ("X: 42", "X: 41")
+        };
         for (version, operation, text) in [
             (1, "open", workload["Source"].as_str().unwrap().to_owned()),
             (
                 2,
                 "change",
-                workload["Source"]
-                    .as_str()
-                    .unwrap()
-                    .replace("Signed:41", "Signed:40"),
+                workload["Source"].as_str().unwrap().replace(before, after),
             ),
         ] {
             let change = if operation == "open" {
@@ -331,7 +413,7 @@ async fn assert_warm_analysis(name: &str) {
             .await
             .unwrap_or_else(|error| {
                 panic!(
-                    "RPC edited build after {:?}: {error}; {:?}",
+                    "{name} edited build after {:?}: {error}; {:?}",
                     started.elapsed(),
                     session.stats()
                 )
@@ -346,6 +428,16 @@ async fn assert_warm_analysis(name: &str) {
             .with_symbols(serde_json::from_str(symbols).unwrap())
             .unwrap();
         assert!(!program.image().hash.is_empty());
+        if name == "generic-methods" {
+            use mini_go::instance::{ExecutionLimits, Instance, PollStatus};
+            let mut instance =
+                Instance::new(std::sync::Arc::new(program), ExecutionLimits::default()).unwrap();
+            while instance.poll_initialize(&cancel, 1024).unwrap() != PollStatus::Ready {}
+            instance.start("default", vec![]).unwrap();
+            while instance.poll_steps(1024).unwrap() != PollStatus::Ready {}
+            assert_eq!(instance.results()[0].integer().unwrap(), 41);
+            instance.close().unwrap();
+        }
         let after = session
             .call_with_timeout(
                 json!({"Operation":"workspace/analyze"}),
@@ -359,7 +451,7 @@ async fn assert_warm_analysis(name: &str) {
             edited["Analysis"]["Snapshot"]
         );
         eprintln!(
-            "RPC edited build: {:?}; {:?}",
+            "{name} edited build: {:?}; {:?}",
             started.elapsed(),
             session.stats()
         );
@@ -384,8 +476,14 @@ async fn delivery_confirmation_preserves_only_committed_inputs() {
             assert!(RestoreState::decode(invalid).is_err());
         }
         let clock = Arc::new(TestClock::default());
-        let mut session =
-            CompilerSession::with_clock(image, 1, RestoreState::default(), clock.clone()).unwrap();
+        let mut session = CompilerSession::with_clock(
+            image,
+            1,
+            RestoreState::default(),
+            Default::default(),
+            clock.clone(),
+        )
+        .unwrap();
         assert_eq!(
             session
                 .start(

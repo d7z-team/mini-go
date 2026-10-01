@@ -121,6 +121,7 @@ type CompositeInfo struct {
 	Key           types.TypeRef
 	Element       types.TypeRef
 	Fields        []CompositeField
+	Initializers  []Selection
 	ModulePath    string
 	InferredArray bool
 }
@@ -131,6 +132,12 @@ type CompositeField struct {
 	Tag      string
 	Embedded bool
 	Variadic bool
+}
+
+// GenericMethod is a source declaration, not a runtime method-set entry.
+type GenericMethod struct {
+	Method types.Method
+	Object ObjectID
 }
 
 type EmbedKind uint8
@@ -268,6 +275,7 @@ type ProgramInfo struct {
 	IntrinsicCalls map[ast.NodeID]bytecode.IntrinsicID
 	Diagnostics    []source.Diagnostic
 	GenericDecls   map[ObjectID][]ObjectID
+	GenericMethods []GenericMethod
 	Functions      map[ast.NodeID]ObjectID
 }
 

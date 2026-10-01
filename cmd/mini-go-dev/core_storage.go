@@ -46,8 +46,18 @@ func readSnapshot(path string) (snapshot, error) {
 	if err := json.NewDecoder(reader).Decode(&out); err != nil {
 		return snapshot{}, err
 	}
-	if out.Schema != schema || out.Version != version || out.GoVersion != goVersion {
+	if out.Schema != schema || out.Version != version || out.GoVersion != goVersion && out.GoVersion != jsonGoVersion {
 		return snapshot{}, errors.New("core API baseline has an unsupported schema or Go version")
+	}
+	seen := make(map[string]bool)
+	for _, pkg := range out.Packages {
+		if pkg.Path == "" || seen[pkg.Path] || (pkg.Path == "encoding/json") != (out.GoVersion == jsonGoVersion) {
+			return snapshot{}, errors.New("core API baseline has invalid or duplicate package coverage")
+		}
+		seen[pkg.Path] = true
+	}
+	if len(seen) == 0 {
+		return snapshot{}, errors.New("core API baseline is empty")
 	}
 	return out, nil
 }

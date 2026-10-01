@@ -1,4 +1,5 @@
 {
+	"generic_methods": "42",
 	"captured_result_calls": "42",
 	"array_value_copies": "42",
 	"slot_locals": "42",

@@ -96,6 +96,8 @@ func EncodeIdentityExpression(w *identity.Writer, value Expression) {
 	w.String(string(value.Kind))
 	compiler_source.EncodeIdentitySpan(w, value.Span)
 	w.String(string(value.Name))
+	w.String(string(value.FunctionModule))
+	w.String(string(value.FunctionID))
 	EncodeIdentityIdentifier(w, value.NameID)
 	w.String(string(value.Literal))
 	w.Bool(value.Type != nil)
@@ -164,6 +166,7 @@ func EncodeIdentityField(w *identity.Writer, value Field) {
 	}
 	w.Uint(uint64(value.NodeID))
 	w.String(string(value.Name))
+	w.String(string(value.EmbeddedName))
 	EncodeIdentityIdentifier(w, value.NameID)
 	EncodeIdentityTypeExpr(w, value.Type)
 	w.String(string(value.Tag))
@@ -198,6 +201,7 @@ func EncodeIdentityFuncDecl(w *identity.Writer, value FuncDecl) {
 	}
 	EncodeIdentityBlockStmt(w, value.Body)
 	w.Bool(bool(value.Template))
+	w.String(string(value.DefinitionModule))
 	w.LeaveStructure()
 }
 

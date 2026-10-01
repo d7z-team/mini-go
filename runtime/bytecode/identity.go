@@ -3,4 +3,4 @@
 package bytecode
 
 // CompilerIdentity identifies the compiler and bytecode semantics used by caches.
-const CompilerIdentity = "a44f4b9a0c49d31129361fc56898789daa9e0c938b795edf8415adfa1a3b3f4c"
+const CompilerIdentity = "db3a4d473a2eb8034ad3f0b089d376f76a00456e0acd2e58ccd6d4be9ebdf868"

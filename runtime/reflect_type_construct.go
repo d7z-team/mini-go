@@ -3,9 +3,9 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"go/token"
 	"strings"
 
+	"github.com/d7z-team/mini-go/compiler/token"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
@@ -111,7 +111,7 @@ func reflectStructOf(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 			!anonymousExists || !anonymousOK || !module.resolvedRuntimeType(anonymousValue.Type).Primitive(types.PrimitiveBool) {
 			return reflectTypeError(fmt.Sprintf("reflect.StructOf: invalid field metadata at index %d", index)), nil
 		}
-		if !token.IsIdentifier(name) || name == "_" || names[name] {
+		if !token.IsIdentifierName(name) || name == "_" || names[name] {
 			return reflectTypeError("reflect.StructOf: invalid or duplicate field " + name), nil
 		}
 		names[name] = true

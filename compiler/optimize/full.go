@@ -1,8 +1,7 @@
 package optimize
 
 import (
-	"encoding/json"
-
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 )
 
@@ -64,17 +63,16 @@ func booleanLiteral(expression hir.Expression) (bool, bool) {
 	if expression.Kind != hir.ExprLiteral {
 		return false, false
 	}
-	var value bool
-	if json.Unmarshal(expression.Value, &value) != nil {
+	if expression.Value == nil || expression.Value.Kind() != constant.Boolean {
 		return false, false
 	}
-	return value, true
+	return expression.Value.Text == "true", true
 }
 
 func booleanExpression(original hir.Expression, value bool) hir.Expression {
-	raw := json.RawMessage(`false`)
+	raw := constant.Scalar(`false`)
 	if value {
-		raw = json.RawMessage(`true`)
+		raw = constant.Scalar(`true`)
 	}
 	return hir.Expression{Kind: hir.ExprLiteral, Type: original.Type, Untyped: original.Untyped, Value: raw}
 }
@@ -111,8 +109,7 @@ func propagateAdjacentBooleanLocals(body []hir.Statement) ([]hir.Statement, bool
 		if storedLocal == "" {
 			continue
 		}
-		var boolean bool
-		if json.Unmarshal(statement.Expr.Value, &boolean) != nil {
+		if statement.Expr.Value == nil || statement.Expr.Value.Kind() != constant.Boolean {
 			continue
 		}
 		local = storedLocal

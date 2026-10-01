@@ -96,7 +96,7 @@ func matchEmbedResources(patterns []string, resources []ResourceFile) ([]Resourc
 					continue
 				}
 				relative := strings.TrimPrefix(resource.Path, prefix)
-				if !includeHidden && embedHiddenPath(relative) {
+				if !includeHidden && hasHiddenPathElement(relative) {
 					continue
 				}
 				if err := validateEmbedMatch(resource.Path); err != nil {
@@ -144,13 +144,4 @@ func validateEmbedPattern(pattern string) error {
 		return fmt.Errorf("invalid //go:embed pattern %q: %v", pattern, err)
 	}
 	return nil
-}
-
-func embedHiddenPath(name string) bool {
-	for _, part := range strings.Split(name, "/") {
-		if strings.HasPrefix(part, ".") || strings.HasPrefix(part, "_") {
-			return true
-		}
-	}
-	return false
 }

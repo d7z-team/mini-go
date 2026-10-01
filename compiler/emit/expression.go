@@ -153,7 +153,7 @@ func (l *slotLowerer) expression(expr hir.Expression) ([]ir.Operand, error) {
 		if id == "" {
 			id = "c." + strconv.Itoa(index)
 		}
-		l.artifact.Constants = append(l.artifact.Constants, ir.Constant{ID: id, Type: expr.Type, Value: expr.Value, Untyped: expr.Untyped})
+		l.artifact.Constants = append(l.artifact.Constants, ir.Constant{ID: id, Type: expr.Type, Value: expr.Value.Encode(&l.artifact.TypeTable, expr.Type, expr.Untyped), Untyped: expr.Untyped})
 		l.constants[id] = uint32(index)
 		return []ir.Operand{{Kind: ir.OperandConstant, Index: uint32(index)}}, nil
 	case hir.ExprConst:

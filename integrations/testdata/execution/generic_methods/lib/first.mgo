@@ -1,0 +1,3 @@
+package lib
+func First[T ~int](x T) T { return T(helperA(int(x))) }
+func helperA(x int) int { return x+1 }

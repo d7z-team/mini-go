@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"encoding/json"
 	"strings"
 
 	ir "github.com/d7z-team/mini-go/compiler/hir"
@@ -89,10 +88,10 @@ func (l *lowerer) lookupConstValue(name string, scope *funcScope) (constantValue
 	if value, ok := l.constValues[name]; ok {
 		return value, true
 	}
-	if export, ok := l.dotImportExport(name, source.Span{}); ok && export.Kind == check.ObjectConst && len(export.Value) != 0 {
+	if export, ok := l.dotImportExport(name, source.Span{}); ok && export.Kind == check.ObjectConst && export.Value != nil {
 		return constantValue{
 			Type:    export.Type,
-			Value:   append(json.RawMessage(nil), export.Value...),
+			Value:   export.Value,
 			Untyped: export.Untyped,
 		}, true
 	}

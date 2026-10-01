@@ -1,8 +1,6 @@
 // Package token defines Mini-Go lexical token kinds.
 package token
 
-import "unicode"
-
 type Kind string
 
 const (
@@ -158,11 +156,11 @@ func IsIdentifierStart(r rune) bool {
 	return r == '_' ||
 		(r >= 'a' && r <= 'z') ||
 		(r >= 'A' && r <= 'Z') ||
-		(r >= 0x80 && unicode.IsLetter(r))
+		(r >= 0x80 && inUnicodeRanges(letterRanges, r))
 }
 
 func IsIdentifierPart(r rune) bool {
-	return IsIdentifierStart(r) || IsDecimalDigit(r) || (r >= 0x80 && unicode.IsDigit(r))
+	return IsIdentifierStart(r) || IsDecimalDigit(r) || (r >= 0x80 && inUnicodeRanges(digitRanges, r))
 }
 
 func IsDecimalDigit(r rune) bool {

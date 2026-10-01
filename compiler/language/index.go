@@ -47,12 +47,16 @@ func occurrenceKey(modulePath string, program ast.Program, info *check.ProgramIn
 	if occurrence.Role == ast.NameLabelDefinition || occurrence.Role == ast.NameLabelReference {
 		return labelKey(modulePath, program, occurrence)
 	}
-	if selection, ok := info.Selections[occurrence.Node]; ok && occurrence.Role == ast.NameSelector {
+	if selection, ok := info.Selections[occurrence.Node]; ok {
 		if selection.Kind == check.SelectionMethod || selection.Kind == check.SelectionMethodExpression {
 			return methodKey(selection.ModulePath, info, selection.DeclaringReceiver, selection.Name)
 		}
 		if selection.Kind == check.SelectionField {
-			return fieldKey(modulePath, info, selection.Receiver, selection.Name)
+			receiver := selection.Receiver
+			if selection.DeclaringReceiver.Valid() {
+				receiver = selection.DeclaringReceiver
+			}
+			return fieldKey(modulePath, info, receiver, selection.Name)
 		}
 		if selection.ModulePath != "" {
 			return "export|" + selection.ModulePath + "|" + selection.Name
@@ -68,6 +72,11 @@ func occurrenceKey(modulePath string, program ast.Program, info *check.ProgramIn
 	object, ok := info.Objects[occurrence.Object]
 	if !ok {
 		return declarationKey(modulePath, program, info, occurrence)
+	}
+	for _, generic := range info.GenericMethods {
+		if generic.Object == object.ID {
+			return methodKey(generic.Method.ModulePath, info, generic.Method.Receiver, generic.Method.Name)
+		}
 	}
 	if object.FunctionID != "" && object.Kind == check.ObjectFunc {
 		return "function|" + modulePath + "|" + object.FunctionID
@@ -120,11 +129,19 @@ func methodKey(modulePath string, info *check.ProgramInfo, receiver types.TypeRe
 }
 
 func fieldKey(modulePath string, info *check.ProgramInfo, receiver types.TypeRef, name string) string {
+	receiver = info.Relations.ResolveAlias(receiver)
 	view := info.Relations.View(receiver)
 	if view.Shape() == types.Pointer {
 		if elem, ok := view.Elem(); ok {
 			receiver = elem
 		}
+	}
+	receiver = info.Relations.ResolveAlias(receiver)
+	if node, ok := info.TypeTable.Node(receiver); ok && node.Kind == types.Instance {
+		receiver = info.Relations.ResolveAlias(node.Base)
+	}
+	if receiver.Named.ModulePath != "" {
+		modulePath = receiver.Named.ModulePath
 	}
 	return "field|" + modulePath + "|" + types.FormatWithTable(info.TypeTable, receiver) + "|" + name
 }

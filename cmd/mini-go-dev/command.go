@@ -12,9 +12,14 @@ import (
 
 func runDevCLI(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: mini-go-dev compiler-binary|bytecode-json|compiler-core|compiler-identity|contract-spec|runtime-contract|runtime-vectors|runtime-state-vectors|runtime-stdlib-vectors|runtime-manifest|runtime-blocks|runtime-host-broker|rpc-fixtures|bootstrap|core-api|vscode-grammar")
+		return errors.New("usage: mini-go-dev unicode|compiler-binary|bytecode-json|compiler-core|compiler-identity|contract-spec|runtime-contract|runtime-vectors|runtime-state-vectors|runtime-stdlib-vectors|runtime-manifest|runtime-blocks|runtime-host-broker|rpc-fixtures|bootstrap|core-api|vscode-grammar")
 	}
 	switch args[0] {
+	case "unicode":
+		if len(args) != 1 {
+			return errors.New("unicode accepts no arguments")
+		}
+		return generateUnicode()
 	case "tools-schema":
 		return runToolsSchema(args[1:], stderr)
 	case "rpc-fixtures":

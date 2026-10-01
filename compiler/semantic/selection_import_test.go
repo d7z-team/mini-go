@@ -1,10 +1,59 @@
 package semantic
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/d7z-team/mini-go/compiler/parser"
+	"github.com/d7z-team/mini-go/compiler/types"
 )
+
+func TestRecursiveGenericEmbeddingKeepsConcreteFieldSelection(t *testing.T) {
+	parsed := parser.ParseSource("example", "main.mgo", `package main
+type Nest[T any] struct { *Nest[*T]; Value T }
+func Main() { var value Nest[int]; _ = value.Value; _ = value.Missing }
+`)
+	if len(parsed.Diagnostics) != 0 {
+		t.Fatal(parsed.Diagnostics)
+	}
+	checked := Check(parsed.Program)
+	found := false
+	for _, selection := range checked.Info.Selections {
+		if selection.Name == "Value" {
+			found = true
+			if selection.Type != types.Builtin(types.PrimitiveInt) {
+				t.Fatalf("recursive field type: %+v", selection.Type)
+			}
+		}
+		if selection.Name == "Missing" {
+			t.Fatal("unresolved member acquired a selection")
+		}
+	}
+	if !found {
+		t.Fatal("concrete field selection missing")
+	}
+}
+
+func TestRepeatedDiamondRetainsFieldAmbiguity(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("package main\ntype A0 struct{X int}\ntype B0 struct{X int}\n")
+	for depth := 1; depth <= 30; depth++ {
+		fmt.Fprintf(&source, "type A%d struct{A%d;B%d}\ntype B%d struct{A%d;B%d}\n", depth, depth-1, depth-1, depth, depth-1, depth-1)
+	}
+	source.WriteString("func Main(){_ = A30{X:1}}\n")
+	parsed := parser.ParseSource("example/main", "main.mgo", source.String())
+	if len(parsed.Diagnostics) != 0 {
+		t.Fatal(parsed.Diagnostics)
+	}
+	checked := Check(parsed.Program)
+	for _, diagnostic := range checked.Info.Diagnostics {
+		if diagnostic.Code == "semantic.composite.ambiguous" {
+			return
+		}
+	}
+	t.Fatalf("missing diamond ambiguity: %+v", checked.Info.Diagnostics)
+}
 
 func TestImportedPromotedMethodPreservesReceiverPath(t *testing.T) {
 	parsed := parser.ParseSource("example/main", "main.mgo", `package main

@@ -491,13 +491,13 @@ func (s *scanner) advanceHeader(kind token.Kind) {
 }
 
 func normalizeLimits(limits Limits) Limits {
-	if limits.MaxSourceBytes <= 0 || limits.MaxSourceBytes > DefaultMaxSourceBytes {
+	if limits.MaxSourceBytes <= 0 {
 		limits.MaxSourceBytes = DefaultMaxSourceBytes
 	}
-	if limits.MaxTokens <= 0 || limits.MaxTokens > DefaultMaxTokens {
+	if limits.MaxTokens <= 0 {
 		limits.MaxTokens = DefaultMaxTokens
 	}
-	if limits.MaxDiagnostics <= 0 || limits.MaxDiagnostics > DefaultMaxDiagnostics {
+	if limits.MaxDiagnostics <= 0 {
 		limits.MaxDiagnostics = DefaultMaxDiagnostics
 	}
 	return limits

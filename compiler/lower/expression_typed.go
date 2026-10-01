@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -11,13 +10,13 @@ import (
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 )
 
-func (l *lowerer) lowerRuntimeConstant(expr ast.Expression, raw json.RawMessage, typ string, scope *funcScope) (ir.Expression, bool) {
+func (l *lowerer) lowerRuntimeConstant(expr ast.Expression, raw *constant.Value, typ string, scope *funcScope) (ir.Expression, bool) {
 	if !l.untypedConstExpression(expr, scope) {
-		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(typ), Value: append(json.RawMessage(nil), raw...)}, true
+		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(typ), Value: raw}, true
 	}
 	target := defaultUntypedConstType(typ, raw)
 	if target == "" || target == "Any" {
-		target = inferConstRawDefaultType(raw)
+		target = inferConstantDefaultType(raw)
 	}
 	converted, convertedType, ok := l.convertTypedConstValue(raw, typ, target, expr.Span)
 	if !ok {
@@ -40,7 +39,7 @@ func (l *lowerer) lowerExpressionInTypeOptions(expr ast.Expression, targetType s
 		return ir.Expression{}, false
 	}
 	if targetType != "" && l.isNilAssignableType(targetType) && isNilLiteral(expr) {
-		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(l.resolveType(targetType)), Value: json.RawMessage("null")}, true
+		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(l.resolveType(targetType)), Value: constant.Scalar("null")}, true
 	}
 	if expr.Kind == ast.ExprComposite && (expr.Type == nil || expr.Type.Kind == ast.TypeInvalid) {
 		if !allowElidedComposite {
@@ -135,7 +134,7 @@ func (l *lowerer) lowerUntypedConstInterfaceDefault(expr ast.Expression, targetT
 		return ir.Expression{}, false, false
 	}
 	if isNilLiteral(expr) {
-		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(targetType), Value: json.RawMessage("null")}, true, true
+		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(targetType), Value: constant.Scalar("null")}, true, true
 	}
 	if !l.untypedConstExpression(expr, scope) {
 		return ir.Expression{}, false, false
@@ -146,7 +145,7 @@ func (l *lowerer) lowerUntypedConstInterfaceDefault(expr ast.Expression, targetT
 	}
 	defaultType := defaultUntypedConstType(sourceType, raw)
 	if defaultType == "" || defaultType == "Any" {
-		defaultType = inferConstRawDefaultType(raw)
+		defaultType = inferConstantDefaultType(raw)
 	}
 	converted, typ, ok := l.convertTypedConstValue(raw, sourceType, defaultType, expr.Span)
 	if !ok {
@@ -227,7 +226,7 @@ func (l *lowerer) constantIndexValue(expr ast.Expression, scope *funcScope) (int
 	}
 	typ = strings.TrimSpace(typ)
 	if typ == "" || typ == "Any" {
-		typ = inferConstRawDefaultType(raw)
+		typ = inferConstantDefaultType(raw)
 	}
 	if value, ok := l.constExactInteger(raw, typ); ok {
 		if constant.CompareSignedDecimal(value, minInt64Text) < 0 {
@@ -377,7 +376,7 @@ func (l *lowerer) lowerModuleTypeConversionCall(expr ast.Expression, scope *func
 	}
 	target := l.selectorConversionType(*expr.Callee, scope)
 	if isNilLiteral(expr.Args[0]) && l.isNilAssignableType(target) {
-		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(target), Value: json.RawMessage("null")}, true
+		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(target), Value: constant.Scalar("null")}, true
 	}
 	operand, ok := l.lowerExpression(expr.Args[0], scope)
 	if !ok {

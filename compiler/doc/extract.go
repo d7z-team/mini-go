@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/d7z-team/mini-go/compiler/analysis"
 	"github.com/d7z-team/mini-go/compiler/ast"
@@ -380,6 +378,5 @@ func defaultImportName(modulePath string) string {
 }
 
 func exported(name string) bool {
-	r, _ := utf8.DecodeRuneInString(strings.TrimPrefix(name, "*"))
-	return r != utf8.RuneError && unicode.IsUpper(r)
+	return tokenpkg.IsExportedName(strings.TrimPrefix(name, "*"))
 }

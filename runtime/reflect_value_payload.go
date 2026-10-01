@@ -295,7 +295,7 @@ func reflectIndexPointer(module *moduleInstance, parentPtr vmValue, index int64)
 	if index < 0 {
 		return vmValue{}, fmt.Errorf("reflect: negative index %d", index)
 	}
-	elemType := module.arrayElemType(parent.Type)
+	elemType := module.sequenceElementType(parent.Type)
 	if elemType == "" {
 		return vmValue{}, errors.New("reflect: Index of non-array/slice Value")
 	}

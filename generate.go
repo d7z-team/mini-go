@@ -1,5 +1,6 @@
 package minigo
 
+//go:generate go run ./cmd/mini-go-dev unicode
 //go:generate go run ./cmd/mini-go-dev compiler-binary
 //go:generate go run ./cmd/mini-go-dev bytecode-json
 

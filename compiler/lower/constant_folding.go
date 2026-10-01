@@ -1,13 +1,11 @@
 package lower
 
 import (
-	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/constant"
-	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func foldInt64Unary(operator string, value int64) (int64, bool) {
@@ -62,27 +60,27 @@ func foldInt64Binary(operator string, left, right int64) (int64, bool) {
 	}
 }
 
-func finiteFloatRaw(value float64) (json.RawMessage, bool) {
+func floatConstant(value float64) (*constant.Value, bool) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return nil, false
 	}
-	return json.RawMessage(strconv.FormatFloat(value, 'g', -1, 64)), true
+	return constant.Scalar(strconv.FormatFloat(value, 'g', -1, 64)), true
 }
 
-func foldBoolUnary(operator string, raw json.RawMessage, typ string) (json.RawMessage, bool) {
+func foldBoolUnary(operator string, raw *constant.Value, typ string) (*constant.Value, bool) {
 	value, ok := constBool(raw, typ)
 	if !ok {
 		return nil, false
 	}
 	switch operator {
 	case "!":
-		return boolRaw(!value), true
+		return booleanConstant(!value), true
 	default:
 		return nil, false
 	}
 }
 
-func foldBoolBinary(operator string, leftRaw json.RawMessage, leftType string, rightRaw json.RawMessage, rightType string) (json.RawMessage, string, bool) {
+func foldBoolBinary(operator string, leftRaw *constant.Value, leftType string, rightRaw *constant.Value, rightType string) (*constant.Value, string, bool) {
 	left, ok := constBool(leftRaw, leftType)
 	if !ok {
 		return nil, "", false
@@ -93,30 +91,26 @@ func foldBoolBinary(operator string, leftRaw json.RawMessage, leftType string, r
 	}
 	switch operator {
 	case "&&":
-		return boolRaw(left && right), "Bool", true
+		return booleanConstant(left && right), "Bool", true
 	case "||":
-		return boolRaw(left || right), "Bool", true
+		return booleanConstant(left || right), "Bool", true
 	case "==":
-		return boolRaw(left == right), "Bool", true
+		return booleanConstant(left == right), "Bool", true
 	case "!=":
-		return boolRaw(left != right), "Bool", true
+		return booleanConstant(left != right), "Bool", true
 	default:
 		return nil, "", false
 	}
 }
 
-func constBool(raw json.RawMessage, typ string) (bool, bool) {
-	if typ != "Bool" {
+func constBool(value *constant.Value, typ string) (bool, bool) {
+	if value == nil || typ != "Bool" || value.Kind() != constant.Boolean {
 		return false, false
 	}
-	var out bool
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return false, false
-	}
-	return out, true
+	return value.Text == "true", true
 }
 
-func (l *lowerer) constBool(raw json.RawMessage, typ string) (bool, bool) {
+func (l *lowerer) constBool(raw *constant.Value, typ string) (bool, bool) {
 	if out, ok := constBool(raw, typ); ok {
 		return out, true
 	}
@@ -127,33 +121,33 @@ func (l *lowerer) constBool(raw json.RawMessage, typ string) (bool, bool) {
 	return constBool(raw, underlying)
 }
 
-func boolRaw(value bool) json.RawMessage {
+func booleanConstant(value bool) *constant.Value {
 	if value {
-		return json.RawMessage("true")
+		return constant.Scalar("true")
 	}
-	return json.RawMessage("false")
+	return constant.Scalar("false")
 }
 
-func foldInt64Compare(operator string, left, right int64) (json.RawMessage, bool) {
+func foldInt64Compare(operator string, left, right int64) (*constant.Value, bool) {
 	switch operator {
 	case "==":
-		return boolRaw(left == right), true
+		return booleanConstant(left == right), true
 	case "!=":
-		return boolRaw(left != right), true
+		return booleanConstant(left != right), true
 	case "<":
-		return boolRaw(left < right), true
+		return booleanConstant(left < right), true
 	case "<=":
-		return boolRaw(left <= right), true
+		return booleanConstant(left <= right), true
 	case ">":
-		return boolRaw(left > right), true
+		return booleanConstant(left > right), true
 	case ">=":
-		return boolRaw(left >= right), true
+		return booleanConstant(left >= right), true
 	default:
 		return nil, false
 	}
 }
 
-func foldExactIntegerCompare(operator, left, right string) (json.RawMessage, bool) {
+func foldExactIntegerCompare(operator, left, right string) (*constant.Value, bool) {
 	if _, ok := constant.NormalizeSignedDecimal(left); !ok {
 		return nil, false
 	}
@@ -163,17 +157,17 @@ func foldExactIntegerCompare(operator, left, right string) (json.RawMessage, boo
 	cmp := constant.CompareSignedDecimal(left, right)
 	switch operator {
 	case "==":
-		return boolRaw(cmp == 0), true
+		return booleanConstant(cmp == 0), true
 	case "!=":
-		return boolRaw(cmp != 0), true
+		return booleanConstant(cmp != 0), true
 	case "<":
-		return boolRaw(cmp < 0), true
+		return booleanConstant(cmp < 0), true
 	case "<=":
-		return boolRaw(cmp <= 0), true
+		return booleanConstant(cmp <= 0), true
 	case ">":
-		return boolRaw(cmp > 0), true
+		return booleanConstant(cmp > 0), true
 	case ">=":
-		return boolRaw(cmp >= 0), true
+		return booleanConstant(cmp >= 0), true
 	default:
 		return nil, false
 	}
@@ -219,7 +213,7 @@ func (l *lowerer) foldExactIntegerUnary(operator, value, typ string) (string, bo
 	}
 }
 
-func foldStringBinary(operator string, leftRaw json.RawMessage, leftType string, rightRaw json.RawMessage, rightType string) (json.RawMessage, string, bool) {
+func foldStringBinary(operator string, leftRaw *constant.Value, leftType string, rightRaw *constant.Value, rightType string) (*constant.Value, string, bool) {
 	left, ok := constString(leftRaw, leftType)
 	if !ok {
 		return nil, "", false
@@ -230,33 +224,36 @@ func foldStringBinary(operator string, leftRaw json.RawMessage, leftType string,
 	}
 	switch operator {
 	case "+":
-		return bytecode.EncodeStringConstant(left + right), "String", true
+		return stringConstant(left + right), "String", true
 	case "==":
-		return boolRaw(left == right), "Bool", true
+		return booleanConstant(left == right), "Bool", true
 	case "!=":
-		return boolRaw(left != right), "Bool", true
+		return booleanConstant(left != right), "Bool", true
 	case "<":
-		return boolRaw(left < right), "Bool", true
+		return booleanConstant(left < right), "Bool", true
 	case "<=":
-		return boolRaw(left <= right), "Bool", true
+		return booleanConstant(left <= right), "Bool", true
 	case ">":
-		return boolRaw(left > right), "Bool", true
+		return booleanConstant(left > right), "Bool", true
 	case ">=":
-		return boolRaw(left >= right), "Bool", true
+		return booleanConstant(left >= right), "Bool", true
 	default:
 		return nil, "", false
 	}
 }
 
-func constString(raw json.RawMessage, typ string) (string, bool) {
-	if typ != "String" {
+func constString(value *constant.Value, typ string) (string, bool) {
+	if value == nil || typ != "String" {
 		return "", false
 	}
-	out, err := bytecode.DecodeStringConstant(raw)
-	return out, err == nil
+	return value.StringValue()
 }
 
-func (l *lowerer) constString(raw json.RawMessage, typ string) (string, bool) {
+func stringConstant(text string) *constant.Value {
+	return constant.String(text, "String", false).Ref()
+}
+
+func (l *lowerer) constString(raw *constant.Value, typ string) (string, bool) {
 	if out, ok := constString(raw, typ); ok {
 		return out, true
 	}

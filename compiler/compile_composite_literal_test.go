@@ -161,16 +161,6 @@ func Main() { _ = Point{"X": 1} }
 `,
 			code: "hirgen.composite.struct.field",
 		},
-		{
-			name: "promoted field key",
-			source: `
-package main
-type Inner struct { Value int64 }
-type Outer struct { Inner }
-func Main() { _ = Outer{Value: 1} }
-`,
-			code: "hirgen.composite.struct.unknown",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result, err := compileTestSource("example/main", "main.mgo", tc.source)

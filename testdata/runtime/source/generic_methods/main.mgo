@@ -1,0 +1,35 @@
+package main
+
+type Ω struct { Value int }
+type Box struct { Ω; Other int }
+
+func (b *Ω) Add[T ~int](n T) T { b.Value += int(n); return T(b.Value) }
+func (b Ω) Echo[T any](n T) T { return n }
+func (b *Ω) IsNil[T any](n T) bool { return b == nil }
+func (b Ω) Sum[T ~int](values ...T) T {
+	result := T(b.Value)
+	for _, value := range values { result += value }
+	return result
+}
+func Identity[T any](n T) T { return n }
+
+func Main() int {
+	order := 0
+	next := func(n int) int { order = order*10+n; return n }
+	b := Box{Value: next(1), Other: next(2)}
+	if order != 12 { panic("initializer order") }
+	f := b.Add[int]
+	if f(2) != 3 || b.Value != 3 { panic("receiver capture") }
+	valueMethod := b.Sum[int]
+	b.Value = 4
+	if valueMethod(1, 2) != 6 || Box.Sum[int](b, 1, 2) != 7 { panic("variadic value capture") }
+	var pointer *Ω
+	isNil := pointer.IsNil[string]
+	if !isNil("nil") || !(*Ω).IsNil[int](nil, 0) { panic("nil receiver") }
+	var echo func(int) int = b.Echo
+	expression := Box.Echo[int]
+	ch := make(chan func(int) int, 1)
+	ch <- Identity
+	𐗀 := (<-ch)(echo(expression(b,42)))
+	return 𐗀
+}

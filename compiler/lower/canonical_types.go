@@ -371,6 +371,9 @@ func (l *lowerer) structFieldName(field ast.Field) string {
 	if name != "" {
 		return name
 	}
+	if field.EmbeddedName != "" {
+		return field.EmbeddedName
+	}
 	return l.embeddedFieldName(field.Type)
 }
 

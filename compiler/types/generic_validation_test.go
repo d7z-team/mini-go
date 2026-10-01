@@ -23,7 +23,7 @@ func TestCompilerValidationKeepsGenericTypesOutOfRuntimeTables(t *testing.T) {
 	}
 }
 
-func TestFormatInstanceUsesNamedDeclarationIdentity(t *testing.T) {
+func TestInstanceTextPreservesDeclarationAndArguments(t *testing.T) {
 	table := &TypeTable{}
 	instance := TypeRef{Kind: Instance, Node: "instance.Seq.String"}
 	if err := table.Add(TypeNode{
@@ -34,8 +34,17 @@ func TestFormatInstanceUsesNamedDeclarationIdentity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := FormatWithTable(table, instance); got != "iter.Seq" {
-		t.Fatalf("FormatWithTable(instance) = %q, want iter.Seq", got)
+	text := FormatWithTable(table, instance)
+	if text != "Instance<iter.Seq, String>" {
+		t.Fatalf("FormatWithTable(instance) = %q", text)
+	}
+	parsed, err := NewParser("iter", table).Parse(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, ok := table.Node(parsed)
+	if !ok || node.Kind != Instance || node.Base.Named.DeclID != "Seq" || len(node.TypeArgs) != 1 || node.TypeArgs[0] != Builtin(PrimitiveString) {
+		t.Fatalf("instance round trip: %+v", node)
 	}
 }
 

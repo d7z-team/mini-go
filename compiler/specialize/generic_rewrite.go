@@ -106,6 +106,9 @@ func (s *genericSpecializer) rewriteType(typ *ast.TypeExpr, substitutions map[st
 		s.rewriteType(&typ.Results[i].Type, substitutions)
 	}
 	for i := range typ.Fields {
+		if typ.Fields[i].Name == "" && typ.Fields[i].EmbeddedName == "" {
+			typ.Fields[i].EmbeddedName = genericReceiverName(typ.Fields[i].Type)
+		}
 		s.rewriteType(&typ.Fields[i].Type, substitutions)
 	}
 	for i := range typ.Methods {
@@ -147,6 +150,12 @@ func (s *genericSpecializer) rewriteStmt(stmt *ast.Statement, substitutions map[
 				continue
 			}
 			if target, ok := s.expressionType(stmt.Left[i], substitutions); ok {
+				if stmt.Kind == ast.StmtSend {
+					target = s.underlyingTypeExpr(target, map[string]bool{})
+					if target.Kind == ast.TypeChan && target.Elem != nil {
+						target = *target.Elem
+					}
+				}
 				s.rewriteGenericFunctionValue(&stmt.Right[i], target, substitutions)
 			}
 		}
@@ -196,6 +205,21 @@ func (s *genericSpecializer) rewriteExpr(expr *ast.Expression, substitutions map
 	if expr == nil || expr.Kind == ast.ExprInvalid {
 		return
 	}
+	if expr.FunctionID != "" {
+		s.rewriteType(expr.Type, substitutions)
+		return
+	}
+	if s.rewriteGenericMethodCall(expr, substitutions) {
+		return
+	}
+	if expr.Kind == ast.ExprIndex || expr.Kind == ast.ExprIndexList {
+		if name, receiver, args := s.prepareGenericMethod(*expr, substitutions); name != "" && len(args) == len(s.functions[name].typeParams) {
+			if generated := s.instantiateFunction(name, args, expr.Span); generated != "" {
+				s.bindMethodValue(expr, generated, receiver)
+			}
+			return
+		}
+	}
 	if expr.Kind == ast.ExprCall && s.activeAlias != "" && expr.Callee != nil && expr.Callee.Kind == ast.ExprIdent && len(expr.Args) == 1 {
 		if replacement, ok := substitutions[expr.Callee.Name]; ok {
 			s.rewriteExpr(&expr.Args[0], substitutions)
@@ -215,19 +239,10 @@ func (s *genericSpecializer) rewriteExpr(expr *ast.Expression, substitutions map
 			return
 		}
 	}
-	if expr.Kind == ast.ExprIdent && s.activeAlias != "" {
-		name := strings.TrimSpace(s.activeReferences[expr.NodeID])
-		if name == "" {
-			name = strings.TrimSpace(s.activeReferenceOffsets[expr.Span.Start.Offset])
-		}
-		if name != "" && expr.Name == name {
-			operand := ast.Expression{Kind: ast.ExprIdent, Name: s.activeAlias, Span: expr.Span}
-			*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprSelector, Operand: &operand, Field: name, Span: expr.Span}
-
-			return
-		}
-	}
 	s.rewriteType(expr.Type, substitutions)
+	if call, ok := s.info.Calls[expr.NodeID]; ok && call.Kind == check.CallConversion && len(expr.Args) == 1 {
+		s.rewriteGenericFunctionValue(&expr.Args[0], s.sourceTypeExpr(call.Target, expr.Span), substitutions)
+	}
 	if call, ok := s.info.Calls[expr.NodeID]; ok && call.Kind == check.CallConversion && call.Target.Kind == types.TypeParameter && len(expr.Args) == 1 {
 		s.rewriteExpr(&expr.Args[0], substitutions)
 		target := s.sourceTypeExpr(call.Target, expr.Span)

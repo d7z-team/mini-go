@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"sort"
 )
 
@@ -19,6 +20,22 @@ func compareSnapshots(want, got snapshot) []difference {
 			continue
 		}
 		wantDecls, gotDecls := declarationMap(expected.Declarations), declarationMap(actual.Declarations)
+		for key, methods := range requiredAPIs[expected.Path] {
+			decl, found := gotDecls[key]
+			if !found {
+				out = append(out, difference{Package: expected.Path, Name: key, Code: "missing_required"})
+				continue
+			}
+			for _, name := range methods {
+				found := false
+				for _, method := range decl.Methods {
+					found = found || method.Name == name
+				}
+				if !found {
+					out = append(out, difference{Package: expected.Path, Name: decl.Name + "." + name, Code: "missing_required_method"})
+				}
+			}
+		}
 		for key, declaration := range gotDecls {
 			baseline, ok := wantDecls[key]
 			if !ok {
@@ -50,6 +67,13 @@ func compareSnapshots(want, got snapshot) []difference {
 	return out
 }
 
+var requiredAPIs = map[string]map[string][]string{
+	"bytes":        {"func:CutLast": nil},
+	"strings":      {"func:CutLast": nil},
+	"net/url":      {"type:URL": {"Clone"}, "type:Values": {"Clone"}},
+	"math/rand/v2": {"type:Rand": {"N"}},
+}
+
 func declarationMatches(expected, actual apiDeclaration, complete bool) bool {
 	left, right := expected, actual
 	left.Fields, right.Fields = nil, nil
@@ -76,7 +100,7 @@ func fieldsAreSubset(expected, actual []apiField) bool {
 		available[field.Name] = field
 	}
 	for _, field := range actual {
-		if want, ok := available[field.Name]; !ok || want != field {
+		if want, ok := available[field.Name]; !ok || !reflect.DeepEqual(want, field) {
 			return false
 		}
 	}

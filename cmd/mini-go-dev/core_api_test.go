@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"go/build"
 	"go/importer"
 	gotypes "go/types"
 	"os"
@@ -11,6 +12,62 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCheckedInAPIReferences(t *testing.T) {
+	baseline, err := readSnapshot(filepath.Join("testdata", filepath.Base(baselinePath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonReference, err := readSnapshot(filepath.Join("testdata", filepath.Base(jsonBaselinePath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.GoVersion != goVersion || jsonReference.GoVersion != jsonGoVersion {
+		t.Fatal("reference domain versions")
+	}
+	baseline.Packages = append(baseline.Packages, jsonReference.Packages...)
+	paths, err := packagePaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered := make(map[string]bool)
+	for _, pkg := range baseline.Packages {
+		covered[pkg.Path] = true
+	}
+	for _, path := range paths {
+		pkg, err := build.Default.Import(path, "", build.FindOnly)
+		if (path == "uuid" || err == nil && pkg.Goroot) && !covered[path] {
+			t.Errorf("standard package %s is missing from API references", path)
+		}
+		delete(covered, path)
+	}
+	for path := range covered {
+		t.Errorf("API reference has no source package: %s", path)
+	}
+	actual, err := buildMiniGoSnapshot(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if differences := compareSnapshots(baseline, actual); len(differences) != 0 {
+		for _, diff := range differences {
+			t.Errorf("%s %s %s: %s want %s got %s", diff.Package, diff.Name, diff.Kind, diff.Code, diff.Want, diff.Got)
+		}
+	}
+}
+
+func TestGenericMethodAPIConstraints(t *testing.T) {
+	want := apiDeclaration{Kind: "type", Name: "Rand", Type: "rand.Rand", Methods: []apiField{{Name: "N", Type: "function(T) T", TypeParams: []apiField{{Name: "T", Type: "interface{~Int}"}}}}}
+	got := want
+	got.Methods = []apiField{{Name: "N", Type: "function(T) T", TypeParams: []apiField{{Name: "T", Type: "Any"}}}}
+	if declarationMatches(want, got, false) {
+		t.Fatal("method constraint mismatch accepted")
+	}
+	baseline := snapshot{Packages: []apiPackage{{Path: "math/rand/v2", Declarations: []apiDeclaration{want}}}}
+	actual := snapshot{Packages: []apiPackage{{Path: "math/rand/v2", Declarations: []apiDeclaration{{Kind: "type", Name: "Rand", Type: "rand.Rand"}}}}}
+	if len(compareSnapshots(baseline, actual)) == 0 {
+		t.Fatal("required method absent")
+	}
+}
 
 func TestGoTypeMembersIncludesPromotedTestingMethods(t *testing.T) {
 	pkg, err := importer.Default().Import("testing")

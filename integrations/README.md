@@ -11,11 +11,6 @@
 | RPC 的 VM 调用、服务发布与跨语言通信 | 根 [RPC 一致性数据](../testdata/README.md#rpc-一致性数据) |
 | Go/Rust 原生标准库宿主与调试 | 根 [共享测试数据](../testdata/README.md) |
 
-## 运行
-
-```bash
-make test TEST_PACKAGES='./integrations'
-```
-
-普通集成测试也由 `make test` 自动发现，并复用 Mini-Go 编译缓存。
-跨语言通信矩阵需要先构建 peer，使用[开发指南](../DEVELOPMENT.md#rust-验证)中的 `make test-interop`。
+普通集成测试由 `make test` 自动发现，并复用 Mini-Go 编译缓存。
+包筛选见[日常工作流](../DEVELOPMENT.md#日常工作流)，需要 peer 的跨语言通信矩阵使用
+[Rust 验证](../DEVELOPMENT.md#rust-验证)中的 `make test-interop`。

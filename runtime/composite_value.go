@@ -57,6 +57,21 @@ func (s *vmSlice) writeBytes(offset int, values []byte) {
 	}
 }
 
+// copyBytesFrom snapshots distinct storage before taking the destination lock.
+// Views of the same storage can use copy directly, including overlapping ranges.
+func (s *vmSlice) copyBytesFrom(source *vmSlice, count int) {
+	if s.vmSliceStorage == source.vmSliceStorage {
+		s.mu.Lock()
+		copy(s.ByteBacking[s.Start:s.Start+count], source.ByteBacking[source.Start:source.Start+count])
+		s.mu.Unlock()
+		return
+	}
+	source.mu.Lock()
+	bytes := append([]byte(nil), source.ByteBacking[source.Start:source.Start+count]...)
+	source.mu.Unlock()
+	s.writeBytes(0, bytes)
+}
+
 func (storage *vmSliceStorage) valuesSnapshot() []vmValue {
 	storage.mu.Lock()
 	defer storage.mu.Unlock()
@@ -165,7 +180,7 @@ func newSequenceValue(module *moduleInstance, typ any, values []vmValue) (vmValu
 			return vmValue{}, fmt.Errorf("array length mismatch: got %d, want %d", len(values), length)
 		}
 	}
-	elemType := module.arrayElemType(typeText)
+	elemType := module.sequenceElementType(typeText)
 	out := make([]vmValue, len(values))
 	for i, value := range values {
 		normalized, err := module.coerceAssignableValue(value, elemType)

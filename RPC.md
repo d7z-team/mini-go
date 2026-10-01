@@ -176,11 +176,10 @@ func run() error {
 
 ## 接口与数据类型
 
-schema 可声明 message、enum、service 和 resource。值类型支持固定宽度整数、浮点、复数、bool、string、
-slice、map 及 optional；二进制数据使用 `[]uint8`。
-
-整数使用 `int8/16/32/64` 或 `uint8/16/32/64`，浮点使用 `float32/64`，复数使用 `complex64/128`。
-`int`、`uint`、`uintptr`、`byte` 和 `rune` 不是 schema 类型。每个生成方法都带错误结果，无需在 schema 中声明 `error`。
+schema 可声明 message、enum、service 和 resource。值支持固定宽度整数（`int8/16/32/64`、
+`uint8/16/32/64`）、浮点、复数、bool、string、slice、map 与 optional；bytes 使用 `[]uint8`。
+浮点使用 `float32/64`，复数使用 `complex64/128`；schema 使用固定宽度类型，不使用 `int`、`uint`、
+`uintptr`、`byte` 或 `rune`。方法自动带错误结果，无需声明 `error`。
 
 | 数据 | 使用约定 |
 | --- | --- |
@@ -275,9 +274,6 @@ Go 的零值选择默认值，Rust 使用 `EndpointOptions::default()`；显式�
 失去租约授权后返回 `unavailable`，恢复连接时需要重新绑定。
 同进程原生调用不使用网络租约。
 
-生成客户端负责结果解码、确认和失败时的未交付资源回收。使用底层 `RouteSet.Call` 时，须对结果执行一次
-`Accept` 或 `Discard`。
-
 超时或断线不证明服务端没有执行操作。框架不会自动重试可能有副作用的调用，业务重试应自行保证幂等性。
 Go handler 的普通 error 和 panic 会转成内部错误；需要调用方区分的业务失败应返回明确状态码。
 
@@ -292,7 +288,10 @@ Go 服务客户端关闭后，已经取得的资源仍需逐个关闭；Mini-Go 
 关闭 Instance 会回收会话资源，共享 Host 与业务 backend 仍由创建者关闭。
 
 资源开始关闭后不能再调用。关闭失败时仍由原 owner 负责，调用方可以再次 Close；并发 Close 共享同一次尝试。
-Close 会等待已经进入 handler 的资源调用退出，Shutdown 会回收遗留资源并报告最终错误。
+Close 等待已进入 handler 的调用退出，Shutdown 回收遗留资源并报告最终错误。
+生成客户端负责解码、确认和未交付资源回收；直接使用 `RouteSet.Call` 时，须对结果执行一次 `Accept` 或 `Discard`。
+
+### 数据大小与额度
 
 较大的 bytes、字符串和复合值由连接透明分片，无需业务手动处理网络帧。默认单条逻辑消息上限为 64 MiB，
 单连接在途 payload 上限为 128 MiB，可通过 `rpc.EndpointOptions.Limits` 配置。
@@ -368,10 +367,7 @@ ESM specifier，例如 `./model.js`。
 import { RPC } from "@d7z-team/mini-go/rpc";
 import { GreeterClient } from "./greeter.js";
 
-const connection = await RPC.connect("wss://example.test/rpc", {
-  leaseTtlMs: 60_000,
-  admissionTimeoutMs: 10_000,
-});
+const connection = await RPC.connect("wss://example.test/rpc");
 try {
   const client = await GreeterClient.bind(connection, {
     labels: { zone: "local" },
@@ -427,9 +423,9 @@ TypeScript 映射保留 wire 语义：64 位整数使用 `bigint`，bytes 使用
 `undefined`，map 使用 `Map`，复数使用 `{re, im}`。生成的资源客户端只能回传给原 binding，并应显式
 `close()`；Provider 资源在远端丢弃、关闭或连接结束时由 SDK 清理。
 
-前文的 deadline、租约、资源归属和关闭语义同样适用。TypeScript 使用 `timeoutMs` 或 `AbortSignal`
-限制等待；断线后创建新 connection 并重新 bind/publish。`close()` 等待清理，`terminate()` 直接终止
-Worker，不保证异步清理完成。
+使用 `timeoutMs` 或 `AbortSignal` 限制等待；连接的 `leaseTtlMs`、`admissionTimeoutMs` 和
+`maxCallDurationMs` 对应[错误与超时](#错误与超时)中的网络配置。断线后重新 connect 并 bind/publish。
+`close()` 等待清理，`terminate()` 直接终止 Worker，不保证异步清理完成。
 
 ## Rust API
 

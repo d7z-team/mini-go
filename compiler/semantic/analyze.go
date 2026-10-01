@@ -26,6 +26,7 @@ type analyzer struct {
 	constantStates   map[ObjectID]uint8
 	variableBindings map[ObjectID]*variableBinding
 	resultTypes      []types.TypeRef
+	definitionModule string
 }
 
 // Check validates source structure and computes all source-level semantic

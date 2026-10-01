@@ -21,6 +21,14 @@ impl CompilerSession {
     }
     /// Prepare and initialize a compiler within one shared timeout.
     pub async fn new_with_timeout(image: &[u8], timeout: Duration) -> Result<Self, RuntimeError> {
+        Self::new_with_options(image, CompilerOptions::default(), timeout).await
+    }
+    /// Prepare with host budgets, preserved by recovery and upgrade.
+    pub async fn new_with_options(
+        image: &[u8],
+        options: CompilerOptions,
+        timeout: Duration,
+    ) -> Result<Self, RuntimeError> {
         if timeout.is_zero() {
             return Err(failure("deadline", "compiler preparation deadline"));
         }
@@ -34,6 +42,7 @@ impl CompilerSession {
                 image,
                 1,
                 RestoreState::default(),
+                options,
                 Arc::new(SystemClock::default()),
             ),
         )
@@ -52,9 +61,10 @@ impl CompilerSession {
         image: &[u8],
         generation: u64,
         restore: RestoreState,
+        options: CompilerOptions,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, RuntimeError> {
-        if image.len() > LoadLimits::compiler().max_image_bytes {
+        if image.len() > options.load.max_image_bytes {
             return Err(failure("load_limit", "compiler image too large"));
         }
         let image = image.to_vec();
@@ -64,7 +74,7 @@ impl CompilerSession {
             if let Some((image, restore, send)) = work.lock().unwrap().take()
                 && !send.is_closed()
             {
-                let result = Self::with_clock(&image, generation, restore, clock.clone());
+                let result = Self::with_clock(&image, generation, restore, options, clock.clone());
                 let _ = send.send(result);
             }
             Next::Done
@@ -152,7 +162,7 @@ impl CompilerSession {
         self.generation_high_watermark = generation;
         let mut candidate = tokio::select! {
             _ = cancel.cancelled() => return Err(failure("canceled", "upgrade canceled")),
-            result = tokio::time::timeout_at(deadline, Self::prepare_native(image, generation, self.confirmed.clone(), self.clock.clone())) =>
+            result = tokio::time::timeout_at(deadline, Self::prepare_native(image, generation, self.confirmed.clone(), self.options, self.clock.clone())) =>
                 result.map_err(|_| failure("deadline", "upgrade preparation deadline"))??,
         };
         // Initial polling restores and analyzes confirmed inputs before hello is delivered.

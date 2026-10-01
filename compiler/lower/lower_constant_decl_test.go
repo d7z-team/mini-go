@@ -49,7 +49,7 @@ func TestLowerTopLevelIntConstExpression(t *testing.T) {
 	if len(diagnostics) != 0 {
 		t.Fatalf("Lower returned diagnostics: %#v", diagnostics)
 	}
-	if len(program.Constants) != 2 || program.Constants[1].ID != "const.Mask" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "Int64" || string(program.Constants[1].Value) != "32" {
+	if len(program.Constants) != 2 || program.Constants[1].ID != "const.Mask" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "Int64" || string(program.Constants[1].Value.JSON()) != "32" {
 		t.Fatalf("expected folded Int64 constant expression, got %#v", program.Constants)
 	}
 }
@@ -96,7 +96,7 @@ func TestLowerTopLevelStringConstExpression(t *testing.T) {
 	if len(diagnostics) != 0 {
 		t.Fatalf("Lower returned diagnostics: %#v", diagnostics)
 	}
-	if len(program.Constants) != 2 || program.Constants[1].ID != "const.Name" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "String" || string(program.Constants[1].Value) != `"mini-go"` {
+	if len(program.Constants) != 2 || program.Constants[1].ID != "const.Name" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "String" || string(program.Constants[1].Value.JSON()) != `"mini-go"` {
 		t.Fatalf("expected folded String constant expression, got %#v", program.Constants)
 	}
 }
@@ -155,7 +155,7 @@ func TestLowerTopLevelFloatConstExpression(t *testing.T) {
 	values := map[string]string{}
 	types := map[string]string{}
 	for _, constant := range program.Constants {
-		values[constant.Name] = string(constant.Value)
+		values[constant.Name] = string(constant.Value.JSON())
 		types[constant.Name] = hirTypeString(&program.TypeTable, constant.Type)
 	}
 	if types["Total"] != "Float64" || values["Total"] != "42.5" {
@@ -230,7 +230,7 @@ func TestLowerTopLevelBoolConstExpression(t *testing.T) {
 	}
 	values := map[string]string{}
 	for _, constant := range program.Constants {
-		values[constant.Name] = string(constant.Value)
+		values[constant.Name] = string(constant.Value.JSON())
 		if hirTypeString(&program.TypeTable, constant.Type) != "Bool" {
 			t.Fatalf("expected Bool constant, got %#v", constant)
 		}
@@ -296,7 +296,7 @@ func TestLowerTopLevelConstConversions(t *testing.T) {
 	values := map[string]string{}
 	types := map[string]string{}
 	for _, constant := range program.Constants {
-		values[constant.Name] = string(constant.Value)
+		values[constant.Name] = string(constant.Value.JSON())
 		types[constant.Name] = hirTypeString(&program.TypeTable, constant.Type)
 	}
 	if types["Base"] != "Int64" || values["Base"] != "40" {
@@ -357,7 +357,7 @@ func TestLowerBuiltinTypeCallConversion(t *testing.T) {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
 	result := fn.Body[0].Results[0]
-	if result.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, result.Type) != "Bool" || string(result.Value) != "true" {
+	if result.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, result.Type) != "Bool" || string(result.Value.JSON()) != "true" {
 		t.Fatalf("expected rune conversion comparison to fold to true, got %#v", result)
 	}
 }
@@ -412,7 +412,7 @@ func TestLowerNilConversionInsideBuiltinCall(t *testing.T) {
 	if appendExpr.Kind != ir.ExprAppend || appendExpr.Operand == nil {
 		t.Fatalf("expected append expression, got %#v", appendExpr)
 	}
-	if appendExpr.Operand.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, appendExpr.Operand.Type) != "Slice<Int>" || string(appendExpr.Operand.Value) != "null" {
+	if appendExpr.Operand.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, appendExpr.Operand.Type) != "Slice<Int>" || string(appendExpr.Operand.Value.JSON()) != "null" {
 		t.Fatalf("expected typed nil slice operand, got %#v", appendExpr.Operand)
 	}
 }
@@ -453,7 +453,7 @@ func TestLowerNamedFunctionNilConversion(t *testing.T) {
 		t.Fatalf("expected Main return expression, got %#v", program.Functions)
 	}
 	result := fn.Body[0].Results[0]
-	if result.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, result.Type) != "example/main.Handler" || string(result.Value) != "null" {
+	if result.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, result.Type) != "example/main.Handler" || string(result.Value.JSON()) != "null" {
 		t.Fatalf("expected typed nil named function value, got %#v", result)
 	}
 }

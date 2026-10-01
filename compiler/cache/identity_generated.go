@@ -64,6 +64,16 @@ func EncodeIdentityEntryPoint(w *identity.Writer, value EntryPoint) {
 	w.LeaveStructure()
 }
 
+// EncodeIdentityGenericExpression writes the compiler identity schema fields.
+func EncodeIdentityGenericExpression(w *identity.Writer, value GenericExpression) {
+	if !w.EnterStructure() {
+		return
+	}
+	w.Uint(uint64(value.Node))
+	compiler_types.EncodeIdentityTypeRef(w, value.Type)
+	w.LeaveStructure()
+}
+
 // EncodeIdentityGenericReference writes the compiler identity schema fields.
 func EncodeIdentityGenericReference(w *identity.Writer, value GenericReference) {
 	if !w.EnterStructure() {
@@ -71,7 +81,14 @@ func EncodeIdentityGenericReference(w *identity.Writer, value GenericReference) 
 	}
 	w.Uint(uint64(value.Node))
 	w.String(string(value.Name))
+	w.String(string(value.ModulePath))
 	compiler_source.EncodeIdentitySpan(w, value.Span)
+	w.Uint(uint64(value.Kind))
+	w.Bool(bool(value.Generic))
+	w.String(string(value.Type))
+	w.String(string(value.Value))
+	w.String(string(value.Imaginary))
+	w.Bool(bool(value.Untyped))
 	w.LeaveStructure()
 }
 
@@ -84,11 +101,31 @@ func EncodeIdentityGenericTemplate(w *identity.Writer, value GenericTemplate) {
 	w.String(string(value.Kind))
 	w.String(string(value.Name))
 	w.String(string(value.Type))
+	w.String(string(value.Receiver))
+	w.Uint(uint64(len(value.TypeParams)))
+	for i0 := range value.TypeParams {
+		EncodeIdentityGenericTypeParameter(w, value.TypeParams[i0])
+	}
 	compiler_ast.EncodeIdentityDecl(w, value.Decl)
 	w.Uint(uint64(len(value.References)))
 	for i0 := range value.References {
 		EncodeIdentityGenericReference(w, value.References[i0])
 	}
+	w.Uint(uint64(len(value.Expressions)))
+	for i0 := range value.Expressions {
+		EncodeIdentityGenericExpression(w, value.Expressions[i0])
+	}
+	w.LeaveStructure()
+}
+
+// EncodeIdentityGenericTypeParameter writes the compiler identity schema fields.
+func EncodeIdentityGenericTypeParameter(w *identity.Writer, value GenericTypeParameter) {
+	if !w.EnterStructure() {
+		return
+	}
+	w.String(string(value.Name))
+	w.String(string(value.Binding))
+	w.String(string(value.Constraint))
 	w.LeaveStructure()
 }
 

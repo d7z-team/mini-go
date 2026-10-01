@@ -83,6 +83,36 @@ func TestEngineCompilesAndRunsSource(t *testing.T) {
 	}
 }
 
+func TestEngineForwardsCompilerCapacity(t *testing.T) {
+	text := "package main\nfunc Main() int { return 42 }\n"
+	sources, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{{
+		ModulePath: "example/main", Files: []source.File{{Path: "main.mgo", Text: text}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []int{len(text) - 1, len(text)} {
+		engine, err := minigo.New(minigo.Config{
+			Sources: sources, Cache: cache.NewMemoryBackend(), Limits: compiler.Limits{MaxSourceBytes: limit},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = engine.Close() })
+		result, err := engine.Check("example/main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if limit == len(text) {
+			if !result.OK() {
+				t.Fatalf("source within capacity: %v", result.Diagnostics)
+			}
+		} else if len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != "scanner.source.limit" {
+			t.Fatalf("source exceeds capacity: %v", result.Diagnostics)
+		}
+	}
+}
+
 func TestEngineStandardLibraryDoesNotRequireHostForPureCode(t *testing.T) {
 	sources, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{{
 		ModulePath: "example/pure",

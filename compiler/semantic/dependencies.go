@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
@@ -26,6 +27,9 @@ type DependencyExport struct {
 	Variadic   bool
 	Untyped    bool
 	TypeParams []string
+
+	// Decoded facts belong to one analyzer's dependency snapshot.
+	constantValue *constant.Value
 }
 
 type DependencyTypeField struct {
@@ -43,6 +47,13 @@ type DependencyTypeMethod struct {
 	Variadic   bool
 	FunctionID string
 	ModulePath string
+	TypeParams []DependencyTypeParameter
+}
+
+type DependencyTypeParameter struct {
+	Name       string
+	Binding    string
+	Constraint string
 }
 
 // DependencyPackage describes a resolved package, including one with no exports.
@@ -63,7 +74,7 @@ func (a *analyzer) importedMember(modulePath, qualifier, name string, span sourc
 		return DependencyExport{}, false // The import declaration owns this diagnostic.
 	}
 	code := "semantic.import.member.missing"
-	if !isExported(name) {
+	if !isExported(name) && modulePath != a.definitionModule {
 		code = "semantic.import.member.unexported"
 	} else if member, ok := a.dependency(modulePath, name); ok {
 		return member, true
@@ -75,6 +86,7 @@ func (a *analyzer) importedMember(modulePath, qualifier, name string, span sourc
 func (a *analyzer) registerDependencies(exports []DependencyExport) {
 	for i := range exports {
 		export := exports[i]
+		export.constantValue = nil
 		export.ModulePath = strings.TrimSpace(export.ModulePath)
 		export.Name = strings.TrimSpace(export.Name)
 		if export.ModulePath == "" || export.Name == "" {
@@ -140,17 +152,46 @@ func (a *analyzer) registerDependencies(exports []DependencyExport) {
 				}
 			}
 			for _, method := range export.Methods {
-				methodType := parseDependencyType(parser, method.Signature)
+				methodParser := a.dependencyParser(export)
+				objectID := ObjectID("dependency.method." + modulePath + "." + export.Name + "." + method.Name)
+				if len(method.TypeParams) != 0 {
+					if methodParser.Bindings == nil {
+						methodParser.Bindings = make(map[string]types.TypeRef)
+					}
+					for _, param := range method.TypeParams {
+						id := types.TypeID(string(objectID) + "." + param.Name)
+						ref := types.TypeRef{Kind: types.TypeParameter, Node: id}
+						_ = a.info.TypeTable.Add(types.TypeNode{ID: id, Kind: types.TypeParameter, Name: param.Name, Constraint: types.AnyType()})
+						methodParser.Bindings[param.Binding] = ref
+						paramID := ObjectID(id)
+						a.info.Objects[paramID] = Object{ID: paramID, Kind: ObjectTypeParam, Name: param.Name, Type: ref}
+						a.info.GenericDecls[objectID] = append(a.info.GenericDecls[objectID], paramID)
+					}
+					for _, param := range method.TypeParams {
+						node, _ := a.info.TypeTable.Node(methodParser.Bindings[param.Binding])
+						if constraint := parseDependencyType(methodParser, param.Constraint); constraint.Valid() {
+							node.Constraint = constraint
+							_ = a.info.TypeTable.Replace(node)
+						}
+					}
+				}
+				methodType := parseDependencyType(methodParser, method.Signature)
 				signature, ok := a.info.TypeTable.IsFunction(methodType)
 				if !ok {
 					continue
 				}
 				signature.Variadic = signature.Variadic || method.Variadic
-				node.Methods = append(node.Methods, types.Method{
-					Name: strings.TrimSpace(method.Name), Receiver: parseDependencyType(parser, method.Receiver),
+				resolved := types.Method{
+					Name: strings.TrimSpace(method.Name), Receiver: parseDependencyType(methodParser, method.Receiver),
 					Signature: signature, FunctionID: strings.TrimSpace(method.FunctionID),
 					ModulePath: firstNonEmpty(method.ModulePath, modulePath),
-				})
+				}
+				if len(method.TypeParams) != 0 {
+					a.info.Objects[objectID] = Object{ID: objectID, Kind: ObjectFunc, Name: method.Name, Type: methodType, ModulePath: modulePath, Exported: isExported(method.Name)}
+					a.info.GenericMethods = append(a.info.GenericMethods, GenericMethod{Method: resolved, Object: objectID})
+				} else {
+					node.Methods = append(node.Methods, resolved)
+				}
 			}
 			_ = a.info.TypeTable.Replace(node)
 		}

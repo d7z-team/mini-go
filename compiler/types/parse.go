@@ -82,6 +82,24 @@ func (p *Parser) Parse(text string) (TypeRef, error) {
 	if primitive := primitiveByName(text); primitive != PrimitiveInvalid {
 		return Builtin(primitive), nil
 	}
+	if strings.HasPrefix(text, "Instance<") && strings.HasSuffix(text, ">") {
+		parts := splitTopLevel(text[len("Instance<"):len(text)-1], ',')
+		if len(parts) < 2 {
+			return TypeRef{}, fmt.Errorf("generic instance requires type arguments: %q", text)
+		}
+		base, err := p.Parse(parts[0])
+		if err != nil {
+			return TypeRef{}, err
+		}
+		arguments := make([]TypeRef, len(parts)-1)
+		for i, part := range parts[1:] {
+			arguments[i], err = p.Parse(part)
+			if err != nil {
+				return TypeRef{}, err
+			}
+		}
+		return p.node(TypeNode{Kind: Instance, Base: base, TypeArgs: arguments}, text)
+	}
 	if strings.HasPrefix(text, "Slice<") && strings.HasSuffix(text, ">") {
 		elem, err := p.Parse(text[len("Slice<") : len(text)-1])
 		if err != nil {

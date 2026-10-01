@@ -48,18 +48,14 @@ func buildMiniGoSnapshot(baseline snapshot) (snapshot, error) {
 				continue
 			}
 			decl := apiDeclaration{Kind: declaration.Kind, Name: declaration.Name, Type: declaration.Type, Alias: declaration.Alias, Untyped: declaration.Untyped, Exact: declaration.Exact}
-			for _, field := range declaration.Fields {
-				decl.Fields = append(decl.Fields, apiField(field))
-			}
+			decl.Fields = append(decl.Fields, declaration.Fields...)
 			for _, method := range declaration.Methods {
 				if isOperatorMethod(method.Name) {
 					continue
 				}
-				decl.Methods = append(decl.Methods, apiField(method))
+				decl.Methods = append(decl.Methods, method)
 			}
-			for _, param := range declaration.TypeParams {
-				decl.TypeParams = append(decl.TypeParams, apiField(param))
-			}
+			decl.TypeParams = append(decl.TypeParams, declaration.TypeParams...)
 			entry.Declarations = append(entry.Declarations, decl)
 		}
 		out.Packages = append(out.Packages, entry)

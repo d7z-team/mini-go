@@ -53,7 +53,7 @@ export function createCompilerHandler(
       try {
         memory = (await load(message.wasmUrl)).memory;
         if (closed) return;
-        vm = new WasmCompiler(message.image, generation, message.restore);
+        vm = new WasmCompiler(message.image, generation, message.restore, message.resources);
         port.send({ kind: "compilerResponse", generation, id: 0 });
       } catch (error) {
         fail(0, error);

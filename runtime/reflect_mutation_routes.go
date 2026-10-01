@@ -84,7 +84,7 @@ func reflectValueGrow(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		if slice != nil {
 			copy(backing, slice.values())
 		}
-		elemType := module.arrayElemType(current.Type)
+		elemType := module.sequenceElementType(current.Type)
 		for i := length; i < len(backing); i++ {
 			backing[i] = module.zeroValue(elemType)
 		}

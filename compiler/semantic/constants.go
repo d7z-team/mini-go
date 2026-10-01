@@ -248,7 +248,7 @@ func (a *analyzer) convertConstant(value constant.Value, target types.TypeRef) (
 		}
 	}
 	if primitive, _ := a.info.Relations.View(target).Primitive(); primitive == types.PrimitiveString {
-		if _, err := strconv.Unquote(value.Text); err != nil {
+		if !value.IsString {
 			n, ok := value.Int64()
 			if !ok {
 				return constant.Value{}, false
@@ -291,6 +291,9 @@ func (a *analyzer) roundTypedConstant(value constant.Value, target types.TypeRef
 }
 
 func (a *analyzer) importedConstant(export DependencyExport) (constant.Value, bool) {
+	if export.constantValue != nil {
+		return *export.constantValue, true
+	}
 	typ := export.Type
 	if ref, err := a.parser.Parse(typ); err == nil {
 		if primitive, _ := a.info.Relations.View(ref).Primitive(); primitive == types.PrimitiveString || primitive == types.PrimitiveBool || primitive == types.PrimitiveComplex64 || primitive == types.PrimitiveComplex128 {
@@ -299,6 +302,10 @@ func (a *analyzer) importedConstant(export DependencyExport) (constant.Value, bo
 	}
 	value, ok := constant.FromJSON(export.Value, typ, export.Untyped)
 	value.Type = export.Type
+	if ok {
+		export.constantValue = value.Ref()
+		a.dependencies[export.ModulePath][export.Name] = export
+	}
 	return value, ok
 }
 
@@ -344,7 +351,7 @@ func (a *analyzer) evaluateConstantCall(expr ast.Expression, scope ScopeID) (con
 		}
 		if name == "len" {
 			if value, ok := a.evaluateConstantExpression(expr.Args[0], scope); ok {
-				if text, err := strconv.Unquote(value.Text); err == nil {
+				if text, ok := value.StringValue(); ok {
 					return constant.Integer(strconv.Itoa(len(text)), "Int", true)
 				}
 			}
@@ -380,9 +387,9 @@ func (a *analyzer) evaluateConstantCall(expr ast.Expression, scope ScopeID) (con
 				return constant.Value{}, false
 			}
 			var comparison int
-			if left, err := strconv.Unquote(value.Text); err == nil {
-				right, err := strconv.Unquote(next.Text)
-				if err != nil {
+			if left, ok := value.StringValue(); ok {
+				right, ok := next.StringValue()
+				if !ok {
 					return constant.Value{}, false
 				}
 				comparison = strings.Compare(left, right)

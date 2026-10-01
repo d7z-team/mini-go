@@ -178,7 +178,7 @@ func Main() int { return Order() }
 	artifact := ir.NewArtifact(program.ModulePath, program.Package)
 	artifact.TypeTable = types.CloneTable(program.TypeTable)
 	for _, constant := range program.Constants {
-		artifact.Constants = append(artifact.Constants, ir.Constant{ID: constant.ID, Type: constant.Type, Value: constant.Value, Untyped: constant.Untyped})
+		artifact.Constants = append(artifact.Constants, ir.Constant{ID: constant.ID, Type: constant.Type, Value: constant.Value.Encode(&artifact.TypeTable, constant.Type, constant.Untyped), Untyped: constant.Untyped})
 	}
 	for _, global := range program.Globals {
 		artifact.Globals = append(artifact.Globals, ir.Global{ID: global.ID, Type: global.Type})

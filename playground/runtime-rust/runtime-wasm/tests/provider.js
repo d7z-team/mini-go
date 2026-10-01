@@ -1,4 +1,5 @@
 let pending = 0;
+const resultBytes = new URL(import.meta.url).searchParams.get("resultBytes");
 const channelName = new URL(import.meta.url).searchParams.get("releaseChannel");
 const channel = channelName ? new BroadcastChannel(channelName) : undefined;
 const released = channel
@@ -27,7 +28,11 @@ export async function call({ payload, signal }) {
     pending--;
   };
   return {
-    payload: signal.aborted ? new Uint8Array() : payload,
+    payload: signal.aborted
+      ? new Uint8Array()
+      : resultBytes === null
+        ? payload
+        : new Uint8Array(Number(resultBytes)),
     consumed: finish,
     discard: finish,
   };

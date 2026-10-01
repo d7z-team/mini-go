@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/token"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
@@ -133,7 +134,10 @@ func (a *analyzer) compositeType(typ ast.TypeExpr) types.TypeRef {
 			name := strings.TrimSpace(field.Name)
 			embedded := name == ""
 			if embedded {
-				name = embeddedFieldName(field.Type)
+				name = field.EmbeddedName
+				if name == "" {
+					name = embeddedFieldName(field.Type)
+				}
 				if !a.validEmbeddedFieldType(field.Type, true) {
 					a.addDiagnostic("semantic.struct.embed.invalid", "embedded field must be a named type or pointer to a named non-pointer type", field.Span)
 				}
@@ -217,6 +221,9 @@ func (a *analyzer) validEmbeddedFieldType(typ ast.TypeExpr, allowUnresolved bool
 func embeddedFieldName(typ ast.TypeExpr) string {
 	for typ.Kind == ast.TypePointer && typ.Elem != nil {
 		typ = *typ.Elem
+	}
+	if typ.Kind == ast.TypeInstance && typ.Base != nil {
+		typ = *typ.Base
 	}
 	name := strings.TrimSpace(typ.Name)
 	if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
@@ -330,9 +337,5 @@ func firstNonEmpty(values ...string) string {
 }
 
 func isExported(name string) bool {
-	if name == "" {
-		return false
-	}
-	first := name[0]
-	return first >= 'A' && first <= 'Z'
+	return token.IsExportedName(name)
 }

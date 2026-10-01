@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/constant"
@@ -29,21 +28,21 @@ func foldExactRationalBinary(operator string, left, right exactRational) (exactR
 	}
 }
 
-func foldExactRationalCompare(operator string, left, right exactRational) (json.RawMessage, bool) {
+func foldExactRationalCompare(operator string, left, right exactRational) (*constant.Value, bool) {
 	comparison := constant.CompareRational(left, right)
 	switch operator {
 	case "==":
-		return boolRaw(comparison == 0), true
+		return booleanConstant(comparison == 0), true
 	case "!=":
-		return boolRaw(comparison != 0), true
+		return booleanConstant(comparison != 0), true
 	case "<":
-		return boolRaw(comparison < 0), true
+		return booleanConstant(comparison < 0), true
 	case "<=":
-		return boolRaw(comparison <= 0), true
+		return booleanConstant(comparison <= 0), true
 	case ">":
-		return boolRaw(comparison > 0), true
+		return booleanConstant(comparison > 0), true
 	case ">=":
-		return boolRaw(comparison >= 0), true
+		return booleanConstant(comparison >= 0), true
 	default:
 		return nil, false
 	}
@@ -83,86 +82,59 @@ func parseExactImaginaryLiteral(text string) (exactComplex, bool) {
 	return exactComplex{realPart: zero, imaginaryPart: imagPart}, true
 }
 
-func exactRationalText(value exactRational) string {
-	if !value.Valid() {
-		return ""
-	}
-	return value.Numerator + "/" + value.Denominator
+func exactRationalConstant(number exactRational) (*constant.Value, bool) {
+	value, ok := constant.Numeric(number.String(), "Float64", true)
+	return value.Ref(), ok
 }
 
-func exactRationalRaw(value exactRational) (json.RawMessage, bool) {
-	encoded, err := json.Marshal(exactRationalText(value))
-	return json.RawMessage(encoded), err == nil
+func exactIntegerConstant(text string) (*constant.Value, bool) {
+	value, ok := constant.Integer(text, "Int", true)
+	return value.Ref(), ok
 }
 
-func exactIntegerJSONRaw(value string) (json.RawMessage, bool) {
-	value, ok := constant.NormalizeSignedDecimal(value)
-	if !ok {
-		return nil, false
-	}
-	if _, ok := constant.SignedDecimalInt64(value); ok {
-		return json.RawMessage(value), true
-	}
-	encoded, err := json.Marshal(value)
-	return json.RawMessage(encoded), err == nil
+func exactComplexConstant(value exactComplex) (*constant.Value, bool) {
+	return &constant.Value{Real: value.realPart.String(), Imag: value.imaginaryPart.String(), Type: "Complex128", Untyped: true}, value.realPart.Valid() && value.imaginaryPart.Valid()
 }
 
-func exactComplexRaw(value exactComplex) (json.RawMessage, bool) {
-	encoded, err := json.Marshal(struct {
-		Real string `json:"real"`
-		Imag string `json:"imag"`
-	}{Real: exactRationalText(value.realPart), Imag: exactRationalText(value.imaginaryPart)})
-	return json.RawMessage(encoded), err == nil
-}
-
-func exactRationalFromRaw(raw json.RawMessage) (exactRational, bool) {
-	if text, ok := rawString(raw); ok {
-		return parseExactRationalLiteral(text)
-	}
-	var number json.Number
-	if err := json.Unmarshal(raw, &number); err != nil {
+func constantRational(value *constant.Value) (exactRational, bool) {
+	if value == nil {
 		return exactRational{}, false
 	}
-	return parseExactRationalLiteral(number.String())
+	return value.Rational()
 }
 
-func constantRawNegativeZero(raw json.RawMessage) bool {
-	text := strings.TrimSpace(string(raw))
-	if !strings.HasPrefix(text, "-") {
+func constantNegativeZero(value *constant.Value) bool {
+	if value == nil || !strings.HasPrefix(value.Text, "-") {
 		return false
 	}
-	value, ok := parseExactRationalLiteral(text)
-	return ok && value.IsZero()
+	number, ok := value.Rational()
+	return ok && number.IsZero()
 }
 
-func exactComplexFromRaw(raw json.RawMessage) (exactComplex, bool) {
-	var wire struct {
-		Real json.RawMessage `json:"real"`
-		Imag json.RawMessage `json:"imag"`
+func constantComplex(value *constant.Value) (exactComplex, bool) {
+	if value == nil || value.Kind() != constant.ComplexValue {
+		return exactComplex{}, false
 	}
-	if err := json.Unmarshal(raw, &wire); err == nil && len(wire.Real) != 0 && len(wire.Imag) != 0 {
-		realPart, realOK := exactRationalFromRaw(wire.Real)
-		imagPart, imagOK := exactRationalFromRaw(wire.Imag)
-		return exactComplex{realPart: realPart, imaginaryPart: imagPart}, realOK && imagOK
-	}
-	return exactComplex{}, false
+	realPart, realOK := constant.ParseRationalLiteral(value.Real)
+	imagPart, imagOK := constant.ParseRationalLiteral(value.Imag)
+	return exactComplex{realPart: realPart, imaginaryPart: imagPart}, realOK && imagOK
 }
 
-func (l *lowerer) constExactRational(raw json.RawMessage, typ string) (exactRational, bool) {
+func (l *lowerer) constExactRational(raw *constant.Value, typ string) (exactRational, bool) {
 	kind := l.underlyingConstType(typ)
 	if !isIntegerType(kind) && !isFloatType(kind) {
 		return exactRational{}, false
 	}
-	return exactRationalFromRaw(raw)
+	return constantRational(raw)
 }
 
-func (l *lowerer) constExactComplex(raw json.RawMessage, typ string) (exactComplex, bool) {
+func (l *lowerer) constExactComplex(raw *constant.Value, typ string) (exactComplex, bool) {
 	kind := l.underlyingConstType(typ)
 	if isComplexType(kind) {
-		return exactComplexFromRaw(raw)
+		return constantComplex(raw)
 	}
 	if isIntegerType(kind) || isFloatType(kind) {
-		realPart, ok := exactRationalFromRaw(raw)
+		realPart, ok := constantRational(raw)
 		if !ok {
 			return exactComplex{}, false
 		}
@@ -172,9 +144,9 @@ func (l *lowerer) constExactComplex(raw json.RawMessage, typ string) (exactCompl
 	return exactComplex{}, false
 }
 
-func (l *lowerer) rationalRawForType(value exactRational, typ string, untyped bool) (json.RawMessage, bool) {
+func (l *lowerer) rationalConstantForType(value exactRational, typ string, untyped bool) (*constant.Value, bool) {
 	if untyped {
-		return exactRationalRaw(value)
+		return exactRationalConstant(value)
 	}
 	kind := l.underlyingConstType(typ)
 	bits := 64
@@ -185,12 +157,12 @@ func (l *lowerer) rationalRawForType(value exactRational, typ string, untyped bo
 	if !ok {
 		return nil, false
 	}
-	return finiteFloatRaw(converted)
+	return floatConstant(converted)
 }
 
-func (l *lowerer) complexRawForType(value exactComplex, typ string, untyped bool) (json.RawMessage, bool) {
+func (l *lowerer) complexConstantForType(value exactComplex, typ string, untyped bool) (*constant.Value, bool) {
 	if untyped {
-		return exactComplexRaw(value)
+		return exactComplexConstant(value)
 	}
 	kind := l.underlyingConstType(typ)
 	bits := 64
@@ -203,5 +175,5 @@ func (l *lowerer) complexRawForType(value exactComplex, typ string, untyped bool
 	if !realOK || !imagOK {
 		return nil, false
 	}
-	return complexRaw(complex(realPart, imagPart))
+	return complexConstant(complex(realPart, imagPart))
 }

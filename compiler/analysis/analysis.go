@@ -4,13 +4,12 @@ package analysis
 import (
 	"sort"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/parser"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/source"
+	"github.com/d7z-team/mini-go/compiler/token"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
@@ -59,11 +58,12 @@ type PublicDeclaration struct {
 }
 
 type PublicField struct {
-	Name     string `json:"name,omitempty"`
-	Type     string `json:"type"`
-	Tag      string `json:"tag,omitempty"`
-	Embedded bool   `json:"embedded,omitempty"`
-	Variadic bool   `json:"variadic,omitempty"`
+	Name       string        `json:"name,omitempty"`
+	Type       string        `json:"type"`
+	Tag        string        `json:"tag,omitempty"`
+	Embedded   bool          `json:"embedded,omitempty"`
+	Variadic   bool          `json:"variadic,omitempty"`
+	TypeParams []PublicField `json:"type_params,omitempty"`
 }
 
 // ProjectPublicAPI returns the deterministic exported declaration surface of
@@ -85,7 +85,7 @@ func ProjectPublicAPI(source Package) PublicAPI {
 		case check.ObjectConst:
 			decl.Kind = "const"
 			if value, ok := info.ConstObjects[object.ID]; ok {
-				decl.Exact = value.Text
+				decl.Exact = value.ExactText()
 			}
 		case check.ObjectVar:
 			decl.Kind = "var"
@@ -114,6 +114,25 @@ func ProjectPublicAPI(source Package) PublicAPI {
 					if exportedName(method.Name) {
 						decl.Methods = append(decl.Methods, PublicField{Name: method.Name, Type: types.FormatSignature(info.TypeTable, method.Signature), Variadic: method.Signature.Variadic})
 					}
+				}
+				for _, generic := range info.GenericMethods {
+					receiver := generic.Method.Receiver
+					if receiver.Kind == types.Pointer {
+						receiver, _ = info.Relations.View(receiver).Elem()
+					}
+					if instance, found := info.TypeTable.Node(receiver); found && instance.Kind == types.Instance {
+						receiver = instance.Base
+					}
+					if !exportedName(generic.Method.Name) || !info.Relations.Identical(receiver, object.Type).OK {
+						continue
+					}
+					method := PublicField{Name: generic.Method.Name, Type: types.FormatSignature(info.TypeTable, generic.Method.Signature), Variadic: generic.Method.Signature.Variadic}
+					for _, id := range info.GenericDecls[generic.Object] {
+						param := info.Objects[id]
+						constraint, _ := info.Relations.View(param.Type).Constraint()
+						method.TypeParams = append(method.TypeParams, PublicField{Name: param.Name, Type: types.FormatWithTable(info.TypeTable, constraint)})
+					}
+					decl.Methods = append(decl.Methods, method)
 				}
 			}
 		default:
@@ -203,8 +222,7 @@ func publicMethodSet(table *types.TypeTable, ref types.TypeRef, seen map[types.T
 }
 
 func exportedName(name string) bool {
-	r, _ := utf8.DecodeRuneInString(name)
-	return r != utf8.RuneError && unicode.IsUpper(r)
+	return token.IsExportedName(name)
 }
 
 func CheckProgram(program ast.Program, options check.AnalyzeOptions) Package {
@@ -229,8 +247,11 @@ func Index(source Package) Package {
 			occurrence.Type = object.Type
 			occurrence.Symbol = objectSymbol(checked.Info.ModulePath, object)
 		}
-		if selection, ok := checked.Info.Selections[name.Node]; ok && name.Role == ast.NameSelector {
+		if selection, ok := checked.Info.Selections[name.Node]; ok {
 			occurrence.Type = selection.Type
+			if selection.Object != "" {
+				occurrence.Object = selection.Object
+			}
 			if selection.ModulePath != "" && selection.Name != "" {
 				occurrence.Symbol = SymbolKey{ModulePath: selection.ModulePath, Name: selection.Name}
 			}
@@ -245,6 +266,15 @@ func Index(source Package) Package {
 		}
 		if occurrence.Type.Valid() {
 			occurrence.TypeText = types.FormatWithTable(checked.Info.TypeTable, occurrence.Type)
+		}
+		if parameters := checked.Info.GenericDecls[occurrence.Object]; len(parameters) != 0 {
+			var params []string
+			for _, id := range parameters {
+				param := checked.Info.Objects[id]
+				constraint, _ := checked.Info.Relations.View(param.Type).Constraint()
+				params = append(params, param.Name+" "+types.FormatWithTable(checked.Info.TypeTable, constraint))
+			}
+			occurrence.TypeText = "[" + strings.Join(params, ", ") + "] " + occurrence.TypeText
 		}
 		source.Occurrences = append(source.Occurrences, occurrence)
 	}

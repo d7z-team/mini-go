@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/d7z-team/mini-go/compiler/token"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
@@ -59,7 +60,7 @@ func artifactMethodIdentity(owner, name string) string {
 	if name == "" {
 		return ""
 	}
-	if name[0] >= 'A' && name[0] <= 'Z' {
+	if token.IsExportedName(name) {
 		return name
 	}
 	owner = strings.TrimSpace(owner)

@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
 
@@ -62,7 +61,7 @@ func (l *lowerer) untypedConstExpression(expr ast.Expression, scope *funcScope) 
 	return false
 }
 
-func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMessage, string, bool) {
+func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (*constant.Value, string, bool) {
 	if l.semantic != nil {
 		if value, ok := l.semantic.Constants[expr.NodeID]; ok {
 			l.markConstantImports(expr, scope)
@@ -70,22 +69,9 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 			if ref, err := l.typeParser.Parse(typ); err == nil {
 				typ = l.formatSemanticType(ref)
 			}
-			kind := l.underlyingConstType(typ)
-			if value.Imag != "" {
-				realPart, _ := constant.ParseRationalLiteral(value.Real)
-				imaginaryPart, _ := constant.ParseRationalLiteral(value.Imag)
-				raw, valid := l.complexRawForType(exactComplex{realPart: realPart, imaginaryPart: imaginaryPart}, typ, value.Untyped)
-				return raw, typ, valid
-			}
-			if kind == "Float32" || kind == "Float64" {
-				rational, _ := value.Rational()
-				raw, valid := l.rationalRawForType(rational, typ, value.Untyped)
-				return raw, typ, valid
-			}
-			if !value.Untyped {
-				return l.convertConstValue(value.JSON(), typ, typ)
-			}
-			return value.JSON(), typ, true
+			// Semantic facts already passed representability checks. Keep them
+			// exact until conversion or the artifact emission boundary.
+			return value.Ref(), typ, true
 		}
 	}
 	switch expr.Kind {
@@ -93,16 +79,16 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 		return literalValue(expr)
 	case ast.ExprIdent:
 		if value, ok := l.lookupConstValue(expr.Name, scope); ok {
-			return append(json.RawMessage(nil), value.Value...), value.Type, true
+			return value.Value, value.Type, true
 		}
-		if export, ok := l.dotImportExport(expr.Name, expr.Span); ok && export.Kind == check.ObjectConst && len(export.Value) != 0 {
-			return append(json.RawMessage(nil), export.Value...), export.Type, true
+		if export, ok := l.dotImportExport(expr.Name, expr.Span); ok && export.Kind == check.ObjectConst && export.Value != nil {
+			return export.Value, export.Type, true
 		}
 		return nil, "", false
 	case ast.ExprSelector:
-		if export, ok := l.selectorExport(expr, scope); ok && export.Kind == check.ObjectConst && len(export.Value) != 0 {
+		if export, ok := l.selectorExport(expr, scope); ok && export.Kind == check.ObjectConst && export.Value != nil {
 			l.markImportExport(export.ModulePath, expr.Field)
-			return append(json.RawMessage(nil), export.Value...), export.Type, true
+			return export.Value, export.Type, true
 		}
 		return nil, "", false
 	case ast.ExprUnary:
@@ -114,7 +100,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 			typ = defaultUntypedConstType(typ, raw)
 		}
 		if typ == "" || typ == "Any" {
-			typ = inferConstRawDefaultType(raw)
+			typ = inferConstantDefaultType(raw)
 		}
 		if out, ok := foldBoolUnary(expr.Operator, raw, typ); ok {
 			return out, "Bool", true
@@ -123,7 +109,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 			switch expr.Operator {
 			case "+":
 				untyped := l.untypedConstExpression(expr, scope)
-				out, ok := l.complexRawForType(value, typ, untyped)
+				out, ok := l.complexConstantForType(value, typ, untyped)
 				if !ok && !untyped {
 					l.add("hirgen.const.representable", "constant value is not representable by target type "+typ, expr.Span)
 				}
@@ -132,7 +118,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 				value.realPart, _ = constant.NegateRational(value.realPart)
 				value.imaginaryPart, _ = constant.NegateRational(value.imaginaryPart)
 				untyped := l.untypedConstExpression(expr, scope)
-				out, ok := l.complexRawForType(value, typ, untyped)
+				out, ok := l.complexConstantForType(value, typ, untyped)
 				if !ok && !untyped {
 					l.add("hirgen.const.representable", "constant value is not representable by target type "+typ, expr.Span)
 				}
@@ -143,16 +129,16 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 			switch expr.Operator {
 			case "+":
 				untyped := l.untypedConstExpression(expr, scope)
-				if !untyped && value.IsZero() && constantRawNegativeZero(raw) {
-					return json.RawMessage("-0"), typ, true
+				if !untyped && value.IsZero() && constantNegativeZero(raw) {
+					return constant.Scalar("-0"), typ, true
 				}
-				out, ok := l.rationalRawForType(value, typ, untyped)
+				out, ok := l.rationalConstantForType(value, typ, untyped)
 				if !ok && !untyped {
 					l.add("hirgen.const.representable", "constant value is not representable by target type "+typ, expr.Span)
 				}
 				return out, typ, ok
 			case "-":
-				negativeZero := value.IsZero() && constantRawNegativeZero(raw)
+				negativeZero := value.IsZero() && constantNegativeZero(raw)
 				value, ok = constant.NegateRational(value)
 				if !ok {
 					return nil, "", false
@@ -160,11 +146,11 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 				untyped := l.untypedConstExpression(expr, scope)
 				if !untyped && value.IsZero() {
 					if negativeZero {
-						return json.RawMessage("0"), typ, true
+						return constant.Scalar("0"), typ, true
 					}
-					return json.RawMessage("-0"), typ, true
+					return constant.Scalar("-0"), typ, true
 				}
-				out, ok := l.rationalRawForType(value, typ, untyped)
+				out, ok := l.rationalConstantForType(value, typ, untyped)
 				if !ok && !untyped {
 					l.add("hirgen.const.representable", "constant value is not representable by target type "+typ, expr.Span)
 				}
@@ -181,7 +167,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 					l.add("hirgen.const.representable", "constant value is not representable by target type "+typ, expr.Span)
 					return nil, "", false
 				}
-				raw, ok := l.exactIntegerRawForType(out, typ)
+				raw, ok := l.integerConstantForType(out, typ)
 				return raw, typ, ok
 			}
 		}
@@ -193,7 +179,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 		if !ok {
 			return nil, "", false
 		}
-		return json.RawMessage(strconv.FormatInt(out, 10)), typ, true
+		return constant.Scalar(strconv.FormatInt(out, 10)), typ, true
 	case ast.ExprBinary:
 		if !l.validateConstantArithmetic(expr, scope) {
 			return nil, "", false
@@ -207,10 +193,10 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 			return nil, "", false
 		}
 		if leftType == "" || leftType == "Any" {
-			leftType = inferConstRawDefaultType(leftRaw)
+			leftType = inferConstantDefaultType(leftRaw)
 		}
 		if rightType == "" || rightType == "Any" {
-			rightType = inferConstRawDefaultType(rightRaw)
+			rightType = inferConstantDefaultType(rightRaw)
 		}
 		leftUntyped := expr.Left != nil && l.untypedConstExpression(*expr.Left, scope)
 		rightUntyped := expr.Right != nil && l.untypedConstExpression(*expr.Right, scope)
@@ -237,7 +223,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 							return nil, "", false
 						}
 					}
-					raw, ok := l.exactIntegerRawForType(out, resultType)
+					raw, ok := l.integerConstantForType(out, resultType)
 					if !ok {
 						return nil, "", false
 					}
@@ -252,7 +238,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 				}
 				out, ok := foldInt64Binary(expr.Operator, leftValue, rightValue)
 				if ok {
-					return json.RawMessage(strconv.FormatInt(out, 10)), leftType, true
+					return constant.Scalar(strconv.FormatInt(out, 10)), leftType, true
 				}
 			}
 		}
@@ -268,7 +254,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 					if expr.Operator == "!=" {
 						equal = !equal
 					}
-					return boolRaw(equal), "Bool", true
+					return booleanConstant(equal), "Bool", true
 				}
 				value, ok := foldExactComplexBinary(expr.Operator, left, right)
 				if ok {
@@ -280,7 +266,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 							typ = rightType
 						}
 					}
-					raw, ok := l.complexRawForType(value, typ, untyped)
+					raw, ok := l.complexConstantForType(value, typ, untyped)
 					if !ok && !untyped {
 						l.add("hirgen.const.representable", "constant value is not representable by target type "+typ, expr.Span)
 					}
@@ -305,7 +291,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 							typ = rightType
 						}
 					}
-					raw, ok := l.rationalRawForType(value, typ, untyped)
+					raw, ok := l.rationalConstantForType(value, typ, untyped)
 					if !ok && !untyped {
 						l.add("hirgen.const.representable", "constant value is not representable by target type "+typ, expr.Span)
 					}
@@ -366,7 +352,7 @@ func (l *lowerer) markConstantImports(expr ast.Expression, scope *funcScope) {
 	}
 }
 
-func (l *lowerer) foldUnsignedIntegerUnary(operator string, raw json.RawMessage, typ string) (json.RawMessage, bool) {
+func (l *lowerer) foldUnsignedIntegerUnary(operator string, raw *constant.Value, typ string) (*constant.Value, bool) {
 	if strings.TrimSpace(operator) != "^" {
 		return nil, false
 	}
@@ -379,11 +365,7 @@ func (l *lowerer) foldUnsignedIntegerUnary(operator string, raw json.RawMessage,
 		return nil, false
 	}
 	value = normalizeConstUint(^value, kind)
-	encoded, err := json.Marshal(strconv.FormatUint(value, 10))
-	if err != nil {
-		return nil, false
-	}
-	return json.RawMessage(encoded), true
+	return constant.Scalar(strconv.FormatUint(value, 10)), true
 }
 
 func derefExpr(expr *ast.Expression) ast.Expression {
@@ -393,110 +375,51 @@ func derefExpr(expr *ast.Expression) ast.Expression {
 	return *expr
 }
 
-func constInt64(raw json.RawMessage, typ string) (int64, bool) {
-	if !isIntegerType(typ) {
+func constInt64(value *constant.Value, typ string) (int64, bool) {
+	if value == nil || !isIntegerType(typ) {
 		return 0, false
 	}
-	if isUnsignedIntegerType(typ) {
-		out, ok := constUint64(raw, typ)
-		if !ok || out > uint64(maxInt64Value) {
-			return 0, false
-		}
-		return int64(out), ok
-	}
-	if value, ok := constExactInteger(raw, typ); ok {
-		return constant.SignedDecimalInt64(value)
-	}
-	if text, ok := rawString(raw); ok {
-		out, err := strconv.ParseInt(text, 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return out, true
-	}
-	var number json.Number
-	if err := json.Unmarshal(raw, &number); err == nil {
-		out, err := strconv.ParseInt(number.String(), 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return out, true
-	}
-	return 0, false
-}
-
-func constUint64(raw json.RawMessage, typ string) (uint64, bool) {
-	if !isIntegerType(typ) {
+	integer, ok := constExactInteger(value, typ)
+	if !ok {
 		return 0, false
 	}
-	if isSignedIntegerType(typ) {
-		if out, ok := constInt64(raw, typ); ok {
-			if out < 0 {
-				return 0, false
-			}
-			return uint64(out), true
-		}
-	}
-	if value, ok := constExactInteger(raw, typ); ok && !strings.HasPrefix(value, "-") {
-		out, err := strconv.ParseUint(value, 10, 64)
-		return out, err == nil
-	}
-	if text, ok := rawString(raw); ok {
-		out, err := strconv.ParseUint(text, 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return out, true
-	}
-	var number json.Number
-	if err := json.Unmarshal(raw, &number); err == nil {
-		out, err := strconv.ParseUint(number.String(), 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return out, true
-	}
-	return 0, false
+	return constant.SignedDecimalInt64(integer)
 }
 
-func rawString(raw json.RawMessage) (string, bool) {
-	var text string
-	if err := json.Unmarshal(raw, &text); err != nil {
+func constUint64(value *constant.Value, typ string) (uint64, bool) {
+	if value == nil || !isIntegerType(typ) {
+		return 0, false
+	}
+	integer, ok := constExactInteger(value, typ)
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(integer, 10, 64)
+	return n, err == nil
+}
+
+func constExactInteger(raw *constant.Value, typ string) (string, bool) {
+	if !isIntegerType(typ) {
+		return "", false
+	}
+	if raw == nil || raw.Kind() != constant.Number {
+		return "", false
+	}
+	number, ok := raw.Rational()
+	if !ok {
+		return "", false
+	}
+	text, ok := number.Integer()
+	if !ok {
+		return "", false
+	}
+	if isUnsignedIntegerType(typ) && strings.HasPrefix(text, "-") {
 		return "", false
 	}
 	return text, true
 }
 
-func integerRawText(raw json.RawMessage) (string, bool) {
-	if text, ok := rawString(raw); ok {
-		return strings.TrimSpace(text), true
-	}
-	var number json.Number
-	if err := json.Unmarshal(raw, &number); err == nil {
-		return strings.TrimSpace(number.String()), true
-	}
-	return "", false
-}
-
-func constExactInteger(raw json.RawMessage, typ string) (string, bool) {
-	if !isIntegerType(typ) {
-		return "", false
-	}
-	text, ok := integerRawText(raw)
-	if !ok || text == "" || strings.ContainsAny(text, ".eEiI") {
-		return "", false
-	}
-	value, ok := constant.NormalizeSignedDecimal(text)
-	if !ok {
-		return "", false
-	}
-	if isUnsignedIntegerType(typ) && strings.HasPrefix(value, "-") {
-		return "", false
-	}
-	return value, true
-}
-
-func (l *lowerer) constExactInteger(raw json.RawMessage, typ string) (string, bool) {
+func (l *lowerer) constExactInteger(raw *constant.Value, typ string) (string, bool) {
 	if value, ok := constExactInteger(raw, typ); ok {
 		return value, true
 	}
@@ -507,7 +430,7 @@ func (l *lowerer) constExactInteger(raw json.RawMessage, typ string) (string, bo
 	return constExactInteger(raw, underlying)
 }
 
-func (l *lowerer) constInt64(raw json.RawMessage, typ string) (int64, bool) {
+func (l *lowerer) constInt64(raw *constant.Value, typ string) (int64, bool) {
 	if out, ok := constInt64(raw, typ); ok {
 		return out, true
 	}

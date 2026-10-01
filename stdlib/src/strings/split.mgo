@@ -38,6 +38,15 @@ func Cut(s string, sep string) (string, string, bool) {
 	return before, after, true
 }
 
+// CutLast slices s around the last instance of sep. If sep is absent,
+// it returns s, "", false.
+func CutLast(s, sep string) (before, after string, found bool) {
+	if index := LastIndex(s, sep); index >= 0 {
+		return s[:index], s[index + len(sep):], true
+	}
+	return s, "", false
+}
+
 // CutPrefix returns s without the provided leading prefix string
 // and reports whether it found the prefix.
 // If s doesn't start with prefix, CutPrefix returns s, false.

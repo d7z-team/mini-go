@@ -1,5 +1,6 @@
 import {
   copyBytes,
+  validateResourceOptions,
   toError,
   type Control,
   type ControlResult,
@@ -20,7 +21,7 @@ import type {
 } from "./types.js";
 
 // Limit serialization work before handing arbitrary values to a worker or WASM.
-function checkInput(value: unknown, maxBytes = 8 * 1024 * 1024): void {
+function validateTransferInput(value: unknown, maxBytes = 8 * 1024 * 1024): void {
   const pending: [unknown, number][] = [[value, 0]];
   let bytes = 0,
     nodes = 0;
@@ -73,6 +74,9 @@ export class Runtime {
   private readonly hostCalls = new Map<number, AbortController>();
   private closing = false;
   private terminated = false;
+  private maxInputBytes = 0;
+  private maxHostResultBytes = 0;
+  private maxImageBytes = 0;
 
   static async create(
     image: Uint8Array | ArrayBuffer,
@@ -81,28 +85,16 @@ export class Runtime {
   ): Promise<Runtime> {
     const { signal, provider, workerUrl: _, providerModule, wasmUrl, ...rest } = options;
     if (signal?.aborted) throw toError(signal.reason ?? "initialization canceled");
-    if (options.maxSteps !== undefined) {
-      const steps = options.maxSteps;
-      if (
-        (typeof steps === "number" && !Number.isSafeInteger(steps)) ||
-        steps < -1 ||
-        steps > 9223372036854775807n
-      )
-        throw new Error("maxSteps requires -1, 0, or a positive signed 64-bit integer");
-    }
-    const maxImageBytes = (options.workload === "compiler" ? 64 : 32) * 1024 * 1024;
-    if (image.byteLength > maxImageBytes) throw new Error("image exceeds WASM limit");
+    validateResourceOptions(options);
+    if (options.load?.maxImageBytes !== undefined && image.byteLength > options.load.maxImageBytes)
+      throw new Error("image exceeds WASM limit");
     const configuration = {
       ...rest,
       providerModule: providerModule?.toString(),
       wasmUrl: wasmUrl?.toString(),
     };
-    checkInput(configuration);
-    const vm = new Runtime(
-      factory(options),
-      provider,
-      options.workload === "compiler" ? 64 * 1024 * 1024 : 8 * 1024 * 1024,
-    );
+    validateTransferInput(configuration);
+    const vm = new Runtime(factory(options), provider);
     const abort = () => {
       vm.ready.reject(toError(signal?.reason ?? "initialization canceled"));
       void vm.close();
@@ -125,7 +117,6 @@ export class Runtime {
   private constructor(
     private readonly worker: WorkerConnection,
     private readonly provider: Options["provider"],
-    private readonly maxInputBytes: number,
   ) {
     worker.listen(
       (message) => this.handleWorkerMessage(message),
@@ -135,6 +126,11 @@ export class Runtime {
 
   private handleWorkerMessage(message: Response): void {
     switch (message.kind) {
+      case "limits":
+        this.maxInputBytes = message.maxInputBytes;
+        this.maxHostResultBytes = message.maxHostResultBytes;
+        this.maxImageBytes = message.maxImageBytes;
+        break;
       case "ready":
         this.ready.resolve();
         break;
@@ -185,7 +181,7 @@ export class Runtime {
       if (!this.provider) throw new Error(`host route unavailable: ${route}`);
       const bytes = await this.provider({ route, payload, signal: controller.signal });
       if (!(bytes instanceof Uint8Array)) throw new Error("provider must return Uint8Array");
-      if (bytes.byteLength > 4 * 1024 * 1024) throw new Error("host result exceeds limit");
+      if (bytes.byteLength > this.maxHostResultBytes) throw new Error("host result exceeds limit");
       if (!this.terminated) this.worker.send({ kind: "hostResult", id, payload: bytes });
     } catch (reason) {
       if (!this.terminated)
@@ -207,7 +203,7 @@ export class Runtime {
   ): Execution {
     if (this.closing || this.terminated) throw new Error("instance is closing");
     if (this.calls.size >= 128) throw new Error("call queue is full");
-    checkInput(arguments_, this.maxInputBytes);
+    validateTransferInput(arguments_, this.maxInputBytes);
     if (
       timeoutMs !== undefined &&
       (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > Number.MAX_SAFE_INTEGER)
@@ -262,7 +258,10 @@ export class Runtime {
     if (this.closing || this.terminated) return Promise.reject(new Error("instance is closing"));
     if (this.commands.size >= 128) return Promise.reject(new Error("control queue is full"));
     try {
-      checkInput(command);
+      if (command.kind === "patch") {
+        if (command.image.byteLength > this.maxImageBytes)
+          throw Object.assign(new Error("image exceeds WASM limit"), { code: "load_limit" });
+      } else validateTransferInput(command);
     } catch (reason) {
       return Promise.reject(reason);
     }

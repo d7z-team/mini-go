@@ -3,11 +3,72 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { gunzipSync } from "node:zlib";
 import { MiniGo, values } from "@d7z-team/mini-go";
-import { exerciseCompiler, exerciseCompiledRPC } from "./compiler_scenario.js";
+import {
+  compilerResources,
+  compilerRequest,
+  exerciseCompiler,
+  exerciseCompiledRPC,
+} from "./compiler_scenario.js";
 import { createBrowserPage, openBrowserPage } from "./browser_helpers.js";
 import { startPeer } from "./test_helpers.js";
 
 const compilerImage = new URL("../dist/tools/compiler.json.gz", import.meta.url);
+
+test(
+  "explicit runtime budgets support cold Unicode compilation and execution",
+  { timeout: 600_000 },
+  async (t) => {
+    const compiler = await MiniGo.create(await readFile(compilerImage), {
+      ...compilerResources,
+      signal: t.signal,
+    });
+    let prepared;
+    try {
+      const envelope = await compilerRequest(compiler, values, {}, t.signal);
+      prepared = await compilerRequest(
+        compiler,
+        values,
+        {
+          Format: envelope.Format,
+          Version: envelope.Version,
+          Operation: "prepare",
+          Root: "probe",
+          Packages: [
+            {
+              Namespace: "module:probe",
+              ModulePath: "probe",
+              Files: [
+                {
+                  Path: "main.mgo",
+                  Text: "package main\nimport \"unicode\"\nfunc Main() bool { return unicode.IsLetter('中') }\n",
+                },
+              ],
+            },
+          ],
+          EntryPoints: [{ Name: "default", ModulePath: "probe", Function: "Main" }],
+        },
+        t.signal,
+      );
+      assert.equal(prepared.Error, "");
+      assert.ok(prepared.ImageJSON);
+      await compiler.close();
+    } finally {
+      compiler.terminate();
+    }
+    const vm = await MiniGo.create(new TextEncoder().encode(prepared.ImageJSON), {
+      signal: t.signal,
+    });
+    try {
+      const execution = vm.start("default", [], { signal: t.signal });
+      const result = await execution.result;
+      await execution.settled;
+      assert.equal(result.roots[0].data.Bool, true);
+      await vm.close();
+    } finally {
+      vm.terminate();
+    }
+  },
+);
 
 test("compiler response preserves exact image bytes when loading the compiled program", async () => {
   const image = String.raw`{"constants":[9007199254740993,1e+09,-0,"\u2028","brace } and quote \""],"nested":{"2":true,"1":null}}`;
@@ -54,7 +115,7 @@ test("compiler response preserves exact image bytes when loading the compiled pr
 });
 
 test(
-  "compiler workload: Node default-budget RPC compilation and execution",
+  "compiler workload: Node explicit-budget RPC compilation and execution",
   { timeout: 600_000 },
   async (t) => {
     const address = await startPeer(t);
@@ -76,7 +137,7 @@ test(
 );
 
 test(
-  "compiler workload: browser default-budget RPC compilation and execution",
+  "compiler workload: browser explicit-budget RPC compilation and execution",
   { timeout: 600_000 },
   async (t) => {
     const address = await startPeer(t);

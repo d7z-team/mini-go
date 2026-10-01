@@ -78,7 +78,7 @@ func TestLowerLocalConstDecl(t *testing.T) {
 	if len(diagnostics) != 0 {
 		t.Fatalf("Lower returned diagnostics: %#v", diagnostics)
 	}
-	if len(program.Constants) != 2 || program.Constants[1].Name != "Answer" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "Int64" || string(program.Constants[1].Value) != "42" {
+	if len(program.Constants) != 2 || program.Constants[1].Name != "Answer" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "Int64" || string(program.Constants[1].Value.JSON()) != "42" {
 		t.Fatalf("expected folded local constants, got %#v", program.Constants)
 	}
 	if strings.HasPrefix(program.Constants[1].ID, "const.Answer") {
@@ -89,7 +89,7 @@ func TestLowerLocalConstDecl(t *testing.T) {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
 	returnExpr := mainFn.Body[0].Results[0]
-	if returnExpr.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, returnExpr.Type) != "Int64" || string(returnExpr.Value) != "42" {
+	if returnExpr.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, returnExpr.Type) != "Int64" || string(returnExpr.Value.JSON()) != "42" {
 		t.Fatalf("expected local constant to fold to Int64 literal, got %#v", returnExpr)
 	}
 }

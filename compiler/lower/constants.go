@@ -1,20 +1,18 @@
 package lower
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	"github.com/d7z-team/mini-go/compiler/source"
-	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 type pendingConstDecl struct {
 	name    string
 	typ     string
-	raw     json.RawMessage
+	raw     *constant.Value
 	untyped bool
 }
 
@@ -36,7 +34,7 @@ func (l *lowerer) lowerPackageConstDecls(program ast.Program, out *ir.Program) b
 	done := make([]bool, len(decls))
 	ready := map[string]struct{}{}
 	for name, value := range l.constValues {
-		if len(value.Value) != 0 {
+		if value.Value != nil {
 			ready[name] = struct{}{}
 		}
 	}
@@ -220,7 +218,7 @@ func (l *lowerer) evaluatePackageConstDecl(decl ast.Decl) ([]pendingConstDecl, b
 	for _, constant := range pending {
 		l.constValues[constant.name] = constantValue{
 			Type:    constant.typ,
-			Value:   append(json.RawMessage(nil), constant.raw...),
+			Value:   constant.raw,
 			Untyped: constant.untyped,
 		}
 	}
@@ -327,7 +325,7 @@ func (l *lowerer) lowerLocalConstDecl(decl ast.Decl, scope *funcScope) bool {
 		scope.constants[constant.name] = id
 		scope.constValues[constant.name] = constantValue{
 			Type:    constant.typ,
-			Value:   append(json.RawMessage(nil), constant.raw...),
+			Value:   constant.raw,
 			Untyped: constant.untyped,
 		}
 	}
@@ -363,7 +361,7 @@ func (l *lowerer) localConstReferencesFuture(expr ast.Expression, scope *funcSco
 	return constExprReferencesAnyName(expr, names)
 }
 
-func (l *lowerer) convertTypedConstValue(raw json.RawMessage, sourceType, targetType string, span source.Span) (json.RawMessage, string, bool) {
+func (l *lowerer) convertTypedConstValue(raw *constant.Value, sourceType, targetType string, span source.Span) (*constant.Value, string, bool) {
 	targetType = l.resolveType(strings.TrimSpace(targetType))
 	if targetType == "" {
 		return nil, "", false
@@ -373,7 +371,7 @@ func (l *lowerer) convertTypedConstValue(raw json.RawMessage, sourceType, target
 	}
 	sourceType = strings.TrimSpace(sourceType)
 	if sourceType == "" || sourceType == "Any" {
-		sourceType = inferConstRawDefaultType(raw)
+		sourceType = inferConstantDefaultType(raw)
 	}
 	converted, typ, ok := l.convertConstValue(raw, sourceType, targetType)
 	if ok {
@@ -388,38 +386,28 @@ func (l *lowerer) constRepresentabilityTarget(targetType string) bool {
 	return kind == "Bool" || kind == "String" || isNumericType(kind)
 }
 
-func inferConstRawDefaultType(raw json.RawMessage) string {
-	text := strings.TrimSpace(string(raw))
-	if text == "" || text == "null" {
+func inferConstantDefaultType(value *constant.Value) string {
+	if value == nil {
 		return ""
 	}
-	if text == "true" || text == "false" {
+	switch value.Kind() {
+	case constant.Boolean:
 		return "Bool"
-	}
-	if strings.HasPrefix(text, `"`) {
-		if value, ok := rawString(raw); ok {
-			if strings.Contains(value, "/") {
-				return "Float64"
-			}
-			if _, ok := constant.NormalizeSignedDecimal(value); ok {
-				return "Int"
-			}
-		}
+	case constant.StringValue:
 		return "String"
-	}
-	if strings.HasPrefix(text, "{") {
-		if _, err := bytecode.DecodeStringConstant(raw); err == nil {
-			return "String"
-		}
+	case constant.ComplexValue:
 		return "Complex128"
+	case constant.Number:
+		if strings.ContainsAny(value.Text, "/.eE") || isFloatType(value.Type) {
+			return "Float64"
+		}
+		return "Int"
+	default:
+		return ""
 	}
-	if strings.ContainsAny(text, ".eE") {
-		return "Float64"
-	}
-	return "Int"
 }
 
-func defaultUntypedConstType(sourceType string, raw json.RawMessage) string {
+func defaultUntypedConstType(sourceType string, raw *constant.Value) string {
 	sourceType = strings.TrimSpace(sourceType)
 	switch sourceType {
 	case "Bool", "String":
@@ -436,7 +424,7 @@ func defaultUntypedConstType(sourceType string, raw json.RawMessage) string {
 	if isComplexType(sourceType) {
 		return "Complex128"
 	}
-	return inferConstRawDefaultType(raw)
+	return inferConstantDefaultType(raw)
 }
 
 func constSpecNameSet(names []string) map[string]struct{} {

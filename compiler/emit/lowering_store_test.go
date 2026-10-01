@@ -1,9 +1,9 @@
 package emit
 
 import (
-	"encoding/json"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
@@ -184,7 +184,7 @@ func TestLowerStoreValuesPreservesRightHandSnapshots(t *testing.T) {
 }
 
 func TestLowerStoreLocalPreservesRebindPayload(t *testing.T) {
-	literal := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: json.RawMessage(`1`)}
+	literal := hir.Expression{Kind: hir.ExprLiteral, Type: testHIRType("Int64"), Value: constant.Scalar(`1`)}
 	artifact, err := lowerTestProgram(t, hir.Program{
 		ModulePath: "example/module",
 		Package:    "main",

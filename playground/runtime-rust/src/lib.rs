@@ -14,7 +14,7 @@ mod server;
 #[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
 mod transport;
 #[cfg(feature = "compiler")]
-pub use compiler::CompilerSession;
+pub use compiler::{CompilerOptions, CompilerSession};
 #[cfg(feature = "dap")]
 pub use dap::DebugSession;
 #[cfg(feature = "compiler")]

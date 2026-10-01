@@ -3,6 +3,7 @@ package runtime
 import (
 	"strings"
 
+	"github.com/d7z-team/mini-go/compiler/token"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
@@ -346,12 +347,7 @@ func isPrimitiveTypeName(name string) bool {
 }
 
 func isExportedName(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return false
-	}
-	ch := name[0]
-	return ch >= 'A' && ch <= 'Z'
+	return token.IsExportedName(strings.TrimSpace(name))
 }
 
 func sortTypeMethodInfo(values []TypeMethodInfo) {

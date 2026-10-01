@@ -1,5 +1,24 @@
 // This scenario runs unchanged in Node and browser workers.
-async function compilerRequest(vm, values, request, signal) {
+export const compilerResources = {
+  limits: {
+    maxSteps: -1,
+    maxHeapBytes: 128 * 1024 * 1024,
+    maxObjects: 500_000,
+    maxSequenceElements: 4 * 1024 * 1024,
+    maxDynamicTypes: 16_384,
+    maxDynamicTypeBytes: 64 * 1024 * 1024,
+    maxFfiBytes: 64 * 1024 * 1024,
+    maxFfiResultBytes: 64 * 1024 * 1024,
+  },
+  load: {
+    maxImageBytes: 64 * 1024 * 1024,
+    maxArtifactBytes: 64 * 1024 * 1024,
+    maxPackages: 2048,
+    maxTypeNodes: 200_000,
+  },
+};
+
+export async function compilerRequest(vm, values, request, signal) {
   const execution = vm.start(
     "default",
     [values.bytes(new TextEncoder().encode(JSON.stringify(request)))],
@@ -50,8 +69,8 @@ async function compilerRequest(vm, values, request, signal) {
 
 export async function exerciseCompiler(MiniGo, values, image, signal) {
   const vm = await MiniGo.create(image, {
-    workload: "compiler",
-    maxSteps: 5_000_000,
+    ...compilerResources,
+    limits: { ...compilerResources.limits, maxSteps: 5_000_000 },
     signal,
   });
   try {
@@ -89,7 +108,7 @@ export async function exerciseCompiler(MiniGo, values, image, signal) {
 }
 
 export async function exerciseCompiledRPC(MiniGo, values, image, source, address, signal) {
-  const compiler = await MiniGo.create(image, { workload: "compiler", signal });
+  const compiler = await MiniGo.create(image, { ...compilerResources, signal });
   let prepared;
   try {
     const envelope = await compilerRequest(compiler, values, {}, signal);

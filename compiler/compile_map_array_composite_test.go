@@ -31,7 +31,7 @@ func Main() { _ = lib.Box{hidden: 1} }
 	if err != nil {
 		t.Fatalf("compileTestWorkspace failed: %v", err)
 	}
-	requireCompileDiagnostic(t, result.Diagnostics, "hirgen.composite.struct.unexported")
+	requireCompileDiagnostic(t, result.Diagnostics, "semantic.composite.unexported")
 }
 
 func TestCompileRejectsDuplicateConstantMapCompositeKeys(t *testing.T) {

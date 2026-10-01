@@ -32,7 +32,7 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 		if data == nil || i < 0 || int(i) >= data.Len {
 			return vmValue{}, newGuestPanic(fmt.Errorf("slice index out of range: %d", i))
 		}
-		elemType := module.arrayElemType(object.Type)
+		elemType := module.sequenceElementType(object.Type)
 		normalized, err := module.coerceAssignableValue(value, elemType)
 		if err != nil {
 			return vmValue{}, fmt.Errorf("slice element: %w", err)
@@ -50,7 +50,7 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 		if i < 0 || int(i) >= data.Len {
 			return vmValue{}, newGuestPanic(fmt.Errorf("array index out of range: %d", i))
 		}
-		elemType := module.arrayElemType(object.Type)
+		elemType := module.sequenceElementType(object.Type)
 		normalized, err := module.coerceAssignableValue(value, elemType)
 		if err != nil {
 			return vmValue{}, fmt.Errorf("array element: %w", err)

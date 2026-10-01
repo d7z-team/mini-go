@@ -49,12 +49,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 cargo run -- /path/to/go-mini/playground/runtime-rust/examples/blocks/arithmetic.json
 ```
 
-使用 `Limits { ..Default::default() }` 覆盖需要的限制。`LoadOptions` 约束加载，
-`Limits` 约束执行；两者分别配置。错误通过 `RuntimeError.code`、`path`、`message` 返回。
-共享实例正被其他操作占用时可能返回 `busy`，调用方应让出执行后重试。
+`LoadOptions` 约束加载，`Limits { ..Default::default() }` 覆盖执行限制：
 
-`Limits::max_steps` 的 0 或默认值表示每个 scope 最多 1 亿步，`UNLIMITED_STEPS`（-1）放开累计步数，
-正数设置预算。推进批次和热更新不重置预算；无限模式仍保留取消、内存及任务限制。
+| 执行配置 | 含义 |
+| --- | --- |
+| `max_steps` | 每个 scope 默认 1 亿步；0 使用默认，正数设置预算，`UNLIMITED_STEPS`（-1）不限累计步数 |
+| `max_allocated_bytes` | 逻辑存活 guest 数据及尚未重新统计的分配 |
+| `max_heap_bytes` | VM arena 存储计费 |
+
+推进批次和热更新不重置预算；不限步数仍保留取消和其他限额。内存计费不等于累计分配量或进程 RSS。
+错误通过 `RuntimeError.code`、`path`、`message` 返回；共享实例占用时的 `busy` 可让出执行后重试。
 
 `HostValue` 是宿主输入，`HostSnapshot` 是独立拥有数据的输出，可保留别名和循环。
 常用输入可由 `HostValue::int` 等构造；复杂值见 [snapshot 模块](src/snapshot.rs)。
@@ -198,20 +202,33 @@ async fn open_sources(root: &std::path::Path) -> Result<LanguageService, Runtime
 调用方完成使用后执行 `language.close().await`。额外模块同样作为 SourceTree 提供，
 compiler 按 import 选择依赖。装配错误保留当前工作区，`Editable` 可授权编辑额外包。
 
-编译器在 VM 中执行，首次分析包含导入依赖，较大工作区可能触发步数或请求期限限制。
-频繁编辑时复用会话；仅执行脚本的应用可由 Go 预先编译镜像。
+### 预算与生命周期
 
-### 会话生命周期
+编译器在 VM 中执行，默认不限累计 steps，guest heap 上限为 128 MiB。
+频繁编辑时复用会话；较大工作区可通过 `CompilerOptions` 调整执行和加载预算：
 
-`CompilerSession::bundled().await` 使用分发镜像，`new(image).await` 使用显式镜像。
-编译会话的原生异步 API 运行在启用时间支持的 Tokio runtime 中。
-调用默认期限为 30 秒；`new_with_timeout`、`call_with_timeout` 和 `upgrade_with_timeout`
-可显式设置有限期限。构造的解码与初始化、升级的准备与恢复分别共用整个操作的期限，
-请求的恢复和分析共用当前调用的剩余期限；请求中的 `Deadline` 可进一步缩短预算。
-自建驱动使用 `with_clock` 时，会话与内部 VM 使用同一时钟。
-取消先通知 guest，最多给予 2 秒清理时间；丢弃调用 future 会丢弃未确认的会话状态。
-恢复仅重建已成功交付的源码输入，恢复后旧 snapshot 过期。`upgrade` 在候选会话中恢复并分析成功后切换。
-成功升级的 `UpgradeResult::cleanup_error` 单独报告旧 owner 的清理错误，此时新会话已经提交。
+```rust
+use mini_go::{CompilerOptions, CompilerSession};
+use std::time::Duration;
+
+async fn compiler(image: &[u8]) -> Result<CompilerSession, mini_go::RuntimeError> {
+    let mut options = CompilerOptions::default();
+    options.limits.max_heap_bytes = 256 << 20;
+    options.load.max_image_bytes = 96 << 20;
+    CompilerSession::new_with_options(image, options, Duration::from_secs(60)).await
+}
+```
+
+编译入口的 `max_steps = 0` 使用编译默认值；正数设置预算，-1 不限累计步数。
+配置在恢复和升级时保持不变；步数放开后，统计、调度、取消和请求期限仍生效。
+
+原生异步 API 需要启用时间支持的 Tokio runtime。`bundled()` 使用分发镜像，`new(image)` 使用指定镜像，
+默认期限均为 30 秒；`new_with_timeout`、`call_with_timeout` 和 `upgrade_with_timeout` 可覆盖期限。
+每次操作的初始化或恢复计入同一期限，请求 `Deadline` 可进一步缩短预算。
+
+取消最多给予 guest 2 秒清理时间；丢弃调用 future 会丢弃未确认状态。
+恢复只重建成功交付的输入，旧 snapshot 失效。`upgrade` 在候选恢复并分析成功后切换，失败保留原会话；
+成功结果中的 `cleanup_error` 表示旧 owner 清理异常，新会话仍有效。
 
 自建事件循环的同步推进接口见
 [编译会话驱动](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#编译会话驱动)。

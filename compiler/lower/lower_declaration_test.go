@@ -76,7 +76,7 @@ func TestLowerTopLevelConstAndVar(t *testing.T) {
 	if returnExpr.Kind != hir.ExprBinary || returnExpr.Left == nil || returnExpr.Right == nil || returnExpr.Right.Kind != hir.ExprGlobal {
 		t.Fatalf("expected folded const plus global return expression, got %#v", returnExpr)
 	}
-	if returnExpr.Left.Kind != hir.ExprLiteral || hirTypeString(&program.TypeTable, returnExpr.Left.Type) != "Int64" || string(returnExpr.Left.Value) != "40" {
+	if returnExpr.Left.Kind != hir.ExprLiteral || hirTypeString(&program.TypeTable, returnExpr.Left.Type) != "Int64" || string(returnExpr.Left.Value.JSON()) != "40" {
 		t.Fatalf("expected const side to fold to Int64 literal, got %#v", returnExpr.Left)
 	}
 }
@@ -167,7 +167,7 @@ func TestLowerTopLevelNamedConstAlias(t *testing.T) {
 	if len(diagnostics) != 0 {
 		t.Fatalf("Lower returned diagnostics: %#v", diagnostics)
 	}
-	if len(program.Constants) != 2 || program.Constants[1].ID != "const.Answer" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "Int64" || string(program.Constants[1].Value) != "40" {
+	if len(program.Constants) != 2 || program.Constants[1].ID != "const.Answer" || hirTypeString(&program.TypeTable, program.Constants[1].Type) != "Int64" || string(program.Constants[1].Value.JSON()) != "40" {
 		t.Fatalf("expected named constant alias to copy value, got %#v", program.Constants)
 	}
 	mainFn, ok := findFunction(program.Functions, "fn.Main")
@@ -175,7 +175,7 @@ func TestLowerTopLevelNamedConstAlias(t *testing.T) {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
 	returnExpr := mainFn.Body[0].Results[0]
-	if returnExpr.Kind != hir.ExprLiteral || hirTypeString(&program.TypeTable, returnExpr.Type) != "Int64" || string(returnExpr.Value) != "40" {
+	if returnExpr.Kind != hir.ExprLiteral || hirTypeString(&program.TypeTable, returnExpr.Type) != "Int64" || string(returnExpr.Value.JSON()) != "40" {
 		t.Fatalf("expected alias constant to fold to Int64 literal, got %#v", returnExpr)
 	}
 }

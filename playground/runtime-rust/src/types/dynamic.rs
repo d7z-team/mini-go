@@ -510,12 +510,9 @@ impl TypeRegistry {
                 let mut names = HashSet::new();
                 let mut output = Vec::new();
                 for field in fields {
-                    let valid_name = !field.name.is_empty()
-                        && field.name.chars().enumerate().all(|(index, ch)| {
-                            ch == '_' || ch.is_alphabetic() || index > 0 && ch.is_numeric()
-                        });
+                    let valid_name = super::names::is_identifier(&field.name);
                     if !valid_name
-                        || !field.name.chars().next().is_some_and(char::is_uppercase)
+                        || !crate::types::names::is_exported(&field.name)
                         || field.tag.contains('`')
                         || !names.insert(field.name.clone())
                     {

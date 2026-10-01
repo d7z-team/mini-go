@@ -1,0 +1,7 @@
+package other
+
+var Offset = 5
+func Value(x int) int { return x+Offset }
+func Identity[T any](x T) T { return x }
+type Box struct{}
+func (Box) Echo[T ~int](x T) T { return x+5 }

@@ -97,7 +97,18 @@ Engine 自动提供标准库源码。额外源码可通过 `NewStandardLibrary`�
 
 惰性源码树要求底层 FS 在使用期间保持稳定；目录内容改变后应创建新快照再编译。
 
-## 嵌入资源
+### 编译配置
+
+`minigo.Config` 的 `Optimization`、`Symbols` 选择优化级别与独立调试符号，零值为 O0、不生成符号。
+O0 适合源码单步，O1 为常规优化，O2 增加保持求值顺序的函数内优化。
+
+`Config.Limits` 控制包、文件、源码字节、token、AST、诊断和泛型实例化容量。
+省略时使用默认值，正数可提高或收紧容量；`MaxSyntaxDepth` 保留解析器结构上限。
+例如 `compiler.Limits{MaxSourceBytes: 32 << 20}` 允许更大的单文件源码。
+直接使用 compiler 时，对应配置位于 `compiler.Options`，请求可通过 `compiler.Request.Limits` 指定限制。
+有效限制参与缓存身份，调整容量不改变类型检查规则。
+
+### 嵌入资源
 
 `workspace.SourcePackage.Resources` 保存 package-relative 资源，资源内容参与编译缓存 identity：
 
@@ -150,10 +161,10 @@ library scope 超过限制时仅该 scope 失败；main scope 超限会结束实
 ### 资源限制与观测
 
 `InstanceOptions.Limits` 限制步数、任务、内存、调用边界和动态类型等资源，零值采用默认限制，正值覆盖。
+`MaxAllocatedBytes` 约束逻辑存活 guest 数据及尚未重新统计的分配，不是累计分配量或进程 RSS。
 每个 scope 默认最多 1 亿步；`PollSteps` 和热更新都不重置预算。`MaxSteps` 可设为
 `minigo.UnlimitedSteps`（-1）以保留取消和其他限制、放开累计步数，其他负值无效。
-`Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供一致的状态快照；guest 内存统计用于逻辑计费，
-不等同于 Go heap 或进程 RSS。
+`Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供状态与计费快照。
 热点定位可配置 `InstanceOptions.GuestProfile` 并读取 `Execution.GuestProfile()`；
 统计口径与测量方式见[性能诊断](DEVELOPMENT.md#缓存与性能)。
 
@@ -275,9 +286,9 @@ RPC binding 生成见 [RPC 指南](RPC.md)。
 
 ### 编译选项
 
-`run` 和 `test` 通过 `-O=0|1|2` 选择优化级别，默认 O1。O0 适合源码单步，O2 增加保持求值顺序的
-函数内优化。`-symbols` 独立生成 ProgramSymbols，ExecutionImage 只保存执行代码。
-嵌入时通过 `minigo.Config` 或 `compiler.Options` 的 `Optimization`、`Symbols` 选择，零值为 O0、不生成符号。
+`run` 和 `test` 通过 `-O=0|1|2` 选择优化级别，默认 O1。
+`-symbols` 生成独立的 ProgramSymbols，ExecutionImage 只保存执行代码。
+优化级别与嵌入配置见[编译配置](#编译配置)。
 
 ### 本地源码装配
 
@@ -321,14 +332,15 @@ LSP initializationOptions 接受相同的 module、sources、tags，目录相对
 DAP 使用 O0 并生成调试符号；普通 run/test 通过 `-symbols` 启用符号。
 
 library 调试接口包括 `SetBreakpoints`、`DebugSnapshot`、`DebugScopes` 和 `DebugVariables`。
-源码单步和变量检查需要 `ProgramSymbols`；变量与源码引用在恢复执行后失效。热更新后断点按新 revision
-重新解析，历史帧继续显示其所属 generation 的符号。
+源码单步和变量检查需要 `ProgramSymbols`；变量与源码引用在恢复执行后失效。
+热更新后断点按新 revision 解析，历史帧保留对应符号。
 
 Go 应用通过 `compiler/language` 查询语言信息，或用 `compiler/service.Session` 管理文档、分析和构建，
 使用完毕调用 `Close`。版本与快照的关系见[架构](ARCHITECTURE.md#语言服务与调试)。
 
 ## 语言与标准库
 
-标准库为精选移植，具体 API 和行为以 [生成参考](docs/reference/README.md) 为准。
+Mini-Go 支持 Go 1.27 的泛型方法、提升字段初始化和函数值上下文类型推导，使用 Unicode 17 字符规则；
+宿主工具链最低版本仍为 Go 1.26。标准库为精选移植，具体 API 和行为以[生成参考](docs/reference/README.md)为准。
 系统能力由宿主注入；默认 Local 时区为 UTC，时间二进制格式属于 Mini-Go 自身契约。
 标准库源码组织与维护入口见 [stdlib README](stdlib/README.md)。

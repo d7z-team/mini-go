@@ -1,10 +1,10 @@
 package lower
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	"github.com/d7z-team/mini-go/compiler/source"
 )
@@ -108,7 +108,7 @@ func (l *lowerer) lowerRangeFunctionReturn(stmt ast.Statement, scope *funcScope)
 			statements = append(statements, ir.Statement{Kind: ir.StmtStoreValues, Values: values, Targets: ctx.resultTargets})
 		}
 	}
-	trueValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: json.RawMessage(`true`)}
+	trueValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: constant.Scalar(`true`)}
 	statements = append(statements,
 		ir.Statement{Kind: ir.StmtStoreUpvalue, Upvalue: ctx.returnFlagUpvalue, Expr: trueValue},
 		ir.Statement{Kind: ir.StmtJump, Label: ctx.stopLabel},

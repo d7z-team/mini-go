@@ -113,6 +113,11 @@ func (l *lowerer) lowerComposite(expr ast.Expression, scope *funcScope) (ir.Expr
 			fields := l.zeroStructFieldValues(literalFields)
 			return ir.Expression{Kind: ir.ExprStruct, Type: l.hirType(typ), Fields: fields}, true
 		}
+		for _, selection := range composite.Initializers {
+			if len(selection.Index) > 1 {
+				return l.lowerPromotedComposite(expr, composite, typ, scope)
+			}
+		}
 		fields := make([]ir.FieldValue, 0, len(entries))
 		seen := map[string]struct{}{}
 		for _, entry := range entries {
@@ -150,6 +155,66 @@ func (l *lowerer) lowerComposite(expr ast.Expression, scope *funcScope) (ir.Expr
 		l.add("hirgen.composite.type", "unsupported composite literal type", expr.Span)
 		return ir.Expression{}, false
 	}
+}
+
+// lowerPromotedComposite binds source expressions before assembling embedded
+// values, so grouping fields never changes evaluation order.
+func (l *lowerer) lowerPromotedComposite(expr ast.Expression, composite check.CompositeInfo, typ string, scope *funcScope) (ir.Expression, bool) {
+	var lets []addressLet
+	values := make([]ir.Expression, len(expr.Items))
+	seen := make(map[string]bool)
+	for i, item := range expr.Items {
+		selection := composite.Initializers[i]
+		if item.Key == nil || item.Key.Kind != ast.ExprIdent || len(selection.Index) == 0 || item.Key.Name == "_" {
+			l.add("hirgen.composite.struct.unknown", "struct composite field is not uniquely declared in literal type", expr.Span)
+			return ir.Expression{}, false
+		}
+		if seen[item.Key.Name] {
+			l.add("hirgen.composite.struct.duplicate", "duplicate struct composite field", item.Key.Span)
+			return ir.Expression{}, false
+		}
+		seen[item.Key.Name] = true
+		fieldType := l.formatSemanticType(selection.Type)
+		value, ok := l.lowerCompositeValueInType(item.Value, fieldType, scope)
+		if !ok {
+			return ir.Expression{}, false
+		}
+		local := l.newSyntheticLocal(scope, "composite", fieldType)
+		lets = append(lets, addressLet{local: local, value: value})
+		values[i] = ir.Expression{Kind: ir.ExprLocal, Local: local}
+	}
+	var assemble func(types.TypeRef, []int) ir.Expression
+	assemble = func(ref types.TypeRef, prefix []int) ir.Expression {
+		result := ir.Expression{Kind: ir.ExprStruct, Type: l.hirType(l.formatSemanticType(ref))}
+		fields, _ := l.semantic.Relations.View(ref).StructFields()
+		for index, field := range fields {
+			path := append(append([]int(nil), prefix...), index)
+			value := ir.Expression{Kind: ir.ExprZero, Type: l.hirType(l.formatSemanticType(field.Type))}
+			for i, selection := range composite.Initializers {
+				if len(selection.Index) < len(path) {
+					continue
+				}
+				matches := true
+				for j, component := range path {
+					matches = matches && selection.Index[j] == component
+				}
+				if !matches {
+					continue
+				}
+				if len(selection.Index) == len(path) {
+					value = values[i]
+				} else {
+					value = assemble(field.Type, path)
+				}
+				break
+			}
+			result.Fields = append(result.Fields, ir.FieldValue{Name: field.Name, Value: value})
+		}
+		return result
+	}
+	result := assemble(composite.Type, nil)
+	result.Type = l.hirType(typ)
+	return wrapAddressLets(result, lets), true
 }
 
 func (l *lowerer) semanticStructLiteralFields(expr ast.Expression, info check.CompositeInfo) []structLiteralField {

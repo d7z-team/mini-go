@@ -11,7 +11,7 @@ Mini-Go 是使用 Go-like 语法的嵌入式脚本引擎。Go 应用直接编译
 
 ## 主要功能
 
-- **Go-like 语言**：泛型、闭包、channel/select、defer/panic/recover、反射和嵌入资源。
+- **Go-like 语言**：泛型函数与方法、提升字段字面量、闭包、channel/select、defer/panic/recover、反射和嵌入资源。
 - **受控执行**：独立 Instance、有界并行、取消、资源限制、观测和热更新。
 - **宿主扩展**：通过 FFI 接入宿主能力，生成 Go、Mini-Go、Rust 与 TypeScript MRPC 客户端和 Provider。
 - **多环境接入**：Go runtime、Rust runtime，以及面向浏览器和 Node.js 的 TypeScript SDK。
@@ -21,7 +21,8 @@ Mini-Go 是使用 Go-like 语法的嵌入式脚本引擎。Go 应用直接编译
 
 ## 安装
 
-需要 Go 1.26 或更新版本。
+宿主工具链需要 Go 1.26 或更新版本。Mini-Go 的语言和标准库支持范围独立于宿主版本，
+详见[语言与标准库](./USAGE.md#语言与标准库)。
 
 ```bash
 go install github.com/d7z-team/mini-go/cmd/mini-go@latest

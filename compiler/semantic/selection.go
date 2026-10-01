@@ -8,14 +8,18 @@ import (
 )
 
 type selectorCandidate struct {
-	selection Selection
-	fieldType types.TypeRef
+	selection    Selection
+	fieldType    types.TypeRef
+	ambiguous    bool
+	inaccessible bool
 }
 
 type selectorFrontier struct {
 	typ      types.TypeRef
 	index    []int
 	indirect bool
+	multiple bool
+	key      string
 }
 
 func (a *analyzer) finalizeSelector(expr *ast.Expression, info ExprInfo) ExprInfo {
@@ -86,6 +90,7 @@ func (a *analyzer) finalizeSelector(expr *ast.Expression, info ExprInfo) ExprInf
 		return info
 	}
 	selection := candidate.selection
+	info.Object = selection.Object
 	if methodExpression {
 		selection.Kind = SelectionMethodExpression
 		signature := selection.Signature
@@ -118,35 +123,72 @@ func (a *analyzer) finalizeSelector(expr *ast.Expression, info ExprInfo) ExprInf
 
 func (a *analyzer) lookupSelector(receiver types.TypeRef, name string, methodExpression bool) (selectorCandidate, bool) {
 	receiver = a.resolveAlias(receiver)
-	frontier := []selectorFrontier{{typ: receiver}}
-	seen := make(map[string]struct{})
+	lookupKey := func(ref types.TypeRef, indirect bool) string {
+		ref = a.resolveAlias(ref)
+		pointer := a.info.Relations.View(ref).Shape() == types.Pointer
+		if pointer {
+			ref, _ = a.info.Relations.View(ref).Elem()
+			ref = a.resolveAlias(ref)
+		}
+		// Member names belong to the declaration. Recursive instantiations
+		// must not expand that declaration again for each changing argument.
+		if node, ok := a.typeNode(ref); ok && node.Kind == types.Instance {
+			ref = a.resolveAlias(node.Base)
+		}
+		key := types.FormatWithTable(a.info.TypeTable, ref)
+		if pointer {
+			key = "Ptr<" + key + ">"
+		}
+		if indirect {
+			key += "\x00indirect"
+		}
+		return key
+	}
+	frontier := []selectorFrontier{{typ: receiver, key: lookupKey(receiver, false)}}
+	seen := make(map[string]bool)
 	for len(frontier) != 0 {
 		var candidates []selectorCandidate
 		var next []selectorFrontier
+		nextIndex := make(map[string]int)
 		for _, item := range frontier {
-			key := types.FormatWithTable(a.info.TypeTable, item.typ)
-			if _, exists := seen[key]; exists {
+			if seen[item.key] {
 				continue
 			}
-			seen[key] = struct{}{}
-			candidates = append(candidates, a.directSelectorCandidates(item, name, methodExpression)...)
+			seen[item.key] = true
+			direct := a.directSelectorCandidates(item, name, methodExpression)
+			if item.multiple && len(direct) != 0 {
+				return selectorCandidate{ambiguous: true}, false
+			}
+			candidates = append(candidates, direct...)
 			for index, field := range a.structFields(item.typ) {
 				if !field.Embedded {
 					continue
 				}
+				indirect := item.indirect || a.info.Relations.View(item.typ).Shape() == types.Pointer
+				key := lookupKey(field.Type, indirect)
+				if seen[key] {
+					continue
+				}
+				// Keep one path per type and depth, but retain multiplicity:
+				// a diamond is ambiguous even when both paths reach one type.
+				if previous, exists := nextIndex[key]; exists {
+					next[previous].multiple = true
+					continue
+				}
+				nextIndex[key] = len(next)
 				path := append(append([]int(nil), item.index...), index)
 				next = append(next, selectorFrontier{
-					typ: field.Type, index: path,
-					indirect: item.indirect || a.info.Relations.View(item.typ).Shape() == types.Pointer,
+					typ: field.Type, index: path, indirect: indirect,
+					multiple: item.multiple, key: key,
 				})
 			}
 		}
 		if len(candidates) == 1 {
 			candidates[0].selection.Receiver = receiver
-			return candidates[0], true
+			return candidates[0], !candidates[0].inaccessible
 		}
 		if len(candidates) > 1 {
-			return selectorCandidate{}, false
+			return selectorCandidate{ambiguous: true}, false
 		}
 		frontier = next
 	}
@@ -172,16 +214,42 @@ func (a *analyzer) directSelectorCandidates(item selectorFrontier, name string, 
 	var out []selectorCandidate
 	if !methodExpression {
 		for index, field := range a.structFields(item.typ) {
-			if field.Name == name && a.visibleMember(name, a.typeModule(item.typ)) {
+			if field.Name == name {
 				path := append(append([]int(nil), item.index...), index)
 				out = append(out, selectorCandidate{
-					selection: Selection{Kind: SelectionField, Name: name, Receiver: item.typ, Type: field.Type, Index: path},
-					fieldType: field.Type,
+					selection:    Selection{Kind: SelectionField, Name: name, Receiver: item.typ, DeclaringReceiver: item.typ, Type: field.Type, Index: path},
+					fieldType:    field.Type,
+					inaccessible: !a.visibleMember(name, a.typeModule(item.typ)),
 				})
 			}
 		}
 	}
-	for _, method := range a.directMethods(item.typ, methodExpression && !item.indirect) {
+	methods := a.directMethods(item.typ, methodExpression && !item.indirect)
+	genericObjects := make(map[string]ObjectID)
+	base := a.resolveAlias(item.typ)
+	pointer := a.info.Relations.View(base).Shape() == types.Pointer
+	if pointer {
+		base, _ = a.info.Relations.View(base).Elem()
+	}
+	if node, ok := a.typeNode(base); ok && node.Kind == types.Instance {
+		base = node.Base
+	}
+	for _, generic := range a.info.GenericMethods {
+		owner := generic.Method.Receiver
+		methodPointer := a.info.Relations.View(owner).Shape() == types.Pointer
+		if methodPointer {
+			owner, _ = a.info.Relations.View(owner).Elem()
+		}
+		if node, ok := a.typeNode(owner); ok && node.Kind == types.Instance {
+			owner = node.Base
+		}
+		if !a.info.Relations.Identical(a.resolveAlias(base), a.resolveAlias(owner)).OK || methodExpression && !item.indirect && methodPointer && !pointer {
+			continue
+		}
+		methods = append(methods, generic.Method)
+		genericObjects[generic.Method.Name] = generic.Object
+	}
+	for _, method := range methods {
 		modulePath := strings.TrimSpace(method.ModulePath)
 		if modulePath == "" {
 			modulePath = a.typeModule(item.typ)
@@ -195,6 +263,7 @@ func (a *analyzer) directSelectorCandidates(item selectorFrontier, name string, 
 		}
 		out = append(out, selectorCandidate{selection: Selection{
 			Kind: SelectionMethod, Name: name, ModulePath: modulePath,
+			Object:     genericObjects[method.Name],
 			FunctionID: method.FunctionID, Receiver: item.typ, DeclaringReceiver: declaringReceiver,
 			Signature: method.Signature, Variadic: method.Signature.Variadic,
 			Interface: a.isInterface(item.typ), Indirect: item.typ.Kind != types.Pointer && method.Receiver.Kind == types.Pointer,
@@ -211,6 +280,21 @@ func (a *analyzer) structFields(ref types.TypeRef) []types.Field {
 			return nil
 		}
 		ref = elem
+	}
+	ref = a.resolveAlias(ref)
+	if instance, ok := a.typeNode(ref); ok && instance.Kind == types.Instance {
+		fields, _ := a.info.Relations.View(instance.Base).StructFields()
+		bindings, ok := a.instanceTypeBindings(instance)
+		if !ok {
+			return fields
+		}
+		cache := make(map[types.TypeID]types.TypeRef)
+		for i := range fields {
+			if resolved, valid := a.substituteType(fields[i].Type, bindings, "fields."+string(instance.ID), cache); valid {
+				fields[i].Type = resolved
+			}
+		}
+		return fields
 	}
 	fields, ok := a.info.Relations.View(ref).StructFields()
 	if !ok {
@@ -269,6 +353,10 @@ func (a *analyzer) typeModule(ref types.TypeRef) string {
 	if a.info.Relations.View(ref).Shape() == types.Pointer {
 		ref, _ = a.info.Relations.View(ref).Elem()
 	}
+	ref = a.resolveAlias(ref)
+	if node, ok := a.typeNode(ref); ok && node.Kind == types.Instance {
+		ref = a.resolveAlias(node.Base)
+	}
 	if node, ok := a.typeNode(ref); ok && node.Kind == types.Named {
 		return node.Identity.ModulePath
 	}
@@ -283,5 +371,5 @@ func (a *analyzer) typeNode(ref types.TypeRef) (types.TypeNode, bool) {
 }
 
 func (a *analyzer) visibleMember(name, modulePath string) bool {
-	return isExported(name) || strings.TrimSpace(modulePath) == strings.TrimSpace(a.info.ModulePath)
+	return isExported(name) || strings.TrimSpace(modulePath) == strings.TrimSpace(a.info.ModulePath) || modulePath != "" && modulePath == a.definitionModule
 }

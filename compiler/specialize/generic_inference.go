@@ -367,6 +367,9 @@ func (s *genericSpecializer) expressionType(expr ast.Expression, substitutions m
 			}
 		}
 	}
+	if s.activeAlias != "" {
+		return ast.TypeExpr{}, false
+	}
 	info, ok := s.info.Exprs[expr.NodeID]
 	if !ok || !info.Type.Valid() {
 		return ast.TypeExpr{}, false

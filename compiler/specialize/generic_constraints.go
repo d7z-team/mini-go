@@ -100,7 +100,7 @@ func (s *genericSpecializer) satisfiesConstraint(arg, constraint ast.TypeExpr, n
 
 func (s *genericSpecializer) registerMethod(receiver string, method ast.FuncDecl, pointer bool) {
 	receiver = strings.TrimSpace(receiver)
-	if receiver == "" || method.Name == "" {
+	if receiver == "" || method.Name == "" || len(method.TypeParams) != 0 {
 		return
 	}
 	keys := []string{receiver}

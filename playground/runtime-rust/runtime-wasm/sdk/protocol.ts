@@ -1,4 +1,36 @@
-import type { Bindings, Frame, FrameRef, HostValue, Options, Snapshot, Stats } from "./types.js";
+import type {
+  Bindings,
+  Frame,
+  FrameRef,
+  HostValue,
+  Options,
+  ResourceOptions,
+  Snapshot,
+  Stats,
+} from "./types.js";
+
+/** Validate before copying inputs or creating workers; Rust resolves omitted defaults. */
+export function validateResourceOptions(options: ResourceOptions): void {
+  for (const [group, values] of Object.entries({ limits: options.limits, load: options.load })) {
+    for (const [name, value] of Object.entries(values ?? {})) {
+      if (value === undefined) continue;
+      const steps = group === "limits" && name === "maxSteps";
+      const wide =
+        group === "limits" &&
+        ["maxHeapBytes", "maxAllocatedBytes", "maxDynamicTypeBytes"].includes(name);
+      const min = steps ? -1 : name === "maxFrameCacheBytes" && group === "limits" ? 0 : 1;
+      const max = steps ? 9223372036854775807n : wide ? 18446744073709551615n : 4294967295n;
+      if (
+        (typeof value !== "number" && typeof value !== "bigint") ||
+        (typeof value === "number" && !Number.isSafeInteger(value)) ||
+        (!steps && !wide && typeof value !== "number") ||
+        value < min ||
+        value > max
+      )
+        throw new Error(`invalid ${group}.${name}`);
+    }
+  }
+}
 
 /** Own the visible bytes, including Buffer and offset views, before transfer or retention. */
 export function copyBytes(source: Uint8Array | ArrayBuffer): Uint8Array<ArrayBuffer> {
@@ -67,6 +99,7 @@ export type Request =
   | { kind: "hostResult"; id: number; payload: Uint8Array; error?: string };
 export type Response =
   | CompilerResponse
+  | { kind: "limits"; maxInputBytes: number; maxHostResultBytes: number; maxImageBytes: number }
   | { kind: "ready" | "closed" }
   | { kind: "fatal"; error: Failure }
   | { kind: "result"; id: number; value?: Snapshot; error?: Failure }
@@ -81,6 +114,7 @@ export type CompilerCommand =
       generation: bigint;
       image: Uint8Array;
       restore: Uint8Array;
+      resources: ResourceOptions;
       wasmUrl?: string;
     }
   | { kind: "compilerRequest"; generation: bigint; id: number; input: string; timeout: number }

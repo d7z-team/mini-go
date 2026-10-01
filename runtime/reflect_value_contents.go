@@ -79,7 +79,7 @@ func reflectValueCap(module *moduleInstance, value vmValue) int64 {
 		}
 		return int64(data.Cap)
 	case *vmArray:
-		if module != nil && module.isArrayType(value.Type) && !module.isSliceType(value.Type) {
+		if module != nil && module.isArrayType(value.Type) {
 			return int64(data.Len)
 		}
 	}

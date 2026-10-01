@@ -225,7 +225,7 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
             }
             const releaseChannel = new BroadcastChannel("browser-ownership-budget");
             const bounded = await MiniGo.create(await load("host-result"), {
-              maxPendingCalls: 1,
+              limits: { maxPendingCalls: 1 },
               providerModule: `${location.origin}/playground/runtime-rust/runtime-wasm/tests/provider.js?releaseChannel=browser-ownership-budget`,
             });
             const accepted = bounded.start("default");

@@ -1,6 +1,67 @@
 package runtime
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
+
+func TestByteSliceCopyPreservesOverlappingViews(t *testing.T) {
+	for _, compact := range []bool{false, true} {
+		for _, direction := range []string{"left", "right", "string", "distinct"} {
+			module := &moduleInstance{}
+			parent := newByteSliceHeaderValue("Slice<Uint8>", []byte("abcdef"), 6, 6)
+			if !compact {
+				values := make([]vmValue, 6)
+				for i, value := range []byte("abcdef") {
+					values[i] = newVMValue("Uint8", uint64(value))
+				}
+				parent = newSliceValue("Slice<Uint8>", values)
+			}
+			header := parent.Data.(*vmSlice)
+			source := newSliceViewValue("Slice<Uint8>", header, 0, 4, 6)
+			destination := newSliceViewValue("Slice<Uint8>", header, 1, 4, 5)
+			want := "aabcdf"
+			switch direction {
+			case "left":
+				source, destination = destination, source
+				want = "bcdeef"
+			case "string":
+				source = newVMValue("String", "wxyz!")
+				want = "awxyzf"
+			case "distinct":
+				source = newByteSliceHeaderValue("Slice<Uint8>", []byte("wxyz!"), 5, 5)
+				want = "awxyzf"
+			}
+			copied, err := copyValue(module, destination, source)
+			if err != nil || copied.scalar != 4 {
+				t.Fatalf("compact=%t %s: copy=%v, %v", compact, direction, copied, err)
+			}
+			text, _, err := module.convertByteSliceToString(parent)
+			if err != nil || text.Data != want {
+				t.Fatalf("compact=%t %s: got %v, want %q (%v)", compact, direction, text.Data, want, err)
+			}
+		}
+	}
+}
+
+func TestByteSliceCopyAcrossConcurrentStorageOwners(t *testing.T) {
+	left := newByteSliceHeaderValue("Slice<Uint8>", []byte("abcd"), 4, 4).Data.(*vmSlice)
+	right := newByteSliceHeaderValue("Slice<Uint8>", []byte("wxyz"), 4, 4).Data.(*vmSlice)
+	var group sync.WaitGroup
+	for _, pair := range [][2]*vmSlice{{left, right}, {right, left}, {left, left}} {
+		group.Go(func() {
+			for range 100 {
+				pair[0].copyBytesFrom(pair[1], 4)
+			}
+		})
+	}
+	group.Wait()
+	for _, storage := range []*vmSlice{left, right} {
+		if value := string(storage.bytes()); value != "abcd" && value != "wxyz" {
+			t.Fatalf("copy corrupted bytes: %q", value)
+		}
+	}
+}
 
 func TestPackedByteSliceSharesViewAndSeparatesOwnedCopy(t *testing.T) {
 	value := newByteSliceHeaderValue("Slice<Uint8>", []byte{1, 2, 3}, 3, 3)

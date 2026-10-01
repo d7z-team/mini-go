@@ -68,9 +68,39 @@ export interface RPCOptions {
   admissionTimeoutMs?: number;
   maxCallDurationMs?: number;
 }
-export interface Options {
-  /** Select the bounded compiler image and execution envelope. */
-  workload?: "runtime" | "compiler";
+/** Omitted fields use the entry point's defaults; byte/count limits are positive. */
+export interface ExecutionLimits {
+  /** 0/omitted: entry default (runtime 100M, compiler unlimited); -1: unlimited. */
+  maxSteps?: number | bigint;
+  maxFrames?: number;
+  /** Zero disables the idle frame cache. */
+  maxFrameCacheBytes?: number;
+  maxRetainedRevisions?: number;
+  maxDynamicTypes?: number;
+  maxDynamicTypeBytes?: number | bigint;
+  maxObjects?: number;
+  maxHeapBytes?: number | bigint;
+  /** Logical live guest data budget, independent of cumulative allocations and RSS. */
+  maxAllocatedBytes?: number | bigint;
+  maxStringBytes?: number;
+  maxValueDepth?: number;
+  maxSequenceElements?: number;
+  maxTasks?: number;
+  maxPendingCalls?: number;
+  maxFfiBytes?: number;
+  maxFfiResultBytes?: number;
+}
+export interface LoadLimits {
+  maxImageBytes?: number;
+  maxArtifactBytes?: number;
+  maxPackages?: number;
+  maxTypeNodes?: number;
+}
+export interface ResourceOptions {
+  limits?: ExecutionLimits;
+  load?: LoadLimits;
+}
+export interface Options extends ResourceOptions {
   signal?: AbortSignal;
   provider?: (request: HostRequest) => Uint8Array | Promise<Uint8Array>;
   /** Absolute URL of a worker provider module exporting call and optional close. */
@@ -82,10 +112,6 @@ export interface Options {
   rpcUrl?: string;
   rpcOptions?: RPCOptions;
   capabilities?: string[];
-  /** 0/default: 100 million, -1: unlimited; positive values fit signed i64. */
-  maxSteps?: number | bigint;
-  maxHeapBytes?: number | bigint;
-  maxPendingCalls?: number;
   symbols?: Uint8Array;
 }
 export interface FrameRef {

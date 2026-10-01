@@ -7,10 +7,10 @@ import (
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
-	"github.com/d7z-team/mini-go/runtime/bytecode"
+	"github.com/d7z-team/mini-go/compiler/constant"
 )
 
-func literalValue(expr ast.Expression) (json.RawMessage, string, bool) {
+func literalValue(expr ast.Expression) (*constant.Value, string, bool) {
 	typ := ""
 	if expr.Type != nil {
 		typ = typeString(*expr.Type)
@@ -20,7 +20,7 @@ func literalValue(expr ast.Expression) (json.RawMessage, string, bool) {
 	}
 	text := strings.TrimSpace(expr.Literal)
 	if text == "nil" {
-		return json.RawMessage("null"), typ, true
+		return constant.Scalar("null"), typ, true
 	}
 	switch typ {
 	case "String":
@@ -31,7 +31,7 @@ func literalValue(expr ast.Expression) (json.RawMessage, string, bool) {
 		if err != nil {
 			return nil, "", false
 		}
-		return bytecode.EncodeStringConstant(value), typ, true
+		return stringConstant(value), typ, true
 	case "Bool":
 		if text != "true" && text != "false" {
 			return nil, "", false
@@ -44,35 +44,37 @@ func literalValue(expr ast.Expression) (json.RawMessage, string, bool) {
 		if !ok {
 			return nil, "", false
 		}
-		raw, ok := exactIntegerJSONRaw(value)
+		raw, ok := exactIntegerConstant(value)
 		return raw, typ, ok
 	case "Float32", "Float64":
 		value, ok := parseExactRationalLiteral(text)
 		if !ok {
 			return nil, "", false
 		}
-		raw, ok := exactRationalRaw(value)
+		raw, ok := exactRationalConstant(value)
 		return raw, typ, ok
 	case "Complex64", "Complex128":
 		var value exactComplex
 		var ok bool
 		if strings.HasPrefix(text, "{") {
-			value, ok = exactComplexFromRaw(json.RawMessage(text))
+			decoded, valid := constant.FromJSON([]byte(text), typ, true)
+			value, ok = constantComplex(decoded.Ref())
+			ok = ok && valid
 		} else {
 			value, ok = parseExactImaginaryLiteral(text)
 		}
 		if !ok {
 			return nil, "", false
 		}
-		raw, ok := exactComplexRaw(value)
+		raw, ok := exactComplexConstant(value)
 		return raw, typ, ok
 	default:
 		if text == "" {
 			return nil, "", false
 		}
 	}
-	raw := json.RawMessage(text)
-	if !json.Valid(raw) {
+	raw := constant.Scalar(text)
+	if !json.Valid([]byte(text)) {
 		return nil, "", false
 	}
 	return raw, typ, true

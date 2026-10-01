@@ -8,6 +8,34 @@ import (
 	"github.com/d7z-team/mini-go/compiler/token"
 )
 
+func TestLexicalCapacityCanExceedDefaultBudgets(t *testing.T) {
+	t.Run("tokens", func(t *testing.T) {
+		file := source.NewFile("sample", "large.mgo", strings.Repeat(";", DefaultMaxTokens+1))
+		for _, limit := range []int{0, DefaultMaxTokens + 2} {
+			document := ScanDocument(file, Limits{MaxTokens: limit})
+			if limit == 0 {
+				if !source.HasErrors(document.Diagnostics()) {
+					t.Fatal("expected token budget diagnostic")
+				}
+			} else if diagnostics := document.Diagnostics(); len(diagnostics) != 0 || document.TokenCount() != DefaultMaxTokens+2 {
+				t.Fatalf("raised token budget: tokens=%d diagnostics=%v", document.TokenCount(), diagnostics)
+			}
+		}
+	})
+	t.Run("diagnostics", func(t *testing.T) {
+		file := source.NewFile("sample", "invalid.mgo", strings.Repeat("@ ", DefaultMaxDiagnostics+1))
+		document := ScanDocument(file, Limits{MaxDiagnostics: DefaultMaxDiagnostics + 2})
+		for _, diagnostic := range document.Diagnostics() {
+			if diagnostic.Code == source.DiagnosticTruncated {
+				t.Fatalf("raised diagnostic budget truncated: %v", document.Diagnostics())
+			}
+		}
+		if len(document.Diagnostics()) != DefaultMaxDiagnostics+1 {
+			t.Fatalf("expected every invalid token to be diagnosed: %v", document.Diagnostics())
+		}
+	})
+}
+
 func TestLexicalViewsExpandSourceSpansInEitherDirection(t *testing.T) {
 	for _, text := range []string{"", "plain", "a\r\n中文\n\xfflast\n", "\n\n"} {
 		file := source.NewFile("sample", "sample.mgo", text)

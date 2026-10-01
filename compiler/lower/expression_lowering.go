@@ -1,9 +1,8 @@
 package lower
 
 import (
-	"encoding/json"
-
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	bytecode "github.com/d7z-team/mini-go/runtime/bytecode"
@@ -23,6 +22,10 @@ func (l *lowerer) lowerExpression(expr ast.Expression, scope *funcScope) (ir.Exp
 }
 
 func (l *lowerer) lowerExpressionBody(expr ast.Expression, scope *funcScope) (ir.Expression, bool) {
+	if expr.FunctionID != "" {
+		l.ensureSourceRequirement(expr.FunctionModule)
+		return ir.Expression{Kind: ir.ExprFunction, Function: expr.FunctionID, ModulePath: expr.FunctionModule, Type: l.hirType(l.resolveSourceTypePtr(expr.Type, scope))}, true
+	}
 	switch expr.Kind {
 	case ast.ExprEmbed:
 		return l.lowerEmbedInitializer(expr)
@@ -138,7 +141,7 @@ func (l *lowerer) lowerExpressionBody(expr ast.Expression, scope *funcScope) (ir
 				return ir.Expression{}, false
 			}
 			if isNilLiteral(expr.Args[0]) && l.isNilAssignableType(target) {
-				return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(target), Value: json.RawMessage("null")}, true
+				return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(target), Value: constant.Scalar("null")}, true
 			}
 			if !l.validateConversion(expr.Args[0], target, scope, expr.Span) {
 				return ir.Expression{}, false
@@ -196,6 +199,18 @@ func (l *lowerer) lowerExpressionBody(expr ast.Expression, scope *funcScope) (ir
 			}
 		}
 		if expr.Callee.Kind == ast.ExprIdent {
+			if expr.Callee.FunctionID != "" {
+				signature, found := l.semanticCallSignature(expr)
+				if !found {
+					l.add("hirgen.semantic.call", "bound function call is missing semantic signature", expr.Span)
+					return ir.Expression{}, false
+				}
+				args, ok := l.lowerCallArguments(expr, scope, l.signatureParamTypes(signature), signature.Variadic, nil)
+				if !ok {
+					return ir.Expression{}, false
+				}
+				return ir.Expression{Kind: ir.ExprCallDirect, Function: expr.Callee.FunctionID, ModulePath: expr.Callee.FunctionModule, Args: args, ResultCount: len(signature.Results), ResultTypes: signature.Results}, true
+			}
 			if fn, ok := l.functions[expr.Callee.Name]; ok {
 				signature, found := l.semanticCallSignature(expr)
 				if !found {
@@ -340,7 +355,7 @@ func (l *lowerer) lowerExpressionBody(expr ast.Expression, scope *funcScope) (ir
 				return ir.Expression{}, false
 			}
 		}
-		zero := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: json.RawMessage(`0`)}
+		zero := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Int"), Value: constant.Scalar(`0`)}
 		noMax := ir.Expression{Kind: ir.ExprZero, Type: l.hirType("Void")}
 		start := zero
 		if expr.Start != nil {
@@ -407,7 +422,7 @@ func (l *lowerer) lowerExpressionBody(expr ast.Expression, scope *funcScope) (ir
 	case ast.ExprConvert:
 		target := l.resolveSourceTypePtr(expr.Type, scope)
 		if expr.Operand != nil && isNilLiteral(*expr.Operand) && l.isNilAssignableType(target) {
-			return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(target), Value: json.RawMessage("null")}, true
+			return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(target), Value: constant.Scalar("null")}, true
 		}
 		if expr.Operand != nil && !l.validateConversion(*expr.Operand, target, scope, expr.Span) {
 			return ir.Expression{}, false

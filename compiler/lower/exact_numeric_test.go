@@ -15,20 +15,20 @@ func TestExactNumericParsesAndFoldsWithoutHostPrecisionLoss(t *testing.T) {
 		t.Fatal("exact division failed")
 	}
 	whole, ok := foldExactRationalBinary("*", third, three)
-	if !ok || exactRationalText(whole) != "1/1" {
-		t.Fatalf("(1/3)*3 = %q", exactRationalText(whole))
+	if !ok || whole.Numerator+"/"+whole.Denominator != "1/1" {
+		t.Fatalf("(1/3)*3 = %q", whole.Numerator+"/"+whole.Denominator)
 	}
 
 	high, _ := parseExactRationalLiteral("9007199254740993.0")
 	prior, _ := parseExactRationalLiteral("9007199254740992.0")
 	comparison, ok := foldExactRationalCompare(">", high, prior)
-	if !ok || string(comparison) != "true" {
+	if !ok || string(comparison.JSON()) != "true" {
 		t.Fatal("exact constants above 2^53 compared equal")
 	}
 
 	hex, ok := parseExactRationalLiteral("0x1.fp2")
-	if !ok || exactRationalText(hex) != "31/4" {
-		t.Fatalf("hex float = %q", exactRationalText(hex))
+	if !ok || hex.Numerator+"/"+hex.Denominator != "31/4" {
+		t.Fatalf("hex float = %q", hex.Numerator+"/"+hex.Denominator)
 	}
 }
 

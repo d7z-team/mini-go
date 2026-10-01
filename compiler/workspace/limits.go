@@ -14,7 +14,7 @@ const (
 )
 
 // Limits bounds deterministic work performed while loading a source graph.
-// Zero values select defaults; callers may supply lower values.
+// Positive capacities override defaults; syntax depth retains its structural ceiling.
 type Limits struct {
 	MaxPackages         int
 	MaxFiles            int
@@ -27,28 +27,28 @@ type Limits struct {
 }
 
 func normalizeLimits(limits Limits) Limits {
-	if limits.MaxPackages <= 0 || limits.MaxPackages > DefaultMaxPackages {
+	if limits.MaxPackages <= 0 {
 		limits.MaxPackages = DefaultMaxPackages
 	}
-	if limits.MaxFiles <= 0 || limits.MaxFiles > DefaultMaxFiles {
+	if limits.MaxFiles <= 0 {
 		limits.MaxFiles = DefaultMaxFiles
 	}
-	if limits.MaxTotalSourceBytes <= 0 || limits.MaxTotalSourceBytes > DefaultMaxTotalSourceBytes {
+	if limits.MaxTotalSourceBytes <= 0 {
 		limits.MaxTotalSourceBytes = DefaultMaxTotalSourceBytes
 	}
-	if limits.MaxSourceBytes <= 0 || limits.MaxSourceBytes > scanner.DefaultMaxSourceBytes {
+	if limits.MaxSourceBytes <= 0 {
 		limits.MaxSourceBytes = scanner.DefaultMaxSourceBytes
 	}
-	if limits.MaxTokens <= 0 || limits.MaxTokens > scanner.DefaultMaxTokens {
+	if limits.MaxTokens <= 0 {
 		limits.MaxTokens = scanner.DefaultMaxTokens
 	}
 	if limits.MaxSyntaxDepth <= 0 || limits.MaxSyntaxDepth > parser.DefaultMaxNesting {
 		limits.MaxSyntaxDepth = parser.DefaultMaxNesting
 	}
-	if limits.MaxASTNodes <= 0 || limits.MaxASTNodes > ast.DefaultMaxNodes {
+	if limits.MaxASTNodes <= 0 {
 		limits.MaxASTNodes = ast.DefaultMaxNodes
 	}
-	if limits.MaxDiagnostics <= 0 || limits.MaxDiagnostics > DefaultMaxDiagnostics {
+	if limits.MaxDiagnostics <= 0 {
 		limits.MaxDiagnostics = DefaultMaxDiagnostics
 	}
 	return limits

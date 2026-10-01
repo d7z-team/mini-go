@@ -15,10 +15,6 @@
 ## 维护
 
 公开注释与同目录行为测试描述实际支持的 API，Go 测试验证宿主和跨层集成。
-生成与验证顺序见[开发指南](../DEVELOPMENT.md#生成与派生物)。
-
-```bash
-make test TEST_PACKAGES='./stdlib/...'
-```
+生成与验证顺序见[开发指南](../DEVELOPMENT.md#生成与派生物)，单独验证时选择 `./stdlib/...` 包。
 
 移植源码保留原版权头，适用 [Go 许可证](LICENSE_GO)。

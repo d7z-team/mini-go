@@ -55,7 +55,7 @@ func TestLowerBuiltinLenCapCalls(t *testing.T) {
 	if len(fn.Body) == 0 || len(fn.Body[0].Results) != 2 {
 		t.Fatalf("expected two return expressions, got %#v", fn.Body)
 	}
-	if got := fn.Body[0].Results[0]; got.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, got.Type) != "Int" || string(got.Value) != "3" {
+	if got := fn.Body[0].Results[0]; got.Kind != ir.ExprLiteral || hirTypeString(&program.TypeTable, got.Type) != "Int" || string(got.Value.JSON()) != "3" {
 		t.Fatalf("expected len builtin to fold to Int literal 3, got %#v", got)
 	}
 	if got := fn.Body[0].Results[1].Kind; got != ir.ExprCap {

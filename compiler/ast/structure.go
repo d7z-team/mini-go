@@ -92,12 +92,15 @@ func walkStructure(program *Program, limits Limits, assignIDs bool) ([]source.Di
 			stopped = true
 			return false
 		}
-		nodes++
-		if nodes > limits.MaxNodes {
+		if nodes == limits.MaxNodes {
+			if nodes < int(^uint(0)>>1) {
+				nodes++
+			}
 			collector.Add(structureDiagnostic("ast.limit.nodes", "AST node count exceeds compiler limit", span))
 			stopped = true
 			return false
 		}
+		nodes++
 		if assignIDs {
 			*id, nextNode = nextNode, nextNode+1
 		} else if *id != 0 {
@@ -123,7 +126,7 @@ func walkStructure(program *Program, limits Limits, assignIDs bool) ([]source.Di
 		if value == nil || stopped {
 			return
 		}
-		if len(stack) >= limits.MaxNodes+limits.MaxDepth {
+		if len(stack)-limits.MaxDepth >= limits.MaxNodes {
 			collector.Add(structureDiagnostic("ast.limit.nodes", "AST node count exceeds compiler limit", source.Span{}))
 			stopped = true
 			return
@@ -134,7 +137,7 @@ func walkStructure(program *Program, limits Limits, assignIDs bool) ([]source.Di
 		if stopped {
 			return
 		}
-		if len(stack) >= limits.MaxNodes+limits.MaxDepth {
+		if len(stack)-limits.MaxDepth >= limits.MaxNodes {
 			collector.Add(structureDiagnostic("ast.limit.nodes", "AST node count exceeds compiler limit", source.Span{}))
 			stopped = true
 			return
@@ -168,7 +171,10 @@ func walkStructure(program *Program, limits Limits, assignIDs bool) ([]source.Di
 					continue
 				}
 				if memo.nodes > limits.MaxNodes-nodes {
-					nodes = limits.MaxNodes + 1
+					nodes = limits.MaxNodes
+					if nodes < int(^uint(0)>>1) {
+						nodes++
+					}
 					collector.Add(structureDiagnostic("ast.limit.nodes", "AST node count exceeds compiler limit", source.Span{}))
 					stopped = true
 					continue
@@ -477,10 +483,10 @@ func normalizeStructureLimits(limits Limits) Limits {
 	if limits.MaxDepth <= 0 || limits.MaxDepth > DefaultMaxDepth {
 		limits.MaxDepth = DefaultMaxDepth
 	}
-	if limits.MaxNodes <= 0 || limits.MaxNodes > DefaultMaxNodes {
+	if limits.MaxNodes <= 0 {
 		limits.MaxNodes = DefaultMaxNodes
 	}
-	if limits.MaxDiagnostics <= 0 || limits.MaxDiagnostics > DefaultMaxDiagnostics {
+	if limits.MaxDiagnostics <= 0 {
 		limits.MaxDiagnostics = DefaultMaxDiagnostics
 	}
 	return limits

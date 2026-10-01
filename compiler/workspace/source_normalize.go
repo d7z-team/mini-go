@@ -50,7 +50,7 @@ func normalizePackage(pkg SourcePackage) (SourcePackage, error) {
 			}
 			seen[name] = struct{}{}
 			file.Path = name
-			file.ID = stableFileID(modulePath, name)
+			file.ID = "file:" + modulePath + "/" + name
 			if tests {
 				out.TestFiles = append(out.TestFiles, file)
 			} else {
@@ -114,8 +114,13 @@ func normalizeFilePath(name string) (string, error) {
 	return name, nil
 }
 
-func stableFileID(modulePath, name string) string {
-	return "file:" + modulePath + "/" + name
+func hasHiddenPathElement(name string) bool {
+	for _, element := range strings.Split(name, "/") {
+		if strings.HasPrefix(element, ".") || strings.HasPrefix(element, "_") {
+			return true
+		}
+	}
+	return false
 }
 
 type packageFileClass struct {
@@ -134,7 +139,7 @@ func classifyPackageFile(name string) packageFileClass {
 		source:          sourceFile,
 		test:            sourceFile && strings.HasSuffix(name, "_test.mgo"),
 		resource:        true,
-		discoverPackage: sourceFile && !ignoredPackagePath(name),
+		discoverPackage: sourceFile && !hasHiddenPathElement(name),
 	}
 }
 

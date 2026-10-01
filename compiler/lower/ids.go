@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	ir "github.com/d7z-team/mini-go/compiler/hir"
+	"github.com/d7z-team/mini-go/compiler/token"
 )
 
 func sortStrings(values []string) {
@@ -126,11 +127,7 @@ func functionHasLocalID(fn *ir.Function, id string) bool {
 }
 
 func isExported(name string) bool {
-	if name == "" {
-		return false
-	}
-	ch := name[0]
-	return ch >= 'A' && ch <= 'Z'
+	return token.IsExportedName(name)
 }
 
 func (l *lowerer) newLabel(prefix string) string {

@@ -68,7 +68,7 @@ func hostValueToVM(ctx context.Context, module *moduleInstance, expected string,
 		out = newByteSliceHeaderValue(expected, bytes, len(bytes), cap(bytes))
 	case HostArrayKind, HostSliceKind:
 		items := make([]vmValue, len(value.items))
-		elementType := module.arrayElemType(expected)
+		elementType := module.sequenceElementType(expected)
 		for i := range value.items {
 			if i&255 == 0 {
 				if err := ctx.Err(); err != nil {

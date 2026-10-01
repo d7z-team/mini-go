@@ -16,6 +16,11 @@ test(
       ),
     );
     let loss;
+    const resources = {
+      limits: { maxSteps: 0, maxHeapBytes: 192 * 1024 * 1024 },
+      load: { maxImageBytes: 60 * 1024 * 1024 },
+    };
+    const expectedResources = structuredClone(resources);
     let cleanupFailure = false;
     const factory = (options) => {
       const connection = createWorker(options);
@@ -31,6 +36,8 @@ test(
           }
         },
         send(message) {
+          if (message.kind === "compilerCreate")
+            assert.deepEqual(message.resources, expectedResources);
           if (message.kind === "compilerRequest") operation = JSON.parse(message.input).Operation;
           connection.send(message);
           if (message.kind === "compilerAck" && loss === "confirmed") {
@@ -59,7 +66,12 @@ test(
         },
       };
     };
-    const service = await LanguageService.create(factory, image, { timeoutMs: 300_000 });
+    const service = await LanguageService.create(factory, image, {
+      ...resources,
+      timeoutMs: 300_000,
+    });
+    resources.limits.maxSteps = 1;
+    resources.load.maxImageBytes = 1;
     image.fill(0);
     try {
       loss = "workspace/open";

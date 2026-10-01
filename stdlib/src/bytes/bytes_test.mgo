@@ -6,6 +6,31 @@ import (
 	"testing"
 )
 
+func TestCutLast(t *testing.T) {
+	s := []byte("a:b:c")
+	before, after, found := bytes.CutLast(s, []byte(":"))
+	if !found || string(before) != "a:b" || string(after) != "c" {
+		t.Fatal("last separator")
+	}
+	before[0] = 'x'
+	after[0] = 'y'
+	if string(s) != "x:b:y" {
+		t.Fatal("slice alias")
+	}
+	before, after, found = bytes.CutLast(nil, nil)
+	if !found || before != nil || after != nil {
+		t.Fatal("nil empty separator")
+	}
+	before, after, found = bytes.CutLast(s, []byte("missing"))
+	if found || string(before) != string(s) || after != nil {
+		t.Fatal("missing separator")
+	}
+	before, after, found = bytes.CutLast(s, nil)
+	if !found || string(before) != string(s) || len(after) != 0 {
+		t.Fatal("empty separator")
+	}
+}
+
 func TestBytesCompareSearchTrim(t *testing.T) {
 	if !bytes.Equal([]byte("go"), []byte("go")) {
 		t.Fatalf("Equal should match equal slices")

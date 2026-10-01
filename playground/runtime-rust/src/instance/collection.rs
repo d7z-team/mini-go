@@ -523,8 +523,32 @@ impl Instance {
                 .collect::<Vec<_>>();
             return self.append_bytes(object, &bytes);
         }
+        let (new_length, new_capacity) =
+            self.reserve_slice_append(length, capacity, values.len())?;
+        if new_capacity > capacity {
+            let mut initial = self.slice_values(&object)?;
+            initial.extend(values);
+            object = self.make_slice(object.typ, new_length, new_capacity, initial)?;
+        } else if let Data::Slice(slice) = &mut object.data {
+            let slice = Arc::make_mut(slice);
+            slice.identity = Arc::default();
+            slice.length = new_length;
+            for (index, value) in values.into_iter().enumerate() {
+                self.store_index(object.clone(), Value::int((length + index) as i64), value)?;
+            }
+        }
+        Ok(object)
+    }
+
+    /// Validate and charge logical growth before mutating either backing kind.
+    pub(super) fn reserve_slice_append(
+        &mut self,
+        length: usize,
+        capacity: usize,
+        added: usize,
+    ) -> Result<(usize, usize), RuntimeError> {
         let new_length = length
-            .checked_add(values.len())
+            .checked_add(added)
             .filter(|length| *length <= self.limits.max_sequence_elements)
             .ok_or_else(|| {
                 RuntimeError::new("value_limit", "append", "slice length exceeds limit")
@@ -549,19 +573,7 @@ impl Instance {
                 })?;
             self.charge_guest(bytes)?;
         }
-        if new_capacity > capacity {
-            let mut initial = self.slice_values(&object)?;
-            initial.extend(values);
-            object = self.make_slice(object.typ, new_length, new_capacity, initial)?;
-        } else if let Data::Slice(slice) = &mut object.data {
-            let slice = Arc::make_mut(slice);
-            slice.identity = Arc::default();
-            slice.length = new_length;
-            for (index, value) in values.into_iter().enumerate() {
-                self.store_index(object.clone(), Value::int((length + index) as i64), value)?;
-            }
-        }
-        Ok(object)
+        Ok((new_length, new_capacity))
     }
 
     pub(super) fn copy_values(

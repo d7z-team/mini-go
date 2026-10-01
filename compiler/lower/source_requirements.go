@@ -2,8 +2,10 @@ package lower
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	ir "github.com/d7z-team/mini-go/compiler/hir"
+	"github.com/d7z-team/mini-go/compiler/token"
 )
 
 func (l *lowerer) markImportExport(modulePath, export string) {
@@ -35,11 +37,11 @@ func (l *lowerer) markImportExportsInType(modulePath, typ string) {
 		start := i + index + len(prefix)
 		end := start
 		for end < len(typ) {
-			ch := typ[end]
-			if !(ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9') {
+			ch, size := utf8.DecodeRuneInString(typ[end:])
+			if !token.IsIdentifierPart(ch) {
 				break
 			}
-			end++
+			end += size
 		}
 		if end > start {
 			l.markImportExport(modulePath, typ[start:end])

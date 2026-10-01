@@ -6,6 +6,27 @@ import (
 	"github.com/d7z-team/mini-go/compiler/source"
 )
 
+func TestSharedTreeCapacityCanExceedDefaultNodeBudget(t *testing.T) {
+	expression := &Expression{Kind: ExprIdent, Name: "x"}
+	for range 20 {
+		expression = &Expression{Kind: ExprBinary, Operator: "+", Left: expression, Right: expression}
+	}
+	program := Program{Files: []File{{Decls: []Decl{{Kind: DeclVar, Var: &ValueDecl{Values: []Expression{*expression}}}}}}}
+	requireDiagnostic(t, ValidateStructure(&program, Limits{}), "ast.limit.nodes")
+	diagnostics, stats := ValidateStructureWithStats(&program, Limits{MaxNodes: 3_000_000})
+	if len(diagnostics) != 0 || stats.Nodes <= DefaultMaxNodes {
+		t.Fatalf("expanded shared tree: nodes=%d diagnostics=%v", stats.Nodes, diagnostics)
+	}
+	if diagnostics := ValidateStructure(&program, Limits{MaxNodes: int(^uint(0) >> 1)}); len(diagnostics) != 0 {
+		t.Fatalf("platform-sized node budget: %v", diagnostics)
+	}
+	for range 64 {
+		expression = &Expression{Kind: ExprBinary, Operator: "+", Left: expression, Right: expression}
+	}
+	program.Files[0].Decls[0].Var.Values[0] = *expression
+	requireDiagnostic(t, ValidateStructure(&program, Limits{MaxNodes: int(^uint(0) >> 1)}), "ast.limit.nodes")
+}
+
 func TestDeclarationPayloadsRequireTheirVariantAndRejectCycles(t *testing.T) {
 	for _, kind := range []DeclKind{DeclImport, DeclConst, DeclVar, DeclType, DeclFunc} {
 		t.Run(string(kind), func(t *testing.T) {

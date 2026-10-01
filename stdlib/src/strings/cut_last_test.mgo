@@ -1,0 +1,24 @@
+package strings_test
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestCutLast(t *testing.T) {
+	for _, tc := range []struct {
+		text, sep, before, after string
+		found bool
+	}{
+		{"a:b:c", ":", "a:b", "c", true},
+		{"", "", "", "", true},
+		{"你好世界你好", "你好", "你好世界", "", true},
+		{"abc", "", "abc", "", true},
+		{"abc", "z", "abc", "", false},
+	} {
+		before, after, found := strings.CutLast(tc.text, tc.sep)
+		if before != tc.before || after != tc.after || found != tc.found {
+			t.Fatalf("CutLast(%q,%q)", tc.text, tc.sep)
+		}
+	}
+}

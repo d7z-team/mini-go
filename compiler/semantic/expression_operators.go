@@ -9,13 +9,6 @@ import (
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
-func (a *analyzer) finalizeLiteral(expr *ast.Expression, info ExprInfo) ExprInfo {
-	info.Type = a.resolvedTypePtr(expr.Type)
-	info.Mode = ExprConstant
-	info.Untyped = true
-	return info
-}
-
 func (a *analyzer) finalizeUnary(expr *ast.Expression, info ExprInfo) ExprInfo {
 	if expr.Operand == nil {
 		return info
@@ -407,6 +400,11 @@ func (a *analyzer) unresolvedDependencyTypeParameter(ref types.TypeRef) bool {
 }
 
 func (a *analyzer) validateTypeParameterBinary(expr *ast.Expression, left, right ExprInfo, operator string) {
+	// Imported generic results can still contain dependency parameters before
+	// specialization. Only declaration-scoped parameters constrain this body.
+	if !a.typeParameterInScope(left.Type, expr.NodeID) && !a.typeParameterInScope(right.Type, expr.NodeID) {
+		return
+	}
 	if left.Type.Kind == types.TypeParameter && right.Type.Kind == types.TypeParameter &&
 		!a.info.Relations.Identical(left.Type, right.Type).OK {
 		a.addDiagnostic("semantic.generic.binary_types", "generic binary operands must have identical types", expr.Span)

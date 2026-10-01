@@ -1,10 +1,10 @@
 package lower
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
@@ -46,8 +46,8 @@ func (l *lowerer) lowerFunctionRange(stmt ast.Statement, scope *funcScope, itera
 	returnFlagLocal := l.newSyntheticLocal(rangeScope, "range.func.returning", "Bool")
 	iteratorRef := ir.Expression{Kind: ir.ExprLocal, Local: iteratorLocal, Type: l.hirType(info.IteratorType)}
 	returnFlagRef := ir.Expression{Kind: ir.ExprLocal, Local: returnFlagLocal, Type: l.hirType("Bool")}
-	trueValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: json.RawMessage(`true`)}
-	falseValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: json.RawMessage(`false`)}
+	trueValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: constant.Scalar(`true`)}
+	falseValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: constant.Scalar(`false`)}
 	yield, ok := l.buildRangeYieldFunction(stmt, info, rangeScope, keepLocal, returnFlagLocal, returnSlots, userLabel)
 	if !ok {
 		return nil, false
@@ -123,8 +123,8 @@ func (l *lowerer) buildRangeYieldFunction(
 		returnTargets = append(returnTargets, ir.StoreTarget{Kind: "upvalue", Upvalue: upvalueID})
 	}
 	keepRef := ir.Expression{Kind: ir.ExprUpvalue, Upvalue: keepUpvalue, Type: l.hirType("Bool")}
-	trueValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: json.RawMessage(`true`)}
-	falseValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: json.RawMessage(`false`)}
+	trueValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: constant.Scalar(`true`)}
+	falseValue := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType("Bool"), Value: constant.Scalar(`false`)}
 	activeLabel := l.newLabel("range.yield.active")
 	continueLabel := l.newLabel("range.yield.continue")
 	stopLabel := l.newLabel("range.yield.stop")

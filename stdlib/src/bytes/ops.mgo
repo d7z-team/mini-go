@@ -111,6 +111,15 @@ func Cut(s []byte, sep []byte) ([]byte, []byte, bool) {
 	return before, after, true
 }
 
+// CutLast slices s around the last instance of sep. The returned slices
+// share s's storage. If sep is absent, it returns s, nil, false.
+func CutLast(s, sep []byte) (before, after []byte, found bool) {
+	if index := LastIndex(s, sep); index >= 0 {
+		return s[:index], s[index + len(sep):], true
+	}
+	return s, nil, false
+}
+
 // CutPrefix returns s without the provided leading prefix byte slice
 // and reports whether it found the prefix.
 // If s doesn't start with prefix, CutPrefix returns s, false.

@@ -148,3 +148,28 @@ func TestArrayLengthsUseImportedConstantFacts(t *testing.T) {
 		}
 	}
 }
+
+func TestImportedConstantSnapshotsFollowDependencyRevision(t *testing.T) {
+	const input = "package arrays\nimport \"example/sizes\"\nconst Doubled = sizes.Size + sizes.Size\ntype Digest [Doubled]byte"
+	options := AnalyzeOptions{Dependencies: testDependencies([]DependencyExport{{
+		ModulePath: "example/sizes", Name: "Size", Kind: ObjectConst, Type: "Int",
+		Value: json.RawMessage("16"), Untyped: true,
+	}})}
+	var snapshots []CheckedProgram
+	for _, value := range []string{"16", "32"} {
+		options.Dependencies[0].Members[0].Value = json.RawMessage(value)
+		parsed := parser.ParseSource("example/arrays", "arrays.mgo", input)
+		checked := WithOptions(parsed.Program, options)
+		if len(checked.Info.Diagnostics) != 0 {
+			t.Fatal(checked.Info.Diagnostics)
+		}
+		snapshots = append(snapshots, checked)
+	}
+	for i, checked := range snapshots {
+		decl := checked.Program.Files[0].Decls[2]
+		ref := checked.Info.Types[decl.Type.Type.NodeID].Type
+		if length, _, ok := types.View(checked.Info.TypeTable, ref).Array(); !ok || length != int64(32*(i+1)) {
+			t.Fatalf("dependency revision %d: array length %d, %v", i, length, ok)
+		}
+	}
+}

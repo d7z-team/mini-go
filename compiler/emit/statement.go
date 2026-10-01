@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/hir"
 	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
@@ -105,7 +106,7 @@ func (l *slotLowerer) statement(stmt hir.Statement) error {
 				if when {
 					value = []byte("true")
 				}
-				return l.statement(hir.Statement{Kind: hir.StmtReturn, Results: []hir.Expression{{Kind: hir.ExprLiteral, Type: types.Builtin(types.PrimitiveBool), Value: value}}})
+				return l.statement(hir.Statement{Kind: hir.StmtReturn, Results: []hir.Expression{{Kind: hir.ExprLiteral, Type: types.Builtin(types.PrimitiveBool), Value: constant.Scalar(string(value))}}})
 			}
 		}
 		op, payload, children = ir.OpReturn, ir.ReturnPayload{ResultCount: totalExpressionResults(stmt.Results)}, stmt.Results
