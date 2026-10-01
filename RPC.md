@@ -49,8 +49,7 @@ service Greeter {
 }
 ```
 
-`namespace` 标识接口命名空间，`mgo_package` 和 `go_package` 指定生成代码的目标包；后者分号后的部分是 Go package 名。
-字段标识应在声明范围内保持唯一。
+`namespace` 标识接口命名空间；`mgo_package` 和 `go_package` 指定目标包，分号后为 Go package 名。
 
 ### 2. 生成代码
 
@@ -63,8 +62,8 @@ mini-go rpc generate \
   api/greeter.mrpc
 ```
 
-生成结果包含消息、handler、客户端和 Provider；按需添加 Rust 或 TypeScript 输出，同一命令的输出原子写入。
-接口修改后重新生成并分发各端 binding，契约不匹配会在绑定时失败。
+生成结果包含消息、handler、客户端和 Provider。接口修改后重新生成并分发各端 binding；
+契约不匹配会在绑定时失败。
 
 ### 3. 编写脚本
 
@@ -89,8 +88,7 @@ func Greeting() string {
 }
 ```
 
-调用对当前 Mini-Go goroutine 表现为阻塞，其他 goroutine 仍可运行。本例将失败作为脚本 panic 报告；
-业务代码也可检查 `err`，或将其作为函数返回值交给调用方。
+调用等待期间，其他 Mini-Go goroutine 仍可运行。本例将错误转成 panic，业务代码也可向调用方返回错误。
 
 ### 4. 装配宿主并调用
 
@@ -191,9 +189,6 @@ slice、map 及 optional；二进制数据使用 `[]uint8`。
 | resource | 属于创建它的绑定；复制句柄共享关闭状态，结果可与业务 fault 一起返回空资源 |
 | 浮点与复数 | 保留对应类型的宽度、负零和可表示的特殊值 |
 
-通信双方使用匹配的 schema 生成 binding，绑定时校验契约身份。结果解码失败时，生成客户端会回收
-本次尚未交付的资源。
-
 共享声明可以独立分发，并通过显式 alias 引用：
 
 ```text
@@ -248,21 +243,13 @@ func Serve() error {
 将 `Serve` 注册为 Engine 命名入口后，用 `Instance.Start` 保持服务运行；服务结束前该入口会持续等待请求。
 长任务通过 `rpc.Context.Done()` 或 `Err()` 配合取消。宿主关闭 Instance 或取消该入口时，服务随之结束。
 
-Go、Mini-Go 和不同 VM 都可以同时提供服务与发起调用，连接方向不决定调用角色。
-
-## 可选服务与本地实现
-
-Mini-Go 的 NewGreeterClient 延迟到首次调用时绑定。需要预先选择宿主服务或本地实现时，
-使用生成的 BindGreeterClient：它检查完整契约，不执行业务方法。
-
-使用 `rpc.CodeOf(err)` 检查绑定错误，只有 `unimplemented` 适合作为缺少服务的回退条件。接口不匹配、权限、超时和
-断线按错误处理；业务调用不会自动重放。绑定失败可以重试，已关闭的客户端不可重开。
-官方标准库能力的可选装配见 [系统能力](USAGE.md#系统能力)。
-
 ## 错误与超时
 
 Go handler 可返回 `rpc.StatusError{Code: rpc.CodeInvalidArgument, Message: "..."}`；Mini-Go handler 使用
-`rpc.NewError("invalid_argument", "...")`。调用方通过各自 `rpc.CodeOf(err)` 获取状态码与说明。
+`rpc.NewError("invalid_argument", "...")`。调用方通过 `rpc.CodeOf(err)` 判断状态码。
+
+Mini-Go 的 `NewGreeterClient` 在首次调用时绑定；需要提前检查服务时使用 `BindGreeterClient`。
+只有绑定返回 `unimplemented` 时，才适合选择本地实现作为回退；其他失败按错误处理。
 
 | 状态 | 调用方处理 |
 | --- | --- |
@@ -288,8 +275,8 @@ Go 的零值选择默认值，Rust 使用 `EndpointOptions::default()`；显式�
 失去租约授权后返回 `unavailable`，恢复连接时需要重新绑定。
 同进程原生调用不使用网络租约。
 
-生成客户端负责结果解码、确认和未交付资源的回收。直接使用底层 `RouteSet.Call` 时，调用方必须对
-`Result` 执行一次 `Accept(ctx)` 或 `Discard(ctx)`。
+生成客户端负责结果解码、确认和失败时的未交付资源回收。使用底层 `RouteSet.Call` 时，须对结果执行一次
+`Accept` 或 `Discard`。
 
 超时或断线不证明服务端没有执行操作。框架不会自动重试可能有副作用的调用，业务重试应自行保证幂等性。
 Go handler 的普通 error 和 panic 会转成内部错误；需要调用方区分的业务失败应返回明确状态码。
@@ -316,10 +303,9 @@ Host 和 Gateway 分别限制会话与连接数；尚未清理完成的对象继
 
 ## 远程连接与路由
 
-本地固定服务使用前面的 Host 即可；动态服务使用 `rpc/router.Router` 注册 provider，再将 Router 作为 Host 的
-`Fallback` 或生成 Go 客户端的 Binder。客户端的 `BindOptions.Labels` 可约束候选服务，
-`AffinityKey` 可请求稳定选择。客户端绑定后保持所选 provider，重新选择需要创建新的客户端。
-标签按 key 和 value 精确匹配，空的 Labels 集合表示不按标签筛选。
+动态服务通过 `rpc/router.Router` 注册 provider，将 Router 作为 Host 的 `Fallback` 或 Go 客户端的 Binder。
+`BindOptions.Labels` 按键值筛选候选，`AffinityKey` 请求稳定选择。绑定后保持所选 provider，
+重新选择需要创建新客户端。
 
 跨进程支持 `ws://`、`wss://` 和本地 Unix socket 地址 `ws+unix:///绝对路径`。启动中转 Gateway：
 
@@ -357,21 +343,14 @@ Program 热更新保持 FFI 会话和现有客户端连接。它更新脚本代�
 关闭顺序通常为：停止新请求，关闭 Instance，再关闭 Host、客户端和连接，最后释放业务 backend。
 `Shutdown(ctx)` 的 context 只限制本次等待，已开始的清理继续进行，之后可以再次等待终态。
 
-| 操作 | 关闭语义 |
-| --- | --- |
-| Gateway `BeginDrain()` | 拒绝新 session，已接受的握手和连接可以完成 |
-| Gateway `Shutdown(ctx)` | 发起关闭并等待清理，可在等待取消后再次等待 |
-| Endpoint `Wait(ctx)` | 仅等待既有清理，返回清理错误，不发起关闭或报告断连原因 |
-| Endpoint `Shutdown(ctx)` | 发起关闭，报告传输与清理错误 |
-
-Gateway 在清理完成后释放连接名额。脚本和共享宿主的关闭流程见
-[优雅停机](USAGE.md#优雅停机)，执行预算见[长期运行](USAGE.md#长期运行)。
+Gateway 的 `BeginDrain()` 停止接纳新 session，`Shutdown(ctx)` 发起关闭并等待清理。
+Endpoint 的 `Wait(ctx)` 只等待既有清理；需要主动关闭时使用 `Shutdown(ctx)`。
+脚本和共享宿主的关闭顺序见[优雅停机](USAGE.md#优雅停机)。
 
 ## TypeScript / JavaScript API
 
-`@d7z-team/mini-go/rpc` 在 Browser 与 Node.js 中提供相同的 API。它创建独立的 Worker、Rust Endpoint
-和 WebSocket，不需要 Mini-Go 镜像。生成代码是环境无关的 TypeScript ESM；项目使用 TypeScript、bundler
-或其他现有构建步骤生成 JavaScript，不需要维护另一份手写 binding。
+`@d7z-team/mini-go/rpc` 在 Browser 与 Node.js 中提供相同 API，通过独立 Worker 连接 WebSocket，
+无需 Mini-Go 镜像。生成代码为 TypeScript ESM，由应用现有构建流程生成 JavaScript。
 
 为前面的 Greeter schema 生成 TypeScript：
 
@@ -381,7 +360,7 @@ mini-go rpc generate -ts-out src/greeter.ts api/greeter.mrpc
 
 `-ts-runtime` 可覆盖生成代码导入的 RPC SDK 模块，缺省为 `@d7z-team/mini-go/rpc`；`-ts-prefix`
 为当前文件的导出声明增加前缀。被导入 schema 必须声明 `ts_module`，路径应使用最终 JavaScript 的
-ESM specifier，例如 `./model.js`。同一次生成的所有语言输出原子写入。
+ESM specifier，例如 `./model.js`。
 
 生成的客户端直接接收 `RPCConnection`：
 
@@ -419,27 +398,28 @@ import { RPC, RPCStatus } from "@d7z-team/mini-go/rpc";
 import { createGreeterProvider } from "./greeter.js";
 
 const connection = await RPC.connect("wss://example.test/rpc");
-const publication = await connection.publish(
-  createGreeterProvider({
-    hello(context, request) {
-      if (context.signal.aborted) throw new RPCStatus("canceled", "call canceled");
-      return { message: `Hello, ${request.name}!` };
-    },
-  }),
-  { name: "web-worker", weight: 1 },
-);
-
 try {
-  await runApplicationUntilShutdown();
+  const publication = await connection.publish(
+    createGreeterProvider({
+      hello(context, request) {
+        if (context.signal.aborted) throw new RPCStatus("canceled", "call canceled");
+        return { message: `Hello, ${request.name}!` };
+      },
+    }),
+    { name: "web-worker", weight: 1 },
+  );
+  try {
+    await runApplicationUntilShutdown();
+  } finally {
+    await publication.close();
+  }
 } finally {
-  await publication.close();
   await connection.close();
 }
 ```
 
 示例中的 `runApplicationUntilShutdown` 代表应用自己的服务生命周期。
 
-Browser 与 Node.js 通过 conditional export 选择 Worker 适配器；生成的 `greeter.ts` 无需环境分支。
 直接部署浏览器文件、覆盖 Worker/WASM URL 和 import map 的方式见
 [TypeScript SDK](playground/runtime-rust/runtime-wasm/README.md#独立-typescript-rpc)。
 
@@ -455,8 +435,8 @@ Worker，不保证异步清理完成。
 
 原生 VM、取消与 Tokio 接入见 [Rust 使用指南](playground/runtime-rust/USAGE.md)，本节只说明 RPC 装配。
 
-Rust crate 位于 `playground/runtime-rust`，启用 `rpc` 使用本地服务、Router、Endpoint
-与 FFI Host；`rpc-gateway` 增加 WebSocket/TLS/Unix socket。`stdlib-host` 提供原生标准库宿主。
+启用 `rpc` 使用本地服务、Router、Endpoint 与 FFI Host；远程传输增加 `rpc-gateway`。
+安装和完整 feature 列表见 [Rust README](playground/runtime-rust/README.md)。
 
 使用同一 schema 生成 Rust 模块：
 
@@ -466,7 +446,7 @@ mini-go rpc generate -rust-out src/greeter.rs -rust-module crate::greeter api/gr
 
 将输出作为 `mod greeter` 装配。依赖 schema 的 `rust_module` 指定其模块路径；
 `rust_runtime` 默认 `mini_go`，`rust_prefix` 修改生成名称。
-这些配置只影响源码组织；生成 Rust 代码需要 rustfmt。
+生成 Rust 代码需要 rustfmt。
 
 | 操作 | API |
 | --- | --- |
@@ -482,5 +462,3 @@ mini-go rpc generate -rust-out src/greeter.rs -rust-module crate::greeter api/gr
 
 应用提供 Tokio runtime，并在关闭它之前等待 Host、Endpoint 和 Router 完成 shutdown。完整装配可参考
 [Rust Gateway 示例测试](playground/runtime-rust/tests/rpc_gateway.rs)。
-
-共享数据与互操作验证见 [RPC 测试数据](testdata/rpc/README.md)。

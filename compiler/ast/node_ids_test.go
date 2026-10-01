@@ -2,7 +2,7 @@ package ast
 
 import "testing"
 
-func TestAssignNodeIDsIsDeterministicAcrossCopiedTrees(t *testing.T) {
+func TestFinalizeStructureAssignsDeterministicIdentities(t *testing.T) {
 	program := Program{
 		ModulePath: "example/main",
 		Package:    "main",
@@ -11,14 +11,14 @@ func TestAssignNodeIDsIsDeterministicAcrossCopiedTrees(t *testing.T) {
 				Path: "a.mgo",
 				Decls: []Decl{{
 					Kind: DeclFunc,
-					Func: FuncDecl{
+					Func: &FuncDecl{
 						Name: "first",
 						Body: BlockStmt{Stmts: []Statement{{
 							Kind: StmtReturn,
 							Results: []Expression{{
 								Kind:    ExprLiteral,
 								Literal: "1",
-								Type:    TypeExpr{Kind: TypeName, Name: "Int"},
+								Type:    &TypeExpr{Kind: TypeName, Name: "Int"},
 							}},
 						}}},
 					},
@@ -28,7 +28,7 @@ func TestAssignNodeIDsIsDeterministicAcrossCopiedTrees(t *testing.T) {
 				Path: "b.mgo",
 				Decls: []Decl{{
 					Kind: DeclVar,
-					Var: ValueDecl{
+					Var: &ValueDecl{
 						Names:  []string{"second"},
 						Values: []Expression{{Kind: ExprIdent, Name: "first"}},
 					},
@@ -37,10 +37,14 @@ func TestAssignNodeIDsIsDeterministicAcrossCopiedTrees(t *testing.T) {
 		},
 	}
 
-	AssignNodeIDs(&program)
+	if diagnostics, _ := FinalizeStructure(&program, Limits{}); len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
 	first := collectTestNodeIDs(program)
 	copyOfProgram := program
-	AssignNodeIDs(&copyOfProgram)
+	if diagnostics, _ := FinalizeStructure(&copyOfProgram, Limits{}); len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
 	second := collectTestNodeIDs(copyOfProgram)
 	if len(first) != len(second) {
 		t.Fatalf("node count changed after reassignment: %d != %d", len(first), len(second))
@@ -75,7 +79,10 @@ func collectTestNodeIDs(program Program) []NodeID {
 				for _, stmt := range decl.Func.Body.Stmts {
 					ids = append(ids, stmt.NodeID)
 					for _, expr := range stmt.Results {
-						ids = append(ids, expr.NodeID, expr.Type.NodeID)
+						ids = append(ids, expr.NodeID)
+						if expr.Type != nil {
+							ids = append(ids, expr.Type.NodeID)
+						}
 					}
 				}
 			case DeclVar:

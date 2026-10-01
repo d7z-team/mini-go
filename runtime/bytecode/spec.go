@@ -20,6 +20,10 @@ type Spec struct {
 	LocalFields             []FieldSpec   `json:"local_fields"`
 	UpvalueFields           []FieldSpec   `json:"upvalue_fields"`
 	InstructionFields       []FieldSpec   `json:"instruction_fields"`
+	SlotCodeFields          []FieldSpec   `json:"slot_code_fields"`
+	SlotInstructionFields   []FieldSpec   `json:"slot_instruction_fields"`
+	SlotOperandFields       []FieldSpec   `json:"slot_operand_fields"`
+	SlotOperandsFields      []FieldSpec   `json:"slot_operands_fields"`
 	ExportFields            []FieldSpec   `json:"export_fields"`
 	RequirementFields       []FieldSpec   `json:"requirement_fields"`
 	ProgramSymbolFields     []FieldSpec   `json:"program_symbol_fields"`
@@ -55,33 +59,63 @@ type PayloadSpec struct {
 }
 
 type OpcodeSpec struct {
-	Op       string `json:"op"`
-	Category string `json:"category"`
-	Payload  string `json:"payload,omitempty"`
-	Stack    string `json:"stack"`
-	Terminal bool   `json:"terminal,omitempty"`
-	Notes    string `json:"notes,omitempty"`
+	Op       string       `json:"op"`
+	Category string       `json:"category"`
+	Payload  string       `json:"payload,omitempty"`
+	Operands string       `json:"operands"`
+	Arity    OperandArity `json:"arity"`
+	Terminal bool         `json:"terminal,omitempty"`
+	Notes    string       `json:"notes,omitempty"`
+}
+
+// OperandArity distinguishes fixed slot counts from payload-dependent counts.
+// Kind is required: an omitted rule is not a zero-operand instruction.
+type OperandArity struct {
+	Kind    string `json:"kind"`
+	Inputs  int    `json:"inputs"`
+	Outputs int    `json:"outputs"`
 }
 
 func CurrentSpec() Spec {
 	return Spec{
-		Format:                  Format,
-		Version:                 CurrentVersion,
-		OpcodeSet:               OpcodeSet,
-		SymbolsFormat:           SymbolsFormat,
-		SymbolsVersion:          SymbolsVersion,
-		SymbolsContract:         SymbolsContract,
-		ArtifactFields:          artifactFieldSpecs(),
-		ModuleFields:            moduleFieldSpecs(),
-		TypeRefFields:           typeRefFieldSpecs(),
-		TypeNodeFields:          typeNodeFieldSpecs(),
-		FunctionTypeFields:      functionTypeFieldSpecs(),
-		ConstantFields:          constantFieldSpecs(),
-		GlobalFields:            globalFieldSpecs(),
-		FunctionFields:          functionFieldSpecs(),
-		LocalFields:             localFieldSpecs(),
-		UpvalueFields:           upvalueFieldSpecs(),
-		InstructionFields:       instructionFieldSpecs(),
+		Format:             Format,
+		Version:            CurrentVersion,
+		OpcodeSet:          OpcodeSet,
+		SymbolsFormat:      SymbolsFormat,
+		SymbolsVersion:     SymbolsVersion,
+		SymbolsContract:    SymbolsContract,
+		ArtifactFields:     artifactFieldSpecs(),
+		ModuleFields:       moduleFieldSpecs(),
+		TypeRefFields:      typeRefFieldSpecs(),
+		TypeNodeFields:     typeNodeFieldSpecs(),
+		FunctionTypeFields: functionTypeFieldSpecs(),
+		ConstantFields:     constantFieldSpecs(),
+		GlobalFields:       globalFieldSpecs(),
+		FunctionFields:     functionFieldSpecs(),
+		LocalFields:        localFieldSpecs(),
+		UpvalueFields:      upvalueFieldSpecs(),
+		InstructionFields:  instructionFieldSpecs(),
+		SlotCodeFields: []FieldSpec{
+			{Name: "types", Type: "[]TypeRef", Rule: "temporary slot types"},
+			{Name: "instructions", Type: "[]SlotInstruction"},
+			{Name: "operands", Type: "[]SlotOperands"},
+			{Name: "descriptors", Type: "DescriptorTables", Required: true, Rule: "typed payload tables indexed by instruction descriptor"},
+		},
+		SlotInstructionFields: []FieldSpec{
+			{Name: "0", Type: "uint16", Required: true, Rule: "numeric opcode; tuple has exactly three elements"},
+			{Name: "1", Type: "uint32", Required: true, Rule: "index in the opcode's descriptor table"},
+			{Name: "2", Type: "uint32", Required: true, Rule: "operand record index"},
+		},
+		SlotOperandFields: []FieldSpec{
+			{Name: "0", Type: "uint8", Required: true, Rule: "0: temporary slot; 1: package constant; 2: private scalar or pointer local; tuple has exactly two elements"},
+			{Name: "1", Type: "uint32", Required: true, Rule: "index in the selected storage domain"},
+		},
+		SlotOperandsFields: []FieldSpec{
+			{Name: "inputs", Type: "[]Operand", Rule: "values evaluated in source order; direct locals must not be addressable"},
+			{Name: "outputs", Type: "[]uint32", Rule: "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len or cap"},
+			{Name: "release", Type: "[]uint32", Rule: "clear after instruction completion, before entering the next instruction"},
+			{Name: "release_before", Type: "[]uint32", Rule: "clear on instruction entry, once across suspension and retries"},
+		},
 		ExportFields:            exportFieldSpecs(),
 		RequirementFields:       requirementFieldSpecs(),
 		ProgramSymbolFields:     programSymbolFieldSpecs(),
@@ -117,9 +151,11 @@ func OpcodeSpecs() []OpcodeSpec {
 	return append([]OpcodeSpec(nil), opcodeSpecs...)
 }
 
-func OpcodeSpecFor(op string) (OpcodeSpec, bool) {
-	spec, ok := opcodeSpecByOp[op]
-	return spec, ok
+func OpcodeSpecFor(op Opcode) (OpcodeSpec, bool) {
+	if !IsKnownOpcode(op) {
+		return OpcodeSpec{}, false
+	}
+	return opcodeSpecs[int(op)-1], true
 }
 
 func PayloadSpecs() []PayloadSpec {
@@ -179,7 +215,7 @@ func globalFieldSpecs() []FieldSpec {
 }
 
 func functionFieldSpecs() []FieldSpec {
-	return []FieldSpec{{Name: "id", Type: "string", Required: true}, {Name: "revision_local", Type: "bool"}, {Name: "signature", Type: "FunctionSignature", Required: true}, {Name: "locals", Type: "[]Local"}, {Name: "result_locals", Type: "[]local-id", Rule: "must match named result order"}, {Name: "upvalues", Type: "[]Upvalue"}, {Name: "max_stack", Type: "int"}, {Name: "instructions", Type: "[]Instruction"}}
+	return []FieldSpec{{Name: "id", Type: "string", Required: true}, {Name: "revision_local", Type: "bool"}, {Name: "signature", Type: "FunctionSignature", Required: true}, {Name: "locals", Type: "[]Local"}, {Name: "result_locals", Type: "[]local-id", Rule: "must match named result order"}, {Name: "upvalues", Type: "[]Upvalue"}, {Name: "code", Type: "SlotCode", Required: true}}
 }
 
 func localFieldSpecs() []FieldSpec {
@@ -266,16 +302,6 @@ func makePayloadSpecMap(specs []PayloadSpec) map[string]PayloadSpec {
 	out := make(map[string]PayloadSpec, len(specs))
 	for _, spec := range specs {
 		out[spec.Name] = spec
-	}
-	return out
-}
-
-var opcodeSpecByOp = makeOpcodeSpecMap(opcodeSpecs)
-
-func makeOpcodeSpecMap(specs []OpcodeSpec) map[string]OpcodeSpec {
-	out := make(map[string]OpcodeSpec, len(specs))
-	for _, spec := range specs {
-		out[spec.Op] = spec
 	}
 	return out
 }

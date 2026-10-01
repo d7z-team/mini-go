@@ -21,54 +21,56 @@ func TestDebuggerSchemaStepOutFromDeferredCleanup(t *testing.T) {
 			artifact.Functions = []ir.Function{{
 				ID:        "fn.main",
 				Signature: testSignature("function() Int64"),
-				Instructions: []ir.Instruction{{
-					Op:      string(ir.OpCallDirect),
-					Payload: json.RawMessage(`{"function":"fn.inner","arg_count":0,"result_count":1}`),
+				Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+					Op:      ir.OpCallDirect,
+					Payload: ir.CallPayload{Function: "fn.inner", ArgCount: 0, ResultCount: 1},
 				}, {
-					Op:      string(ir.OpReturn),
-					Payload: json.RawMessage(`{"result_count":1}`),
-				}},
+					Op:      ir.OpReturn,
+					Payload: ir.ReturnPayload{ResultCount: 1},
+				}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 			}, {
 				ID:        "fn.inner",
 				Signature: testSignature("function() Int64"),
-				Instructions: []ir.Instruction{{
-					Op:      string(ir.OpMakeClosure),
-					Payload: json.RawMessage(`{"function":"fn.cleanup"}`),
+				Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
+					Op:      ir.OpMakeClosure,
+					Payload: ir.ClosurePayload{Function: "fn.cleanup"},
 				}, {
-					Op: string(ir.OpDeferPush),
+					Op: ir.OpDeferPush, Payload: ir.DeferPayload{},
 				}, {
-					Op:      string(ir.OpConst),
-					Payload: json.RawMessage(`{"constant":"c.answer"}`),
+					Op:      ir.OpConst,
+					Payload: ir.ConstPayload{Constant: "c.answer"},
 				}, {
-					Op:      string(ir.OpReturn),
-					Payload: json.RawMessage(`{"result_count":1}`),
-				}},
+					Op:      ir.OpReturn,
+					Payload: ir.ReturnPayload{ResultCount: 1},
+				}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 			}, {
 				ID:        "fn.cleanup",
 				Signature: testSignature("function() Void"),
-				Instructions: []ir.Instruction{{
-					Op:      string(ir.OpReturn),
-					Payload: json.RawMessage(`{"result_count":0}`),
-				}},
+				Code: testSlotCode([]string{}, []ir.Instruction{{
+					Op:      ir.OpReturn,
+					Payload: ir.ReturnPayload{ResultCount: 0},
+				}}, [][2][]uint32{{nil, nil}}),
 			}}
 			if test.recoverPanic {
 				artifact.Constants = append(artifact.Constants, ir.Constant{
 					ID: "c.message", Type: testType("String"), Value: json.RawMessage(`"failed"`),
 				})
-				artifact.Functions[0].Instructions = []ir.Instruction{
-					{Op: string(ir.OpCallDirect), Payload: json.RawMessage(`{"function":"fn.inner","arg_count":0,"result_count":0}`)},
-					{Op: string(ir.OpConst), Payload: json.RawMessage(`{"constant":"c.answer"}`)},
-					{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":1}`)},
-				}
+				artifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{
+					{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.inner", ArgCount: 0, ResultCount: 0}},
+					{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.answer"}},
+					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+				}, [][2][]uint32{{nil, nil}, {nil, {0}}, {{0}, nil}})
 				inner := &artifact.Functions[1]
 				inner.Signature = testSignature("function() Void")
-				inner.Instructions[2].Payload = json.RawMessage(`{"constant":"c.message"}`)
-				inner.Instructions[3] = ir.Instruction{Op: string(ir.OpPanic)}
-				artifact.Functions[2].Instructions = []ir.Instruction{
-					{Op: string(ir.OpRecover)},
-					{Op: string(ir.OpPop)},
-					{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":0}`)},
-				}
+				inner.Code.Types[1] = testType("String")
+				inner.Code.Descriptors.Const[0] = ir.ConstPayload{Constant: "c.message"}
+				inner.Code.Instructions[3].Op = ir.OpPanic
+				inner.Code.Instructions[3].Descriptor = 0
+				artifact.Functions[2].Code = testSlotCode([]string{"Any"}, []ir.Instruction{
+					{Op: ir.OpRecover},
+					{Op: ir.OpPop},
+					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
+				}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})
 			}
 			artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 			setTestInstructionLocations(t, &artifact,

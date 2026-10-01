@@ -43,8 +43,8 @@ func TestToolsImageMatchesNativeWorkspace(t *testing.T) {
 		if !ok {
 			t.Fatal("expected bytes")
 		}
-		var response compilerentry.ToolsResponse
-		if err = json.Unmarshal(output, &response); err != nil {
+		response, err := compilerentry.DecodeToolsResponse(output)
+		if err != nil {
 			t.Fatal(err)
 		}
 		if response.Error != nil {

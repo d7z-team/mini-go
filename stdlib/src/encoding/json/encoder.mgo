@@ -78,15 +78,27 @@ func Compact(dst *bytes.Buffer, src []byte) error {
 		return newMarshalError("json: Compact target must be a non-nil buffer")
 	}
 	scan := newScanner()
-	if err := checkValid(src, scan); err != nil {
-		return err
-	}
-	scan.reset()
-	for _, c := range src {
+	var compact []byte
+	start := 0
+	for i, c := range src {
+		scan.bytes++
 		opcode := scan.step(scan, c)
-		if opcode != scanSkipSpace && !(opcode == scanEnd && isSpace(c)) {
-			dst.WriteByte(c)
+		if opcode == scanError {
+			return scan.err
 		}
+		if opcode == scanSkipSpace || (opcode == scanEnd && isSpace(c)) {
+			compact = append(compact, src[start:i]...)
+			start = i + 1
+		}
+	}
+	if scan.eof() == scanError {
+		return scan.err
+	}
+	if start == 0 {
+		dst.Write(src)
+	} else {
+		compact = append(compact, src[start:]...)
+		dst.Write(compact)
 	}
 	return nil
 }

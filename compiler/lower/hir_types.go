@@ -68,6 +68,11 @@ func (l *lowerer) finalizeHIRTypeTable(program *ir.Program) error {
 }
 
 func collectStatementTypes(stmt *ir.Statement, roots *[]types.TypeRef) {
+	for _, match := range stmt.TypeCases {
+		if match.Type.Valid() {
+			*roots = append(*roots, match.Type)
+		}
+	}
 	collectExpressionTypes(&stmt.Expr, roots)
 	for i := range stmt.Results {
 		collectExpressionTypes(&stmt.Results[i], roots)
@@ -83,6 +88,7 @@ func collectStatementTypes(stmt *ir.Statement, roots *[]types.TypeRef) {
 }
 
 func collectExpressionTypes(expr *ir.Expression, roots *[]types.TypeRef) {
+	*roots = append(*roots, expr.ResultTypes...)
 	if expr.Type.Valid() {
 		*roots = append(*roots, expr.Type)
 	}

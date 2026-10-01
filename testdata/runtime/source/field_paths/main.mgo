@@ -1,0 +1,77 @@
+package main
+
+type Leaf struct {
+	Z int
+	_ int
+	A int
+}
+
+type Branch struct {
+	Z Leaf
+	A *Leaf
+}
+
+type Root struct {
+	Z Branch
+	A *Branch
+}
+
+func recoverPath(root *Root) (result int) {
+	defer func() {
+		if recover() != nil {
+			result = 7
+		}
+	}()
+	return root.A.A.Z
+}
+
+func mutate(root *Root) int {
+	root.A.A.Z = 99
+	return 2
+}
+
+func privateFields(root Root) int {
+	first := root.Z.Z.Z
+	root = Root{Z: Branch{Z: Leaf{Z: 2}}}
+	return first + root.Z.Z.Z
+}
+
+func indexedScalar(values []int, index int) int {
+	value := values[index]
+	narrow := int8(value)
+	return int(narrow)
+}
+
+func recoverIndexed(values []int) (result int) {
+	result = 7
+	defer func() {
+		recover()
+	}()
+	result = values[1]
+	return result
+}
+
+func Main() int {
+	leaf := Leaf{Z: 40, A: 3}
+	branch := Branch{Z: leaf, A: &leaf}
+	root := Root{Z: branch, A: &branch}
+	if privateFields(root) != 42 {
+		return 4
+	}
+	if indexedScalar([]int{298}, 0) != 42 || recoverIndexed([]int{42}) != 7 {
+		return 5
+	}
+	copy := root.Z.Z
+	before := root.A.A.Z + mutate(&root)
+	if before != 42 || copy.Z != 40 || root.A.A.Z != 99 || root.Z.Z.A != 3 {
+		return 1
+	}
+	if recoverPath(nil) != 7 || recoverPath(&Root{}) != 7 {
+		return 2
+	}
+	root.A.A = nil
+	if recoverPath(&root) != 7 {
+		return 3
+	}
+	return before
+}

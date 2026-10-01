@@ -84,6 +84,7 @@ func setRuntimeStructField(value *vmStruct, name string, field vmValue) {
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	if index, _, ok := value.schema.field(name); ok && index < len(value.values) {
+		value.detachSharedValues()
 		value.values[index] = field
 	}
 }
@@ -106,6 +107,16 @@ type vmStruct struct {
 	schema *structSchema
 	values []vmValue
 	sparse bool
+	shared bool
+}
+
+// detachSharedValues is called with mu held before changing a field. Struct
+// copies may share flat value fields, but writes must keep their value identity.
+func (value *vmStruct) detachSharedValues() {
+	if value.shared {
+		value.values = slices.Clone(value.values)
+		value.shared = false
+	}
 }
 
 func (value *vmStruct) snapshot() ([]vmValue, bool) {
@@ -132,6 +143,7 @@ func (value *vmStruct) initializeField(index int, zero vmValue) vmValue {
 		value.values = make([]vmValue, len(value.schema.fields))
 	}
 	if !value.values[index].Type.Valid() {
+		value.detachSharedValues()
 		value.values[index] = zero
 	}
 	return value.values[index]
@@ -205,6 +217,7 @@ func updatedStructValue(data any, field string, value vmValue) (any, bool) {
 	if len(current.values) == 0 {
 		current.values = make([]vmValue, len(current.schema.fields))
 	}
+	current.detachSharedValues()
 	current.values[index] = value
 	return current, true
 }

@@ -7,51 +7,38 @@ import (
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/parser"
 	"github.com/d7z-team/mini-go/compiler/source"
 )
 
-func resolveEmbeds(program *ast.Program, resources []ResourceFile) []source.Diagnostic {
-	if program == nil {
-		return nil
-	}
+func resolveEmbeds(builder parser.PackageBuilder, resources []ResourceFile) []source.Diagnostic {
 	var diagnostics []source.Diagnostic
-	for fileIndex := range program.Files {
-		fileImportsEmbed := false
-		for _, decl := range program.Files[fileIndex].Decls {
-			if decl.Kind == ast.DeclImport && decl.Import.Path == "embed" {
-				fileImportsEmbed = true
-				break
-			}
+	for _, decl := range builder.Embeds() {
+		add := func(code, message string) {
+			diagnostics = append(diagnostics, source.Diagnostic{
+				Code: source.DiagnosticCode(code), Severity: source.SeverityError,
+				Message: message, Primary: decl.Span,
+			})
 		}
-		for declIndex := range program.Files[fileIndex].Decls {
-			decl := &program.Files[fileIndex].Decls[declIndex]
-			if decl.Kind != ast.DeclVar || len(decl.Var.EmbedPatterns) == 0 {
-				continue
-			}
-			add := func(code, message string) {
-				diagnostics = append(diagnostics, source.Diagnostic{
-					Code: source.DiagnosticCode(code), Severity: source.SeverityError,
-					Message: message, Primary: decl.Span,
-				})
-			}
-			if !fileImportsEmbed {
-				add("compiler.embed.import", "//go:embed requires importing package embed")
-				continue
-			}
-			if len(decl.Var.Names) != 1 || decl.Var.Names[0] == "_" || len(decl.Var.Values) != 0 {
-				add("compiler.embed.declaration", "//go:embed requires one package variable without an initializer")
-				continue
-			}
-			matched, err := matchEmbedResources(decl.Var.EmbedPatterns, resources)
-			if err != nil {
-				add("compiler.embed.pattern", err.Error())
-				continue
-			}
-			files := make([]ast.EmbedFile, len(matched))
-			for index, resource := range matched {
-				files[index] = ast.EmbedFile{Path: resource.Path, Data: append([]byte(nil), resource.Data...)}
-			}
-			decl.Var.Values = []ast.Expression{{Kind: ast.ExprEmbed, Span: decl.Span, EmbedFiles: files}}
+		if !decl.ImportsEmbed {
+			add("compiler.embed.import", "//go:embed requires importing package embed")
+			continue
+		}
+		if !decl.ValidVariable {
+			add("compiler.embed.declaration", "//go:embed requires one package variable without an initializer")
+			continue
+		}
+		matched, err := matchEmbedResources(decl.Patterns, resources)
+		if err != nil {
+			add("compiler.embed.pattern", err.Error())
+			continue
+		}
+		files := make([]ast.EmbedFile, len(matched))
+		for index, resource := range matched {
+			files[index] = ast.EmbedFile{Path: resource.Path, Data: resource.Data}
+		}
+		if !builder.BindEmbed(decl.File, decl.Declaration, files) {
+			add("compiler.embed.declaration", "invalid embed declaration")
 		}
 	}
 	return diagnostics

@@ -14,13 +14,13 @@ func TestValidateArtifactAcceptsMinimalArtifact(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: json.RawMessage(`{"constant":"c.zero"}`),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{Constant: "c.zero"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	if err := testValidateArtifact(&artifact); err != nil {
@@ -46,8 +46,8 @@ func TestValidateArtifactAppliesTypeLimitBeforeGraphValidation(t *testing.T) {
 func TestValidateArtifactRejectsDuplicateFunctionID(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{
-		{ID: "fn.main", Signature: testSignature("function() Void")},
-		{ID: "fn.main", Signature: testSignature("function() Void")},
+		{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")},
+		{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")},
 	}
 
 	err := testValidateArtifact(&artifact)
@@ -63,13 +63,13 @@ func TestValidateArtifactChecksFunctionResultLocals(t *testing.T) {
 		Signature:    testSignature("function() Int64"),
 		Locals:       []Local{{ID: "local.out", Type: testType("Int64")}},
 		ResultLocals: []string{"local.out"},
-		Instructions: []Instruction{{
-			Op:      string(OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.out"}`),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpLoadLocal,
+			Payload: LocalPayload{Local: "local.out"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	if err := testValidateArtifact(&artifact); err != nil {
 		t.Fatalf("ValidateArtifact failed: %v", err)
@@ -93,10 +93,10 @@ func TestValidateArtifactRejectsMissingPayloadField(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: json.RawMessage(`{}`),
-		}},
+		Code: testSlotCode([]string{"Int"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{},
+		}}, [][2][]uint32{{nil, {0}}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -113,10 +113,10 @@ func TestValidateArtifactRejectsMissingTypePayload(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpConvert),
-			Payload: json.RawMessage(`{}`),
-		}},
+		Code: testSlotCode([]string{"Int", "Int"}, []Instruction{{
+			Op:      OpConvert,
+			Payload: TypePayload{},
+		}}, [][2][]uint32{{{0}, {1}}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -126,17 +126,7 @@ func TestValidateArtifactRejectsMissingTypePayload(t *testing.T) {
 }
 
 func TestValidateArtifactRejectsPayloadForNoPayloadOpcode(t *testing.T) {
-	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{
-		ID:        "fn.main",
-		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpPop),
-			Payload: json.RawMessage(`{"unexpected":true}`),
-		}},
-	}}
-
-	err := testValidateArtifact(&artifact)
+	err := validateInstruction("instruction", &Instruction{Op: OpPop, Payload: ReturnPayload{}})
 	if err == nil || !strings.Contains(err.Error(), "must not have payload") {
 		t.Fatalf("expected no-payload opcode error, got %v", err)
 	}
@@ -148,21 +138,22 @@ func TestValidateArtifactRejectsPayloadForNoPayloadOpcode(t *testing.T) {
 func TestValidateArtifactAcceptsDeferOwnerDepthPayload(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
+		Code:      &SlotCode{},
 		ID:        "fn.cleanup",
 		Signature: testSignature("function() Void"),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.cleanup"}`),
+		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+			Op:      OpMakeClosure,
+			Payload: ClosurePayload{Function: "fn.cleanup"},
 		}, {
-			Op:      string(OpDeferPush),
-			Payload: json.RawMessage(`{"owner_depth":2}`),
+			Op:      OpDeferPush,
+			Payload: DeferPayload{OwnerDepth: 2},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":0}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 0},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}}
 
 	if err := testValidateArtifact(&artifact); err != nil {
@@ -173,18 +164,19 @@ func TestValidateArtifactAcceptsDeferOwnerDepthPayload(t *testing.T) {
 func TestValidateArtifactRejectsNegativeDeferOwnerDepth(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
+		Code:      &SlotCode{},
 		ID:        "fn.cleanup",
 		Signature: testSignature("function() Void"),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.cleanup"}`),
+		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+			Op:      OpMakeClosure,
+			Payload: ClosurePayload{Function: "fn.cleanup"},
 		}, {
-			Op:      string(OpDeferPush),
-			Payload: json.RawMessage(`{"owner_depth":-1}`),
-		}},
+			Op:      OpDeferPush,
+			Payload: DeferPayload{OwnerDepth: -1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -198,10 +190,10 @@ func TestValidateArtifactRejectsMissingWaitableTypePayload(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeWaitable),
-			Payload: json.RawMessage(`{}`),
-		}},
+		Code: testSlotCode([]string{"Int", "Any"}, []Instruction{{
+			Op:      OpMakeWaitable,
+			Payload: MakeWaitablePayload{},
+		}}, [][2][]uint32{{{0}, {1}}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -227,7 +219,7 @@ func TestValidateArtifactPreservesNestedVariadicFunctionTypes(t *testing.T) {
 		ID:   "global.handlers",
 		Type: testType("Map<String, function(variadic Slice<Int64>) Int64>"),
 	}}
-	artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	if err := testValidateArtifact(&artifact); err != nil {
 		t.Fatalf("ValidateArtifact rejected nested variadic function type: %v", err)
@@ -240,7 +232,7 @@ func TestValidateArtifactRejectsNonFinalNestedVariadicFunctionType(t *testing.T)
 		Name: "Bad",
 		Type: testInvalidNestedVariadicType(),
 	}})
-	artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	if err := testValidateArtifact(&artifact); err == nil || !strings.Contains(err.Error(), "invalid function type") {
 		t.Fatalf("expected invalid nested variadic function type error, got %v", err)
@@ -261,6 +253,7 @@ func TestValidateArtifactAcceptsLocalModuleMethodMetadata(t *testing.T) {
 		}},
 	}})
 	artifact.Functions = []Function{{
+		Code:      &SlotCode{},
 		ID:        "method.Token.hidden",
 		Signature: testSignature("function() Int"),
 	}}

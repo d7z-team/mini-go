@@ -60,6 +60,9 @@ func (e *Engine) Hover(uri DocumentURI, position Position) *Hover {
 }
 
 func (e *Engine) documentation(occurrence indexedOccurrence) string {
+	if occurrence.Occurrence == nil {
+		return ""
+	}
 	modulePath := occurrence.Symbol.ModulePath
 	if modulePath == "" {
 		modulePath = occurrence.ModulePath

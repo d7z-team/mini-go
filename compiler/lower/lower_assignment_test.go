@@ -18,25 +18,25 @@ func TestLowerAddressOfCompositeLiteral(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "Counter", Type: counterStruct},
+				Type: &ast.TypeDecl{Name: "Counter", Type: counterStruct},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"p"},
 								Values: []ast.Expression{{
 									Kind: ast.ExprAddr,
 									Operand: ptrExpr(ast.Expression{
 										Kind: ast.ExprComposite,
-										Type: counterType,
-										Entries: []ast.KeyValue{{
+										Type: &counterType,
+										Items: []ast.KeyValue{{
 											Key:   ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Value"}),
-											Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: intType},
+											Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: &intType},
 										}},
 									}),
 								}},
@@ -82,24 +82,24 @@ func TestLowerMultiResultAssignment(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Pair",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}, {Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}, {Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"a", "b"},
 								Type:  intType,
 							},
@@ -157,24 +157,24 @@ func TestLowerMultiResultVarDeclaration(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Pair",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}, {Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}, {Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"a", "b"},
 								Type:  intType,
 								Values: []ast.Expression{{
@@ -222,19 +222,19 @@ func TestLowerMultiValueAssignment(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"a", "b"},
 								Type:  intType,
 								Values: []ast.Expression{
-									{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
-									{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
+									{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
+									{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
 								},
 							},
 						}},

@@ -37,7 +37,7 @@ func (l *lowerer) packageFunctionDependencies(program ast.Program) map[string]ma
 				receiver := l.methodReceiverType(decl.Func.Receiver.Type)
 				key = methodID(receiver, name)
 			}
-			refs[key] = l.collectFunctionInitReferences(decl.Func)
+			refs[key] = l.collectFunctionInitReferences(*decl.Func)
 		}
 	}
 	deps := map[string]map[string]struct{}{}
@@ -333,7 +333,7 @@ func (l *lowerer) collectDeclStatementInitReferences(stmt ast.Statement, scope *
 				l.collectExpressionInitReferences(value, scope, refs)
 			}
 			for i, name := range decl.Var.Names {
-				scope.declareValue(name, l.dependencyValueDeclType(decl.Var, i, scope))
+				scope.declareValue(name, l.dependencyValueDeclType(*decl.Var, i, scope))
 			}
 		case ast.DeclType:
 			name := strings.TrimSpace(decl.Type.Name)
@@ -343,7 +343,7 @@ func (l *lowerer) collectDeclStatementInitReferences(stmt ast.Statement, scope *
 		case ast.DeclFunc:
 			name := strings.TrimSpace(decl.Func.Name)
 			if name != "" && !isBlankIdentifier(name) {
-				scope.declareValue(name, l.signatureOf(decl.Func))
+				scope.declareValue(name, l.signatureOf(*decl.Func))
 			}
 		}
 	}
@@ -416,28 +416,18 @@ func (l *lowerer) collectExpressionInitReferences(expr ast.Expression, scope *in
 			l.collectExpressionInitReferences(*expr.Max, scope, refs)
 		}
 	case ast.ExprComposite:
-		literalFields := l.structLiteralFields(expr.Type, l.resolveSourceType(expr.Type))
-		if len(expr.Entries) == 0 && len(expr.Elements) > 0 {
-			for i, element := range expr.Elements {
-				if len(literalFields) == len(expr.Elements) && literalFields[i].name == "_" {
-					continue
-				}
-				l.collectExpressionInitReferences(element, scope, refs)
+		literalFields := l.structLiteralFields(expr.Type, l.resolveSourceTypePtr(expr.Type, nil))
+		for i, item := range expr.Items {
+			if item.Key == nil && len(literalFields) == len(expr.Items) && literalFields[i].name == "_" {
+				continue
 			}
-			break
-		}
-		items := expr.Items
-		if len(items) == 0 {
-			items = expr.Entries
-		}
-		for _, item := range items {
 			if item.Key != nil {
 				l.collectExpressionInitReferences(*item.Key, scope, refs)
 			}
 			l.collectExpressionInitReferences(item.Value, scope, refs)
 		}
 	case ast.ExprFunc:
-		l.collectFunctionLiteralInitReferences(expr.Func, scope, refs)
+		l.collectFunctionLiteralInitReferences(*expr.Func, scope, refs)
 	case ast.ExprConvert, ast.ExprAssert:
 		if expr.Operand != nil {
 			l.collectExpressionInitReferences(*expr.Operand, scope, refs)
@@ -478,7 +468,7 @@ func (l *lowerer) dependencyExpressionType(expr ast.Expression, scope *initDepen
 			return l.resolveType(l.typeRefString(typ))
 		}
 	case ast.ExprComposite, ast.ExprConvert, ast.ExprAssert:
-		return l.resolveSourceType(expr.Type)
+		return l.resolveSourceTypePtr(expr.Type, nil)
 	case ast.ExprAddr:
 		if expr.Operand == nil {
 			return ""
@@ -512,7 +502,7 @@ func (l *lowerer) dependencyExpressionType(expr ast.Expression, scope *initDepen
 			}
 		}
 	case ast.ExprLiteral:
-		return l.resolveSourceType(expr.Type)
+		return l.resolveSourceTypePtr(expr.Type, nil)
 	}
 	return ""
 }

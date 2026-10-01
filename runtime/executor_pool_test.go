@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -192,50 +193,55 @@ func TestExecutorShutdownClosesAttachedInstancesAndRejectsNewOnes(t *testing.T) 
 	}
 }
 
-func TestOneWorkerExecutorAdvancesMultipleInstancesWithoutPinnedSupervisors(t *testing.T) {
-	executor, err := NewExecutor(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	program := patchTestProgram(t, publicParallelArtifact(), "shared-one-worker")
-	instances := make([]*Instance, 2)
-	executions := make([]*Execution, 2)
-	for index := range instances {
-		instances[index], err = program.Instantiate(t.Context(), InstanceOptions{
-			Parallelism: 4,
-			Executor:    executor,
-		})
-		if err != nil {
-			_ = executor.Shutdown(context.Background())
-			t.Fatal(err)
+func TestExecutorAdvancesMultipleInstancesAcrossWorkerAndParallelismSettings(t *testing.T) {
+	for _, workers := range []int{1, 4} {
+		for _, parallelism := range []int{1, 4} {
+			t.Run(fmt.Sprintf("workers=%d/parallelism=%d", workers, parallelism), func(t *testing.T) {
+				executor, err := NewExecutor(workers)
+				if err != nil {
+					t.Fatal(err)
+				}
+				program := patchTestProgram(t, publicParallelArtifact(), fmt.Sprintf("shared-%d-%d", workers, parallelism))
+				instances := make([]*Instance, 2)
+				executions := make([]*Execution, 2)
+				for index := range instances {
+					instances[index], err = program.Instantiate(t.Context(), InstanceOptions{
+						Parallelism: parallelism,
+						Executor:    executor,
+					})
+					if err != nil {
+						_ = executor.Shutdown(context.Background())
+						t.Fatal(err)
+					}
+					executions[index], err = instances[index].Start("run")
+					if err != nil {
+						_ = executor.Shutdown(context.Background())
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				var group sync.WaitGroup
+				errorsByInstance := make([]error, len(executions))
+				for index, execution := range executions {
+					group.Go(func() {
+						if _, waitErr := execution.Wait(ctx); waitErr != nil {
+							errorsByInstance[index] = waitErr
+							return
+						}
+						_, errorsByInstance[index] = execution.WaitScope(ctx)
+					})
+				}
+				group.Wait()
+				for _, waitErr := range errorsByInstance {
+					if waitErr != nil {
+						t.Fatal(waitErr)
+					}
+				}
+				if err := executor.Shutdown(ctx); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
-		executions[index], err = instances[index].Start("run")
-		if err != nil {
-			_ = executor.Shutdown(context.Background())
-			t.Fatal(err)
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	var group sync.WaitGroup
-	errorsByInstance := make([]error, len(executions))
-	for index, execution := range executions {
-		group.Go(func() {
-			if _, waitErr := execution.Wait(ctx); waitErr != nil {
-				errorsByInstance[index] = waitErr
-				return
-			}
-			_, errorsByInstance[index] = execution.WaitScope(ctx)
-		})
-	}
-	group.Wait()
-	for _, waitErr := range errorsByInstance {
-		if waitErr != nil {
-			t.Fatal(waitErr)
-		}
-	}
-	if err := executor.Shutdown(ctx); err != nil {
-		t.Fatal(err)
 	}
 }

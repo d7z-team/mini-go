@@ -128,12 +128,12 @@ export class Runtime {
     private readonly maxInputBytes: number,
   ) {
     worker.listen(
-      (message) => this.message(message),
+      (message) => this.handleWorkerMessage(message),
       (reason) => this.terminate(reason),
     );
   }
 
-  private message(message: Response): void {
+  private handleWorkerMessage(message: Response): void {
     switch (message.kind) {
       case "ready":
         this.ready.resolve();

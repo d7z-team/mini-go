@@ -81,7 +81,7 @@ func prepare(request Request, mode string, manifest []cache.TestEntry) (PrepareR
 	if err := request.Context.Err(); err != nil {
 		return PrepareResult{}, err
 	}
-	built, err := Compile(request)
+	built, err := compile(request, false)
 	if err != nil {
 		return PrepareResult{}, err
 	}

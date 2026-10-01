@@ -18,24 +18,24 @@ func TestVMRunsCompositeAccess(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+		Code: testSlotCode([]string{"Int64", "Int64", "Slice<Int64>"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpMakeSequence),
+			Op:      ir.OpMakeSequence,
 			Payload: testArrayPayload("Slice<Int64>", 2),
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op: string(ir.OpLoadIndex),
+			Op: ir.OpLoadIndex,
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {nil, {0}}, {{2, 0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -61,41 +61,41 @@ func TestVMRunsCompositeMutation(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []ir.Local{{ID: "local.arr", Type: testType("Slice<Int64>")}},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.zero"}`),
+		Code: testSlotCode([]string{"Int64", "Int64", "Slice<Int64>"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.zero"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpMakeSequence),
+			Op:      ir.OpMakeSequence,
 			Payload: testArrayPayload("Slice<Int64>", 2),
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.arr"}`),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.arr"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.arr"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.arr"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op: string(ir.OpStoreIndex),
+			Op: ir.OpStoreIndex,
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.arr"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.arr"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op: string(ir.OpLoadIndex),
+			Op: ir.OpLoadIndex,
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {{2}, nil}, {nil, {2}}, {nil, {0}}, {nil, {1}}, {{2, 0, 1}, nil}, {nil, {2}}, {nil, {0}}, {{2, 0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -124,19 +124,19 @@ func TestVMRunsStructMember(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64", "Point"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpMakeStruct),
+			Op:      ir.OpMakeStruct,
 			Payload: testStructPayload("Point", "X"),
 		}, {
-			Op:      string(ir.OpLoadField),
-			Payload: json.RawMessage(`{"field":"X"}`),
+			Op:      ir.OpLoadField,
+			Payload: ir.FieldPayload{Field: "X"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -169,16 +169,16 @@ func TestVMZeroNamedStructUsesTypeFieldMetadata(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpZero),
+		Code: testSlotCode([]string{"User", "String"}, []ir.Instruction{{
+			Op:      ir.OpZero,
 			Payload: testTypePayload("User"),
 		}, {
-			Op:      string(ir.OpLoadField),
-			Payload: json.RawMessage(`{"field":"Name"}`),
+			Op:      ir.OpLoadField,
+			Payload: ir.FieldPayload{Field: "Name"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -243,19 +243,19 @@ func TestVMNamedStructMemberReadUsesTypeFieldMetadata(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.id"}`),
+		Code: testSlotCode([]string{"Int64", "User", "String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.id"},
 		}, {
-			Op:      string(ir.OpMakeStruct),
+			Op:      ir.OpMakeStruct,
 			Payload: testStructPayload("User", "ID"),
 		}, {
-			Op:      string(ir.OpLoadField),
-			Payload: json.RawMessage(`{"field":"Name"}`),
+			Op:      ir.OpLoadField,
+			Payload: ir.FieldPayload{Field: "Name"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, {2}}, {{2}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -270,7 +270,7 @@ func TestVMNamedStructMemberReadUsesTypeFieldMetadata(t *testing.T) {
 	requireValues(t, result.Values, newVMValue("String", ""))
 }
 
-func TestVMNamedStructMakeStructRejectsUnknownField(t *testing.T) {
+func TestLoaderNamedStructMakeStructRejectsUnknownField(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	setRuntimeTestNamedTypes(&artifact, []testNamedType{{
 		Name: "User",
@@ -284,29 +284,25 @@ func TestVMNamedStructMakeStructRejectsUnknownField(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.age"}`),
+		Code: testSlotCode([]string{"Int64", "User"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.age"},
 		}, {
-			Op:      string(ir.OpMakeStruct),
+			Op:      ir.OpMakeStruct,
 			Payload: testStructPayload("User", "Age"),
 		}, {
-			Op: string(ir.OpPop),
-		}},
+			Op: ir.OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
+	_, err := loadTestEngine(artifact)
 	if err == nil || !strings.Contains(err.Error(), `unknown field "Age" for example/module.User`) {
-		t.Fatalf("expected unknown field error, got %v", err)
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
-func TestVMNamedStructMakeStructRejectsWrongFieldType(t *testing.T) {
+func TestLoaderNamedStructMakeStructRejectsWrongFieldType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	setRuntimeTestNamedTypes(&artifact, []testNamedType{{
 		Name: "User",
@@ -320,25 +316,21 @@ func TestVMNamedStructMakeStructRejectsWrongFieldType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+		Code: testSlotCode([]string{"Int64", "User"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpMakeStruct),
+			Op:      ir.OpMakeStruct,
 			Payload: testStructPayload("User", "Name"),
 		}, {
-			Op: string(ir.OpPop),
-		}},
+			Op: ir.OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), `field "Name"`) || !strings.Contains(err.Error(), "Int64 is not String") {
-		t.Fatalf("expected field type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "Int64 is not assignable to String") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
@@ -360,31 +352,31 @@ func TestVMNamedStructStoreFieldUsesTypeFieldMetadata(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
 		Locals:    []ir.Local{{ID: "local.user", Type: testType("User")}},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpZero),
+		Code: testSlotCode([]string{"User", "String"}, []ir.Instruction{{
+			Op:      ir.OpZero,
 			Payload: testTypePayload("User"),
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: testPayload(ir.LocalPayload{Local: "local.user"}),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.user"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: testPayload(ir.LocalPayload{Local: "local.user"}),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.user"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.name"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.name"},
 		}, {
-			Op:      string(ir.OpStoreField),
-			Payload: json.RawMessage(`{"field":"Name"}`),
+			Op:      ir.OpStoreField,
+			Payload: ir.FieldPayload{Field: "Name"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: testPayload(ir.LocalPayload{Local: "local.user"}),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.user"},
 		}, {
-			Op:      string(ir.OpLoadField),
-			Payload: json.RawMessage(`{"field":"Name"}`),
+			Op:      ir.OpLoadField,
+			Payload: ir.FieldPayload{Field: "Name"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {0}}, {nil, {1}}, {{0, 1}, nil}, {nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -399,7 +391,7 @@ func TestVMNamedStructStoreFieldUsesTypeFieldMetadata(t *testing.T) {
 	requireValues(t, result.Values, newVMValue("String", "Ada"))
 }
 
-func TestVMNamedStructStoreFieldRejectsWrongType(t *testing.T) {
+func TestLoaderNamedStructStoreFieldRejectsWrongType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	setRuntimeTestNamedTypes(&artifact, []testNamedType{{
 		Name: "User",
@@ -413,25 +405,21 @@ func TestVMNamedStructStoreFieldRejectsWrongType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpZero),
+		Code: testSlotCode([]string{"User", "Int64"}, []ir.Instruction{{
+			Op:      ir.OpZero,
 			Payload: testTypePayload("User"),
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpStoreField),
-			Payload: json.RawMessage(`{"field":"Name"}`),
-		}},
+			Op:      ir.OpStoreField,
+			Payload: ir.FieldPayload{Field: "Name"},
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), `field "Name"`) || !strings.Contains(err.Error(), "Int64 is not String") {
-		t.Fatalf("expected field type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "Int64 is not assignable to String") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }

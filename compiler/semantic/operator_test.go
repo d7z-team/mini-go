@@ -72,7 +72,7 @@ func Apply(left Value, right Value) (Value, Value, bool) {
 	var apply ast.FuncDecl
 	for _, decl := range checked.Program.Files[0].Decls {
 		if decl.Kind == ast.DeclFunc && decl.Func.Name == "Apply" {
-			apply = decl.Func
+			apply = *decl.Func
 		}
 	}
 	want := []string{"OpAdd", "OpNeg", "OpEq"}
@@ -106,7 +106,7 @@ func Apply(a Number, b Number, x Value) {
 	var apply ast.FuncDecl
 	for _, decl := range checked.Program.Files[0].Decls {
 		if decl.Kind == ast.DeclFunc && decl.Func.Name == "Apply" {
-			apply = decl.Func
+			apply = *decl.Func
 		}
 	}
 	if _, overloaded := checked.Info.Operators[apply.Body.Stmts[0].Right[0].NodeID]; overloaded {

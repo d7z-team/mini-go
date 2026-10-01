@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 
 func TestHashIsStableForSameArtifact(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	left, err := Hash(&artifact)
 	if err != nil {
@@ -30,7 +31,7 @@ func TestHashIsStableForSameArtifact(t *testing.T) {
 
 func TestHashMatchesCanonicalJSONSHA256(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	payload, err := CanonicalJSON(&artifact)
 	if err != nil {
@@ -125,13 +126,13 @@ func TestDecodeJSONRoundTrip(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	attachTestTypeNodes(&artifact)
@@ -236,9 +237,9 @@ func TestValidationIssueCodesAreStable(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op: "does_not_exist",
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op: Opcode(65535),
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 	err := testValidateArtifact(&artifact)
 	if code := ValidationCode(err); code != "ir.opcode.unknown" {
@@ -249,10 +250,10 @@ func TestValidationIssueCodesAreStable(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: json.RawMessage(`{"constant":"c.absent"}`),
-		}},
+		Code: testSlotCode([]string{"Int"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{Constant: "c.absent"},
+		}}, [][2][]uint32{{nil, {0}}}),
 	}}
 	err = testValidateArtifact(&artifact)
 	if code := ValidationCode(err); code != "ir.reference.unknown" {
@@ -278,7 +279,7 @@ func TestValidationCodeDoesNotDependOnMessageText(t *testing.T) {
 
 func TestValidationLimitCode(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 	limits := DefaultValidationLimits()
 	limits.MaxFunctions = 0
 	if err := ValidateArtifactWithLimits(&artifact, limits); err != nil {
@@ -293,7 +294,7 @@ func TestValidationLimitCode(t *testing.T) {
 		t.Fatalf("single function should fit limit, got %v", err)
 	}
 	limits.MaxFunctions = 0
-	artifact.Functions = append(artifact.Functions, Function{ID: "fn.other", Signature: testSignature("function() Void")})
+	artifact.Functions = append(artifact.Functions, Function{Code: &SlotCode{}, ID: "fn.other", Signature: testSignature("function() Void")})
 	if err := ValidateArtifactWithLimits(&artifact, limits); err != nil {
 		t.Fatalf("zero max functions should still disable the limit, got %v", err)
 	}
@@ -305,15 +306,15 @@ func TestValidationLimitCode(t *testing.T) {
 }
 
 func TestDecodeJSONRejectsUnknownArtifactField(t *testing.T) {
-	data := []byte(`{
+	data := []byte(fmt.Sprintf(`{
 		"format":"mini-go-ir",
-		"version":22,
-		"opcode_set":"minigo.ir.v10",
+		"version":%d,
+		"opcode_set":%q,
 		"module":{"path":"example/module","package":"main"},
 		"type_table":{"nodes":[]},
 		"functions":[{"id":"fn.main","signature":{"params":[],"results":[]}}],
 		"extra":true
-	}`)
+	}`, CurrentVersion, OpcodeSet))
 
 	_, err := DecodeJSON(data)
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
@@ -322,22 +323,24 @@ func TestDecodeJSONRejectsUnknownArtifactField(t *testing.T) {
 }
 
 func TestDecodeJSONRejectsUnknownPayloadField(t *testing.T) {
-	data := []byte(`{
+	data := []byte(fmt.Sprintf(`{
 		"format":"mini-go-ir",
-		"version":22,
-		"opcode_set":"minigo.ir.v10",
+		"version":%d,
+		"opcode_set":%q,
 		"module":{"path":"example/module","package":"main"},
 		"type_table":{"nodes":[]},
 		"constants":[{"id":"c.answer","type":{"kind":3,"primitive":7},"value":42}],
 		"functions":[{
 			"id":"fn.main",
 			"signature":{"params":[],"results":[{"kind":3,"primitive":7}]},
-			"instructions":[
-				{"op":"const","payload":{"constant":"c.answer","extra":true}},
-				{"op":"return","payload":{"result_count":1}}
-			]
+			"code":{
+				"types":[{"kind":3,"primitive":7}],
+				"instructions":[[%d,0,0],[%d,0,1]],
+				"descriptors":{"const":[{"constant":"c.answer","extra":true}],"return":[{"result_count":1}]},
+				"operands":[{"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]
+			}
 		}]
-	}`)
+	}`, CurrentVersion, OpcodeSet, OpConst, OpReturn))
 
 	_, err := DecodeJSON(data)
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {

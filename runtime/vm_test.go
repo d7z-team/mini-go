@@ -14,13 +14,13 @@ func TestVMRunsExportedConstantFunction(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -41,13 +41,13 @@ func TestExecutionStartsAndCompletesExport(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -78,12 +78,12 @@ func TestExecutionCapturesFailure(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.message"}`),
+		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.message"},
 		}, {
-			Op: string(ir.OpPanic),
-		}},
+			Op: ir.OpPanic,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -115,13 +115,13 @@ func TestVMRunsJSONArtifact(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	data, err := ir.EncodeJSON(&artifact)

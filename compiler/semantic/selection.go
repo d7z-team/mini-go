@@ -39,7 +39,6 @@ func (a *analyzer) finalizeSelector(expr *ast.Expression, info ExprInfo) ExprInf
 			FunctionID: export.ID, Type: a.dependencyType(export), Variadic: export.Variadic,
 		}
 		info.Type = selection.Type
-		info.Selection = selection
 		switch export.Kind {
 		case ObjectType:
 			info.Mode = ExprType
@@ -55,8 +54,7 @@ func (a *analyzer) finalizeSelector(expr *ast.Expression, info ExprInfo) ExprInf
 		if signature, ok := a.info.Relations.View(info.Type).Function(); ok {
 			selection.Signature = signature
 			selection.Variadic = selection.Variadic || signature.Variadic
-			info.Signature, info.HasSignature = signature, true
-			info.Selection = selection
+			info.Signature = &signature
 		}
 		a.info.Selections[expr.NodeID] = selection
 		return info
@@ -95,12 +93,13 @@ func (a *analyzer) finalizeSelector(expr *ast.Expression, info ExprInfo) ExprInf
 		selection.Type = a.storeFunctionType(expr.NodeID, "selection", signature)
 		selection.Signature = signature
 		info.Type = selection.Type
-		info.Signature, info.HasSignature = signature, true
+		info.Signature = &signature
 		info.Mode = ExprValue
 	} else if selection.Kind == SelectionMethod {
 		selection.Type = a.storeFunctionType(expr.NodeID, "selection", selection.Signature)
 		info.Type = selection.Type
-		info.Signature, info.HasSignature = selection.Signature, true
+		signature := selection.Signature
+		info.Signature = &signature
 		info.Mode = ExprValue
 	} else {
 		selection.Type = candidate.fieldType
@@ -110,10 +109,9 @@ func (a *analyzer) finalizeSelector(expr *ast.Expression, info ExprInfo) ExprInf
 			info.Category = ValueAddressable
 		}
 		if signature, ok := a.info.Relations.View(candidate.fieldType).Function(); ok {
-			info.Signature, info.HasSignature = signature, true
+			info.Signature = &signature
 		}
 	}
-	info.Selection = selection
 	a.info.Selections[expr.NodeID] = selection
 	return info
 }

@@ -100,8 +100,8 @@ func (p *parser) startsParenthesizedWholeExpression() bool {
 		return false
 	}
 	depth := 0
-	for index := p.pos; index < len(p.tokens); index++ {
-		switch p.tokens[index].Kind {
+	for index := p.pos; index < p.lexical.TokenCount(); index++ {
+		switch p.lexical.TokenKind(index) {
 		case token.Lparen:
 			depth++
 		case token.Rparen:
@@ -335,8 +335,9 @@ func (p *parser) parseNestedExpression() ast.Expression {
 	if p.noComposite == 0 {
 		return p.parseExpression(1)
 	}
-	p.noComposite--
-	defer func() { p.noComposite++ }()
+	previous := p.noComposite
+	p.noComposite = 0
+	defer func() { p.noComposite = previous }()
 	return p.parseExpression(1)
 }
 

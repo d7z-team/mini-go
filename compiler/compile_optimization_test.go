@@ -10,7 +10,7 @@ import (
 )
 
 func TestCompileOptimizationLevelsPreserveExportsAndSymbols(t *testing.T) {
-	parsed, diagnostics, err := workspace.ParsePackage(SourcePackage{
+	input := SourcePackage{
 		ModulePath: "example/main",
 		Files: []SourceFile{{Path: "main.mgo", Text: `package main
 func target() int { return 1 }
@@ -23,13 +23,14 @@ func Wrapper() int {
 	return value
 }
 `}},
-	})
-	if err != nil || len(diagnostics) != 0 {
-		t.Fatalf("parse: diagnostics=%#v err=%v", diagnostics, err)
 	}
 	results := make([]compiledPackage, 3)
 	for level := OptimizationNone; level <= OptimizationFull; level++ {
-		results[level], err = compileParsedPackageWithLimits(context.Background(), parsed.Program, lower.Options{}, nil, normalizeCompilerLimits(Limits{}), level)
+		parsed, diagnostics, err := workspace.ParseOwnedPackageWithLimits(input, workspace.Limits{})
+		if err != nil || len(diagnostics) != 0 {
+			t.Fatalf("parse: diagnostics=%#v err=%v", diagnostics, err)
+		}
+		results[level], err = compileParsedPackageWithLimits(context.Background(), parsed, nil, lower.Options{}, nil, normalizeCompilerLimits(Limits{}), level)
 		if err != nil || !results[level].OK() {
 			t.Fatalf("compile O%d: diagnostics=%#v err=%v", level, results[level].Diagnostics, err)
 		}

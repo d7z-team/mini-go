@@ -98,15 +98,15 @@ export type CompilerResponse = {
 };
 
 /** The adapters own platform workers; the runtime owns admission and lifetime. */
-export interface WorkerConnection {
-  send(message: Request, transfer?: ArrayBuffer[]): void;
-  listen(message: (value: Response) => void, failure: (reason: unknown) => void): void;
+export interface WorkerConnection<Input = Request, Output = Response> {
+  send(message: Input, transfer?: ArrayBuffer[]): void;
+  listen(message: (value: Output) => void, failure: (reason: unknown) => void): void;
   terminate(): void;
 }
 export type WorkerFactory = (options: Options) => WorkerConnection;
-export interface WorkerPort {
-  send(message: Response): void;
-  listen(handler: (message: Request) => void): void;
+export interface WorkerPort<Input = Request, Output = Response> {
+  send(message: Output): void;
+  listen(handler: (message: Input) => void): void;
 }
 export type Action =
   | { kind: "call"; id: number; route: string; payload: number[] }

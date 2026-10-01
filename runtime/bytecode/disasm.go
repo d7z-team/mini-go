@@ -121,10 +121,47 @@ func writeFunctions(w io.Writer, functions []Function, table *types.TypeTable) {
 			fmt.Fprintf(w, "  upvalue %s %s", upvalue.ID, types.FormatWithTable(table, upvalue.Type))
 			fmt.Fprintln(w)
 		}
-		for i, inst := range fn.Instructions {
+		instructions, err := fn.Operations()
+		if err != nil {
+			fmt.Fprintf(w, "  <invalid code: %v>\n", err)
+			continue
+		}
+		for i, inst := range instructions {
 			fmt.Fprintf(w, "  %04d %s", i, inst.Op)
-			if len(inst.Payload) != 0 {
-				fmt.Fprintf(w, " %s", compactJSON(inst.Payload))
+			operands := fn.Code.Operands[fn.Code.Instructions[i].Operands]
+			fmt.Fprint(w, " outputs=[")
+			for j, output := range operands.Outputs {
+				if j != 0 {
+					fmt.Fprint(w, " ")
+				}
+				if output&LocalOutput != 0 {
+					fmt.Fprintf(w, "l%d", output&^LocalOutput)
+				} else {
+					fmt.Fprint(w, output)
+				}
+			}
+			fmt.Fprint(w, "] inputs=[")
+			for j, input := range operands.Inputs {
+				if j != 0 {
+					fmt.Fprint(w, " ")
+				}
+				prefix := "s"
+				switch input.Kind {
+				case OperandConstant:
+					prefix = "c"
+				case OperandLocal:
+					prefix = "l"
+				}
+				fmt.Fprintf(w, "%s%d", prefix, input.Index)
+			}
+			fmt.Fprintf(w, "] release=%v release_before=%v", operands.Release, operands.ReleaseBefore)
+			if inst.Payload != nil {
+				payload, err := MarshalPayload(inst.Payload)
+				if err != nil {
+					fmt.Fprintf(w, " <invalid payload: %v>", err)
+				} else {
+					fmt.Fprintf(w, " %s", payload)
+				}
 			}
 			fmt.Fprintln(w)
 		}

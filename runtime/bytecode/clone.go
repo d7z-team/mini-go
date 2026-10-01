@@ -24,10 +24,16 @@ func CloneArtifact(artifact Artifact) Artifact {
 		out.Functions[index].Locals = append([]Local(nil), function.Locals...)
 		out.Functions[index].ResultLocals = append([]string(nil), function.ResultLocals...)
 		out.Functions[index].Upvalues = append([]Upvalue(nil), function.Upvalues...)
-		out.Functions[index].Instructions = make([]Instruction, len(function.Instructions))
-		for instructionIndex, instruction := range function.Instructions {
-			out.Functions[index].Instructions[instructionIndex] = instruction
-			out.Functions[index].Instructions[instructionIndex].Payload = append(json.RawMessage(nil), instruction.Payload...)
+		if function.Code != nil {
+			code := *function.Code
+			code.Types = append([]types.TypeRef(nil), code.Types...)
+			code.Instructions = append([]SlotInstruction(nil), code.Instructions...)
+			code.Descriptors = code.Descriptors.Clone()
+			code.Operands = make([]SlotOperands, len(function.Code.Operands))
+			for i, operands := range function.Code.Operands {
+				code.Operands[i] = SlotOperands{Inputs: append([]Operand(nil), operands.Inputs...), Outputs: append([]uint32(nil), operands.Outputs...), Release: append([]uint32(nil), operands.Release...), ReleaseBefore: append([]uint32(nil), operands.ReleaseBefore...)}
+			}
+			out.Functions[index].Code = &code
 		}
 	}
 	out.Exports = append([]Export(nil), artifact.Exports...)

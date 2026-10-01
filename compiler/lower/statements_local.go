@@ -23,7 +23,7 @@ func (l *lowerer) lowerIncDecAssign(stmt ast.Statement, scope *funcScope) ([]ir.
 		Right: []ast.Expression{{
 			Kind:    ast.ExprLiteral,
 			Literal: "1",
-			Type:    ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
+			Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
 			Span:    stmt.Span,
 		}},
 	}, scope)
@@ -99,7 +99,7 @@ func (l *lowerer) lowerCompoundOperator(selection check.Selection, plan lvaluePl
 		}
 		return ir.Expression{
 			Kind: ir.ExprCallInterface, Type: method.InterfaceType, Field: method.Method,
-			Operand: &receiver, Args: args, ResultCount: len(method.Signature.Results),
+			Operand: &receiver, Args: args, ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results,
 		}, true
 	}
 	method, found := l.methodInfoFromSelection(selection)
@@ -121,7 +121,7 @@ func (l *lowerer) lowerCompoundOperator(selection check.Selection, plan lvaluePl
 	}
 	return ir.Expression{
 		Kind: ir.ExprCallDirect, ModulePath: method.ModulePath, Function: method.FunctionID,
-		Args: args, ResultCount: len(method.Signature.Results),
+		Args: args, ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results,
 	}, true
 }
 
@@ -181,7 +181,7 @@ func (l *lowerer) lowerLocalDecl(decl ast.Decl, scope *funcScope) ([]ir.Statemen
 }
 
 func (l *lowerer) lowerLocalVarDecl(decl ast.Decl, scope *funcScope) ([]ir.Statement, bool) {
-	valueDecl := decl.Var
+	valueDecl := *decl.Var
 	if !l.validateLocalVarNames(valueDecl, decl.Span, scope) {
 		return nil, false
 	}

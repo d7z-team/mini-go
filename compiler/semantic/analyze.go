@@ -3,10 +3,12 @@ package semantic
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/constant"
+	"github.com/d7z-team/mini-go/compiler/parser"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/types"
 	bytecode "github.com/d7z-team/mini-go/runtime/bytecode"
@@ -33,10 +35,27 @@ func Check(program ast.Program) CheckedProgram {
 }
 
 func WithOptions(program ast.Program, options AnalyzeOptions) CheckedProgram {
-	ast.AssignNodeIDs(&program)
+	structural, _ := ast.FinalizeStructure(&program, options.Limits)
+	if source.HasErrors(structural) {
+		return CheckedProgram{Program: program, Info: &ProgramInfo{ModulePath: program.ModulePath, Package: program.Package, Diagnostics: structural}}
+	}
 	info := analyzeWithOptions(program, options)
-	info.Diagnostics = append(info.Diagnostics, ast.ValidateProgram(program)...)
+	info.Diagnostics = append(info.Diagnostics, ast.ValidateProgramContentsWithLimits(program, options.Limits)...)
 	return CheckedProgram{Program: program, Info: info}
+}
+
+// WithParsed consumes an owned source package. Its immutable construction phase
+// has already finalized structure and node identities after all source edits.
+// The returned AST and documents are owned by the caller; future analysis of a
+// modified AST must enter through WithOptions.
+func WithParsed(input parser.Package, options AnalyzeOptions) (CheckedProgram, []parser.Document) {
+	program, documents, diagnostics := input.Take(options.Limits)
+	if source.HasErrors(diagnostics) {
+		return CheckedProgram{Program: program, Info: &ProgramInfo{ModulePath: program.ModulePath, Package: program.Package, Diagnostics: diagnostics}}, documents
+	}
+	info := analyzeWithOptions(program, options)
+	info.Diagnostics = append(info.Diagnostics, ast.ValidateProgramContentsWithLimits(program, options.Limits)...)
+	return CheckedProgram{Program: program, Info: info}, documents
 }
 
 func analyzeWithOptions(program ast.Program, options AnalyzeOptions) *ProgramInfo {
@@ -130,7 +149,7 @@ func (a *analyzer) declare(scopeID ScopeID, kind ObjectKind, name string, node a
 		return
 	}
 	a.nextObj++
-	id := ObjectID(fmt.Sprintf("object.%d.%s", a.nextObj, name))
+	id := ObjectID("object." + strconv.FormatUint(a.nextObj, 10) + "." + name)
 	object := Object{
 		ID: id, Kind: kind, Name: name, Node: node, Scope: scopeID, Type: typ,
 		Exported: isExported(name), Mutable: mutable, Alias: alias,
@@ -272,9 +291,9 @@ func (a *analyzer) analyzeFiles(program ast.Program) {
 				continue
 			}
 			if decl.Func.Receiver == nil && decl.Func.Name != "init" {
-				a.predeclareFunctionSignature(&decl.Func, fileScope)
+				a.predeclareFunctionSignature(decl.Func, fileScope)
 			} else if decl.Func.Receiver != nil {
-				a.predeclareMethodSignature(&decl.Func, fileScope)
+				a.predeclareMethodSignature(decl.Func, fileScope)
 			}
 		}
 	}

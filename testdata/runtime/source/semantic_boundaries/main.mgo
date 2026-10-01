@@ -7,7 +7,7 @@ func RangePointerLive() int {
 		if i == 0 {
 			p[1] = 9
 		}
-		n = n*10 + v
+		n = n * 10 + v
 	}
 	return n
 }
@@ -15,12 +15,14 @@ func RangePointerLive() int {
 func RangeTargets() int {
 	i := 0
 	a := []int{0, 0, 0}
-	for i, a[i] = range []int{10, 20, 30} {
-	}
-	return a[0]*10000 + a[1]*100 + a[2]
+	for i, a[i] = range []int{10, 20, 30} {}
+	return a[0] * 10000 + a[1] * 100 + a[2]
 }
 
-func NilArrayCap() int { var p *[4]int; return cap(p) }
+func NilArrayCap() int {
+	var p *[4]int
+	return cap(p)
+}
 
 func RangeArrayNil() int {
 	var p *[4]int
@@ -75,13 +77,34 @@ func AppendIsolation() int {
 	return s[2]
 }
 
-func LenArrayCall() int { n := 0; f := func() [4]int { n++; return [4]int{} }; _ = len(f()); return n }
+func LenArrayCall() int {
+	n := 0
+	f := func() [4]int {
+		n++
+		return [4]int{}
+	}
+	_ = len(f())
+	return n
+}
 
-func LenArrayDeref() int { var p *[4]int; return len(*p) }
+func LenArrayDeref() int {
+	var p *[4]int
+	return len(*p)
+}
 
-func AppendCap() int { s := make([]int, 4, 8); s = s[:1:2]; s = append(s, 9); return cap(s) }
+func AppendCap() int {
+	s := make([]int, 4, 8)
+	s = s[:1:2]
+	s = append(s, 9)
+	return cap(s)
+}
 
-func AppendByteCap() int { s := make([]byte, 4, 8); s = s[:1:2]; s = append(s, 9); return cap(s) }
+func AppendByteCap() int {
+	s := make([]byte, 4, 8)
+	s = s[:1:2]
+	s = append(s, 9)
+	return cap(s)
+}
 
 func TypedNilEqual() (r int) {
 	defer func() {
@@ -107,7 +130,9 @@ func NilRead() (r int) {
 	return *p
 }
 
-type NilFieldStruct struct{ X int }
+type NilFieldStruct struct {
+	X int
+}
 
 func NilFieldRead() (r int) {
 	defer func() {
@@ -120,7 +145,9 @@ func NilFieldRead() (r int) {
 }
 
 func NilFieldWrite() (r int) {
-	defer func() { recover() }()
+	defer func() {
+		recover()
+	}()
 	var p *NilFieldStruct
 	r, p.X = 42, 1
 	return
@@ -137,12 +164,22 @@ func NilFieldAddress() (r int) {
 	return
 }
 
-func NilKey() int { m := make(map[any]int); m[nil] = 42; return m[nil] }
+func NilKey() int {
+	m := make(map[any]int)
+	m[nil] = 42
+	return m[nil]
+}
 
 func StructNilKey() int {
-	m := make(map[struct{ V any }]int)
-	m[struct{ V any }{}] = 42
-	return m[struct{ V any }{}]
+	m := make(map[struct {
+		V any
+	}]int)
+	m[struct {
+		V any
+	}{}] = 42
+	return m[struct {
+		V any
+	}{}]
 }
 
 func BadKeyRecover() (r int) {
@@ -180,32 +217,70 @@ func BadEqualRecover() (r int) {
 }
 
 func AssignBounds() (r int) {
-	defer func() { recover() }()
+	defer func() {
+		recover()
+	}()
 	s := []int{0}
 	i := 1
 	r, s[i] = 42, 1
 	return
 }
 
-func AssignNil() (r int) { defer func() { recover() }(); var p *int; r, *p = 42, 1; return }
-
-func RHSBeforePanic() (r int) {
-	defer func() { recover() }()
-	s := []int{0}
-	i := 1
-	s[i] = func() int { r = 42; return 1 }()
+func AssignNil() (r int) {
+	defer func() {
+		recover()
+	}()
+	var p *int
+	r, *p = 42, 1
 	return
 }
 
-func NilArrayLen() int { var p *[4]int; return len(p) }
+func RHSBeforePanic() (r int) {
+	defer func() {
+		recover()
+	}()
+	s := []int{0}
+	i := 1
+	s[i] = func() int {
+		r = 42
+		return 1
+	}()
+	return
+}
+
+func NilArrayLen() int {
+	var p *[4]int
+	return len(p)
+}
 
 func AppendOverlap() int {
 	s := []int{1, 2, 3, 4}
 	s = append(s[:1], s...)
-	return s[1]*1000 + s[2]*100 + s[3]*10 + s[4]
+	return s[1] * 1000 + s[2] * 100 + s[3] * 10 + s[4]
 }
 
 func Main() int {
+	value := new(any)
+	if *value != nil || *new(error) != nil {
+		panic("interface allocation zero value")
+	}
+	*value = any(42)
+	if (*value).(int) != 42 {
+		panic("interface allocation assignment")
+	}
+	{
+		type any int
+		type error int
+		type byte int
+		a, e, b := new(any), new(error), new(byte)
+		*a, *e, *b = any(14), error(14), byte(14)
+		if int(*a) + int(*e) + int(*b) != 42 {
+			panic("type declarations shadow predeclared names")
+		}
+	}
+	if ShortCircuitOrder() != 42 {
+		panic("short circuit evaluation order")
+	}
 	if MapMutations() != 42 {
 		panic("map entry lifecycle")
 	}
@@ -293,6 +368,35 @@ func Main() int {
 	return 42
 }
 
+func ShortCircuitOrder() int {
+	calls := 0
+	mark := func(value bool) bool {
+		calls = calls * 10 + 1
+		return value
+	}
+	fail := func() bool {
+		panic("unexpected RHS")
+		return false
+	}
+	if mark(false) && fail() || !(mark(true) || fail()) {
+		return 1
+	}
+	value := (mark(true) && mark(false)) || (mark(true) && mark(true))
+	if !value || calls != 111111 {
+		return 2
+	}
+	identity := func(value bool) bool {
+		return value
+	}
+	if !(identity(mark(false) || mark(true)) && identity(mark(true) && mark(true))) {
+		return 4
+	}
+	if !(mark(false) || mark(true)) && fail() {
+		return 3
+	}
+	return 42
+}
+
 func MapMutations() int {
 	m := map[int]int{1: 10, 2: 20, 3: 30}
 	sum, count := 0, 0
@@ -332,7 +436,7 @@ func MapMutations() int {
 		return 3
 	}
 	for round := 0; round < 20; round++ {
-	outer:
+		outer:
 		for range m {
 			for range n {
 				break outer
@@ -352,9 +456,8 @@ func RangeFunctionTargets() int {
 			}
 		}
 	}
-	for i, a[i] = range iterator {
-	}
-	return a[0]*10000 + a[1]*100 + a[2]
+	for i, a[i] = range iterator {}
+	return a[0] * 10000 + a[1] * 100 + a[2]
 }
 
 func BoundaryVariants() int {
@@ -364,7 +467,10 @@ func BoundaryVariants() int {
 		return 1
 	}
 	calls := 0
-	f := func() *[4]int { calls++; return nil }
+	f := func() *[4]int {
+		calls++
+		return nil
+	}
 	if cap(f()) != 4 || calls != 1 {
 		return 2
 	}

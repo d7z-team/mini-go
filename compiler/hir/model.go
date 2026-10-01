@@ -120,6 +120,7 @@ const (
 	StmtLabel          StatementKind = "label"
 	StmtJump           StatementKind = "jump"
 	StmtJumpIf         StatementKind = "jump_if"
+	StmtTypeDispatch   StatementKind = "type_dispatch"
 )
 
 type Statement struct {
@@ -139,12 +140,26 @@ type Statement struct {
 	Module       string
 	Field        string
 	Label        string
+	// BranchNegated selects the false edge without materializing a unary value.
+	BranchNegated bool
 	// DeferOwnerDepth selects the caller frame that owns a deferred call.
 	// Zero means the current frame.
 	DeferOwnerDepth int
 	Targets         []StoreTarget
 	SelectCases     []SelectCase
 	SelectDefault   bool
+	TypeCases       []TypeCase
+	DefaultLocal    string
+}
+
+// TypeCase selects a label in source order. A zero Type matches a nil
+// interface. Binding selects the case-local destination; Original preserves
+// the subject interface for multi-type and nil cases.
+type TypeCase struct {
+	Type     types.TypeRef
+	Label    string
+	Binding  string
+	Original bool
 }
 
 // SelectCase refers to already evaluated local operands. Receive destinations
@@ -235,6 +250,9 @@ type Expression struct {
 	Ellipsis    bool
 	Captures    []CaptureTarget
 	ResultCount int
+	// ResultTypes describes produced values independently of operation metadata
+	// in Type (for example, an interface call's receiver contract).
+	ResultTypes []types.TypeRef
 	Elements    []Expression
 	Entries     []MapEntry
 	Fields      []FieldValue

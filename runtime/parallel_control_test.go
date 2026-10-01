@@ -7,8 +7,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 type productionSliceGate struct {
@@ -90,12 +88,7 @@ func TestProductionSlicesUseOneBoundaryForStatsPatchAndRevisionInspection(t *tes
 			if operation == "patch" {
 				targetArtifact := publicParallelArtifact()
 				child := &targetArtifact.Functions[1]
-				last := child.Instructions[len(child.Instructions)-1]
-				child.Instructions = append(child.Instructions[:len(child.Instructions)-1],
-					ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-					ir.Instruction{Op: string(ir.OpPop)},
-					last,
-				)
+				insertTestDelay(child.Code, len(child.Code.Instructions)-1, 1)
 				plan, err = instance.PreparePatch(t.Context(), patchTestProgram(t, targetArtifact, "parallel-control-target"))
 				if err != nil {
 					t.Fatal(err)

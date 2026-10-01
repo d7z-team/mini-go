@@ -21,7 +21,7 @@ func FuzzValidateStructure(f *testing.F) {
 			}
 		}
 		program := Program{Files: []File{{Decls: []Decl{{
-			Kind: DeclFunc, Func: FuncDecl{Body: BlockStmt{Stmts: []Statement{{Kind: StmtExpr, Expr: expr}}}},
+			Kind: DeclFunc, Func: &FuncDecl{Body: BlockStmt{Stmts: []Statement{{Kind: StmtExpr, Expr: expr}}}},
 		}}}}}
 		first := ValidateStructure(&program, Limits{MaxDepth: 64, MaxNodes: 256, MaxDiagnostics: 8})
 		second := ValidateStructure(&program, Limits{MaxDepth: 64, MaxNodes: 256, MaxDiagnostics: 8})

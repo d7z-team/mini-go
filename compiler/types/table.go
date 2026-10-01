@@ -157,6 +157,7 @@ func (t *TypeTable) Replace(node TypeNode) error {
 		t.cache.Lock()
 		clear(t.cache.underlying)
 		clear(t.cache.formatted)
+		clear(t.cache.exact)
 		t.cache.Unlock()
 	}
 	return nil

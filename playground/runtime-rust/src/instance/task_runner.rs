@@ -83,15 +83,23 @@ pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
     }
     let frame = task.frames.last().unwrap();
     if frame.panic.is_some()
-        || frame.resume.is_some()
-        || frame.tail_return.is_some()
+        || frame.continuation.is_some()
         || frame.returning.is_some()
         || frame.after_init.is_some()
         || frame.pc >= frame.prepared.code.len()
     {
         return false;
     }
+    if frame.prepared.lazy_slot_inputs[frame.pc]
+        && (0..frame.operand_count(frame.pc))
+            .any(|offset| frame.operand_from_end(frame.pc, offset).is_none())
+    {
+        return false;
+    }
     match frame.prepared.execution[frame.pc] {
+        PreparedInstruction::GetPath(index) => {
+            !frame.prepared.field_paths[index].iter().any(|step| step.indirect)
+        }
         PreparedInstruction::Constant(index) => matches!(
             frame.revision.program.constant_data[index],
             PreparedConstant::Scalar(_)
@@ -100,48 +108,53 @@ pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
             index,
             store,
             rebind,
+            ..
         } => match &frame.locals[index] {
             Local::Private(value) if !store => !matches!(value.get().data, Data::Uninitialized),
-            Local::Private(value) if !rebind => frame.stack.last().is_some_and(|input| {
-                input.typ == value.get().typ && input.logical_bytes().is_ok()
+            Local::Private(value) if !rebind => frame.operand_from_end(frame.pc, 0).is_some_and(|input| {
+                input.typ == value.get().typ
             }),
             _ => false,
         },
         PreparedInstruction::Jump { conditional, .. } => {
-            !conditional || frame.stack.last().is_some_and(|value| matches!(value.data, Data::Bool(_)))
+            !conditional || frame.operand_from_end(frame.pc, 0).is_some_and(|value| matches!(value.data, Data::Bool(_)))
         }
-        PreparedInstruction::Unary(_) => !frame.stack.is_empty(),
-        PreparedInstruction::Binary(operator) => {
-            frame.stack.len() >= 2
-                && !(operator == crate::operators::Operator::Add
+        PreparedInstruction::Unary(_) => frame.operand_count(frame.pc) != 0,
+        PreparedInstruction::Binary(operator) | PreparedInstruction::CompareBranch { operator, .. } => {
+            frame.operand_count(frame.pc) >= 2
+                && !(operator.operator == crate::operators::Operator::Add
                     && matches!(
-                        (&frame.stack[frame.stack.len() - 2].data, &frame.stack.last().unwrap().data),
+                        (&frame.operand_from_end(frame.pc, 1).unwrap().data, &frame.operand_from_end(frame.pc, 0).unwrap().data),
                         (Data::String(_), Data::String(_))
                     ))
         }
         PreparedInstruction::Operand => match &frame.prepared.code[frame.pc] {
-            Instruction::Pop => !frame.stack.is_empty(),
+            Instruction::LoadIndex => frame.operand_count(frame.pc) >= 2
+                && frame.operand_from_end(frame.pc, 1).is_some_and(|value| matches!(value.data, Data::String(_) | Data::Array(_))),
+            Instruction::Pop => frame.operand_count(frame.pc) != 0,
             Instruction::Zero(_) => matches!(
                 frame.prepared.operand_types[frame.pc],
                 Some(TypeIdentity::Any | TypeIdentity::Primitive(_) | TypeIdentity::Pointer(_) | TypeIdentity::Slice(_))
             ),
-            Instruction::LoadField(payload) => frame.stack.last().is_some_and(|value| {
+            Instruction::LoadField(payload) => frame.operand_from_end(frame.pc, 0).is_some_and(|value| {
                 matches!(&value.data, Data::Struct(fields) if fields.contains_key(&payload.field))
             }),
-            Instruction::Len | Instruction::Cap => frame.stack.last().is_some_and(|value| {
+            Instruction::Len | Instruction::Cap => frame.operand_from_end(frame.pc, 0).is_some_and(|value| {
                 matches!(value.data, Data::String(_) | Data::Array(_) | Data::Slice(_) | Data::Nil)
             }),
             Instruction::StringRuneAt | Instruction::StringNextRuneIndex => {
-                frame.stack.len() >= 2
-                    && matches!(frame.stack[frame.stack.len() - 2].data, Data::String(_))
-                    && frame.stack.last().is_some_and(|value| value.integer().is_ok())
+                frame.operand_count(frame.pc) >= 2
+                    && matches!(frame.operand_from_end(frame.pc, 1).unwrap().data, Data::String(_))
+                    && frame.operand_from_end(frame.pc, 0).is_some_and(|value| value.integer().is_ok())
             }
             Instruction::MapIterClose(_) => true,
             _ => false,
         },
         PreparedInstruction::Intrinsic(_)
+        | PreparedInstruction::Construct(_)
         | PreparedInstruction::Upvalue { .. }
-        | PreparedInstruction::Global { .. } => false,
+        | PreparedInstruction::Global { .. }
+        | PreparedInstruction::TypeDispatch(_) => false,
     }
 }
 
@@ -221,31 +234,44 @@ pub(super) fn start_private_batch(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn run_private_slice(mut task: Task, quantum: usize, mut types: TypeRegistry) -> TaskRun {
+    types.use_context(task.frames.last().unwrap().revision.program.decoded.types());
+    let steps = execute_private_slice(&mut task, quantum, &types);
+    TaskRun { task, steps }
+}
+
+pub(super) fn execute_private_slice(
+    task: &mut Task,
+    quantum: usize,
+    types: &TypeRegistry,
+) -> usize {
     let mut steps = 0usize;
-    while steps < quantum && can_execute_private_instruction(&task) {
-        if task
-            .step_grant
-            .as_ref()
-            .is_none_or(|grant| grant.remaining == 0)
-        {
+    if !can_execute_private_instruction(task) {
+        return 0;
+    }
+    while steps < quantum {
+        let remaining = task.step_grant.as_ref().map_or(0, |grant| grant.remaining);
+        if remaining == 0 {
             break;
         }
-        types.use_context(task.frames.last().unwrap().revision.program.decoded.types());
-        if !try_execute_private_instruction(&mut task, &types) {
+        if !try_execute_private_instruction(task, types) {
             break;
         }
-        task.step_grant.as_mut().unwrap().consume();
-        task.scheduling_phase = (task.scheduling_phase + 1) % TASK_POLL_INTERVAL;
+        task.step_grant.as_mut().unwrap().remaining -= 1;
+        task.scheduling_phase =
+            ((usize::from(task.scheduling_phase) + 1) % usize::from(TASK_POLL_INTERVAL)) as u8;
         task.transient_roots.clear();
         steps += 1;
     }
-    TaskRun { task, steps }
+    steps
 }
 
 pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegistry) -> bool {
     let frame = task.frames.last_mut().unwrap();
     let pc = frame.pc;
     let function = &frame.prepared;
+    if pc >= function.execution.len() {
+        return false;
+    }
     // Every fallible check precedes the commit. Returning false must leave the
     // continuation and accounting untouched so the owner can retry normally.
     let popped = match function.execution[pc] {
@@ -253,21 +279,21 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
         | PreparedInstruction::Jump {
             conditional: true, ..
         }
-        | PreparedInstruction::Unary(_) => 1,
-        PreparedInstruction::Binary(_) => 2,
+        | PreparedInstruction::Unary(_)
+        | PreparedInstruction::GetPath(_) => 1,
+        PreparedInstruction::Binary(_) | PreparedInstruction::CompareBranch { .. } => 2,
         PreparedInstruction::Operand => match function.code[pc] {
             Instruction::Pop | Instruction::LoadField(_) | Instruction::Len | Instruction::Cap => 1,
-            Instruction::StringRuneAt | Instruction::StringNextRuneIndex => 2,
+            Instruction::LoadIndex
+            | Instruction::StringRuneAt
+            | Instruction::StringNextRuneIndex => 2,
             _ => 0,
         },
         _ => 0,
     };
-    if frame.stack.len() < popped {
+    if frame.operand_count(frame.pc) < popped {
         return false;
     }
-    let Ok(popped_capacity) = memory::grow_frame_buffer(frame.memory.popped, popped, false) else {
-        return false;
-    };
     let mut next_pc = pc + 1;
     let mut result = None;
     match function.execution[pc] {
@@ -280,6 +306,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
         }
         PreparedInstruction::Local {
             index,
+            move_source,
             store,
             rebind,
         } => {
@@ -287,7 +314,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 if rebind {
                     return false;
                 }
-                let Some(value) = frame.stack.last().cloned() else {
+                let Some(value) = frame.operand_from_end(frame.pc, 0) else {
                     return false;
                 };
                 let Ok(bytes) = value.logical_bytes().and_then(|bytes| {
@@ -297,10 +324,26 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 }) else {
                     return false;
                 };
-                let Local::Private(local) = &mut frame.locals[index] else {
+                let Local::Private(local) = &frame.locals[index] else {
                     return false;
                 };
-                if local.get().typ != value.typ || local.replace(value, bytes).is_err() {
+                if local.get().typ != value.typ {
+                    return false;
+                }
+                let value = if move_source == u32::MAX {
+                    value.clone()
+                } else {
+                    frame.slot_values[move_source as usize].take().unwrap()
+                };
+                let Local::Private(local) = &mut frame.locals[index] else {
+                    unreachable!()
+                };
+                if let Err((_, value)) = local.replace(value, bytes) {
+                    // No owner safepoint or GC occurs inside replacement. A
+                    // rejected charge returns ownership before retrying.
+                    if move_source != u32::MAX {
+                        frame.slot_values[move_source as usize] = Some(value);
+                    }
                     return false;
                 }
             } else {
@@ -316,15 +359,16 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
         PreparedInstruction::Jump {
             target,
             conditional,
+            negate,
         } => {
             let jump = if conditional {
-                let Some(value) = frame.stack.last() else {
+                let Some(value) = frame.operand_from_end(frame.pc, 0) else {
                     return false;
                 };
                 let Data::Bool(value) = value.data else {
                     return false;
                 };
-                value
+                value != negate
             } else {
                 true
             };
@@ -332,8 +376,26 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 next_pc = target;
             }
         }
+        PreparedInstruction::GetPath(index) => {
+            let Some(mut value) = frame.operand_from_end(pc, 0) else {
+                return false;
+            };
+            for step in &function.field_paths[index] {
+                if step.indirect {
+                    return false;
+                }
+                let Data::Struct(fields) = &value.data else {
+                    return false;
+                };
+                let Some(field) = fields.field_at(step.index) else {
+                    return false;
+                };
+                value = field;
+            }
+            result = Some(value.clone());
+        }
         PreparedInstruction::Unary(operator) => {
-            let Some(value) = frame.stack.last().cloned() else {
+            let Some(value) = frame.operand_from_end(frame.pc, 0).cloned() else {
                 return false;
             };
             let Ok(value) = crate::operators::unary(operator, value, types) else {
@@ -341,14 +403,18 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
             };
             result = Some(value);
         }
-        PreparedInstruction::Binary(operator) => {
-            let stack = &frame.stack;
-            if stack.len() < 2 {
+        PreparedInstruction::Binary(operator)
+        | PreparedInstruction::CompareBranch { operator, .. } => {
+            if frame.operand_count(pc) < 2 {
                 return false;
             }
-            let left = stack[stack.len() - 2].clone();
-            let right = stack[stack.len() - 1].clone();
-            if operator == crate::operators::Operator::Add
+            let Some(left) = frame.operand_from_end(pc, 1) else {
+                return false;
+            };
+            let Some(right) = frame.operand_from_end(pc, 0) else {
+                return false;
+            };
+            if operator.operator == crate::operators::Operator::Add
                 && matches!(
                     (&left.data, &right.data),
                     (Data::String(_), Data::String(_))
@@ -359,7 +425,17 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
             let Ok(value) = crate::operators::binary(operator, left, right, types) else {
                 return false;
             };
-            result = Some(value);
+            if let PreparedInstruction::CompareBranch { target, when, .. } = function.execution[pc]
+            {
+                let Data::Bool(matched) = value.data else {
+                    return false;
+                };
+                if matched == when {
+                    next_pc = target;
+                }
+            } else {
+                result = Some(value);
+            }
         }
         PreparedInstruction::Operand => match &function.code[pc] {
             Instruction::Pop => {}
@@ -403,7 +479,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 });
             }
             Instruction::LoadField(payload) => {
-                let Some(value) = frame.stack.last() else {
+                let Some(value) = frame.operand_from_end(frame.pc, 0) else {
                     return false;
                 };
                 let Data::Struct(fields) = &value.data else {
@@ -414,9 +490,34 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 };
                 result = Some(value);
             }
+            Instruction::LoadIndex => {
+                let Some(object) = frame.operand_from_end(pc, 1) else {
+                    return false;
+                };
+                let Some(key) = frame.operand_from_end(pc, 0) else {
+                    return false;
+                };
+                let Ok(index) = key.integer().and_then(|index| {
+                    usize::try_from(index)
+                        .map_err(|_| RuntimeError::new("panic", "index", "negative index"))
+                }) else {
+                    return false;
+                };
+                result = match &object.data {
+                    Data::String(bytes) => bytes.get(index).map(|byte| Value {
+                        typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
+                        data: Data::Unsigned(u64::from(*byte)),
+                    }),
+                    Data::Array(values) => values.get(index).cloned(),
+                    _ => return false,
+                };
+                if result.is_none() {
+                    return false;
+                }
+            }
             Instruction::Len | Instruction::Cap => {
                 let capacity = matches!(function.code[pc], Instruction::Cap);
-                let Some(value) = frame.stack.last() else {
+                let Some(value) = frame.operand_from_end(frame.pc, 0) else {
                     return false;
                 };
                 let pointer_array_length = match types.pointer_element(&value.typ) {
@@ -445,17 +546,22 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 result = Some(Value::int(length));
             }
             Instruction::StringRuneAt | Instruction::StringNextRuneIndex => {
-                let stack = &frame.stack;
-                if stack.len() < 2 {
+                if frame.operand_count(pc) < 2 {
                     return false;
                 }
-                let Data::String(bytes) = &stack[stack.len() - 2].data else {
+                let Some(Value {
+                    data: Data::String(bytes),
+                    ..
+                }) = frame.operand_from_end(pc, 1)
+                else {
                     return false;
                 };
-                let Ok(index) = usize::try_from(match stack.last().unwrap().integer() {
-                    Ok(index) => index,
-                    Err(_) => return false,
-                }) else {
+                let Ok(index) =
+                    usize::try_from(match frame.operand_from_end(pc, 0).unwrap().integer() {
+                        Ok(index) => index,
+                        Err(_) => return false,
+                    })
+                else {
                     return false;
                 };
                 if index >= bytes.len() {
@@ -478,14 +584,16 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
             _ => return false,
         },
         PreparedInstruction::Intrinsic(_)
+        | PreparedInstruction::Construct(_)
         | PreparedInstruction::Upvalue { .. }
-        | PreparedInstruction::Global { .. } => return false,
+        | PreparedInstruction::Global { .. }
+        | PreparedInstruction::TypeDispatch(_) => return false,
     }
-    frame.memory.popped = popped_capacity;
-    frame.stack.truncate(frame.stack.len() - popped);
+    frame.begin_slots(pc);
+    frame.slot_input = 0;
     frame.pc = next_pc;
     if let Some(value) = result {
-        frame.stack.push(value);
+        frame.push_result(value);
     }
     true
 }
@@ -493,6 +601,39 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use test_helpers::slot_code;
+
+    #[test]
+    fn field_reads_follow_storage_layout_with_repeated_blank_fields() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            let integer = serde_json::json!({"kind":3,"primitive":3});
+            let record = serde_json::json!({"kind":12,"node":"record"});
+            artifact["type_table"] = serde_json::json!({"nodes":[{
+                "id":"record","kind":12,"fields":[
+                    {"name":"_","type":integer}, {"name":"_","type":integer},
+                    {"name":"a","type":integer}, {"name":"b","type":integer}]}]});
+            artifact["constants"] = serde_json::json!([
+                {"id":"a","type":integer,"value":42},
+                {"id":"b","type":integer,"value":99}]);
+            artifact["functions"] = serde_json::json!([{
+                "id":"fn.Main","signature":{"results":[integer]},
+                "locals":[{"id":"record","type":record}],
+                "code":slot_code(json!([integer,integer,record,record,integer]), &[
+                    ("const",json!({"constant":"a"}),json!({"outputs":[0]})),
+                    ("const",json!({"constant":"b"}),json!({"outputs":[1]})),
+                    ("make_struct",json!({"type":record,"fields":["a","b"]}),json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]})),
+                    ("store_local",json!({"local":"record"}),json!({"inputs":[[0,2]],"release":[2]})),
+                    ("load_local",json!({"local":"record"}),json!({"outputs":[3]})),
+                    ("load_field",json!({"field":"a"}),json!({"inputs":[[0,3]],"outputs":[4],"release":[3]})),
+                    ("return",json!({"result_count":1}),json!({"inputs":[[0,4]],"release":[4]}))])}]);
+        });
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", vec![]).unwrap();
+        assert_eq!(vm.poll_steps(4096).unwrap(), PollStatus::Ready);
+        assert_eq!(vm.results()[0].integer().unwrap(), 42);
+        vm.close().unwrap();
+    }
 
     fn division_program(divisor: i64) -> Arc<Program> {
         test_helpers::program_with_artifact(|artifact| {
@@ -501,10 +642,11 @@ mod tests {
                 {"id":"b","type":{"kind":3,"primitive":3},"value":divisor}]);
             artifact["functions"] = serde_json::json!([{
                 "id":"fn.Main", "signature":{"results":[{"kind":3,"primitive":3}]},
-                "instructions":[{"op":"const","payload":{"constant":"a"}},
-                    {"op":"const","payload":{"constant":"b"}},
-                    {"op":"binary","payload":{"operator":"/"}},
-                    {"op":"return","payload":{"result_count":1}}]}]);
+                "code":slot_code(json!(vec![json!({"kind":3,"primitive":3});3]), &[
+                    ("const",json!({"constant":"a"}),json!({"outputs":[0]})),
+                    ("const",json!({"constant":"b"}),json!({"outputs":[1]})),
+                    ("binary",json!({"operator":"/"}),json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]})),
+                    ("return",json!({"result_count":1}),json!({"inputs":[[0,2]],"release":[2]}))])}]);
         })
     }
 
@@ -518,12 +660,22 @@ mod tests {
         assert_eq!(run.steps, 2);
         vm.running = run.task;
         assert_eq!(vm.running.frames.last().unwrap().pc, 2);
-        assert_eq!(vm.running.frames.last().unwrap().stack.len(), 2);
+        assert_eq!(
+            vm.running
+                .frames
+                .last()
+                .unwrap()
+                .slot_values
+                .iter()
+                .flatten()
+                .count(),
+            2
+        );
         vm.close().unwrap();
     }
 
     #[test]
-    fn serial_private_execution_matches_owner_accounting_without_retry_copies() {
+    fn serial_private_execution_matches_owner_values_steps_and_accounting() {
         let program = division_program(2);
         let mut fast = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
         let mut owner = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -538,11 +690,11 @@ mod tests {
             assert_eq!(fast.steps(), owner.steps());
             assert_eq!(fast.memory_stats(), owner.memory_stats());
         }
-        assert_eq!(fast.running.retry_operands.capacity(), 0);
-        assert!(owner.running.retry_operands.capacity() >= 2);
         for vm in [&mut fast, &mut owner] {
             assert_eq!(
-                vm.running.frames.last().unwrap().stack[0]
+                vm.running.frames.last().unwrap().slot_values[2]
+                    .as_ref()
+                    .unwrap()
                     .integer()
                     .unwrap(),
                 21
@@ -553,14 +705,57 @@ mod tests {
     }
 
     #[test]
+    fn private_string_index_matches_owner_bytes_and_failure_steps() {
+        for index in [-1, 0, 1, 2] {
+            let program = test_helpers::program_with_artifact(|artifact| {
+                let text = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveString});
+                let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+                let byte = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveUint8});
+                artifact["constants"] = json!([
+                    {"id":"text","type":text,"value":"é"},
+                    {"id":"index","type":integer,"value":index}
+                ]);
+                artifact["functions"] = json!([{"id":"fn.Main","signature":{"results":[byte]},
+                "code":slot_code(json!([byte]), &[
+                    ("load_index",json!({}),json!({"inputs":[[1,0],[1,1]],"outputs":[0]})),
+                    ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))
+                ])}]);
+            });
+            for private in [true, false] {
+                let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
+                vm.start("default", vec![]).unwrap();
+                if !private {
+                    vm.running.begin_instruction(0);
+                }
+                let result = vm.poll_steps(1);
+                assert_eq!(vm.steps(), 1);
+                if !(0..2).contains(&index) {
+                    assert_ne!(result.unwrap(), PollStatus::Ready);
+                    assert!(vm.running.frames.last().unwrap().slot_values[0].is_none());
+                    assert_eq!(vm.poll_steps(1).unwrap_err().code, "panic");
+                    assert_eq!(vm.steps(), 1);
+                } else {
+                    assert_ne!(result.unwrap(), PollStatus::Ready);
+                    assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
+                    assert!(matches!(vm.results()[0].data, Data::Unsigned(value)
+                        if value == if index == 0 { 0xc3 } else { 0xa9 }));
+                }
+                vm.close().unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn private_store_rejection_preserves_operands_local_and_accounting() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([{
                 "id":"fn.Main", "locals":[{"id":"value","type":{"kind":3,"primitive":2}}],
-                "instructions":[{"op":"zero","payload":{"type":{"kind":3,"primitive":2}}},
-                    {"op":"store_local","payload":{"local":"value"}},
-                    {"op":"zero","payload":{"type":{"kind":3,"primitive":2}}},
-                    {"op":"store_local","payload":{"local":"value"}}, {"op":"return","payload":{}}]
+                "code":slot_code(json!([{"kind":3,"primitive":2}]), &[
+                    ("zero",json!({"type":{"kind":3,"primitive":2}}),json!({"outputs":[0]})),
+                    ("store_local",json!({"local":"value"}),json!({"inputs":[[0,0]],"release":[0]})),
+                    ("zero",json!({"type":{"kind":3,"primitive":2}}),json!({"outputs":[0]})),
+                    ("store_local",json!({"local":"value"}),json!({"inputs":[[0,0]],"release":[0]})),
+                    ("return",json!({}),json!({}))])
             }]);
         });
         let mut vm = Instance::new(
@@ -574,13 +769,15 @@ mod tests {
         vm.start("default", vec![]).unwrap();
         assert_eq!(vm.poll_steps(3).unwrap(), PollStatus::Running);
         let frame = vm.running.frames.last_mut().unwrap();
-        frame.stack[0] = Value::string("x".repeat(8192));
+        frame.slot_values[0] = Some(Value::string("x".repeat(8192)));
         let before = vm.heap_stats();
         assert!(can_execute_private_instruction(&vm.running));
         assert!(!try_execute_private_instruction(&mut vm.running, &vm.types));
         let frame = vm.running.frames.last().unwrap();
         assert_eq!(frame.pc, 3);
-        assert_eq!(frame.stack.len(), 1);
+        assert!(
+            matches!(&frame.slot_values[0].as_ref().unwrap().data, Data::String(bytes) if bytes.len() == 8192)
+        );
         let Local::Private(local) = &frame.locals[0] else {
             panic!("private local")
         };
@@ -594,7 +791,76 @@ mod tests {
     }
 
     #[test]
-    fn private_binary_failure_preserves_stack_and_success_preserves_buffer_charge() {
+    fn last_use_store_restores_rejected_input_and_commits_ownership_once() {
+        for release in [false, true] {
+            let program = test_helpers::program_with_artifact(|artifact| {
+                let contract: serde_json::Value =
+                    serde_json::from_str(wire::CONTRACT_JSON).unwrap();
+                let operation = |name: &str, descriptor, operands| {
+                    let opcode = contract["spec"]["opcodes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .position(|entry| entry["op"] == name)
+                        .unwrap()
+                        + 1;
+                    serde_json::json!([opcode, descriptor, operands])
+                };
+                let string = serde_json::json!({"kind":3,"primitive":2});
+                artifact["functions"] = serde_json::json!([{
+                    "id":"fn.Main", "locals":[{"id":"value","type":string}],
+                    "code":{
+                        "types":[string],
+                        "descriptors":{"type":[{"type":string}],"local":[{"local":"value"}],"return":[{}]},
+                        "instructions":[operation("zero",0,0), operation("store_local",0,1),
+                            operation("zero",0,0), operation("store_local",0,1), operation("return",0,2)],
+                        "operands":[{"outputs":[0]}, {"inputs":[[0,0]],"release":if release {vec![0]} else {vec![]}}, {}]
+                    }
+                }]);
+            });
+            let mut vm = Instance::new(
+                program,
+                ExecutionLimits {
+                    max_heap_bytes: 4096,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            vm.start("default", vec![]).unwrap();
+            assert_eq!(vm.poll_steps(3).unwrap(), PollStatus::Running);
+            vm.running.frames.last_mut().unwrap().slot_values[0] =
+                Some(Value::string("x".repeat(8192)));
+            let before = vm.heap_stats();
+            assert!(!try_execute_private_instruction(&mut vm.running, &vm.types));
+            let frame = vm.running.frames.last().unwrap();
+            assert_eq!(frame.pc, 3);
+            assert!(
+                matches!(&frame.slot_values[0].as_ref().unwrap().data, Data::String(bytes) if bytes.len() == 8192)
+            );
+            let Local::Private(local) = &frame.locals[0] else {
+                panic!("private local")
+            };
+            assert!(matches!(&local.get().data, Data::String(bytes) if bytes.is_empty()));
+            assert_eq!(vm.heap_stats().live_bytes, before.live_bytes);
+            assert_eq!(
+                vm.heap_stats().total_allocated_bytes,
+                before.total_allocated_bytes
+            );
+            vm.running.frames.last_mut().unwrap().slot_values[0] = Some(Value::string("ok"));
+            assert!(try_execute_private_instruction(&mut vm.running, &vm.types));
+            let frame = vm.running.frames.last().unwrap();
+            assert_eq!(frame.pc, 4);
+            assert_eq!(frame.slot_values[0].is_none(), release);
+            let Local::Private(local) = &frame.locals[0] else {
+                panic!("private local")
+            };
+            assert!(matches!(&local.get().data, Data::String(bytes) if bytes.as_ref() == b"ok"));
+            vm.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn private_binary_failure_preserves_inputs_and_success_preserves_buffer_charge() {
         for divisor in [0, 2] {
             let mut vm =
                 Instance::new(division_program(divisor), ExecutionLimits::default()).unwrap();
@@ -607,15 +873,18 @@ mod tests {
             let frame = vm.running.frames.last().unwrap();
             if divisor == 0 {
                 assert_eq!(frame.pc, 2);
-                assert_eq!(frame.stack[0].integer().unwrap(), 42);
-                assert_eq!(frame.stack[1].integer().unwrap(), 0);
+                assert_eq!(
+                    frame.slot_values[0].as_ref().unwrap().integer().unwrap(),
+                    42
+                );
+                assert_eq!(frame.slot_values[1].as_ref().unwrap().integer().unwrap(), 0);
             } else {
                 assert_eq!(frame.pc, 3);
-                assert_eq!(frame.stack[0].integer().unwrap(), 21);
                 assert_eq!(
-                    frame.memory.popped,
-                    memory::grow_frame_buffer(0, 2, false).unwrap()
+                    frame.slot_values[2].as_ref().unwrap().integer().unwrap(),
+                    21
                 );
+                assert_eq!(frame.memory.popped, 0);
             }
             vm.close().unwrap();
         }

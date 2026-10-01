@@ -95,13 +95,23 @@ func (m *moduleInstance) typeAssertOKValueWithVariadic(value vmValue, target any
 }
 
 func (m *moduleInstance) typeAssertionOKWithVariadic(value vmValue, target any, targetVariadic bool) (vmValue, bool, error) {
+	out, ok, err := m.matchTypeAssertion(value, target, targetVariadic)
+	if err == nil && !ok {
+		out = m.zeroValue(target)
+	}
+	return out, ok, err
+}
+
+// matchTypeAssertion leaves failed assertions unmaterialized. Only an actual
+// comma-ok expression needs the target's zero value.
+func (m *moduleInstance) matchTypeAssertion(value vmValue, target any, targetVariadic bool) (vmValue, bool, error) {
 	targetType := m.resolvedRuntimeType(target)
 	targetText := targetType.String()
 	if targetText == "" {
 		return vmValue{}, false, errors.New("missing target type")
 	}
 	if isNilDynamicInterface(m, value) {
-		return m.zeroValue(targetType), false, nil
+		return vmValue{}, false, nil
 	}
 	if targetType.Ref.Kind == types.Any {
 		if value.Type.Ref.Kind == types.Any {
@@ -129,7 +139,7 @@ func (m *moduleInstance) typeAssertionOKWithVariadic(value vmValue, target any, 
 		if m.implementsInterface(value.Type, targetText) {
 			return newVMValue(targetType, value), true, nil
 		}
-		return m.zeroValue(targetType), false, nil
+		return vmValue{}, false, nil
 	}
 	if value.Type.Ref.Kind == types.Any {
 		inner, ok := value.Data.(vmValue)
@@ -146,13 +156,13 @@ func (m *moduleInstance) typeAssertionOKWithVariadic(value vmValue, target any, 
 	}
 	if _, ok := value.Data.(functionRef); ok && m.isFunctionType(targetText) {
 		if !m.functionValueAssignable(value, targetText, &targetVariadic) {
-			return m.zeroValue(targetType), false, nil
+			return vmValue{}, false, nil
 		}
 		value.Type = targetType
 		return value, true, nil
 	}
 	if !m.sameRuntimeType(value.Type, targetType) {
-		return m.zeroValue(targetType), false, nil
+		return vmValue{}, false, nil
 	}
 	value.Type = targetType
 	return value, true, nil

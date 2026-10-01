@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func (m *moduleInstance) decodeConstant(typ any, raw json.RawMessage) (vmValue, error) {
@@ -35,8 +37,8 @@ func decodeConstantAs(module *moduleInstance, runtimeType vmType, raw json.RawMe
 		}
 		return newVMValue(runtimeType, out), nil
 	case "String":
-		var out string
-		if err := json.Unmarshal(raw, &out); err != nil {
+		out, err := bytecode.DecodeStringConstant(raw)
+		if err != nil {
 			return vmValue{}, err
 		}
 		return newVMValue(runtimeType, out), nil

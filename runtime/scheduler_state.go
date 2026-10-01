@@ -193,6 +193,7 @@ func (task *executionTask) releaseStepGrant() {
 	budget.reserved -= task.stepGrant
 	used := task.stepGrant - task.stepsLeft
 	budget.committed += min(used, math.MaxInt64-budget.committed)
+	budget.steps.Store(budget.committed)
 	waiting := budget.waiting
 	budget.waiting = false
 	budget.mu.Unlock()
@@ -231,13 +232,9 @@ func (task *executionTask) consumeStep(limit int64) error {
 		task.stepGrant, task.stepsLeft = grant, grant
 	}
 	task.stepsLeft--
-	for {
-		steps := task.budget.steps.Load()
-		if steps == math.MaxInt64 || task.budget.steps.CompareAndSwap(steps, steps+1) {
-			break
-		}
+	if task.execution != nil && task.execution.profileEvery != 0 {
+		task.profilePhase = task.budget.profilePhase.Add(1)
 	}
-	task.profilePhase = task.budget.profilePhase.Add(1)
 	return nil
 }
 

@@ -1,7 +1,6 @@
 package bytecode
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -11,13 +10,13 @@ func TestValidateArtifactRejectsUnknownAddressLocal(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Ptr<Int64>"),
-		Instructions: []Instruction{{
-			Op:      string(OpAddressOf),
-			Payload: json.RawMessage(`{"kind":"local","local":"local.missing"}`),
+		Code: testSlotCode([]string{"Ptr<Int64>"}, []Instruction{{
+			Op:      OpAddressOf,
+			Payload: AddressPayload{Kind: "local", Local: "local.missing"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -32,13 +31,13 @@ func TestValidateArtifactRejectsRebindOnLoadLocal(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []Local{{ID: "local.value", Type: testType("Int64")}},
-		Instructions: []Instruction{{
-			Op:      string(OpLoadLocal),
-			Payload: testPayload(LocalPayload{Local: "local.value", Rebind: true}),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpLoadLocal,
+			Payload: LocalPayload{Local: "local.value", Rebind: true},
 		}, {
-			Op:      string(OpReturn),
-			Payload: testPayload(ReturnPayload{ResultCount: 1}),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -52,10 +51,10 @@ func TestValidateArtifactRejectsUnknownDirectCall(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpCallDirect),
-			Payload: json.RawMessage(`{"function":"fn.missing","arg_count":0}`),
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op:      OpCallDirect,
+			Payload: CallPayload{Function: "fn.missing", ArgCount: 0},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -68,11 +67,12 @@ func TestValidateArtifactRejectsDirectCallShapeMismatch(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op: string(OpCallDirect), Payload: testPayload(CallPayload{Function: "fn.target", ResultCount: 1}),
-		}},
+		Code: testSlotCode([]string{"Int"}, []Instruction{{
+			Op: OpCallDirect, Payload: CallPayload{Function: "fn.target", ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}}),
 	}, {
-		ID: "fn.target", Signature: testSignature("function(Int) Void"),
+		Code: &SlotCode{},
+		ID:   "fn.target", Signature: testSignature("function(Int) Void"),
 	}}
 	if err := testValidateArtifact(&artifact); err == nil || !strings.Contains(err.Error(), "call argument count mismatch") {
 		t.Fatalf("ValidateArtifact() = %v, want call argument count mismatch", err)
@@ -83,9 +83,9 @@ func TestValidateArtifactRejectsReturnShapeMismatch(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
 		ID: "fn.main", Signature: testSignature("function() Int"),
-		Instructions: []Instruction{{
-			Op: string(OpReturn), Payload: testPayload(ReturnPayload{}),
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op: OpReturn, Payload: ReturnPayload{},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 	if err := testValidateArtifact(&artifact); err == nil || !strings.Contains(err.Error(), "return result count mismatch") {
 		t.Fatalf("ValidateArtifact() = %v, want return result count mismatch", err)
@@ -98,10 +98,10 @@ func TestValidateArtifactAcceptsCrossModuleDirectCallRequirement(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpCallDirect),
-			Payload: json.RawMessage(`{"module_path":"example/lib","function":"method.Counter.Add","arg_count":0}`),
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op:      OpCallDirect,
+			Payload: CallPayload{ModulePath: "example/lib", Function: "method.Counter.Add", ArgCount: 0},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 
 	if err := testValidateArtifact(&artifact); err != nil {
@@ -114,11 +114,12 @@ func TestValidateArtifactAcceptsLocalModuleDirectCallPayload(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpCallDirect),
-			Payload: json.RawMessage(`{"module_path":"example/module","function":"fn.helper","arg_count":0}`),
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op:      OpCallDirect,
+			Payload: CallPayload{ModulePath: "example/module", Function: "fn.helper", ArgCount: 0},
+		}}, [][2][]uint32{{nil, nil}}),
 	}, {
+		Code:      &SlotCode{},
 		ID:        "fn.helper",
 		Signature: testSignature("function() Void"),
 	}}
@@ -133,10 +134,10 @@ func TestValidateArtifactRejectsCrossModuleDirectCallWithoutRequirement(t *testi
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpCallDirect),
-			Payload: json.RawMessage(`{"module_path":"example/lib","function":"method.Counter.Add","arg_count":0}`),
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op:      OpCallDirect,
+			Payload: CallPayload{ModulePath: "example/lib", Function: "method.Counter.Add", ArgCount: 0},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -150,10 +151,10 @@ func TestValidateArtifactRejectsUnknownClosureFunction(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.missing"}`),
-		}},
+		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+			Op:      OpMakeClosure,
+			Payload: ClosurePayload{Function: "fn.missing"},
+		}}, [][2][]uint32{{nil, {0}}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -168,12 +169,12 @@ func TestValidateArtifactAcceptsCrossModuleClosureRequirement(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeClosure),
-			Payload: json.RawMessage(`{"module_path":"example/lib","function":"method.Counter.Add"}`),
+		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+			Op:      OpMakeClosure,
+			Payload: ClosurePayload{ModulePath: "example/lib", Function: "method.Counter.Add"},
 		}, {
-			Op: string(OpPop),
-		}},
+			Op: OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	if err := testValidateArtifact(&artifact); err != nil {
@@ -186,10 +187,10 @@ func TestValidateArtifactRejectsCrossModuleClosureWithoutRequirement(t *testing.
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeClosure),
-			Payload: json.RawMessage(`{"module_path":"example/lib","function":"method.Counter.Add"}`),
-		}},
+		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+			Op:      OpMakeClosure,
+			Payload: ClosurePayload{ModulePath: "example/lib", Function: "method.Counter.Add"},
+		}}, [][2][]uint32{{nil, {0}}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -203,13 +204,13 @@ func TestValidateArtifactRejectsUnknownUpvalueSlot(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []Instruction{{
-			Op:      string(OpLoadUpvalue),
-			Payload: json.RawMessage(`{"upvalue":"up.missing"}`),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpLoadUpvalue,
+			Payload: UpvaluePayload{Upvalue: "up.missing"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -224,22 +225,22 @@ func TestValidateArtifactRejectsClosureCaptureCountMismatch(t *testing.T) {
 		ID:        "fn.child",
 		Signature: testSignature("function() Int64"),
 		Upvalues:  []Upvalue{{ID: "up.x", Type: testType("Int64")}},
-		Instructions: []Instruction{{
-			Op:      string(OpLoadUpvalue),
-			Payload: json.RawMessage(`{"upvalue":"up.x"}`),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpLoadUpvalue,
+			Payload: UpvaluePayload{Upvalue: "up.x"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.child"}`),
+		Code: testSlotCode([]string{"function() Int64"}, []Instruction{{
+			Op:      OpMakeClosure,
+			Payload: ClosurePayload{Function: "fn.child"},
 		}, {
-			Op: string(OpPop),
-		}},
+			Op: OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -251,18 +252,19 @@ func TestValidateArtifactRejectsClosureCaptureCountMismatch(t *testing.T) {
 func TestValidateArtifactRejectsSpawnResultCount(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
+		Code:      &SlotCode{},
 		ID:        "fn.child",
 		Signature: testSignature("function() Void"),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.child"}`),
+		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+			Op:      OpMakeClosure,
+			Payload: ClosurePayload{Function: "fn.child"},
 		}, {
-			Op:      string(OpSpawn),
-			Payload: json.RawMessage(`{"arg_count":0,"result_count":1}`),
-		}},
+			Op:      OpSpawn,
+			Payload: CallPayload{ArgCount: 0, ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)

@@ -19,25 +19,25 @@ func TestLowerBranchDeferGoAndPanicStatements(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{Name: "Cleanup"},
+				Func: &ast.FuncDecl{Name: "Cleanup"},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:   "Worker",
 					Params: []ast.Field{{Name: "x", Type: intType}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Fail",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtPanic,
-						Expr: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "failed", Type: ast.TypeExpr{Kind: ast.TypeName, Name: "String"}}),
+						Expr: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "failed", Type: &ast.TypeExpr{Kind: ast.TypeName, Name: "String"}}),
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDefer,
@@ -50,11 +50,11 @@ func TestLowerBranchDeferGoAndPanicStatements(t *testing.T) {
 						Expr: ptrExpr(ast.Expression{
 							Kind:   ast.ExprCall,
 							Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Worker"}),
-							Args:   []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: intType}},
+							Args:   []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: &intType}},
 						}),
 					}, {
 						Kind: ast.StmtFor,
-						Cond: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "true", Type: boolType}),
+						Cond: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "true", Type: &boolType}),
 						Body: ast.BlockStmt{Stmts: []ast.Statement{{
 							Kind: ast.StmtBranch,
 							Op:   "continue",
@@ -153,7 +153,7 @@ func TestLowerRejectsNonCallDeferStatement(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDefer,

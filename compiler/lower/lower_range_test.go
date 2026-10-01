@@ -18,35 +18,32 @@ func TestLowerRangeStatementToLabelsAndIndex(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"xs"},
 							Type:  arrayType,
 							Values: []ast.Expression{{
-								Kind: ast.ExprComposite,
-								Type: arrayType,
-								Elements: []ast.Expression{
-									{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
-									{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
-								},
+								Kind:  ast.ExprComposite,
+								Type:  &arrayType,
+								Items: []ast.KeyValue{{Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}}, {Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}}},
 							}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"i"},
 							Type:   intType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"v"},
 							Type:   intType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 						}}},
 					}, {
 						Kind:  ast.StmtRange,
@@ -100,28 +97,28 @@ func TestLowerStringRangeUsesRuneAndNextIndexPrimitives(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"s"},
 							Type:   stringType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "hello", Type: stringType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "hello", Type: &stringType}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"i"},
 							Type:   intType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"r"},
 							Type:   runeType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: runeType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &runeType}},
 						}}},
 					}, {
 						Kind:  ast.StmtRange,
@@ -161,35 +158,35 @@ func TestLowerMapRangeOwnsEntryIterator(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"m"},
 							Type:  mapType,
 							Values: []ast.Expression{{
 								Kind: ast.ExprComposite,
-								Type: mapType,
-								Entries: []ast.KeyValue{{
-									Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "a", Type: stringType}),
-									Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+								Type: &mapType,
+								Items: []ast.KeyValue{{
+									Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "a", Type: &stringType}),
+									Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 								}},
 							}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"k"},
 							Type:   stringType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "init", Type: stringType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "init", Type: &stringType}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"v"},
 							Type:   intType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 						}}},
 					}, {
 						Kind:  ast.StmtRange,
@@ -230,22 +227,22 @@ func TestLowerMapIndexCommaOKToLowLevelExpression(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"m"},
 							Type:  mapType,
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"v", "ok"},
 							Values: []ast.Expression{{
 								Kind:    ast.ExprIndex,
 								Operand: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "m"}),
-								Index:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "missing", Type: stringType}),
+								Index:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "missing", Type: &stringType}),
 							}},
 						}}},
 					}}},

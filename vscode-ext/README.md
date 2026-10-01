@@ -10,8 +10,6 @@
 code --install-extension /tmp/mini-go.vsix
 ```
 
-也可在 VS Code 扩展视图中选择“从 VSIX 安装”，打开生成的文件。
-
 安装扩展后，在 VS Code 设置中将 `mini-go.lsp.path` 设为已安装的 `mini-go` 可执行文件的绝对路径。
 留空时从 VS Code 进程的 `PATH` 查找 `mini-go`；扩展不捆绑编译器二进制。命令安装方式见
 [项目中文 README](https://github.com/d7z-team/mini-go/blob/main/README_zh.md#安装)。
@@ -19,8 +17,7 @@ code --install-extension /tmp/mini-go.vsix
 `mini-go.module` 设置应用导入前缀（默认 `app`）；`mini-go.sources` 接受
 `[{"module":"rules","directory":"../rules"}]`，相对工作区根装配其他源码。
 
-打开 `.mgo` 文件时扩展自动启动语言服务。修改配置会重启服务，也可通过命令面板执行
-`Mini-Go: Restart Language Server` 手动重启。
+打开 `.mgo` 文件自动启动服务，修改配置自动重启；也可执行命令 `Mini-Go: Restart Language Server`。
 
 接入 DAP 的编辑器另行配置 stdio 命令 `mini-go dap`，launch 参数与工作区约定见
 [使用指南](https://github.com/d7z-team/mini-go/blob/main/USAGE.md#编辑器与调试符号)。

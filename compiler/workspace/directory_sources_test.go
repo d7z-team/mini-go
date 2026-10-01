@@ -22,11 +22,15 @@ func TestDirectorySourcesIndexOwnersAndSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(dependency, "nested/value.mgo")
+	canonicalFile, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		t.Fatal(err)
+	}
 	identity, ok := loaded.Locations.Identity(file)
 	if !ok || identity.ModulePath != "rules/nested" || identity.Path != "nested/value.mgo" {
 		t.Fatalf("identity: %+v %v", identity, ok)
 	}
-	if got, ok := loaded.Locations.File(identity.ModulePath, identity.Path); !ok || got != file {
+	if got, ok := loaded.Locations.File(identity.ModulePath, identity.Path); !ok || got != canonicalFile {
 		t.Fatalf("file: %q %v", got, ok)
 	}
 	if _, editable, _ := loaded.Documents.Package("rules/nested"); editable {

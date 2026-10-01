@@ -155,30 +155,6 @@ func sliceValues(value vmValue) ([]vmValue, bool) {
 	}
 }
 
-func sliceLen(value vmValue) (int, bool) {
-	switch data := value.Data.(type) {
-	case *vmSlice:
-		if data == nil {
-			return 0, true
-		}
-		return data.Len, true
-	default:
-		return 0, false
-	}
-}
-
-func sliceCap(value vmValue) (int, bool) {
-	switch data := value.Data.(type) {
-	case *vmSlice:
-		if data == nil {
-			return 0, true
-		}
-		return data.Cap, true
-	default:
-		return 0, false
-	}
-}
-
 func newSequenceValue(module *moduleInstance, typ any, values []vmValue) (vmValue, error) {
 	runtimeType := module.resolvedRuntimeType(typ)
 	typeText := runtimeType.String()
@@ -341,6 +317,42 @@ func (m *moduleInstance) cloneValueForStore(value vmValue) vmValue {
 		if !ok || data == nil {
 			return value
 		}
+		data.mu.Lock()
+		// Reference-like fields already have Go copy semantics. Nested value
+		// aggregates still need independent addressable storage.
+		shareable := true
+		for _, field := range data.values {
+			for field.Type.Ref.Kind == types.Any || field.Type.ShapeKind() == types.Interface {
+				if field.Data == nil {
+					field = vmValue{}
+					break
+				}
+				inner, ok := field.Data.(vmValue)
+				if !ok {
+					shareable = false
+					break
+				}
+				field = inner
+			}
+			if !shareable {
+				break
+			}
+			switch field.Type.Ref.Kind {
+			case types.Void, types.Primitive, types.Map, types.Pointer, types.Waitable, types.Function:
+				continue
+			}
+			if field.Type.ShapeKind() != types.Slice && field.Type.Valid() {
+				shareable = false
+				break
+			}
+		}
+		if shareable {
+			data.shared = true
+			value.Data = &vmStruct{schema: data.schema, values: data.values, sparse: data.sparse, shared: true}
+			data.mu.Unlock()
+			return value
+		}
+		data.mu.Unlock()
 		values, sparse := data.snapshot()
 		for index, field := range values {
 			values[index] = m.cloneValueForStore(field)
@@ -392,6 +404,7 @@ func (m *moduleInstance) assignPreparedValue(current, prepared vmValue) vmValue 
 		destination.mu.Lock()
 		destination.values = values
 		destination.sparse = sparse
+		destination.shared = false
 		destination.mu.Unlock()
 		return current
 	}

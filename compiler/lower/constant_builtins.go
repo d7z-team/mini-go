@@ -31,7 +31,7 @@ func (l *lowerer) constBuiltinCallValue(expr ast.Expression, scope *funcScope) (
 				return json.RawMessage(strconv.FormatInt(int64(len([]byte(text))), 10)), "Int", true
 			}
 		}
-		typ := l.resolveSourceType(arg.Type)
+		typ := l.resolveSourceTypePtr(arg.Type, nil)
 		if typ == "" || typ == "Any" {
 			typ = l.expressionType(arg, scope)
 		}
@@ -241,7 +241,7 @@ func (l *lowerer) underlyingConstType(typ string) string {
 				continue
 			}
 		}
-		if export, ok := l.importedNamedTypeInfo(typ); ok {
+		if export, ok := l.importedTypeInfo(typ); ok {
 			next := l.resolveType(export.Underlying)
 			if strings.TrimSpace(next) != "" && next != typ {
 				typ = next

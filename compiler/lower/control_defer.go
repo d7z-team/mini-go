@@ -144,6 +144,11 @@ func (l *lowerer) capturedWrapperCallExpression(expr ast.Expression, args []ir.E
 		call, ok := l.capturedWrapperBuiltinCallExpression(expr, args, scope)
 		return call, nil, nil, nil, ok
 	}
+	signature, found := l.semanticCallSignature(expr)
+	if !found {
+		l.add("hirgen.semantic.call", "captured function call is missing semantic signature", expr.Span)
+		return ir.Expression{}, nil, nil, nil, false
+	}
 	fnValue, ok := l.lowerExpression(callee, scope)
 	if !ok {
 		return ir.Expression{}, nil, nil, nil, false
@@ -151,11 +156,6 @@ func (l *lowerer) capturedWrapperCallExpression(expr ast.Expression, args []ir.E
 	if callee.Kind == ast.ExprIdent && fnValue.Kind == ir.ExprFunction {
 		callArgs := args
 		if !argumentsPacked {
-			signature, found := l.semanticCallSignature(expr)
-			if !found {
-				l.add("hirgen.semantic.call", "deferred function call is missing semantic signature", expr.Span)
-				return ir.Expression{}, nil, nil, nil, false
-			}
 			callArgs, ok = l.packCallArguments(expr, args, l.signatureParamTypes(signature), signature.Variadic, nil)
 			if !ok {
 				return ir.Expression{}, nil, nil, nil, false
@@ -163,7 +163,7 @@ func (l *lowerer) capturedWrapperCallExpression(expr ast.Expression, args []ir.E
 		}
 		return ir.Expression{
 			Kind: ir.ExprCallDirect, Function: fnValue.Function, Args: callArgs,
-			ResultCount: l.functionResultCount(callee.Name),
+			ResultCount: len(signature.Results), ResultTypes: signature.Results,
 		}, nil, nil, nil, true
 	}
 	if expr.Ellipsis && !argumentsPacked {
@@ -183,7 +183,7 @@ func (l *lowerer) capturedWrapperCallExpression(expr ast.Expression, args []ir.E
 		Kind:        ir.ExprCallValue,
 		Operand:     &fnRef,
 		Args:        args,
-		ResultCount: l.callResultCount(callee, scope),
+		ResultCount: len(signature.Results), ResultTypes: signature.Results,
 	}, []ir.Statement{store}, []ir.Upvalue{upvalue}, []ir.CaptureTarget{capture}, true
 }
 
@@ -278,7 +278,7 @@ func (l *lowerer) capturedWrapperMethodCallExpression(expr ast.Expression, args 
 			Field:       interfaceMethod.Method,
 			Operand:     &receiverRef,
 			Args:        callArgs,
-			ResultCount: len(interfaceMethod.Signature.Results),
+			ResultCount: len(interfaceMethod.Signature.Results), ResultTypes: interfaceMethod.Signature.Results,
 		}, []ir.Statement{store}, []ir.Upvalue{upvalue}, []ir.CaptureTarget{capture}, true
 	}
 	method, _, ok := l.semanticMethodInfo(selector)
@@ -320,6 +320,6 @@ func (l *lowerer) capturedWrapperMethodCallExpression(expr ast.Expression, args 
 		ModulePath:  method.ModulePath,
 		Function:    method.FunctionID,
 		Args:        callArgs,
-		ResultCount: len(method.Signature.Results),
+		ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results,
 	}, []ir.Statement{store}, []ir.Upvalue{upvalue}, []ir.CaptureTarget{capture}, true
 }

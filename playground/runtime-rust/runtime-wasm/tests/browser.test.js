@@ -4,7 +4,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { chromium, firefox, webkit } from "playwright";
 import { startPeer } from "./test_helpers.js";
 
@@ -12,9 +12,7 @@ const root = path.resolve(fileURLToPath(new URL("../../../../", import.meta.url)
 const fixtureRoot = process.env.MINIGO_WASM_FIXTURES;
 if (!fixtureRoot)
   throw new Error("MINIGO_WASM_FIXTURES must point to the native wasm_driver test output");
-const vectors = JSON.parse(
-  gunzipSync(await readFile(path.join(root, "testdata/runtime/execution.json.gz"))),
-);
+const vectors = JSON.parse(await readFile(path.join(fixtureRoot, "vectors.json"), "utf8"));
 const artifact = await readFile(
   path.join(root, "playground/runtime-rust/runtime-wasm/dist/wasm/mini_go_wasm_bg.wasm"),
 );
@@ -33,6 +31,18 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
             response.end("<!doctype html><title>Mini-Go browser test</title>");
             return;
           }
+          if (url.pathname === "/compressed/answer.json.gz") {
+            const layer = url.searchParams.get("layer");
+            let data = await readFile(path.join(fixtureRoot, "answer.json"));
+            if (layer === "file" || layer === "both") data = gzipSync(data);
+            if (layer === "transport" || layer === "both") {
+              data = gzipSync(data);
+              response.setHeader("Content-Encoding", "gzip");
+            }
+            response.setHeader("Content-Type", "application/octet-stream");
+            response.end(data);
+            return;
+          }
           if (url.pathname.startsWith("/fixture/")) {
             response.setHeader("Content-Type", "application/json");
             response.end(await readFile(path.join(fixtureRoot, path.basename(url.pathname))));
@@ -44,11 +54,11 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
               (v) => v.name === url.searchParams.get("name") && v.optimization === optimization,
             );
             assert.ok(vector, "shared vector exists");
-            // Serve the original JSON subtree without JS Number conversion.
-            const source = gunzipSync(
-              await readFile(path.join(root, "testdata/runtime/execution.json.gz")),
-            ).toString();
-            response.end(extractImage(source, vector.name, vector.optimization));
+            response.end(
+              await readFile(
+                path.join(fixtureRoot, `vector-${vector.name}-${vector.optimization}.json`),
+              ),
+            );
             return;
           }
           const filename = path.resolve(root, "." + decodeURIComponent(url.pathname));
@@ -86,6 +96,24 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
               if (!value) throw new Error(message);
             };
             const metrics = { scenarios: [], cancelMs: 0 };
+            for (const layer of ["file", "transport", "both"]) {
+              const image = new Uint8Array(
+                await (await fetch(`/compressed/answer.json.gz?layer=${layer}`)).arrayBuffer(),
+              );
+              check(
+                (image[0] === 0x1f && image[1] === 0x8b) === (layer !== "transport"),
+                `browser decodes only the HTTP gzip layer: ${layer}`,
+              );
+              const vm = await MiniGo.create(image);
+              try {
+                const execution = vm.start("default");
+                const result = await execution.result;
+                await execution.settled;
+                check(result.roots[0].data.Integer === 42n, `gzip execution: ${layer}`);
+              } finally {
+                await vm.close();
+              }
+            }
             for (const name of ["answer", "init", "host", "timer", "background"]) {
               const before = performance.now();
               const vm = await MiniGo.create(await load(name), {
@@ -401,51 +429,4 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
       }
     },
   );
-}
-
-// Preserve raw integer tokens while selecting one image from the shared corpus.
-function extractImage(source, name, optimization) {
-  let depth = 0,
-    quoted = false,
-    escaped = false,
-    start = -1;
-  for (let i = 0; i < source.length; i++) {
-    const char = source[i];
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quoted = false;
-      continue;
-    }
-    if (char === '"') {
-      quoted = true;
-      continue;
-    }
-    if (char === "{") {
-      if (depth === 0) start = i;
-      depth++;
-    }
-    if (char === "}" && --depth === 0 && start >= 0) {
-      const item = source.slice(start, i + 1),
-        parsed = JSON.parse(item);
-      if (parsed.name !== name || parsed.optimization !== optimization) continue;
-      const imageStart = item.indexOf('"image":') + 8;
-      let level = 0,
-        string = false,
-        escape = false;
-      for (let j = imageStart; j < item.length; j++) {
-        const c = item[j];
-        if (string) {
-          if (escape) escape = false;
-          else if (c === "\\") escape = true;
-          else if (c === '"') string = false;
-          continue;
-        }
-        if (c === '"') string = true;
-        else if (c === "{") level++;
-        else if (c === "}" && --level === 0) return item.slice(imageStart, j + 1);
-      }
-    }
-  }
-  throw new Error("shared image not found");
 }

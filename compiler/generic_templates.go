@@ -13,10 +13,14 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func buildPackageData(program ast.Program, artifact ir.Artifact, symbols ir.PackageSymbols, info *check.ProgramInfo) (cache.PackageData, error) {
-	data, err := cache.FromArtifact(artifact)
-	if err != nil {
-		return cache.PackageData{}, err
+func buildPackageData(program ast.Program, artifact ir.Artifact, artifactHash string, symbols ir.PackageSymbols, info *check.ProgramInfo) (cache.PackageData, error) {
+	data := cache.PackageData{
+		Format: cache.ExportFormat, Version: cache.ExportVersion,
+		ModulePath: artifact.Module.Path, Package: artifact.Module.Package,
+		ArtifactHash: artifactHash, TypeTable: artifact.TypeTable,
+		Constants:    append([]ir.Constant(nil), artifact.Constants...),
+		Exports:      append([]ir.Export(nil), artifact.Exports...),
+		Requirements: append([]ir.Requirement(nil), artifact.Requirements...),
 	}
 	data.SourceFiles = append([]ir.SourceFile(nil), symbols.Files...)
 	genericTypes := make(map[string][]ast.TypeParam)
@@ -76,22 +80,19 @@ func buildPackageData(program ast.Program, artifact ir.Artifact, symbols ir.Pack
 	} else {
 		data.SourceFiles = nil
 	}
-	if len(data.GenericTemplates) == 0 {
-		return data, nil
-	}
-	for _, node := range info.TypeTable.Nodes {
-		if _, exists := data.TypeTable.Node(types.TypeRef{Kind: node.Kind, Node: node.ID}); exists {
-			continue
+	if len(data.GenericTemplates) != 0 {
+		for _, node := range info.TypeTable.Nodes {
+			if _, exists := data.TypeTable.Node(types.TypeRef{Kind: node.Kind, Node: node.ID}); exists {
+				continue
+			}
+			if err := data.TypeTable.Add(node); err != nil {
+				return cache.PackageData{}, fmt.Errorf("merge compiler type %q: %w", node.ID, err)
+			}
 		}
-		if err := data.TypeTable.Add(node); err != nil {
-			return cache.PackageData{}, fmt.Errorf("merge compiler type %q: %w", node.ID, err)
-		}
 	}
+	var err error
 	data.ExportHash, err = data.Hash()
 	if err != nil {
-		return cache.PackageData{}, err
-	}
-	if err := data.Validate(); err != nil {
 		return cache.PackageData{}, err
 	}
 	return data, nil

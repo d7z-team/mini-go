@@ -1,15 +1,146 @@
 {
-  "module":{"path":"test","package":"main"},
-  "globals":[{"id":"value","type":{"kind":3,"primitive":3}}],
-  "functions":[
-    {"id":"fn.init","instructions":[
-      {"op":"zero","payload":{"type":{"kind":3,"primitive":3}}},
-      {"op":"store_global","payload":{"global":"value"}},
-      {"op":"return","payload":{}}
-    ]},
-    {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-      {"op":"load_global","payload":{"global":"value"}},
-      {"op":"return","payload":{"result_count":1}}
-    ]}
-  ]
+  "module": {
+    "path": "test",
+    "package": "main"
+  },
+  "globals": [
+    {
+      "id": "value",
+      "type": {
+        "kind": 3,
+        "primitive": 3
+      }
+    }
+  ],
+  "functions": [
+    {
+      "id": "fn.init",
+      "code": {
+        "types": [
+          {
+            "kind": 3,
+            "primitive": 3
+          }
+        ],
+        "descriptors": {
+          "type": [
+            {
+              "type": {
+                "kind": 3,
+                "primitive": 3
+              }
+            }
+          ],
+          "global": [
+            {
+              "global": "value"
+            }
+          ],
+          "return": [
+            {}
+          ]
+        },
+        "instructions": [
+          [
+            4,
+            0,
+            0
+          ],
+          [
+            13,
+            0,
+            1
+          ],
+          [
+            17,
+            0,
+            2
+          ]
+        ],
+        "operands": [
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ]
+          },
+          {}
+        ]
+      }
+    },
+    {
+      "id": "fn.Main",
+      "signature": {
+        "results": [
+          {
+            "kind": 3,
+            "primitive": 3
+          }
+        ]
+      },
+      "code": {
+        "types": [
+          {
+            "kind": 3,
+            "primitive": 3
+          }
+        ],
+        "descriptors": {
+          "global": [
+            {
+              "global": "value"
+            }
+          ],
+          "return": [
+            {
+              "result_count": 1
+            }
+          ]
+        },
+        "instructions": [
+          [
+            12,
+            0,
+            0
+          ],
+          [
+            17,
+            0,
+            1
+          ]
+        ],
+        "operands": [
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "type_table": {
+    "nodes": []
+  }
 }

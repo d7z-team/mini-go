@@ -53,7 +53,6 @@ type loadedFunction struct {
 	Instructions   []preparedInstruction
 	LocalIndexes   map[string]int
 	UpvalueIndexes map[string]int
-	MaxStack       int
 	ResultTypes    []vmType
 	LocalTypes     []vmType
 	LocalVariadic  []bool
@@ -91,6 +90,10 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 	functionOrder := make([]loadedFunction, 0, len(artifact.Functions))
 	functionIndexes := make(map[string]int, len(artifact.Functions))
 	for _, fn := range artifact.Functions {
+		operations, err := fn.Operations()
+		if err != nil {
+			return nil, fmt.Errorf("function %s: %w", fn.ID, err)
+		}
 		resultTypes := make([]vmType, len(fn.Signature.Results))
 		for i, result := range fn.Signature.Results {
 			resultTypes[i] = runtimeTypeWithTable(result, &artifact.TypeTable)
@@ -116,9 +119,9 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 		if err != nil {
 			return nil, fmt.Errorf("function %s: %w", fn.ID, err)
 		}
-		instructions := make([]preparedInstruction, 0, len(fn.Instructions)-len(labels))
-		for i, inst := range fn.Instructions {
-			if inst.Op == string(ir.OpLabel) {
+		instructions := make([]preparedInstruction, 0, len(operations)-len(labels))
+		for i, inst := range operations {
+			if inst.Op == ir.OpLabel {
 				continue
 			}
 			prepared, err := prepareInstruction(inst)
@@ -126,6 +129,23 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 				return nil, fmt.Errorf("function %s instruction %d: %w", fn.ID, i, err)
 			}
 			prepared.bindTypes(&artifact.TypeTable, artifact.Module.Path)
+			prepared.operands = &fn.Code.Operands[fn.Code.Instructions[i].Operands]
+			if prepared.op == preparedUnary || prepared.op == preparedBinary || prepared.op == preparedCompareBranch {
+				for index, input := range prepared.operands.Inputs {
+					var typ types.TypeRef
+					switch input.Kind {
+					case ir.OperandConstant:
+						typ = artifact.Constants[input.Index].Type
+					case ir.OperandLocal:
+						typ = fn.Locals[input.Index].Type
+					default:
+						typ = fn.Code.Types[input.Index]
+					}
+					if primitive, ok := types.View(&artifact.TypeTable, typ).Primitive(); ok && primitive >= types.PrimitiveInt && primitive <= types.PrimitiveComplex128 {
+						prepared.numericInputs[index] = primitive
+					}
+				}
+			}
 			if prepared.constant != nil {
 				prepared.constantIndex = constantIndexes[prepared.constant.Constant]
 			}
@@ -140,6 +160,34 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 			}
 			if prepared.jump != nil {
 				prepared.jumpPC = labels[prepared.jump.Label]
+			}
+			if prepared.comparison != nil {
+				prepared.jumpPC = labels[prepared.comparison.Label]
+			}
+			if payload := prepared.typeDispatch; payload != nil {
+				dispatch := &preparedTypeSwitch{subject: localIndexes[payload.Subject], fallback: labels[payload.Default], fallbackLocal: -1}
+				if payload.DefaultLocal != "" {
+					dispatch.fallbackLocal = localIndexes[payload.DefaultLocal]
+				}
+				for _, match := range payload.Cases {
+					entry := preparedTypeCase{typ: runtimeTypeWithTable(match.Type, &artifact.TypeTable), target: labels[match.Label], binding: -1, original: match.Original}
+					if match.Binding != "" {
+						entry.binding = localIndexes[match.Binding]
+					}
+					if dispatch.concreteEnd == len(dispatch.cases) {
+						if key, ok := typeDispatchIdentityOf(entry.typ); ok {
+							if dispatch.concrete == nil {
+								dispatch.concrete = make(map[typeDispatchIdentity]int)
+							}
+							if _, exists := dispatch.concrete[key]; !exists {
+								dispatch.concrete[key] = len(dispatch.cases)
+							}
+							dispatch.concreteEnd++
+						}
+					}
+					dispatch.cases = append(dispatch.cases, entry)
+				}
+				prepared.dispatch = dispatch
 			}
 			if prepared.address != nil && prepared.address.Kind == "local" {
 				if index, ok := localIndexes[prepared.address.Local]; ok {
@@ -163,7 +211,6 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 			Instructions:   instructions,
 			LocalIndexes:   localIndexes,
 			UpvalueIndexes: upvalueIndexes,
-			MaxStack:       fn.MaxStack,
 			ResultTypes:    resultTypes,
 			LocalTypes:     localTypes,
 			LocalVariadic:  localVariadic,
@@ -234,6 +281,27 @@ func (inst *preparedInstruction) bindTypes(table *types.TypeTable, modulePath st
 			inst.callModule = strings.TrimSpace(modulePath)
 		}
 	}
+	if inst.fieldPath != nil {
+		current := inst.fieldPath.Type
+		for _, index := range inst.fieldPath.Fields {
+			view := types.View(table, current)
+			step := preparedField{}
+			if view.Shape() == types.Pointer {
+				step.indirect = true
+				element, _ := view.Elem()
+				view = types.View(table, element)
+			}
+			fields, _ := view.StructFields()
+			for i := uint32(0); i < index; i++ {
+				if fields[i].Name != "_" && fields[i].Name != "" {
+					step.index++
+				}
+			}
+			current = fields[index].Type
+			step.typ = runtimeTypeWithTable(current, table)
+			inst.path = append(inst.path, step)
+		}
+	}
 }
 
 func (l *loader) validationLimits() ir.ValidationLimits {
@@ -252,17 +320,21 @@ func (l *loader) loadJSON(data []byte) (*executable, error) {
 }
 
 func instructionLayout(fn ir.Function) (map[string]int, []int, error) {
+	operations, err := fn.Operations()
+	if err != nil {
+		return nil, nil, err
+	}
 	labels := make(map[string]int)
-	executionPCs := make([]int, len(fn.Instructions))
+	executionPCs := make([]int, len(operations))
 	pc := 0
-	for i, inst := range fn.Instructions {
+	for i, inst := range operations {
 		executionPCs[i] = pc
-		if inst.Op != string(ir.OpLabel) {
+		if inst.Op != ir.OpLabel {
 			pc++
 			continue
 		}
 		var payload ir.LabelPayload
-		if err := ir.DecodeInstructionPayload(inst.Payload, &payload); err != nil {
+		if err := ir.ReadInstructionPayload(inst.Payload, &payload); err != nil {
 			return nil, nil, fmt.Errorf("instruction %d label payload: %w", i, err)
 		}
 		if payload.Label == "" {

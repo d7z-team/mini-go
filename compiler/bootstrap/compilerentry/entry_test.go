@@ -148,3 +148,77 @@ func TestServiceReusesBoundedStructuredCache(t *testing.T) {
 		t.Fatalf("closed response = %#v", response)
 	}
 }
+
+func TestServiceReusesAnalysisOnlyForMatchingSourceAndTarget(t *testing.T) {
+	service := NewService(cache.TransientConfig{})
+	defer service.Close()
+	request := Request{
+		Operation: OperationCheck, Root: "sample",
+		Packages: []Package{{Namespace: "module:sample", ModulePath: "sample", Files: []File{{
+			Path: "main.mgo", Text: "package sample\nfunc Main() int { return 41 }\n",
+		}}}},
+	}
+	first := service.Execute(request)
+	if first.Error != "" || len(first.Diagnostics) != 0 || first.Stats.PackagesParsed != 1 {
+		t.Fatalf("first check = %#v", first)
+	}
+	second := service.Execute(request)
+	if second.Error != "" || len(second.Diagnostics) != 0 || second.Stats.PackageCacheHits != 1 || second.Stats.PackagesParsed != 0 {
+		t.Fatalf("repeated check = %#v", second)
+	}
+	request.Packages[0].Files[0].Text = "package sample\nfunc Main() int { return 42 }\n"
+	changed := service.Execute(request)
+	if changed.Error != "" || len(changed.Diagnostics) != 0 || changed.Stats.PackagesParsed != 1 {
+		t.Fatalf("changed source = %#v", changed)
+	}
+	request.Tags = []string{"feature"}
+	retargeted := service.Execute(request)
+	if retargeted.Error != "" || len(retargeted.Diagnostics) != 0 || retargeted.Stats.PackagesParsed != 1 {
+		t.Fatalf("changed target = %#v", retargeted)
+	}
+	request.Operation = OperationPrepare
+	request.EntryPoints = []compiler.EntryPoint{{Name: "main", ModulePath: "sample", Function: "Main"}}
+	warm := service.Execute(request)
+	if warm.Error != "" || warm.Image == nil || len(warm.Diagnostics) != 0 || warm.Stats.PackagesParsed != 0 || warm.Stats.PackagesAnalyzed != 0 {
+		t.Fatalf("prepare after check = %#v", warm)
+	}
+	coldService := NewService(cache.TransientConfig{})
+	defer coldService.Close()
+	cold := coldService.Execute(request)
+	if cold.Error != "" || cold.Image == nil || cold.Image.Hash != warm.Image.Hash || cold.Stats.PackagesParsed != 1 {
+		t.Fatalf("cold prepare = %#v", cold)
+	}
+	request.Packages[0].Files[0].Text = "package sample\nfunc Main() int { return 43 }\n"
+	invalidated := service.Execute(request)
+	if invalidated.Error != "" || invalidated.Image == nil || invalidated.Stats.PackagesParsed != 1 || invalidated.Image.Hash == warm.Image.Hash {
+		t.Fatalf("changed source prepare = %#v", invalidated)
+	}
+}
+
+func TestServiceCoreSnapshotSurvivesRequestsAndIsReleasedOnClose(t *testing.T) {
+	service := NewService(cache.TransientConfig{})
+	defer service.Close()
+	request := Request{Operation: OperationCheck, Root: "sample", Packages: []Package{{Namespace: "module:sample", ModulePath: "sample", Files: []File{{Path: "main.mgo", Text: "package sample\nfunc Main() int { return 1 }\n"}}}}}
+	if response := service.Execute(request); response.Error != "" || len(response.Diagnostics) != 0 {
+		t.Fatalf("initial: %#v", response)
+	}
+	snapshot := service.library
+	request.Packages[0].Files[0].Text = "package sample\nfunc Main() int { return 2 }\n"
+	if response := service.Execute(request); response.Error != "" || len(response.Diagnostics) != 0 {
+		t.Fatalf("edited: %#v", response)
+	}
+	if service.library != snapshot {
+		t.Fatal("request rebuilt immutable core snapshot")
+	}
+	service.compilerID = "previous compiler"
+	if response := service.Execute(request); response.Error != "" || len(response.Diagnostics) != 0 {
+		t.Fatalf("identity change: %#v", response)
+	}
+	if service.library == snapshot {
+		t.Fatal("compiler identity retained previous core snapshot")
+	}
+	service.Close()
+	if service.library != nil || service.analysis != nil {
+		t.Fatal("closed service retained source or analysis")
+	}
+}

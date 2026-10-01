@@ -10,43 +10,37 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func lifecycleArtifact(child []ir.Instruction) ir.Artifact {
+func lifecycleArtifact(child *ir.SlotCode) ir.Artifact {
 	artifact := ir.NewArtifact("scheduler/lifecycle", "main")
 	artifact.Globals = []ir.Global{{ID: "global.completed", Type: testType("Bool")}}
 	entry := []ir.Instruction{
-		{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.child"})},
-		{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
+		{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
+		{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
 	}
 	artifact.Functions = []ir.Function{
-		{ID: "fn.entry", Signature: testSignature("function() Void"), Instructions: entry},
-		{ID: "fn.main", Signature: testSignature("function() Void"), Instructions: append([]ir.Instruction(nil), entry...)},
-		{ID: "fn.child", RevisionLocal: true, Signature: testSignature("function() Void"), Instructions: child},
+		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, entry, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
+		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, entry, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
+		{ID: "fn.child", RevisionLocal: true, Signature: testSignature("function() Void"), Code: child},
 	}
 	return artifact
 }
 
-func delayedLifecycleChild(tail ...ir.Instruction) []ir.Instruction {
-	instructions := make([]ir.Instruction, 0, taskInstructionQuantum*2+len(tail))
-	for range taskInstructionQuantum * 2 {
-		instructions = append(instructions,
-			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			ir.Instruction{Op: string(ir.OpPop)},
-		)
-	}
-	return append(instructions, tail...)
+func delayedLifecycleChild(code *ir.SlotCode) *ir.SlotCode {
+	insertTestDelay(code, 0, taskInstructionQuantum*2)
+	return code
 }
 
 func loopingLifecycleArtifact() ir.Artifact {
 	artifact := ir.NewArtifact("scheduler/completed", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpLabel), Payload: testPayload(ir.LabelPayload{Label: "loop"})},
-			{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			{Op: string(ir.OpPop)},
-			{Op: string(ir.OpJump), Payload: testPayload(ir.JumpPayload{Label: "loop"})},
-		},
+		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+			{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "loop"}},
+			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+			{Op: ir.OpPop},
+			{Op: ir.OpJump, Payload: ir.JumpPayload{Label: "loop"}},
+		}, [][2][]uint32{{nil, nil}, {nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Run", Kind: "function", ID: "fn.entry"}}
 	return artifact
@@ -56,7 +50,7 @@ func TestInterruptHandleOnlyCancelsItsExecution(t *testing.T) {
 	completedArtifact := ir.NewArtifact("scheduler/completed", "main")
 	completedArtifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
+		Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	completedArtifact.Exports = []ir.Export{{Name: "Run", Kind: "function", ID: "fn.entry"}}
 	instance, err := patchTestProgram(t, completedArtifact, "completed-interrupt").Instantiate(context.Background(), InstanceOptions{})
@@ -95,12 +89,12 @@ func TestInterruptHandleOnlyCancelsItsExecution(t *testing.T) {
 }
 
 func TestCancelOneBackgroundScopeKeepsOtherScope(t *testing.T) {
-	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
-		{Op: string(ir.OpWaitableRecv)},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	})
+	artifact := lifecycleArtifact(testSlotCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
+		{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
+		{Op: ir.OpWaitableRecv},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}, {nil, nil}}))
 	instance, err := patchTestProgram(t, artifact, "independent-scopes").Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -129,11 +123,11 @@ func TestCancelOneBackgroundScopeKeepsOtherScope(t *testing.T) {
 }
 
 func TestLibraryInvocationLeavesSpawnedTaskRunning(t *testing.T) {
-	artifact := lifecycleArtifact(delayedLifecycleChild(
-		ir.Instruction{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.true"})},
-		ir.Instruction{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.completed"})},
-		ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	))
+	artifact := lifecycleArtifact(delayedLifecycleChild(testSlotCode([]string{"Bool"}, []ir.Instruction{
+		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.true"}},
+		{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.completed"}},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})))
 	artifact.Constants = []ir.Constant{{ID: "const.true", Type: testType("Bool"), Value: json.RawMessage(`true`)}}
 	program := patchTestProgram(t, artifact, "library-background")
 	instance, err := program.Instantiate(context.Background(), InstanceOptions{})
@@ -165,12 +159,12 @@ func TestLibraryInvocationLeavesSpawnedTaskRunning(t *testing.T) {
 }
 
 func TestCancelCompletedRootReleasesBlockedBackgroundTask(t *testing.T) {
-	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
-		{Op: string(ir.OpWaitableRecv)},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	})
+	artifact := lifecycleArtifact(testSlotCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
+		{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
+		{Op: ir.OpWaitableRecv},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}, {nil, nil}}))
 	instance, err := patchTestProgram(t, artifact, "library-background-cancel").Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -205,10 +199,10 @@ func TestCancelCompletedRootReleasesBlockedBackgroundTask(t *testing.T) {
 }
 
 func TestLibraryBackgroundPanicFaultsInstance(t *testing.T) {
-	artifact := lifecycleArtifact(delayedLifecycleChild(
-		ir.Instruction{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.failure"})},
-		ir.Instruction{Op: string(ir.OpPanic)},
-	))
+	artifact := lifecycleArtifact(delayedLifecycleChild(testSlotCode([]string{"String"}, []ir.Instruction{
+		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.failure"}},
+		{Op: ir.OpPanic},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})))
 	artifact.Constants = []ir.Constant{{ID: "const.failure", Type: testType("String"), Value: json.RawMessage(`"background failed"`)}}
 	program := patchTestProgram(t, artifact, "library-background-panic")
 	instance, err := program.Instantiate(context.Background(), InstanceOptions{})
@@ -233,11 +227,11 @@ func TestLibraryBackgroundPanicFaultsInstance(t *testing.T) {
 }
 
 func TestSpawnedTasksShareScopeStepBudget(t *testing.T) {
-	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	})
+	artifact := lifecycleArtifact(testSlotCode([]string{"Bool"}, []ir.Instruction{
+		{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}))
 	instance, err := patchTestProgram(t, artifact, "shared-scope-budget").Instantiate(context.Background(), InstanceOptions{Limits: Limits{MaxSteps: 2}})
 	if err != nil {
 		t.Fatal(err)

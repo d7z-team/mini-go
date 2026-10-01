@@ -43,7 +43,23 @@ func RunBrowserPeer(ctx context.Context, address string, files fs.FS, input io.R
 	if err != nil {
 		return err
 	}
-	binder, err := rpc.NewLocalBinder(rpc.LocalBinderOptions{}, provider)
+	compilerProbe, err := rpc.NewProvider(rpc.MethodBinding{
+		Method: rpc.Method{ID: "probe.v1::Echo.Add", Service: "probe.v1::Echo", Name: "Add", ContractHash: "1111111111111111111111111111111111111111111111111111111111111111"},
+		Invoke: func(_ context.Context, args []rpc.Value) ([]rpc.Value, error) {
+			if len(args) != 1 || args[0].Type != "int64" {
+				return nil, errors.New("Add requires one int64")
+			}
+			value, ok := args[0].Data.(int64)
+			if !ok {
+				return nil, errors.New("Add requires a signed integer")
+			}
+			return []rpc.Value{{Type: "int64", Data: value + 1}}, nil
+		},
+	})
+	if err != nil {
+		return err
+	}
+	binder, err := rpc.NewLocalBinder(rpc.LocalBinderOptions{}, provider, compilerProbe)
 	if err != nil {
 		return err
 	}

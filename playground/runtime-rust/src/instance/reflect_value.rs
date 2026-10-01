@@ -14,20 +14,26 @@ pub(super) struct ReflectedValue {
 impl Instance {
     fn reflect_deep_equal(&mut self, left: Value, right: Value) -> Result<bool, RuntimeError> {
         let mut pending = vec![(left, right)];
+        // Address equality/hash use only immutable root/path, never the lazy
+        // census identity contained in the address.
+        #[allow(clippy::mutable_key_type)]
         let mut pointers = HashSet::new();
         let mut maps = HashSet::new();
+        #[allow(clippy::mutable_key_type)]
         let mut slices = HashSet::new();
         while let Some((left, right)) = pending.pop() {
             if !self.types.identical(&left.typ, &right.typ)? {
                 return Ok(false);
             }
             match (left.data, right.data) {
-                (Data::Interface(left), Data::Interface(right)) => pending.push((*left, *right)),
+                (Data::Interface(left), Data::Interface(right)) => {
+                    pending.push((Arc::unwrap_or_clone(left), Arc::unwrap_or_clone(right)))
+                }
                 (Data::Array(left), Data::Array(right)) => {
                     if left.len() != right.len() {
                         return Ok(false);
                     }
-                    pending.extend(left.into_iter().zip(right));
+                    pending.extend(left.iter().cloned().zip(right.iter().cloned()));
                 }
                 (Data::Struct(left), Data::Struct(right)) => {
                     if left.len() != right.len() {
@@ -57,7 +63,7 @@ impl Instance {
                     if left.len() != right.len() {
                         return Ok(false);
                     }
-                    for (key, value) in left {
+                    for (key, value) in left.iter() {
                         let Some(index) = right.find(key, &self.types)? else {
                             return Ok(false);
                         };
@@ -232,7 +238,7 @@ impl Instance {
         };
         let target = match fields.get("target").map(|value| &value.data) {
             Some(Data::Interface(value)) => match &value.data {
-                Data::Pointer(address) => Some(address.clone()),
+                Data::Pointer(address) => Some((**address).clone()),
                 _ => {
                     return Err(RuntimeError::new(
                         "reflect",
@@ -296,7 +302,7 @@ impl Instance {
                 Data::Float(value) => zero &= *value == 0.0,
                 Data::Complex { real, imag } => zero &= *real == 0.0 && *imag == 0.0,
                 Data::String(value) => zero &= value.is_empty(),
-                Data::Array(values) => pending.extend(values),
+                Data::Array(values) => pending.extend(values.iter()),
                 Data::Struct(fields) => pending.extend(
                     fields
                         .iter()
@@ -325,7 +331,7 @@ impl Instance {
             let Data::MapEntries(map) = self.heap.get(*handle)?.data.clone() else {
                 unreachable!()
             };
-            for (key, value) in map {
+            for (key, value) in *map {
                 let key = self.reflect_snapshot(ReflectedValue::owned(key), depth + 1)?;
                 let value = self.reflect_snapshot(ReflectedValue::owned(value), depth + 1)?;
                 entries
@@ -337,9 +343,9 @@ impl Instance {
         let target = match view.target {
             Some(address) => Value {
                 typ: TypeIdentity::Any,
-                data: Data::Interface(Box::new(Value {
+                data: Data::Interface(std::sync::Arc::new(Value {
                     typ: TypeIdentity::Pointer(std::sync::Arc::new(value.typ.clone())),
-                    data: Data::Pointer(address),
+                    data: Data::Pointer(std::sync::Arc::new(address)),
                 })),
             },
             None => self.zero(&TypeIdentity::Any, 0)?,
@@ -351,7 +357,7 @@ impl Instance {
                 "data",
                 Value {
                     typ: TypeIdentity::Any,
-                    data: Data::Interface(Box::new(value.clone())),
+                    data: Data::Interface(std::sync::Arc::new(value.clone())),
                 },
             ),
             ("target", target),
@@ -457,7 +463,7 @@ impl Instance {
         if id == "reflect.value_of" {
             let mut value = arguments.remove(0);
             while let Data::Interface(inner) = value.data {
-                value = *inner;
+                value = Arc::unwrap_or_clone(inner);
             }
             let view = if matches!(value.data, Data::Nil)
                 && (value.typ == TypeIdentity::Any
@@ -554,11 +560,11 @@ impl Instance {
                     self.publish_dynamic_type(self.types.clone(), &pointer)?;
                     value = Value {
                         typ: pointer,
-                        data: Data::Pointer(Address {
+                        data: Data::Pointer(std::sync::Arc::new(Address {
                             identity: std::sync::Arc::default(),
                             root: self.allocate(value)?,
                             path: Vec::new(),
-                        }),
+                        })),
                     };
                 }
                 let mut view = ReflectedValue::owned(value);
@@ -586,7 +592,7 @@ impl Instance {
                         })?;
                         current = Value {
                             typ: TypeIdentity::Pointer(std::sync::Arc::new(current.typ)),
-                            data: Data::Pointer(address),
+                            data: Data::Pointer(std::sync::Arc::new(address)),
                         };
                     }
                     let max = if id == "reflect.value_slice3" {
@@ -782,7 +788,7 @@ impl Instance {
                     for index in path {
                         if let Data::Pointer(address) = current.data {
                             current = self.read_address(&address)?;
-                            view.target = Some(address);
+                            view.target = Some(Arc::unwrap_or_clone(address));
                         }
                         let index = usize::try_from(index.integer()?).map_err(|_| {
                             RuntimeError::new("reflect", id, "reflect: negative field index")
@@ -838,7 +844,7 @@ impl Instance {
                     let (item, _) = self.index_value(&current, &arguments[1])?;
                     match current.data {
                         Data::Slice(slice) => {
-                            let mut target = slice.storage;
+                            let mut target = slice.storage.clone();
                             target.path.push(PathElement::Index(slice.start + index));
                             view.target = Some(target);
                         }
@@ -871,12 +877,12 @@ impl Instance {
                     match value.data {
                         Data::Pointer(address) => {
                             view.current = Some(self.read_address(&address)?);
-                            view.target = Some(address);
+                            view.target = Some(Arc::unwrap_or_clone(address));
                             view.addressable = true;
                             view.settable = view.interfaceable;
                         }
                         Data::Interface(value) => {
-                            view.current = Some(*value);
+                            view.current = Some(Arc::unwrap_or_clone(value));
                             view.target = None;
                             view.addressable = false;
                             view.settable = false;
@@ -912,7 +918,7 @@ impl Instance {
                     })?;
                     view.current = Some(Value {
                         typ: TypeIdentity::Pointer(std::sync::Arc::new(current.typ)),
-                        data: Data::Pointer(target),
+                        data: Data::Pointer(std::sync::Arc::new(target)),
                     });
                     view.addressable = false;
                     view.settable = false;
@@ -986,11 +992,11 @@ impl Instance {
                             ));
                         }
                         if id == "reflect.value_set_len" {
-                            slice.length = count;
+                            Arc::make_mut(slice).length = count;
                         } else {
-                            slice.capacity = count;
+                            Arc::make_mut(slice).capacity = count;
                         }
-                        slice.identity = Arc::default();
+                        Arc::make_mut(slice).identity = Arc::default();
                     }
                     self.write_address(&target, current)?;
                     return Ok(None);

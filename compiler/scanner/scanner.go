@@ -65,55 +65,53 @@ func ScanFile(file source.File) Result {
 }
 
 func ScanFileWithLimits(file source.File, limits Limits) Result {
-	return scanFileWithLimits(file, limits, false)
+	return scanDocument(file, limits, false).Syntax()
 }
 
 // ScanHeaderFileWithLimits scans through the import prefix and stops at the
 // first top-level declaration.
 func ScanHeaderFileWithLimits(file source.File, limits Limits) Result {
-	return scanFileWithLimits(file, limits, true)
+	return scanDocument(file, limits, true).Syntax()
 }
 
-func scanFileWithLimits(file source.File, limits Limits, headerOnly bool) Result {
+func scanDocument(file source.File, limits Limits, headerOnly bool) Document {
 	limits = normalizeLimits(limits)
 	file = source.InitializeFile(file)
+	file.LineStarts = append([]int(nil), file.LineStarts...)
 	if len(file.Text) > limits.MaxSourceBytes {
 		span, _ := file.Span(0, len(file.Text))
-		return Result{File: file, Diagnostics: []source.Diagnostic{{
+		return Document{file: file, diagnostics: []source.Diagnostic{{
 			Code: "scanner.source.limit", Severity: source.SeverityError,
 			Message: "source file exceeds scanner byte limit", Primary: span,
 		}}}
 	}
 	s := scanner{file: file, limits: limits, headerOnly: headerOnly}
 	s.scan()
-	return Result{
-		File:        file,
-		Elements:    s.elements,
-		Tokens:      s.tokens,
-		Diagnostics: s.diagnostics,
+	return Document{
+		file:        file,
+		records:     s.records,
+		elements:    s.elements,
+		tokens:      s.tokens,
+		diagnostics: s.diagnostics,
 	}
 }
 
 type scanner struct {
-	file         source.File
-	offset       int
-	insertSemi   bool
-	elements     []Element
-	tokens       []Token
-	diagnostics  []source.Diagnostic
-	limits       Limits
-	stopped      bool
-	diagLimited  bool
-	tokenLimit   bool
-	headerOnly   bool
-	headerState  int
-	headerDepth  int
-	spanStart    int
-	spanEnd      int
-	spanValue    source.Span
-	spanCached   bool
-	positionAt   int
-	positionLine int
+	file        source.File
+	offset      int
+	line        int
+	insertSemi  bool
+	records     lexicalTape
+	elements    []int
+	tokens      []int
+	diagnostics []source.Diagnostic
+	limits      Limits
+	stopped     bool
+	diagLimited bool
+	tokenLimit  bool
+	headerOnly  bool
+	headerState int
+	headerDepth int
 }
 
 func (s *scanner) scan() {
@@ -137,12 +135,12 @@ func (s *scanner) scan() {
 		if r == utf8.RuneError && size == 1 {
 			s.offset++
 			s.addDiagnostic("scanner.utf8.invalid", "invalid UTF-8 encoding", start, s.offset)
-			s.emitToken(token.Illegal, s.file.Text[start:s.offset], start, s.offset)
+			s.emitToken(token.Illegal, start, s.offset)
 			continue
 		}
 		if r == 0 || r == byteOrderMark {
 			s.offset += size
-			s.emitToken(token.Illegal, s.file.Text[start:s.offset], start, s.offset)
+			s.emitToken(token.Illegal, start, s.offset)
 			continue
 		}
 		if token.IsIdentifierStart(r) {
@@ -165,10 +163,10 @@ func (s *scanner) scan() {
 		}
 	}
 	if s.insertSemi && !s.stopped {
-		s.emitSynthetic(token.Semicolon, "\n", s.offset, s.offset)
+		s.emitSynthetic(token.Semicolon, s.offset, s.offset)
 		s.insertSemi = false
 	}
-	s.emitSynthetic(token.EOF, "", s.offset, s.offset)
+	s.emitSynthetic(token.EOF, s.offset, s.offset)
 }
 
 func (s *scanner) scanSourceTextDiagnostics() {
@@ -199,8 +197,8 @@ func (s *scanner) skipWhitespaceAndComments() bool {
 		case ' ', '\t', '\r':
 			start := s.offset
 			for s.offset < len(s.file.Text) {
-				current := s.file.Text[s.offset]
-				if current != ' ' && current != '\t' && current != '\r' {
+				ch := s.file.Text[s.offset]
+				if ch != ' ' && ch != '\t' && ch != '\r' {
 					break
 				}
 				s.offset++
@@ -212,7 +210,7 @@ func (s *scanner) skipWhitespaceAndComments() bool {
 			s.offset++
 			s.emitTrivia(ElementNewline, pos, s.offset)
 			if s.insertSemi {
-				s.emitSynthetic(token.Semicolon, "\n", pos, pos+1)
+				s.emitSynthetic(token.Semicolon, pos, pos+1)
 				s.insertSemi = false
 				return true
 			}
@@ -221,8 +219,10 @@ func (s *scanner) skipWhitespaceAndComments() bool {
 			if s.matchAt("//") {
 				start := s.offset
 				s.offset += 2
-				for s.offset < len(s.file.Text) && s.file.Text[s.offset] != '\n' {
-					s.offset++
+				if newline := strings.IndexByte(s.file.Text[s.offset:], '\n'); newline >= 0 {
+					s.offset += newline
+				} else {
+					s.offset = len(s.file.Text)
 				}
 				s.emitTrivia(ElementLineComment, start, s.offset)
 				continue
@@ -232,12 +232,14 @@ func (s *scanner) skipWhitespaceAndComments() bool {
 				newline := -1
 				insertSemi := s.insertSemi
 				s.offset += 2
-				for s.offset < len(s.file.Text) && !s.matchAt("*/") {
-					if s.file.Text[s.offset] == '\n' && newline < 0 {
-						newline = s.offset
-					}
-					s.offset++
+				end := len(s.file.Text)
+				if closing := strings.Index(s.file.Text[s.offset:], "*/"); closing >= 0 {
+					end = s.offset + closing
 				}
+				if first := strings.IndexByte(s.file.Text[s.offset:end], '\n'); first >= 0 {
+					newline = s.offset + first
+				}
+				s.offset = end
 				if s.offset >= len(s.file.Text) {
 					s.emitTrivia(ElementBlockComment, start, s.offset)
 					s.addDiagnostic("scanner.comment.unterminated", "unterminated block comment", start, len(s.file.Text))
@@ -246,7 +248,7 @@ func (s *scanner) skipWhitespaceAndComments() bool {
 				s.offset += 2
 				s.emitTrivia(ElementBlockComment, start, s.offset)
 				if newline >= 0 && insertSemi {
-					s.emitSynthetic(token.Semicolon, "\n", newline, newline+1)
+					s.emitSynthetic(token.Semicolon, newline, newline+1)
 				}
 				continue
 			}
@@ -260,6 +262,16 @@ func (s *scanner) skipWhitespaceAndComments() bool {
 
 func (s *scanner) scanIdent(start int) {
 	for s.offset < len(s.file.Text) {
+		for s.offset < len(s.file.Text) {
+			value := s.file.Text[s.offset]
+			if value != '_' && (value < 'a' || value > 'z') && (value < 'A' || value > 'Z') && (value < '0' || value > '9') {
+				break
+			}
+			s.offset++
+		}
+		if s.offset == len(s.file.Text) || s.file.Text[s.offset] < utf8.RuneSelf {
+			break
+		}
 		r, size := s.peekRune()
 		if r == utf8.RuneError && size == 1 {
 			break
@@ -270,56 +282,40 @@ func (s *scanner) scanIdent(start int) {
 		s.offset += size
 	}
 	lexeme := s.file.Text[start:s.offset]
-	s.emitToken(token.Lookup(lexeme), lexeme, start, s.offset)
+	s.emitToken(token.Lookup(lexeme), start, s.offset)
+}
+
+var compoundTokens = map[string]token.Kind{
+	"&^=": token.AndNotAssign, "<<=": token.ShlAssign, ">>=": token.ShrAssign, "...": token.Ellipsis,
+	":=": token.Define, "<-": token.Arrow, "++": token.Inc, "--": token.Dec,
+	"&&": token.Land, "||": token.Lor, "==": token.Eq, "!=": token.Ne,
+	"<=": token.Le, ">=": token.Ge, "<<": token.Shl, ">>": token.Shr,
+	"+=": token.AddAssign, "-=": token.SubAssign, "*=": token.MulAssign, "/=": token.QuoAssign,
+	"%=": token.RemAssign, "&=": token.AndAssign, "|=": token.OrAssign, "^=": token.XorAssign,
+	"&^": token.AndNot,
 }
 
 func (s *scanner) scanOperatorOrDelimiter(start int) {
-	candidates := []struct {
-		text string
-		kind token.Kind
-	}{
-		{"&^=", token.AndNotAssign},
-		{"<<=", token.ShlAssign},
-		{">>=", token.ShrAssign},
-		{"...", token.Ellipsis},
-		{":=", token.Define},
-		{"<-", token.Arrow},
-		{"++", token.Inc},
-		{"--", token.Dec},
-		{"&&", token.Land},
-		{"||", token.Lor},
-		{"==", token.Eq},
-		{"!=", token.Ne},
-		{"<=", token.Le},
-		{">=", token.Ge},
-		{"<<", token.Shl},
-		{">>", token.Shr},
-		{"+=", token.AddAssign},
-		{"-=", token.SubAssign},
-		{"*=", token.MulAssign},
-		{"/=", token.QuoAssign},
-		{"%=", token.RemAssign},
-		{"&=", token.AndAssign},
-		{"|=", token.OrAssign},
-		{"^=", token.XorAssign},
-		{"&^", token.AndNot},
-	}
-	for _, candidate := range candidates {
-		if s.matchAt(candidate.text) {
-			s.offset += len(candidate.text)
-			s.emitToken(candidate.kind, candidate.text, start, s.offset)
+	for width := 3; width >= 2; width-- {
+		if start+width > len(s.file.Text) {
+			continue
+		}
+		text := s.file.Text[start : start+width]
+		if kind, ok := compoundTokens[text]; ok {
+			s.offset += width
+			s.emitToken(kind, start, s.offset)
 			return
 		}
 	}
 	if kind, ok := singleCharToken(s.file.Text[start]); ok {
 		s.offset++
-		s.emitToken(kind, s.file.Text[start:s.offset], start, s.offset)
+		s.emitToken(kind, start, s.offset)
 		return
 	}
 	_, size := s.peekRune()
 	s.offset += size
 	s.addDiagnostic("scanner.token.illegal", fmt.Sprintf("illegal character %q", s.file.Text[start:s.offset]), start, s.offset)
-	s.emitToken(token.Illegal, s.file.Text[start:s.offset], start, s.offset)
+	s.emitToken(token.Illegal, start, s.offset)
 }
 
 func singleCharToken(ch byte) (token.Kind, bool) {
@@ -375,12 +371,16 @@ func singleCharToken(ch byte) (token.Kind, bool) {
 	}
 }
 
-func (s *scanner) emitToken(kind token.Kind, lexeme string, start, end int) {
-	s.emitElement(ElementToken, kind, lexeme, start, end)
-	s.emitSynthetic(kind, lexeme, start, end)
+func (s *scanner) emitToken(kind token.Kind, start, end int) {
+	s.emitElement(ElementToken, kind, start, end)
+	s.emitTokenIndex(kind, start, end, len(s.records.kinds)-1)
 }
 
-func (s *scanner) emitSynthetic(kind token.Kind, lexeme string, start, end int) {
+func (s *scanner) emitSynthetic(kind token.Kind, start, end int) {
+	s.emitTokenIndex(kind, start, end, -1)
+}
+
+func (s *scanner) emitTokenIndex(kind token.Kind, start, end, index int) {
 	if kind != token.EOF && len(s.tokens) >= s.limits.MaxTokens {
 		if !s.tokenLimit {
 			s.tokenLimit = true
@@ -389,15 +389,14 @@ func (s *scanner) emitSynthetic(kind token.Kind, lexeme string, start, end int) 
 		s.stopped = true
 		return
 	}
-	span, ok := s.span(start, end)
-	if !ok {
-		span = source.Span{}
+	if index < 0 {
+		for s.line+1 < len(s.file.LineStarts) && s.file.LineStarts[s.line+1] <= start {
+			s.line++
+		}
+		index = len(s.records.kinds)
+		s.records.appendRecord(kind, "", start, end, s.line)
 	}
-	s.tokens = append(s.tokens, Token{
-		Kind:   kind,
-		Lexeme: lexeme,
-		Span:   span,
-	})
+	s.tokens = append(s.tokens, index)
 	s.advanceHeader(kind)
 	if kind != token.Comment && kind != token.EOF && kind != token.Semicolon {
 		s.insertSemi = token.CanEndStatement(kind)
@@ -409,15 +408,15 @@ func (s *scanner) emitSynthetic(kind token.Kind, lexeme string, start, end int) 
 }
 
 func (s *scanner) emitTrivia(kind ElementKind, start, end int) {
-	s.emitElement(kind, "", s.file.Text[start:end], start, end)
+	s.emitElement(kind, "", start, end)
 }
 
-func (s *scanner) emitElement(kind ElementKind, tokenKind token.Kind, lexeme string, start, end int) {
-	span, ok := s.span(start, end)
-	if !ok {
-		span = source.Span{}
+func (s *scanner) emitElement(kind ElementKind, tokenKind token.Kind, start, end int) {
+	for s.line+1 < len(s.file.LineStarts) && s.file.LineStarts[s.line+1] <= start {
+		s.line++
 	}
-	s.elements = append(s.elements, Element{Kind: kind, Token: tokenKind, Lexeme: lexeme, Span: span})
+	s.elements = append(s.elements, len(s.records.kinds))
+	s.records.appendRecord(tokenKind, kind, start, end, s.line)
 }
 
 func (s *scanner) addDiagnostic(code, message string, start, end int) {
@@ -437,7 +436,7 @@ func (s *scanner) addDiagnostic(code, message string, start, end int) {
 	if end > len(s.file.Text) {
 		end = len(s.file.Text)
 	}
-	span, ok := s.span(start, end)
+	span, ok := s.file.Span(start, end)
 	if !ok {
 		span = source.Span{}
 	}
@@ -491,43 +490,6 @@ func (s *scanner) advanceHeader(kind token.Kind) {
 	}
 }
 
-func (s *scanner) span(start, end int) (source.Span, bool) {
-	if s.spanCached && start == s.spanStart && end == s.spanEnd {
-		return s.spanValue, true
-	}
-	if start < 0 || end < start || end > len(s.file.Text) {
-		return source.Span{}, false
-	}
-	startPosition, ok := s.position(start)
-	if !ok {
-		return source.Span{}, false
-	}
-	endPosition, ok := s.position(end)
-	if !ok {
-		return source.Span{}, false
-	}
-	span := source.Span{Start: startPosition, End: endPosition}
-	s.spanStart, s.spanEnd, s.spanValue, s.spanCached = start, end, span, true
-	return span, true
-}
-
-func (s *scanner) position(offset int) (source.Position, bool) {
-	if offset < 0 || offset > len(s.file.Text) || s.file.Path == "" || len(s.file.LineStarts) == 0 {
-		return source.Position{}, false
-	}
-	if offset < s.positionAt {
-		s.positionLine = 0
-	}
-	for s.positionLine+1 < len(s.file.LineStarts) && s.file.LineStarts[s.positionLine+1] <= offset {
-		s.positionLine++
-	}
-	s.positionAt = offset
-	return source.Position{
-		File: s.file.Path, Offset: offset, Line: s.positionLine + 1,
-		Column: offset - s.file.LineStarts[s.positionLine],
-	}, true
-}
-
 func normalizeLimits(limits Limits) Limits {
 	if limits.MaxSourceBytes <= 0 || limits.MaxSourceBytes > DefaultMaxSourceBytes {
 		limits.MaxSourceBytes = DefaultMaxSourceBytes
@@ -559,6 +521,9 @@ func (s *scanner) peekByte() byte {
 func (s *scanner) peekRune() (rune, int) {
 	if s.offset >= len(s.file.Text) {
 		return 0, 0
+	}
+	if ch := s.file.Text[s.offset]; ch < utf8.RuneSelf {
+		return rune(ch), 1
 	}
 	return utf8.DecodeRuneInString(s.file.Text[s.offset:])
 }

@@ -1,1 +1,82 @@
-{"module":{"path":"test","package":"main"},"constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],"functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[{"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}]}]}
+{
+  "module": {
+    "path": "test",
+    "package": "main"
+  },
+  "constants": [
+    {
+      "id": "answer",
+      "type": {
+        "kind": 3,
+        "primitive": 3
+      },
+      "value": 42
+    }
+  ],
+  "functions": [
+    {
+      "id": "fn.Main",
+      "signature": {
+        "results": [
+          {
+            "kind": 3,
+            "primitive": 3
+          }
+        ]
+      },
+      "code": {
+        "types": [
+          {
+            "kind": 3,
+            "primitive": 3
+          }
+        ],
+        "descriptors": {
+          "const": [
+            {
+              "constant": "answer"
+            }
+          ],
+          "return": [
+            {
+              "result_count": 1
+            }
+          ]
+        },
+        "instructions": [
+          [
+            3,
+            0,
+            0
+          ],
+          [
+            17,
+            0,
+            1
+          ]
+        ],
+        "operands": [
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "type_table": {
+    "nodes": []
+  }
+}

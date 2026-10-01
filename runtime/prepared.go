@@ -1,9 +1,9 @@
 package runtime
 
 import (
-	"encoding/json"
 	"fmt"
 
+	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
@@ -75,41 +75,47 @@ const (
 	preparedCallFFI
 	preparedCallIntrinsic
 	preparedSelect
+	preparedTypeDispatch
+	preparedCompareBranch
+	preparedGetPath
 )
 
-var preparedOpcodes = map[string]preparedOpcode{
-	string(ir.OpSelect):      preparedSelect,
-	string(ir.OpMapIterInit): preparedMapIterInit, string(ir.OpMapIterNext): preparedMapIterNext, string(ir.OpMapIterClose): preparedMapIterClose,
-	string(ir.OpConst): preparedConst, string(ir.OpZero): preparedZero, string(ir.OpPop): preparedPop,
-	string(ir.OpUnary): preparedUnary, string(ir.OpBinary): preparedBinary,
-	string(ir.OpLoadLocal): preparedLoadLocal, string(ir.OpStoreLocal): preparedStoreLocal,
-	string(ir.OpLoadUpvalue): preparedLoadUpvalue, string(ir.OpStoreUpvalue): preparedStoreUpvalue,
-	string(ir.OpLoadGlobal): preparedLoadGlobal, string(ir.OpStoreGlobal): preparedStoreGlobal,
-	string(ir.OpJump): preparedJump, string(ir.OpJumpIf): preparedJumpIf,
-	string(ir.OpReturn): preparedReturn, string(ir.OpPanic): preparedPanic,
-	string(ir.OpRecover): preparedRecover, string(ir.OpDeferPush): preparedDeferPush,
-	string(ir.OpCallValue):  preparedCallValue,
-	string(ir.OpCallDirect): preparedCallDirect, string(ir.OpCallInterface): preparedCallInterface,
-	string(ir.OpTailCallDirect): preparedTailCallDirect,
-	string(ir.OpMakeClosure):    preparedMakeClosure, string(ir.OpMakeSequence): preparedMakeSequence,
-	string(ir.OpMakeMap): preparedMakeMap, string(ir.OpMakeStruct): preparedMakeStruct,
-	string(ir.OpMakeSlice): preparedMakeSlice, string(ir.OpMakeWaitable): preparedMakeWaitable,
-	string(ir.OpLoadIndex): preparedLoadIndex, string(ir.OpLoadIndexOK): preparedLoadIndexOK,
-	string(ir.OpStringRuneAt): preparedStringRuneAt, string(ir.OpStringNextRuneIndex): preparedStringNextRuneIndex,
-	string(ir.OpSlice): preparedSlice, string(ir.OpLen): preparedLen, string(ir.OpCap): preparedCap,
-	string(ir.OpAppend): preparedAppend, string(ir.OpDelete): preparedDelete, string(ir.OpClear): preparedClear,
-	string(ir.OpCopy): preparedCopy, string(ir.OpMapKeys): preparedMapKeys, string(ir.OpLoadField): preparedLoadField,
-	string(ir.OpStoreIndex): preparedStoreIndex, string(ir.OpStoreField): preparedStoreField,
-	string(ir.OpTypeAssert): preparedTypeAssert, string(ir.OpTypeAssertOK): preparedTypeAssertOK,
-	string(ir.OpConvert): preparedConvert, string(ir.OpAddressOf): preparedAddressOf, string(ir.OpLoadIndirect): preparedLoadIndirect,
-	string(ir.OpStoreIndirect): preparedStoreIndirect, string(ir.OpWaitableSend): preparedWaitableSend,
-	string(ir.OpWaitableRecv): preparedWaitableRecv, string(ir.OpWaitableRecvOK): preparedWaitableRecvOK,
-	string(ir.OpWaitableCanRecv): preparedWaitableCanRecv, string(ir.OpWaitableTryRecv): preparedWaitableTryRecv,
-	string(ir.OpWaitableTrySend): preparedWaitableTrySend, string(ir.OpWaitableCanSend): preparedWaitableCanSend,
-	string(ir.OpWaitableClose): preparedWaitableClose, string(ir.OpInitModule): preparedInitModule,
-	string(ir.OpLoadExport): preparedLoadExport, string(ir.OpSpawn): preparedSpawn,
-	string(ir.OpCallFFI):       preparedCallFFI,
-	string(ir.OpCallIntrinsic): preparedCallIntrinsic,
+var preparedOpcodes = map[ir.Opcode]preparedOpcode{
+	ir.OpGetPath:       preparedGetPath,
+	ir.OpCompareBranch: preparedCompareBranch,
+	ir.OpTypeDispatch:  preparedTypeDispatch,
+	ir.OpSelect:        preparedSelect,
+	ir.OpMapIterInit:   preparedMapIterInit, ir.OpMapIterNext: preparedMapIterNext, ir.OpMapIterClose: preparedMapIterClose,
+	ir.OpConst: preparedConst, ir.OpZero: preparedZero, ir.OpPop: preparedPop,
+	ir.OpUnary: preparedUnary, ir.OpBinary: preparedBinary,
+	ir.OpLoadLocal: preparedLoadLocal, ir.OpStoreLocal: preparedStoreLocal,
+	ir.OpLoadUpvalue: preparedLoadUpvalue, ir.OpStoreUpvalue: preparedStoreUpvalue,
+	ir.OpLoadGlobal: preparedLoadGlobal, ir.OpStoreGlobal: preparedStoreGlobal,
+	ir.OpJump: preparedJump, ir.OpJumpIf: preparedJumpIf,
+	ir.OpReturn: preparedReturn, ir.OpPanic: preparedPanic,
+	ir.OpRecover: preparedRecover, ir.OpDeferPush: preparedDeferPush,
+	ir.OpCallValue:  preparedCallValue,
+	ir.OpCallDirect: preparedCallDirect, ir.OpCallInterface: preparedCallInterface,
+	ir.OpTailCallDirect: preparedTailCallDirect,
+	ir.OpMakeClosure:    preparedMakeClosure, ir.OpMakeSequence: preparedMakeSequence,
+	ir.OpMakeMap: preparedMakeMap, ir.OpMakeStruct: preparedMakeStruct,
+	ir.OpMakeSlice: preparedMakeSlice, ir.OpMakeWaitable: preparedMakeWaitable,
+	ir.OpLoadIndex: preparedLoadIndex, ir.OpLoadIndexOK: preparedLoadIndexOK,
+	ir.OpStringRuneAt: preparedStringRuneAt, ir.OpStringNextRuneIndex: preparedStringNextRuneIndex,
+	ir.OpSlice: preparedSlice, ir.OpLen: preparedLen, ir.OpCap: preparedCap,
+	ir.OpAppend: preparedAppend, ir.OpDelete: preparedDelete, ir.OpClear: preparedClear,
+	ir.OpCopy: preparedCopy, ir.OpMapKeys: preparedMapKeys, ir.OpLoadField: preparedLoadField,
+	ir.OpStoreIndex: preparedStoreIndex, ir.OpStoreField: preparedStoreField,
+	ir.OpTypeAssert: preparedTypeAssert, ir.OpTypeAssertOK: preparedTypeAssertOK,
+	ir.OpConvert: preparedConvert, ir.OpAddressOf: preparedAddressOf, ir.OpLoadIndirect: preparedLoadIndirect,
+	ir.OpStoreIndirect: preparedStoreIndirect, ir.OpWaitableSend: preparedWaitableSend,
+	ir.OpWaitableRecv: preparedWaitableRecv, ir.OpWaitableRecvOK: preparedWaitableRecvOK,
+	ir.OpWaitableCanRecv: preparedWaitableCanRecv, ir.OpWaitableTryRecv: preparedWaitableTryRecv,
+	ir.OpWaitableTrySend: preparedWaitableTrySend, ir.OpWaitableCanSend: preparedWaitableCanSend,
+	ir.OpWaitableClose: preparedWaitableClose, ir.OpInitModule: preparedInitModule,
+	ir.OpLoadExport: preparedLoadExport, ir.OpSpawn: preparedSpawn,
+	ir.OpCallFFI:       preparedCallFFI,
+	ir.OpCallIntrinsic: preparedCallIntrinsic,
 }
 
 type preparedOperator uint8
@@ -199,6 +205,7 @@ func (operator preparedOperator) String() string {
 }
 
 type preparedInstruction struct {
+	operands  *ir.SlotOperands
 	op        preparedOpcode
 	control   bool
 	canonical ir.Instruction
@@ -206,6 +213,7 @@ type preparedInstruction struct {
 	constant      *ir.ConstPayload
 	typeOperand   *ir.TypePayload
 	operator      preparedOperator
+	numericInputs [2]types.PrimitiveKind
 	makeSequence  *ir.MakeSequencePayload
 	makeMap       *ir.MakeMapPayload
 	makeStruct    *ir.MakeStructPayload
@@ -228,6 +236,11 @@ type preparedInstruction struct {
 	callFFI       *ir.CallFFIPayload
 	callIntrinsic *ir.CallIntrinsicPayload
 	selection     *ir.SelectPayload
+	typeDispatch  *ir.TypeDispatchPayload
+	dispatch      *preparedTypeSwitch
+	comparison    *ir.CompareBranchPayload
+	fieldPath     *ir.FieldPathPayload
+	path          []preparedField
 
 	constantIndex     int
 	localIndex        int
@@ -243,15 +256,15 @@ type preparedInstruction struct {
 }
 
 func (inst preparedInstruction) opcodeText() string {
-	return inst.canonical.Op
+	return inst.canonical.Op.String()
 }
 
 func decodePreparedPayload[T any](inst ir.Instruction) (*T, error) {
-	payload := new(T)
-	if err := json.Unmarshal(inst.Payload, payload); err != nil {
-		return nil, err
+	if payload, ok := inst.Payload.(T); ok {
+		return &payload, nil
 	}
-	return payload, nil
+	var payload T
+	return nil, fmt.Errorf("instruction payload %T does not match %T", inst.Payload, payload)
 }
 
 func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
@@ -268,6 +281,8 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 	switch op {
 	case preparedSelect:
 		out.selection, err = decodePreparedPayload[ir.SelectPayload](inst)
+	case preparedTypeDispatch:
+		out.typeDispatch, err = decodePreparedPayload[ir.TypeDispatchPayload](inst)
 	case preparedConst:
 		out.constant, err = decodePreparedPayload[ir.ConstPayload](inst)
 	case preparedZero, preparedTypeAssert, preparedTypeAssertOK, preparedConvert:
@@ -294,6 +309,8 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 		out.makeWaitable, err = decodePreparedPayload[ir.MakeWaitablePayload](inst)
 	case preparedAppend:
 		out.count, err = decodePreparedPayload[ir.CountPayload](inst)
+	case preparedGetPath:
+		out.fieldPath, err = decodePreparedPayload[ir.FieldPathPayload](inst)
 	case preparedLoadField, preparedStoreField:
 		out.field, err = decodePreparedPayload[ir.FieldPayload](inst)
 	case preparedLoadExport:
@@ -313,6 +330,15 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 		}
 	case preparedJump, preparedJumpIf:
 		out.jump, err = decodePreparedPayload[ir.JumpPayload](inst)
+	case preparedCompareBranch:
+		out.comparison, err = decodePreparedPayload[ir.CompareBranchPayload](inst)
+		if err == nil {
+			var ok bool
+			out.operator, ok = parsePreparedOperator(out.comparison.Operator)
+			if !ok {
+				err = fmt.Errorf("unknown comparison %q", out.comparison.Operator)
+			}
+		}
 	case preparedCallDirect, preparedTailCallDirect, preparedCallValue, preparedSpawn:
 		out.call, err = decodePreparedPayload[ir.CallPayload](inst)
 	case preparedCallInterface:
@@ -322,9 +348,7 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 	case preparedReturn:
 		out.returnValue, err = decodePreparedPayload[ir.ReturnPayload](inst)
 	case preparedDeferPush:
-		if len(inst.Payload) != 0 {
-			out.deferValue, err = decodePreparedPayload[ir.DeferPayload](inst)
-		}
+		out.deferValue, err = decodePreparedPayload[ir.DeferPayload](inst)
 	case preparedCallFFI:
 		out.callFFI, err = decodePreparedPayload[ir.CallFFIPayload](inst)
 	case preparedCallIntrinsic:

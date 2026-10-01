@@ -22,8 +22,8 @@ func HashExecutionImage(image ExecutionImage) (string, error) {
 
 const (
 	ExecutionFormat   = "mini-go-execution-image"
-	ExecutionVersion  = 15
-	ExecutionContract = "minigo.execution.v16"
+	ExecutionVersion  = 18
+	ExecutionContract = "minigo.execution.v19"
 	DefaultEntryName  = "default"
 )
 
@@ -31,6 +31,7 @@ const (
 type PackageArchive struct {
 	Artifact     json.RawMessage `json:"artifact"`
 	ArtifactHash string          `json:"artifact_hash"`
+	validated    *archiveValidation
 }
 
 type Entry struct {
@@ -51,6 +52,12 @@ type ExecutionImage struct {
 	Capabilities []string                  `json:"capabilities,omitempty"`
 	Packages     map[string]PackageArchive `json:"packages"`
 	Hash         string                    `json:"hash"`
+}
+
+// EncodeExecutionImage encodes a prepared image with canonical field, map-key
+// and string ordering. Package payloads must remain valid JSON.
+func EncodeExecutionImage(image *ExecutionImage) ([]byte, error) {
+	return encodeCanonicalValue(image)
 }
 
 func (image ExecutionImage) DefaultEntry() (Entry, bool) {

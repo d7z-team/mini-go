@@ -1,7 +1,6 @@
 package compiler
 
 import (
-	"encoding/json"
 	"testing"
 
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
@@ -67,12 +66,12 @@ func Value() float64 {
 		untyped[constant.ID] = constant.Untyped
 	}
 	for _, function := range result.Artifact.Functions {
-		for _, instruction := range function.Instructions {
-			if instruction.Op != string(ir.OpConst) {
+		for _, instruction := range functionOperations(t, function) {
+			if instruction.Op != ir.OpConst {
 				continue
 			}
 			var payload ir.ConstPayload
-			if err := json.Unmarshal(instruction.Payload, &payload); err != nil {
+			if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 				t.Fatalf("decode const payload: %v", err)
 			}
 			if untyped[payload.Constant] {

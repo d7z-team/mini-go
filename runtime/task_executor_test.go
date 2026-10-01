@@ -17,14 +17,17 @@ func TestTaskFragmentsShareFrameStorageAcrossExecutorWorkers(t *testing.T) {
 		t.Run(strconv.Itoa(workers), func(t *testing.T) {
 			artifact := patchCallArtifact(10, 1)
 			entry := &artifact.Functions[0]
-			entry.Instructions = entry.Instructions[:1]
+			entry.Code.Instructions = entry.Code.Instructions[:1]
+			// Alternate accumulator slots so every binary result has a distinct destination.
+			accumulator, next := uint32(0), uint32(2)
 			for range 128 {
-				entry.Instructions = append(entry.Instructions,
-					ir.Instruction{Op: string(ir.OpCallDirect), Payload: testPayload(ir.CallPayload{Function: "fn.value", ResultCount: 1})},
-					ir.Instruction{Op: string(ir.OpBinary), Payload: testPayload(ir.OperatorPayload{Operator: "+"})},
-				)
+				appendTestSlotCode(entry.Code, []ir.Instruction{
+					{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.value", ResultCount: 1}},
+					{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "+"}},
+				}, [][2][]uint32{{nil, {1}}, {{accumulator, 1}, {next}}})
+				accumulator, next = next, accumulator
 			}
-			entry.Instructions = append(entry.Instructions, ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})})
+			appendTestSlotCode(entry.Code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{{accumulator}, nil}})
 			vm, err := loadTestEngine(artifact)
 			if err != nil {
 				t.Fatal(err)
@@ -109,25 +112,19 @@ func TestTaskFragmentsShareFrameStorageAcrossExecutorWorkers(t *testing.T) {
 
 func publicParallelArtifact() ir.Artifact {
 	artifact := ir.NewArtifact("scheduler/public-parallel", "main")
-	entry := make([]ir.Instruction, 0, 9)
+	entry := testSlotCode([]string{"function() Void"}, nil, nil)
 	for range 4 {
-		entry = append(entry,
-			ir.Instruction{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.child"})},
-			ir.Instruction{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-		)
+		appendTestSlotCode(entry, []ir.Instruction{
+			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
+			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 	}
-	entry = append(entry, ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})})
-	child := make([]ir.Instruction, 0, taskInstructionQuantum*32+1)
-	for range taskInstructionQuantum * 16 {
-		child = append(child,
-			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			ir.Instruction{Op: string(ir.OpPop)},
-		)
-	}
-	child = append(child, ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})})
+	appendTestSlotCode(entry, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	child := testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	insertTestDelay(child, 0, taskInstructionQuantum*16)
 	artifact.Functions = []ir.Function{
-		{ID: "fn.entry", Signature: testSignature("function() Void"), Instructions: entry},
-		{ID: "fn.child", RevisionLocal: true, Signature: testSignature("function() Void"), Instructions: child},
+		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: entry},
+		{ID: "fn.child", RevisionLocal: true, Signature: testSignature("function() Void"), Code: child},
 	}
 	return artifact
 }

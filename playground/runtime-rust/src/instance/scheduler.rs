@@ -21,6 +21,7 @@ pub(super) struct Task {
     pub scope: u64,
     pub frames: Vec<Frame>,
     pub suspended_frames: Vec<Frame>,
+    pub census_completed_frame: Option<usize>,
     pub blocked: Option<Blocked>,
     pub transient_roots: Vec<Handle>,
     pub allocation_roots: Vec<Value>,
@@ -31,14 +32,12 @@ pub(super) struct Task {
     pub pending_write: Option<mutation::PendingWrite>,
     pub write_collection: mutation::WriteCollection,
     // An allocating instruction may have to stop at the owner boundary for a
-    // complete guest-memory census. Keep its exact operands until the owner
+    // complete guest-memory census. Its slots keep exact operands until the owner
     // either rejects the allocation or resumes the same PC without charging
     // another bytecode step.
     pub instruction_active: bool,
     pub instruction_pc: usize,
-    pub instruction_stack_len: usize,
     pub retry_instruction: bool,
-    pub retry_operands: Vec<Value>,
     pub census_request: Option<u64>,
     pub pending_error: Option<RuntimeError>,
 }
@@ -58,9 +57,6 @@ impl Trace for Task {
             visit(*handle);
         }
         for value in &self.allocation_roots {
-            value.trace(visit);
-        }
-        for value in &self.retry_operands {
             value.trace(visit);
         }
         if let Some(operation) = &self.blocked {
@@ -493,8 +489,7 @@ impl Instance {
                                 .frames
                                 .last_mut()
                                 .unwrap()
-                                .stack
-                                .extend(values);
+                                .extend_results(values);
                             true
                         } else {
                             false
@@ -508,13 +503,13 @@ impl Instance {
                 Err(error) if error.code == "panic" => {
                     let frame = task.frames.last_mut().unwrap();
                     if matches!(
-                        frame.resume,
-                        Some(super::reflect_async::IntrinsicResume::Send)
+                        frame.continuation,
+                        Some(frame::Continuation::Intrinsic(
+                            super::reflect_async::IntrinsicResume::Send
+                        ))
                     ) {
-                        frame.resume = None;
-                        frame
-                            .stack
-                            .extend([Value::string(error.message), Value::boolean(false)]);
+                        frame.continuation = None;
+                        frame.extend_results([Value::string(error.message), Value::boolean(false)]);
                     } else {
                         frame.returning = Some(Vec::new());
                         frame.panic = Some(Arc::new(Value {
@@ -594,7 +589,11 @@ impl Instance {
                 };
                 let values =
                     self.ffi_values(crate::ffi::Reply::new(Vec::new(), Some(error), None))?;
-                self.running.frames.last_mut().unwrap().stack.extend(values);
+                self.running
+                    .frames
+                    .last_mut()
+                    .unwrap()
+                    .extend_results(values);
             }
             Spawn(payload) => {
                 self.admit_task()?;
@@ -609,6 +608,16 @@ impl Instance {
                         "expected callable",
                     ));
                 };
+                let result_count = callee
+                    .revision
+                    .as_ref()
+                    .unwrap_or(&self.revision)
+                    .program
+                    .function(&callee.module, &callee.function)?
+                    .declaration
+                    .signature
+                    .results
+                    .len();
                 let id = self.allocate_task_id()?;
                 let scope = self.running.scope;
                 self.preparing_task = Some(std::mem::replace(
@@ -620,7 +629,7 @@ impl Instance {
                     },
                 ));
                 let created =
-                    self.push_frame(callee, arguments, payload.result_count as usize, false);
+                    self.push_frame(Arc::unwrap_or_clone(callee), arguments, result_count, false);
                 let child =
                     std::mem::replace(&mut self.running, self.preparing_task.take().unwrap());
                 created?;
@@ -660,7 +669,7 @@ impl Instance {
                 let value = self.running.pop()?;
                 let channel = self.running.pop()?;
                 if blocking {
-                    self.wait_channel(channel, Some(value), false)?;
+                    self.wait_channel(channel, Some(value), false, None)?;
                 } else {
                     result = Some(Value::boolean(self.try_send(&channel, value)?));
                 }
@@ -670,15 +679,15 @@ impl Instance {
                 let blocking = !matches!(instruction, WaitableTryRecv);
                 let channel = self.running.pop()?;
                 if blocking {
-                    self.wait_channel(channel, None, with_ok)?;
+                    self.wait_channel(channel, None, with_ok, None)?;
                 } else if let Some((value, ok)) = self.try_receive(&channel)? {
-                    self.running.frames.last_mut().unwrap().stack.push(value);
+                    self.running.frames.last_mut().unwrap().push_result(value);
                     if with_ok {
                         result = Some(Value::boolean(ok));
                     }
                 } else {
                     let zero = self.zero(&self.element_type(&channel.typ)?, 0)?;
-                    self.running.frames.last_mut().unwrap().stack.push(zero);
+                    self.running.frames.last_mut().unwrap().push_result(zero);
                     result = Some(Value::boolean(false));
                 }
             }
@@ -695,7 +704,7 @@ impl Instance {
             _ => unreachable!("wait dispatch only receives wait instructions"),
         }
         if let Some(value) = result {
-            self.running.frames.last_mut().unwrap().stack.push(value);
+            self.running.frames.last_mut().unwrap().push_result(value);
         }
         Ok(())
     }

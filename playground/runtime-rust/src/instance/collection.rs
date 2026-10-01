@@ -3,6 +3,277 @@
 use super::*;
 
 impl Instance {
+    pub(super) fn element_type(&self, typ: &TypeIdentity) -> Result<TypeIdentity, RuntimeError> {
+        if let TypeIdentity::Slice(element) = typ {
+            return Ok((**element).clone());
+        }
+        let (module, node) = self
+            .types
+            .node(typ)?
+            .ok_or_else(|| RuntimeError::new("type_error", "container", "missing element type"))?;
+        self.types.resolve(module, &node.elem)
+    }
+
+    pub(super) fn slice_values(&self, value: &Value) -> Result<Vec<Value>, RuntimeError> {
+        match &value.data {
+            Data::Slice(slice) => {
+                let backing = self.snapshot_address(&slice.storage)?;
+                if let Data::Bytes(bytes) = &backing.data {
+                    return bytes
+                        .get(slice.start..slice.start + slice.length)
+                        .ok_or_else(|| {
+                            RuntimeError::new("invalid_slice", "slice", "invalid byte view")
+                        })
+                        .map(|bytes| {
+                            bytes
+                                .iter()
+                                .map(|byte| Value {
+                                    typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
+                                    data: Data::Unsigned(u64::from(*byte)),
+                                })
+                                .collect()
+                        });
+                }
+                let Data::Array(values) = &backing.data else {
+                    return Err(RuntimeError::new(
+                        "invalid_slice",
+                        "slice",
+                        "invalid backing",
+                    ));
+                };
+                Ok(values
+                    .get(slice.start..slice.start + slice.length)
+                    .ok_or_else(|| RuntimeError::new("invalid_slice", "slice", "invalid view"))?
+                    .to_vec())
+            }
+            Data::Nil => Ok(Vec::new()),
+            Data::String(bytes) => Ok(bytes
+                .iter()
+                .map(|byte| Value {
+                    typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
+                    data: Data::Unsigned(u64::from(*byte)),
+                })
+                .collect()),
+            _ => Err(RuntimeError::new("type_error", "slice", "expected slice")),
+        }
+    }
+
+    pub(super) fn make_slice(
+        &mut self,
+        typ: TypeIdentity,
+        length: usize,
+        capacity: usize,
+        initial: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let element = self.element_type(&typ)?;
+        if self
+            .types
+            .identical(&element, &TypeIdentity::Primitive(wire::PrimitiveUint8))?
+        {
+            if !matches!(typ, TypeIdentity::Slice(_))
+                && !self
+                    .types
+                    .node(&typ)?
+                    .is_some_and(|(_, node)| node.kind == wire::Slice)
+            {
+                return Err(RuntimeError::new(
+                    "type_error",
+                    "slice",
+                    "expected slice type",
+                ));
+            }
+            let bytes = initial
+                .into_iter()
+                .map(|value| {
+                    let value = self.coerce(value, &element)?;
+                    match value.data {
+                        Data::Unsigned(byte) => Ok(byte as u8),
+                        _ => Err(RuntimeError::new(
+                            "type_error",
+                            "slice",
+                            "expected byte element",
+                        )),
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return self.make_bytes(typ, length, capacity, &bytes);
+        }
+        self.make_slot_slice(typ, length, capacity, initial)
+    }
+
+    pub(super) fn make_slot_slice(
+        &mut self,
+        typ: TypeIdentity,
+        length: usize,
+        capacity: usize,
+        initial: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        if !matches!(typ, TypeIdentity::Slice(_))
+            && !self
+                .types
+                .node(&typ)?
+                .is_some_and(|(_, node)| node.kind == wire::Slice)
+        {
+            return Err(RuntimeError::new(
+                "type_error",
+                "slice",
+                "expected slice type",
+            ));
+        }
+        if length > capacity || capacity > self.limits.max_sequence_elements {
+            return Err(RuntimeError::new(
+                "value_limit",
+                "slice",
+                "invalid or excessive slice capacity",
+            ));
+        }
+        let element = self.element_type(&typ)?;
+        if initial.len() > length {
+            return Err(RuntimeError::new(
+                "invalid_slice",
+                "slice",
+                "too many initial elements",
+            ));
+        }
+        let zero = self.zero(&element, 0)?;
+        let initial = initial
+            .into_iter()
+            .map(|value| self.coerce(value, &element))
+            .collect::<Result<Vec<_>, _>>()?;
+        let zero_bytes = zero.logical_bytes()?.saturating_sub(16);
+        let mut logical = (capacity as u64)
+            .checked_mul(16)
+            .and_then(|bytes| bytes.checked_add(272))
+            .and_then(|bytes| {
+                zero_bytes
+                    .checked_mul((capacity - initial.len()) as u64)?
+                    .checked_add(bytes)
+            })
+            .ok_or_else(|| {
+                RuntimeError::new("allocation_limit", "slice", "backing size overflow")
+            })?;
+        for value in &initial {
+            logical = logical
+                .checked_add(value.logical_bytes()?.saturating_sub(16))
+                .ok_or_else(|| {
+                    RuntimeError::new("allocation_limit", "slice", "backing size overflow")
+                })?;
+        }
+        if logical > self.limits.max_heap_bytes {
+            return Err(RuntimeError::new(
+                "allocation_limit",
+                "slice",
+                "backing exceeds heap budget",
+            ));
+        }
+        let mut values = Vec::new();
+        values.try_reserve_exact(capacity).map_err(|_| {
+            RuntimeError::new(
+                "allocation_limit",
+                "slice",
+                "slot backing allocation failed",
+            )
+        })?;
+        values.resize(capacity, zero);
+        for (destination, value) in values.iter_mut().zip(initial) {
+            *destination = value;
+        }
+        let root = self.allocate(Value {
+            typ: TypeIdentity::Any,
+            data: Data::Array(values.into()),
+        })?;
+        Ok(Value {
+            typ,
+            data: Data::Slice(std::sync::Arc::new(SliceValue {
+                identity: std::sync::Arc::default(),
+                storage: Address {
+                    identity: std::sync::Arc::default(),
+                    root,
+                    path: Vec::new(),
+                },
+                start: 0,
+                length,
+                capacity,
+            })),
+        })
+    }
+
+    pub(super) fn index_value(
+        &mut self,
+        object: &Value,
+        key: &Value,
+    ) -> Result<(Value, bool), RuntimeError> {
+        if let Data::Map(root) = object.data {
+            let key = self.map_key(&object.typ, key.clone())?;
+            let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
+                return Err(RuntimeError::new("invalid_map", "map", "invalid backing"));
+            };
+            if let Some(index) = entries.find(&key, &self.types)? {
+                return Ok((entries[index].1.clone(), true));
+            }
+            return Ok((self.zero(&self.element_type(&object.typ)?, 0)?, false));
+        }
+        if matches!(object.data, Data::Nil)
+            && self
+                .types
+                .node(&object.typ)?
+                .is_some_and(|(_, node)| node.kind == wire::Map)
+        {
+            self.map_key(&object.typ, key.clone())?;
+            return Ok((self.zero(&self.element_type(&object.typ)?, 0)?, false));
+        }
+        let index = usize::try_from(key.integer()?)
+            .map_err(|_| RuntimeError::new("panic", "index", "negative index"))?;
+        let value = match &object.data {
+            Data::Array(values) => values.get(index).cloned(),
+            Data::String(bytes) => bytes.get(index).map(|byte| Value {
+                typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
+                data: Data::Unsigned(u64::from(*byte)),
+            }),
+            Data::Slice(slice) if index < slice.length => {
+                if slice.storage.path.is_empty() {
+                    let backing = self.heap.get(slice.storage.root)?;
+                    let value = match &backing.data {
+                        Data::Array(values) => values
+                            .get(slice.start + index)
+                            .filter(|value| !matches!(value.data, Data::Uninitialized))
+                            .cloned(),
+                        Data::Bytes(bytes) => bytes.get(slice.start + index).map(|byte| Value {
+                            typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
+                            data: Data::Unsigned(u64::from(*byte)),
+                        }),
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        return Ok((value, true));
+                    }
+                }
+                let mut address = slice.storage.clone();
+                address.path.push(PathElement::Index(slice.start + index));
+                Some(self.read_address(&address)?)
+            }
+            Data::Pointer(address) => {
+                let value = self.read_address(address)?;
+                return self.index_value(&value, key);
+            }
+            _ => None,
+        }
+        .ok_or_else(|| RuntimeError::new("panic", "index", "index outside sequence"))?;
+        Ok((value, true))
+    }
+
+    pub(super) fn store_index(
+        &mut self,
+        object: Value,
+        key: Value,
+        value: Value,
+    ) -> Result<(), RuntimeError> {
+        let mut write = self.prepare_index_write(object, key, value)?;
+        let mut collection = mutation::WriteCollection::IMMEDIATE;
+        while !self.attempt_write(&mut write, &mut collection)? {}
+        Ok(())
+    }
+
     pub(super) fn init_map_iterator(
         &mut self,
         local: &str,
@@ -142,20 +413,21 @@ impl Instance {
                 }
             }
             Data::Slice(mut slice) => {
-                slice.identity = Arc::default();
-                if maximum > slice.capacity {
+                let header = Arc::make_mut(&mut slice);
+                header.identity = Arc::default();
+                if maximum > header.capacity {
                     return Err(RuntimeError::new(
                         "panic",
                         "slice",
                         "slice bounds exceed capacity",
                     ));
                 }
-                slice.start += low;
-                slice.length = high - low;
-                slice.capacity = if full {
+                header.start += low;
+                header.length = high - low;
+                header.capacity = if full {
                     maximum - low
                 } else {
-                    slice.capacity - low
+                    header.capacity - low
                 };
                 Value {
                     typ: object.typ,
@@ -177,7 +449,7 @@ impl Instance {
                 };
                 let element = self.element_type(&object.typ)?;
                 let storage = match storage {
-                    Some(address) => address,
+                    Some(address) => Arc::unwrap_or_clone(address),
                     None => Address {
                         identity: std::sync::Arc::default(),
                         root: self.allocate(Value {
@@ -189,13 +461,13 @@ impl Instance {
                 };
                 Value {
                     typ: TypeIdentity::Slice(std::sync::Arc::new(element)),
-                    data: Data::Slice(SliceValue {
+                    data: Data::Slice(std::sync::Arc::new(SliceValue {
                         identity: std::sync::Arc::default(),
                         storage,
                         start: low,
                         length: high - low,
                         capacity,
-                    }),
+                    })),
                 }
             }
             Data::Nil if maximum == 0 => object,
@@ -238,6 +510,19 @@ impl Instance {
             .into_iter()
             .map(|value| self.coerce(value, &element))
             .collect::<Result<Vec<_>, _>>()?;
+        if self
+            .types
+            .identical(&element, &TypeIdentity::Primitive(wire::PrimitiveUint8))?
+        {
+            let bytes = values
+                .iter()
+                .map(|value| match value.data {
+                    Data::Unsigned(byte) => byte as u8,
+                    _ => unreachable!("byte coercion succeeded"),
+                })
+                .collect::<Vec<_>>();
+            return self.append_bytes(object, &bytes);
+        }
         let new_length = length
             .checked_add(values.len())
             .filter(|length| *length <= self.limits.max_sequence_elements)
@@ -264,32 +549,12 @@ impl Instance {
                 })?;
             self.charge_guest(bytes)?;
         }
-        if self
-            .types
-            .identical(&element, &TypeIdentity::Primitive(wire::PrimitiveUint8))?
-        {
-            let compact = match &object.data {
-                Data::Slice(slice) => {
-                    matches!(self.snapshot_address(&slice.storage)?.data, Data::Bytes(_))
-                }
-                _ => false,
-            };
-            if new_capacity > capacity || !compact {
-                let mut bytes = self.slice_bytes(&object)?;
-                for value in values {
-                    let Data::Unsigned(byte) = value.data else {
-                        unreachable!("byte coercion succeeded")
-                    };
-                    bytes.push(byte as u8);
-                }
-                return self.make_bytes(object.typ, new_length, new_capacity, &bytes);
-            }
-        }
         if new_capacity > capacity {
             let mut initial = self.slice_values(&object)?;
             initial.extend(values);
             object = self.make_slice(object.typ, new_length, new_capacity, initial)?;
         } else if let Data::Slice(slice) = &mut object.data {
+            let slice = Arc::make_mut(slice);
             slice.identity = Arc::default();
             slice.length = new_length;
             for (index, value) in values.into_iter().enumerate() {
@@ -308,24 +573,22 @@ impl Instance {
             && slice.storage.path.is_empty()
             && matches!(self.heap.get(slice.storage.root)?.data, Data::Bytes(_))
         {
-            let source = self.slice_bytes(&source)?;
-            let copied = slice.length.min(source.len());
-            loop {
-                let (snapshot, bytes) = self.heap.read_mutation_base(slice.storage.root)?;
-                let expected = Arc::downgrade(&snapshot);
-                drop(snapshot);
-                if self
-                    .heap
-                    .update(slice.storage.root, &expected, bytes, true, |backing| {
-                        let Data::Bytes(bytes) = &mut backing.data else {
-                            unreachable!()
-                        };
-                        bytes[slice.start..slice.start + copied].copy_from_slice(&source[..copied]);
-                    })?
-                {
-                    return Ok(copied);
+            let length = match &source.data {
+                Data::Slice(slice) => slice.length,
+                Data::String(bytes) => bytes.len(),
+                Data::Nil => 0,
+                _ => {
+                    return Err(RuntimeError::new(
+                        "type_error",
+                        "copy",
+                        "expected byte source",
+                    ));
                 }
-            }
+            };
+            let copied = slice.length.min(length);
+            let source = self.read_byte_range(&source, 0, copied)?;
+            self.write_slice_bytes(&destination, 0, &source)?;
+            return Ok(copied);
         }
         // Snapshot first so overlapping views implement memmove semantics.
         let source = self.slice_values(&source)?;

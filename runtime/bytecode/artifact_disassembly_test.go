@@ -3,6 +3,7 @@ package bytecode
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -31,13 +32,13 @@ func TestDisassembleProducesStableSnapshot(t *testing.T) {
 		Signature:    testSignature("function() Int64"),
 		Locals:       []Local{{ID: "local.tmp", Type: testType("Int64")}},
 		ResultLocals: []string{"local.tmp"},
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	attachTestTypeNodes(&artifact)
@@ -46,7 +47,7 @@ func TestDisassembleProducesStableSnapshot(t *testing.T) {
 		t.Fatalf("Disassemble failed: %v", err)
 	}
 	want := strings.Join([]string{
-		"format mini-go-ir version 22 opcode_set minigo.ir.v10",
+		fmt.Sprintf("format mini-go-ir version %d opcode_set %s", CurrentVersion, OpcodeSet),
 		"module example/module package main",
 		"require source test/dependency hash " + strings.Repeat("a", 64) + " exports [Add]",
 		"type type.User User = struct{ID:Int64 `json:\"id\"`}",
@@ -57,8 +58,8 @@ func TestDisassembleProducesStableSnapshot(t *testing.T) {
 		"func fn.main function() Int64",
 		"  local local.tmp Int64",
 		"  result_local local.tmp",
-		`  0000 const {"constant":"c.answer"}`,
-		`  0001 return {"result_count":1}`,
+		`  0000 const outputs=[0] inputs=[] release=[] release_before=[] {"constant":"c.answer"}`,
+		`  0001 return outputs=[] inputs=[s0] release=[0] release_before=[] {"result_count":1}`,
 		"",
 	}, "\n")
 	if got != want {
@@ -69,6 +70,7 @@ func TestDisassembleProducesStableSnapshot(t *testing.T) {
 func TestDisassemblePreservesVariadicFunctionMetadata(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
+		Code:      &SlotCode{},
 		ID:        "fn.Sum",
 		Signature: testSignature("function(variadic Slice<Int64>) Int64"),
 	}}
@@ -95,6 +97,7 @@ func TestDisassembleDerivesVariadicMetadataFromTypes(t *testing.T) {
 	}})
 	artifact.Globals = []Global{{ID: "global.handler", Type: testType("function(Int64, variadic Slice<Int64>) Int64")}}
 	artifact.Functions = []Function{{
+		Code:      &SlotCode{},
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 		Locals:    []Local{{ID: "local.handler", Type: testType("function(Int64, variadic Slice<Int64>) Int64")}},
@@ -135,7 +138,7 @@ func TestDisassembleShowsUntypedConstantExport(t *testing.T) {
 
 func TestWriteDisassemblyMatchesDisassemble(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	got, err := Disassemble(&artifact)
 	if err != nil {

@@ -1,0 +1,34 @@
+package literal_test
+
+import (
+	"strconv/literal"
+	"testing"
+)
+
+func TestUnquoteByteEscapesAndLiteralBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		source, want string
+	}{
+		{"\"\\377\\x80\\u0080\\U0001f600\"", "\xff\x80\u0080😀"},
+		{"'\\377'", "\xff"},
+		{"`first\r\nsecond`", "first\nsecond"},
+		{"\"literal\ttab\"", "literal\ttab"},
+	} {
+		got, err := literal.Unquote(test.source)
+		if err != nil || got != test.want {
+			t.Fatalf("Unquote boundary failed for %s", test.source)
+		}
+	}
+	for _, source := range []string{"\"\\400\"", "\"\\08\"", "\"\\uD800\"", "\"\\U00110000\"", "\"unterminated\\\"", "'ab'", "''", "\"line\nbreak\"", "`inner`tick`", "\"\\'\""} {
+		if _, err := literal.Unquote(source); err == nil {
+			t.Fatalf("accepted invalid quoted literal %s", source)
+		}
+	}
+	value, multi, tail, err := literal.UnquoteChar("\\u0041!", '"')
+	if err != nil || value != 'A' || !multi || tail != "!" {
+		t.Fatal("Unicode escape flag or tail changed")
+	}
+	if _, _, _, err := literal.UnquoteChar("\\\"", 0); err == nil {
+		t.Fatal("quote zero accepted an escaped quote")
+	}
+}

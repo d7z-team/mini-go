@@ -1,6 +1,6 @@
 package reflect
 
-import "strconv"
+import "strconv/literal"
 
 func typeDescriptor(typ Type) runtimeTypeData {
 	descriptor, message, ok := runtimeTypeDescriptor(typ)
@@ -14,12 +14,19 @@ func typeIdentity(typ Type) string {
 	return typeDescriptor(typ).key
 }
 
+func typeMeasure(typ Type, property string) uint64 {
+	value, message, ok := runtimeTypeMeasure(typ, property)
+	if !ok {
+		panic(message)
+	}
+	return value
+}
+
 func numField(typ Type) int {
 	if typ.Kind() != Struct {
 		panic("reflect: NumField of non-struct type " + typ.String())
 	}
-	descriptor := typeDescriptor(typ)
-	return descriptor.fieldCount
+	return int(typeMeasure(typ, "fields"))
 }
 
 func fieldAt(typ Type, index int) StructField {
@@ -113,7 +120,7 @@ func (tag StructTag) Lookup(key string) (string, bool) {
 		quoted := text[:i + 1]
 		text = text[i + 1:]
 		if key == name {
-			value, err := strconv.Unquote(quoted)
+			value, err := literal.Unquote(quoted)
 			if err != nil {
 				break
 			}
@@ -146,23 +153,27 @@ func methodByName(typ Type, name string) (Method, bool) {
 }
 
 func typeAlign(typ runtimeType) int {
-	return typeDescriptor(typ).align
+	return int(typeMeasure(typ, "align"))
 }
 
 func typeFieldAlign(typ runtimeType) int {
-	return typeDescriptor(typ).fieldAlign
+	return int(typeMeasure(typ, "field_align"))
 }
 
 func typeSize(typ runtimeType) uintptr {
-	return typeDescriptor(typ).size
+	return uintptr(typeMeasure(typ, "size"))
 }
 
 func typeBits(typ runtimeType) int {
-	descriptor := typeDescriptor(typ)
-	if descriptor.bits == 0 {
+	kind := typ.Kind()
+	if kind < Int || kind > Complex128 {
 		panic("reflect: Bits of non-numeric type")
 	}
-	return descriptor.bits
+	bits := typeMeasure(typ, "bits")
+	if bits == 0 {
+		panic("reflect: Bits of non-numeric type")
+	}
+	return int(bits)
 }
 
 func typeOverflowComplex(typ runtimeType, value complex128) bool {
@@ -249,7 +260,11 @@ func typeName(typ runtimeType) string {
 }
 
 func typeKindName(typ runtimeType) Kind {
-	return typeDescriptor(typ).kind
+	kind, message, ok := runtimeTypeKind(typ)
+	if !ok {
+		panic(message)
+	}
+	return Kind(kind)
 }
 
 func typeString(typ runtimeType) string {
@@ -367,11 +382,7 @@ func typeKey(typ Type) Type {
 }
 
 func typeLen(typ Type) int {
-	descriptor := typeDescriptor(typ)
-	if descriptor.kind == Array {
-		return descriptor.length
-	}
-	panic("reflect: Len of non-array type")
+	return int(typeMeasure(typ, "length"))
 }
 
 func typeComparable(typ Type) bool {

@@ -2,60 +2,201 @@ use mini_go::compiler::CompilerSession;
 use mini_go::ffi::Cancellation;
 use serde_json::json;
 
+macro_rules! language_workload_test {
+    ($test:ident, $workload:literal) => {
+        #[tokio::test]
+        async fn $test() {
+            assert_warm_analysis($workload).await;
+        }
+    };
+}
+
+language_workload_test!(pure_preserves_warm_analysis, "pure");
+language_workload_test!(typed_view_preserves_warm_analysis, "typed-view");
+language_workload_test!(errors_preserves_warm_analysis, "errors");
+language_workload_test!(ffi_preserves_warm_analysis, "ffi");
+language_workload_test!(rpc_preserves_analysis_through_edit_and_build, "rpc");
+language_workload_test!(ffi_view_preserves_warm_analysis, "ffi-view");
+
 #[tokio::test]
-async fn shared_language_workloads_preserve_warm_analysis() {
+async fn compiler_preserves_binary_literals_through_image_generation() {
+    use mini_go::{
+        instance::{ExecutionLimits, Instance, PollStatus},
+        loader::LoadLimits,
+        program::Program,
+    };
+    use std::sync::Arc;
+
+    let mut session = CompilerSession::new(include_bytes!("../assets/compiler.json.gz"))
+        .await
+        .unwrap();
+    let cancel = Cancellation::default();
+    let source = r#"package sample
+type Label string
+const raw = "\000\200\xff"
+func Main() int {
+    text := Label(raw + "\u0080")
+    if len(text) != 5 || text[0] != 0 || text[1] != 128 || text[2] != 255 || text[3] != 194 || text[4] != 128 { return -1 }
+    return 42
+}"#;
+    let opened = session
+        .call(
+            json!({"Operation":"workspace/open", "Root":"sample",
+        "Packages":[{"Namespace":"module:sample", "ModulePath":"sample",
+            "Files":[{"Path":"main.mgo", "Text":source}]}]}),
+            &cancel,
+        )
+        .await
+        .unwrap();
+    assert!(opened["Error"].is_null(), "{opened}");
+    let built = session.call(json!({"Operation":"build/prepare", "Build":{
+        "Revision":session.revision(), "EntryPoints":[{"Name":"default", "ModulePath":"sample", "Function":"Main"}]}}), &cancel).await.unwrap();
+    assert!(built["Error"].is_null(), "{built}");
+    let program = Arc::new(
+        Program::load(
+            built["ImageJSON"].as_str().unwrap().as_bytes(),
+            LoadLimits::default(),
+        )
+        .unwrap(),
+    );
+    session.close().await.unwrap();
+    let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+    vm.start("default", Vec::new()).unwrap();
+    while vm.poll_steps(4096).unwrap() != PollStatus::Ready {}
+    assert_eq!(vm.results()[0].integer().unwrap(), 42);
+    vm.close().unwrap();
+}
+
+async fn assert_warm_analysis(name: &str) {
     let workloads: serde_json::Value =
         serde_json::from_str(include_str!("../../../testdata/language/workloads.json")).unwrap();
-    for workload in workloads
+    let workload = workloads
         .as_array()
         .unwrap()
         .iter()
-        .filter(|workload| matches!(workload["Name"].as_str(), Some("pure" | "typed-view")))
-    {
-        let mut session = CompilerSession::new(include_bytes!("../assets/compiler.json.gz"))
-            .await
-            .unwrap();
-        let result = session
-            .call(
-                json!({"Operation":"workspace/open", "Root":"sample",
+        .find(|workload| workload["Name"] == name)
+        .unwrap_or_else(|| panic!("missing shared workload {name}"));
+    eprintln!("compiler workload {}", workload["Name"]);
+    let mut session = CompilerSession::new(include_bytes!("../assets/compiler.json.gz"))
+        .await
+        .unwrap();
+    let result = session
+        .call(
+            json!({"Operation":"workspace/open", "Root":"sample",
             "Packages":[{"Namespace":"module:sample", "ModulePath":"sample", "Files":[
                 {"Path":"main.mgo", "Text":workload["Source"]}]}]}),
-                &Cancellation::default(),
-            )
-            .await
-            .unwrap();
-        assert!(result["Error"].is_null(), "{}: {result}", workload["Name"]);
-        let first = session
-            .call(
-                json!({"Operation":"workspace/analyze"}),
-                &Cancellation::default(),
-            )
-            .await
-            .unwrap();
-        assert!(first["Error"].is_null(), "{first}");
-        for report in first["Analysis"]["Diagnostics"]
-            .as_object()
-            .unwrap()
-            .values()
-        {
-            assert!(
-                report["items"].as_array().is_none_or(Vec::is_empty),
-                "{report}"
-            );
+            &Cancellation::default(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{}: {error}", workload["Name"]));
+    assert!(result["Error"].is_null(), "{}: {result}", workload["Name"]);
+    eprintln!("{} open: {:?}", workload["Name"], session.stats());
+    let first = session
+        .call(
+            json!({"Operation":"workspace/analyze"}),
+            &Cancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert!(first["Error"].is_null(), "{first}");
+    for report in first["Analysis"]["Diagnostics"]
+        .as_object()
+        .unwrap()
+        .values()
+    {
+        assert!(
+            report["items"].as_array().is_none_or(Vec::is_empty),
+            "{report}"
+        );
+    }
+    let second = session
+        .call(
+            json!({"Operation":"workspace/analyze"}),
+            &Cancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first["Analysis"]["Snapshot"],
+        second["Analysis"]["Snapshot"]
+    );
+    if name == "rpc" {
+        let cancel = Cancellation::default();
+        let uri = "mini-go://sample/main.mgo";
+        for (version, operation, text) in [
+            (1, "open", workload["Source"].as_str().unwrap().to_owned()),
+            (
+                2,
+                "change",
+                workload["Source"]
+                    .as_str()
+                    .unwrap()
+                    .replace("Signed:41", "Signed:40"),
+            ),
+        ] {
+            let change = if operation == "open" {
+                json!({"Operation":operation,"Identity":{"URI":uri,"ModulePath":"sample","Path":"main.mgo"},"Version":version,"Text":text})
+            } else {
+                json!({"Operation":operation,"Identity":{"URI":uri},"Version":version,"Changes":[{"text":text}]})
+            };
+            session
+                .call(
+                    json!({"Operation":"document/update","Changes":[change]}),
+                    &cancel,
+                )
+                .await
+                .unwrap();
         }
-        let second = session
+        let edited = session
+            .call(json!({"Operation":"workspace/analyze"}), &cancel)
+            .await
+            .unwrap();
+        assert_ne!(
+            first["Analysis"]["Snapshot"],
+            edited["Analysis"]["Snapshot"]
+        );
+        let started = std::time::Instant::now();
+        let built = session
             .call(
-                json!({"Operation":"workspace/analyze"}),
-                &Cancellation::default(),
+                json!({"Operation":"build/prepare","Build":{
+                    "Revision":session.revision(),"Symbols":true,
+                    "EntryPoints":[{"Name":"default","ModulePath":"sample","Function":"Main"}]
+                }}),
+                &cancel,
             )
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "RPC edited build after {:?}: {error}; {:?}",
+                    started.elapsed(),
+                    session.stats()
+                )
+            });
+        assert!(built["Error"].is_null(), "{built}");
+        let image = built["ImageJSON"].as_str().unwrap();
+        let symbols = built["SymbolsJSON"].as_str().unwrap();
+        assert!(!image.is_empty() && !symbols.is_empty());
+        let program =
+            mini_go::program::Program::load(image.as_bytes(), Default::default()).unwrap();
+        let program = program
+            .with_symbols(serde_json::from_str(symbols).unwrap())
+            .unwrap();
+        assert!(!program.image().hash.is_empty());
+        let after = session
+            .call(json!({"Operation":"workspace/analyze"}), &cancel)
             .await
             .unwrap();
         assert_eq!(
-            first["Analysis"]["Snapshot"],
-            second["Analysis"]["Snapshot"]
+            after["Analysis"]["Snapshot"],
+            edited["Analysis"]["Snapshot"]
         );
-        session.close().await.unwrap();
+        eprintln!(
+            "RPC edited build: {:?}; {:?}",
+            started.elapsed(),
+            session.stats()
+        );
     }
+    session.close().await.unwrap();
 }
 
 #[tokio::test]

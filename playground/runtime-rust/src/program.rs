@@ -1,93 +1,105 @@
-//! Immutable decoded instructions shared by instances. Preparation removes
-//! labels and verifies operand references and stack heights before execution.
+//! Immutable execution plans shared by instances. Preparation validates
+//! control flow and operands, then releases redundant decoded bodies.
 
 use crate::{
     contract_generated as wire,
     error::RuntimeError,
     loader::{DecodedImage, LoadLimits},
 };
-use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 #[derive(Debug)]
 pub(crate) struct Revision {
     pub generation: u64,
     pub program: Arc<Program>,
+    pub logical_functions: Vec<usize>,
 }
 
 mod constant;
 pub(crate) use constant::PreparedConstant;
+mod construct;
+pub(crate) use construct::AggregateLayout;
+pub(crate) use construct::StructLayout;
+pub(crate) use construct::ValueLayout;
+mod slots;
+use slots::PreparedOperands;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "op", content = "payload", rename_all = "snake_case")]
-pub(crate) enum Instruction {
-    Const(wire::ConstPayload),
-    Zero(wire::TypePayload),
-    Pop,
-    Unary(wire::OperatorPayload),
-    Binary(wire::OperatorPayload),
-    LoadLocal(wire::LocalPayload),
-    StoreLocal(wire::LocalPayload),
-    LoadUpvalue(wire::UpvaluePayload),
-    StoreUpvalue(wire::UpvaluePayload),
-    LoadGlobal(wire::GlobalPayload),
-    StoreGlobal(wire::GlobalPayload),
-    Label(wire::LabelPayload),
-    Jump(wire::JumpPayload),
-    JumpIf(wire::JumpPayload),
-    Return(wire::ReturnPayload),
-    Panic,
-    Recover,
-    DeferPush(wire::DeferPayload),
-    CallDirect(wire::CallPayload),
-    TailCallDirect(wire::CallPayload),
-    CallValue(wire::CallPayload),
-    CallFfi(wire::CallFFIPayload),
-    CallInterface(wire::CallInterfacePayload),
-    CallIntrinsic(wire::CallIntrinsicPayload),
-    MakeClosure(wire::ClosurePayload),
-    MakeStruct(wire::MakeStructPayload),
-    MakeSequence(wire::MakeSequencePayload),
-    MakeSlice(wire::MakeSlicePayload),
-    MakeMap(wire::MakeMapPayload),
-    Slice,
-    Append(wire::CountPayload),
-    Copy,
-    Clear,
-    Delete,
-    MapKeys,
-    MapIterInit(wire::LocalPayload),
-    MapIterNext(wire::LocalPayload),
-    MapIterClose(wire::LocalPayload),
-    LoadIndexOk,
-    StringRuneAt,
-    StringNextRuneIndex,
-    TypeAssert(wire::TypePayload),
-    TypeAssertOk(wire::TypePayload),
-    LoadField(wire::FieldPayload),
-    LoadIndex,
-    StoreField(wire::FieldPayload),
-    StoreIndex,
-    AddressOf(wire::AddressPayload),
-    LoadIndirect,
-    StoreIndirect,
-    Convert(wire::TypePayload),
-    Len,
-    Cap,
-    LoadExport(wire::ExportPayload),
-    InitModule(wire::InitModulePayload),
-    Spawn(wire::CallPayload),
-    MakeWaitable(wire::MakeWaitablePayload),
-    Select(wire::SelectPayload),
-    WaitableSend,
-    WaitableRecv,
-    WaitableRecvOk,
-    WaitableTryRecv,
-    WaitableTrySend,
-    WaitableCanRecv,
-    WaitableCanSend,
-    WaitableClose,
+#[derive(Clone)]
+pub(crate) struct PreparedField {
+    pub index: usize,
+    pub indirect: bool,
+}
+
+pub(crate) use wire::Instruction;
+
+pub(crate) const LOCAL_OUTPUT: u32 = 1 << 31;
+
+// Only operations still dispatched through their wire descriptor retain one
+// after preparation. Typed operators, locals, branches and intrinsics execute
+// exclusively from PreparedInstruction. PCs remain stable for symbols/retry.
+#[derive(Clone, Default)]
+pub(crate) struct PreparedCode {
+    indices: Vec<u32>,
+    descriptors: Vec<Instruction>,
+}
+
+impl PreparedCode {
+    fn push(&mut self, instruction: Instruction) {
+        self.indices.push(self.descriptors.len() as u32);
+        self.descriptors.push(instruction);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.indices.len()
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
+    pub(crate) fn descriptor(&self, pc: usize) -> Option<&Instruction> {
+        self.descriptors.get(self.indices[pc] as usize)
+    }
+
+    // Used only by loader validation, before compacting prepared operations.
+    fn iter(&self) -> impl Iterator<Item = &Instruction> {
+        self.descriptors.iter()
+    }
+
+    fn compact(&mut self, execution: &[PreparedInstruction]) {
+        let previous = std::mem::take(&mut self.descriptors);
+        self.descriptors = Vec::with_capacity(
+            execution
+                .iter()
+                .filter(|instruction| {
+                    matches!(
+                        instruction,
+                        PreparedInstruction::Operand | PreparedInstruction::Construct(_)
+                    )
+                })
+                .count(),
+        );
+        for (pc, instruction) in previous.into_iter().enumerate() {
+            self.indices[pc] = if matches!(
+                execution[pc],
+                PreparedInstruction::Operand | PreparedInstruction::Construct(_)
+            ) {
+                let index = self.descriptors.len() as u32;
+                self.descriptors.push(instruction);
+                index
+            } else {
+                u32::MAX
+            };
+        }
+    }
+}
+
+impl std::ops::Index<usize> for PreparedCode {
+    type Output = Instruction;
+    fn index(&self, pc: usize) -> &Instruction {
+        self.descriptor(pc)
+            .expect("operation requires a wire descriptor")
+    }
 }
 
 #[derive(Clone)]
@@ -99,28 +111,45 @@ pub(crate) struct PreparedFunction {
     pub local_types: Vec<crate::types::TypeIdentity>,
     pub addressable_locals: Vec<bool>,
     pub result_types: Vec<crate::types::TypeIdentity>,
+    pub result_locals: Vec<usize>,
     pub execution: Vec<PreparedInstruction>,
     pub operand_types: Vec<Option<crate::types::TypeIdentity>>,
+    pub type_dispatches: Vec<PreparedTypeDispatch>,
+    pub aggregates: Vec<AggregateLayout>,
+    pub field_paths: Vec<Vec<PreparedField>>,
     pub globals: Vec<String>,
     pub targets: Vec<Option<usize>>,
     pub locations: Vec<Vec<wire::Location>>,
     pub declaration: wire::Function,
-    pub code: Vec<Instruction>,
-    pub opcodes: Vec<String>,
-    pub labels: HashMap<String, usize>,
+    pub code: PreparedCode,
+    pub opcodes: Vec<&'static str>,
     pub locals: HashMap<String, usize>,
     pub upvalues: HashMap<String, usize>,
-    pub stack_limit: usize,
+    pub slot_types: Vec<crate::types::TypeIdentity>,
+    pub operands: PreparedOperands,
+    // Only direct locals and non-scalar constants may need owner-side loading.
+    pub lazy_slot_inputs: Vec<bool>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum PreparedInstruction {
+    GetPath(usize),
+    CompareBranch {
+        operator: crate::operators::PreparedOperator,
+        target: usize,
+        when: bool,
+    },
+    Construct(usize),
+    TypeDispatch(usize),
     Intrinsic(wire::Intrinsic),
-    Unary(crate::operators::Operator),
-    Binary(crate::operators::Operator),
+    Unary(crate::operators::PreparedOperator),
+    Binary(crate::operators::PreparedOperator),
     Constant(usize),
     Local {
         index: usize,
+        // A single temporary released on every successor can be transferred
+        // after the private store's checks. u32::MAX means borrow/copy.
+        move_source: u32,
         store: bool,
         rebind: bool,
     },
@@ -135,8 +164,52 @@ pub(crate) enum PreparedInstruction {
     Jump {
         target: usize,
         conditional: bool,
+        negate: bool,
     },
     Operand,
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedTypeDispatch {
+    pub subject: usize,
+    pub fallback: usize,
+    pub fallback_local: Option<usize>,
+    pub cases: Vec<PreparedTypeCase>,
+    pub concrete: HashMap<Option<crate::types::TypeIdentity>, usize>,
+    pub concrete_end: usize,
+}
+
+pub(crate) fn concrete_dispatch_identity(
+    types: &crate::types::TypeRegistry,
+    typ: &crate::types::TypeIdentity,
+) -> Result<bool, RuntimeError> {
+    use crate::types::TypeIdentity;
+    let (leaf, pointer) = match typ {
+        TypeIdentity::Pointer(element) => (element.as_ref(), true),
+        _ => (typ, false),
+    };
+    Ok(match leaf {
+        TypeIdentity::Primitive(primitive) => {
+            (wire::PrimitiveBool..=wire::PrimitiveComplex128).contains(primitive)
+        }
+        TypeIdentity::Named(_) => {
+            pointer
+                || (types.underlying(leaf)? != TypeIdentity::Any
+                    && types.underlying(leaf)? != TypeIdentity::Primitive(wire::PrimitiveError)
+                    && !types.node(leaf)?.is_some_and(|(_, node)| {
+                        matches!(node.kind, wire::Interface | wire::Function)
+                    }))
+        }
+        _ => false,
+    })
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedTypeCase {
+    pub typ: Option<crate::types::TypeIdentity>,
+    pub target: usize,
+    pub binding: Option<usize>,
+    pub original: bool,
 }
 
 pub struct Program {
@@ -220,6 +293,16 @@ impl Program {
         let mut functions = BTreeMap::new();
         let mut prepared_constants = BTreeMap::new();
         let mut constant_data = Vec::new();
+        let mut constant_types = Vec::new();
+        let signatures: BTreeMap<(&str, &str), &wire::FunctionSignature> = decoded
+            .artifacts()
+            .iter()
+            .flat_map(|(module, artifact)| {
+                artifact.functions.iter().map(move |function| {
+                    ((module.as_str(), function.id.as_str()), &function.signature)
+                })
+            })
+            .collect();
         for (module_index, (module, artifact)) in decoded.artifacts().iter().enumerate() {
             let constants = unique_ids(artifact.constants.iter().map(|value| &value.id), module)?;
             let globals = unique_ids(artifact.globals.iter().map(|value| &value.id), module)?;
@@ -229,9 +312,14 @@ impl Program {
                 prepared_constants
                     .insert((module.clone(), constant.id.clone()), constant_data.len());
                 constant_data.push(PreparedConstant::decode(decoded.types(), module, constant)?);
+                constant_types.push(decoded.types().resolve(module, &constant.r#type)?);
             }
             for declaration in artifact.functions.iter() {
                 let path = format!("{module}/{}", declaration.id);
+                let code = declaration
+                    .code
+                    .as_ref()
+                    .ok_or_else(|| RuntimeError::new("invalid_code", &path, "missing slot code"))?;
                 let locals = unique_ids(declaration.locals.iter().map(|value| &value.id), &path)?;
                 let upvalues =
                     unique_ids(declaration.upvalues.iter().map(|value| &value.id), &path)?;
@@ -248,11 +336,15 @@ impl Program {
                         "missing parameter locals",
                     ));
                 }
+                let mut labels = HashMap::new();
                 let mut function = PreparedFunction {
                     addressable_locals: vec![false; declaration.locals.len()],
                     targets: Vec::new(),
                     execution: Vec::new(),
                     operand_types: Vec::new(),
+                    type_dispatches: Vec::new(),
+                    aggregates: Vec::new(),
+                    field_paths: Vec::new(),
                     globals: artifact
                         .globals
                         .iter()
@@ -267,6 +359,7 @@ impl Program {
                         .iter()
                         .map(|local| decoded.types().resolve(module, &local.r#type))
                         .collect::<Result<_, _>>()?,
+                    result_locals: Vec::new(),
                     result_types: declaration
                         .signature
                         .results
@@ -275,12 +368,17 @@ impl Program {
                         .collect::<Result<_, _>>()?,
                     locations: Vec::new(),
                     declaration: declaration.clone(),
-                    code: Vec::new(),
+                    code: PreparedCode::default(),
                     opcodes: Vec::new(),
-                    labels: HashMap::new(),
                     locals,
                     upvalues,
-                    stack_limit: 0,
+                    slot_types: code
+                        .types
+                        .iter()
+                        .map(|typ| decoded.types().resolve(module, typ))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    operands: PreparedOperands::default(),
+                    lazy_slot_inputs: Vec::new(),
                 };
                 if !declaration.result_locals.is_empty() {
                     let results = unique_ids(declaration.result_locals.iter(), &path)?;
@@ -293,22 +391,56 @@ impl Program {
                             "result locals do not match signature or local slots",
                         ));
                     }
+                    function.result_locals = declaration
+                        .result_locals
+                        .iter()
+                        .map(|id| function.locals[id])
+                        .collect();
                 }
-                for raw in declaration.instructions.iter() {
-                    let mut encoded = serde_json::to_value(raw)?;
-                    if raw.op == "defer_push" && raw.payload.is_none() {
-                        encoded["payload"] = serde_json::json!({});
-                    }
-                    let instruction: Instruction =
-                        serde_json::from_value(encoded).map_err(|error| {
-                            RuntimeError::new("invalid_instruction", &path, error.to_string())
-                        })?;
+                let operations = {
+                    code.instructions
+                        .iter()
+                        .map(|instruction| {
+                            code.descriptors
+                                .instruction(instruction.op, instruction.descriptor)
+                                .ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "invalid_descriptor",
+                                        &path,
+                                        "unknown operation or descriptor",
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                };
+                for (position, raw) in operations.iter().enumerate() {
+                    let instruction = raw.clone();
                     if let Instruction::Label(label) = instruction {
+                        {
+                            let operands = code
+                                .operands
+                                .get(code.instructions[position].operands as usize)
+                                .ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "invalid_operand",
+                                        &path,
+                                        "label operand descriptor out of range",
+                                    )
+                                })?;
+                            if !operands.inputs.is_empty()
+                                || !operands.outputs.is_empty()
+                                || !operands.release.is_empty()
+                                || !operands.release_before.is_empty()
+                            {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "label cannot carry operands or releases",
+                                ));
+                            }
+                        }
                         if label.label.is_empty()
-                            || function
-                                .labels
-                                .insert(label.label, function.code.len())
-                                .is_some()
+                            || labels.insert(label.label, function.code.len()).is_some()
                         {
                             return Err(RuntimeError::new(
                                 "invalid_label",
@@ -318,7 +450,160 @@ impl Program {
                         }
                         continue;
                     }
+                    {
+                        let record = &code.instructions[position];
+                        let mut operands = code
+                            .operands
+                            .get(record.operands as usize)
+                            .ok_or_else(|| {
+                                RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "operand descriptor out of range",
+                                )
+                            })?
+                            .clone();
+                        for input in operands.inputs.iter_mut() {
+                            match input.kind {
+                                0 if (input.index as usize) < function.slot_types.len() => {}
+                                2 if (input.index as usize) < function.local_types.len() => {}
+                                1 => {
+                                    let constant = artifact
+                                        .constants
+                                        .get(input.index as usize)
+                                        .ok_or_else(|| {
+                                            RuntimeError::new(
+                                                "invalid_operand",
+                                                &path,
+                                                "constant index out of range",
+                                            )
+                                        })?;
+                                    if constant.untyped {
+                                        return Err(RuntimeError::new(
+                                            "invalid_operand",
+                                            &path,
+                                            "untyped constant is not an execution operand",
+                                        ));
+                                    }
+                                    input.index = u32::try_from(
+                                        prepared_constants[&(module.clone(), constant.id.clone())],
+                                    )
+                                    .map_err(|_| {
+                                        RuntimeError::new(
+                                            "load_limit",
+                                            &path,
+                                            "constant index exceeds u32",
+                                        )
+                                    })?;
+                                }
+                                _ => {
+                                    return Err(RuntimeError::new(
+                                        "invalid_operand",
+                                        &path,
+                                        "input slot or kind out of range",
+                                    ));
+                                }
+                            }
+                        }
+                        for &output in operands.outputs.iter() {
+                            let valid = if output & LOCAL_OUTPUT != 0 {
+                                matches!(
+                                    instruction,
+                                    Instruction::Unary(_)
+                                        | Instruction::Binary(_)
+                                        | Instruction::Zero(_)
+                                        | Instruction::Len
+                                        | Instruction::Cap
+                                        | Instruction::GetPath(_)
+                                        | Instruction::Convert(_)
+                                        | Instruction::LoadIndex
+                                ) && operands.outputs.len() == 1
+                                    && ((output & !LOCAL_OUTPUT) as usize)
+                                        < function.local_types.len()
+                            } else {
+                                (output as usize) < function.slot_types.len()
+                            };
+                            if !valid {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "invalid output destination",
+                                ));
+                            }
+                        }
+                        for slot in operands
+                            .release
+                            .iter()
+                            .chain(operands.release_before.iter())
+                        {
+                            if *slot as usize >= function.slot_types.len() {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "output or release slot out of range",
+                                ));
+                            }
+                        }
+                        for slots in [
+                            &operands.outputs,
+                            &operands.release,
+                            &operands.release_before,
+                        ] {
+                            if slots.len() <= 1 {
+                                continue;
+                            }
+                            let mut seen = std::collections::HashSet::with_capacity(slots.len());
+                            if slots.iter().any(|slot| !seen.insert(*slot)) {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "duplicate output or release slot",
+                                ));
+                            }
+                        }
+                        if operands.outputs.iter().any(|output| {
+                            operands
+                                .inputs
+                                .iter()
+                                .any(|input| input.kind == 0 && input.index == *output)
+                        }) {
+                            return Err(RuntimeError::new(
+                                "invalid_operand",
+                                &path,
+                                "output aliases an input slot",
+                            ));
+                        }
+                        function
+                            .lazy_slot_inputs
+                            .push(operands.inputs.iter().any(|input| {
+                                input.kind == 2
+                                    || input.kind == 1
+                                        && !matches!(
+                                            constant_data[input.index as usize],
+                                            PreparedConstant::Scalar(_)
+                                        )
+                            }));
+                        function.operands.push(operands);
+                    }
                     let valid = match &instruction {
+                        Instruction::CompareBranch(payload) => {
+                            matches!(
+                                payload.operator.as_str(),
+                                "==" | "!=" | "<" | "<=" | ">" | ">="
+                            ) && decoded.types().resolve(module, &payload.r#type).is_ok()
+                        }
+                        Instruction::TypeDispatch(payload) => {
+                            function.locals.contains_key(&payload.subject)
+                                && (payload.default_local.is_empty()
+                                    || function.locals.contains_key(&payload.default_local))
+                                && payload.cases.iter().all(|case| {
+                                    (case.binding.is_empty()
+                                        || function.locals.contains_key(&case.binding))
+                                        && (case.r#type.kind != 0
+                                            || (case.r#type == wire::TypeRef::default()
+                                                && case.original))
+                                })
+                        }
                         Instruction::Select(payload) => {
                             function.locals.contains_key(&payload.index)
                                 && payload.cases.iter().all(|case| {
@@ -426,26 +711,204 @@ impl Program {
                         }
                     }
                     function.code.push(instruction);
-                    function.opcodes.push(raw.op.clone());
+                    function.opcodes.push(raw.opcode());
                 }
-                function.stack_limit = verify_stack(&function, &path)?;
-                for instruction in &function.code {
+                verify_control_flow(&function, &labels, &path)?;
+                for (pc, instruction) in function.code.iter().enumerate() {
                     use Instruction::*;
                     function.execution.push(match instruction {
+                        GetPath(payload) => {
+                            if payload.fields.is_empty() || payload.fields.len() > 16 {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "field path requires 1 to 16 fields",
+                                ));
+                            }
+                            let mut typ = decoded.types().resolve(module, &payload.r#type)?;
+                            let mut steps = Vec::with_capacity(payload.fields.len());
+                            for &index in payload.fields.iter() {
+                                let element = decoded.types().pointer_element(&typ)?;
+                                let indirect = element.is_some();
+                                if let Some(element) = element {
+                                    typ = element;
+                                }
+                                let (owner, node) = decoded
+                                    .types()
+                                    .node(&typ)?
+                                    .filter(|(_, node)| node.kind == wire::Struct)
+                                    .ok_or_else(|| {
+                                        RuntimeError::new(
+                                            "invalid_operand",
+                                            &path,
+                                            "field path requires struct",
+                                        )
+                                    })?;
+                                let field = node
+                                    .fields
+                                    .get(index as usize)
+                                    .filter(|field| field.name != "_")
+                                    .ok_or_else(|| {
+                                        RuntimeError::new(
+                                            "invalid_operand",
+                                            &path,
+                                            "field path index out of range",
+                                        )
+                                    })?;
+                                let names: std::collections::BTreeSet<_> =
+                                    node.fields.iter().map(|field| &field.name).collect();
+                                steps.push(PreparedField {
+                                    indirect,
+                                    index: names
+                                        .iter()
+                                        .position(|name| **name == field.name)
+                                        .unwrap(),
+                                });
+                                typ = decoded.types().resolve(owner, &field.r#type)?;
+                            }
+                            let index = function.field_paths.len();
+                            function.field_paths.push(steps);
+                            PreparedInstruction::GetPath(index)
+                        }
+                        CompareBranch(payload) => PreparedInstruction::CompareBranch {
+                            operator: crate::operators::PreparedOperator::parse(&payload.operator)?,
+                            target: labels[&payload.label],
+                            when: payload.when,
+                        },
+                        MakeStruct(payload) => {
+                            let index = function.aggregates.len();
+                            function.aggregates.push(AggregateLayout::Struct(
+                                StructLayout::prepare(
+                                    decoded.types(),
+                                    &decoded.types().resolve(module, &payload.r#type)?,
+                                    &payload.fields,
+                                )?,
+                            ));
+                            PreparedInstruction::Construct(index)
+                        }
+                        MakeSequence(payload) => {
+                            let index = function.aggregates.len();
+                            function.aggregates.push(AggregateLayout::Sequence(
+                                ValueLayout::prepare(
+                                    decoded.types(),
+                                    &decoded.types().resolve(module, &payload.r#type)?,
+                                )?,
+                            ));
+                            PreparedInstruction::Construct(index)
+                        }
+                        TypeDispatch(payload) => {
+                            let index = function.type_dispatches.len();
+                            let subject = &function.local_types[function.locals[&payload.subject]];
+                            let underlying = decoded.types().underlying(subject)?;
+                            if underlying != crate::types::TypeIdentity::Any
+                                && underlying
+                                    != crate::types::TypeIdentity::Primitive(wire::PrimitiveError)
+                                && !decoded
+                                    .types()
+                                    .node(subject)?
+                                    .is_some_and(|(_, node)| node.kind == wire::Interface)
+                            {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "type dispatch subject must be an interface",
+                                ));
+                            }
+                            if let Some(binding) = function.locals.get(&payload.default_local)
+                                && !decoded
+                                    .types()
+                                    .identical(&function.local_types[*binding], subject)?
+                            {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "type dispatch default binding must match subject type",
+                                ));
+                            }
+                            let mut cases = Vec::with_capacity(payload.cases.len());
+                            let mut concrete = HashMap::new();
+                            let mut concrete_end = 0;
+                            for case in payload.cases.iter() {
+                                cases.push(PreparedTypeCase {
+                                    typ: if case.r#type.kind == 0 {
+                                        None
+                                    } else {
+                                        Some(decoded.types().resolve(module, &case.r#type)?)
+                                    },
+                                    target: labels[&case.label],
+                                    binding: function.locals.get(&case.binding).copied(),
+                                    original: case.original,
+                                });
+                                let entry = cases.last().unwrap();
+                                if let Some(binding) = entry.binding {
+                                    let expected = if entry.original {
+                                        subject
+                                    } else {
+                                        entry.typ.as_ref().unwrap()
+                                    };
+                                    if !decoded
+                                        .types()
+                                        .identical(&function.local_types[binding], expected)?
+                                    {
+                                        return Err(RuntimeError::new(
+                                            "invalid_operand",
+                                            &path,
+                                            "type dispatch case binding has incompatible type",
+                                        ));
+                                    }
+                                }
+                                if concrete_end + 1 == cases.len()
+                                    && match &entry.typ {
+                                        None => true,
+                                        Some(typ) => {
+                                            concrete_dispatch_identity(decoded.types(), typ)?
+                                        }
+                                    }
+                                {
+                                    concrete.entry(entry.typ.clone()).or_insert(concrete_end);
+                                    concrete_end += 1;
+                                }
+                            }
+                            function.type_dispatches.push(PreparedTypeDispatch {
+                                subject: function.locals[&payload.subject],
+                                fallback: labels[&payload.default],
+                                fallback_local: function
+                                    .locals
+                                    .get(&payload.default_local)
+                                    .copied(),
+                                cases,
+                                concrete,
+                                concrete_end,
+                            });
+                            PreparedInstruction::TypeDispatch(index)
+                        }
                         CallIntrinsic(value) => PreparedInstruction::Intrinsic(
                             wire::Intrinsic::from_id(&value.id).unwrap(),
                         ),
                         Unary(value) => PreparedInstruction::Unary(
-                            crate::operators::Operator::parse(&value.operator)?,
+                            crate::operators::PreparedOperator::parse(&value.operator)?,
                         ),
                         Binary(value) => PreparedInstruction::Binary(
-                            crate::operators::Operator::parse(&value.operator)?,
+                            crate::operators::PreparedOperator::parse(&value.operator)?,
                         ),
                         Const(value) => PreparedInstruction::Constant(
                             prepared_constants[&(module.clone(), value.constant.clone())],
                         ),
                         LoadLocal(value) | StoreLocal(value) => PreparedInstruction::Local {
                             index: function.locals[&value.local],
+                            move_source: {
+                                let operands = function.operands.at(pc);
+                                match operands.inputs {
+                                    [input]
+                                        if matches!(instruction, StoreLocal(_))
+                                            && input.kind == 0
+                                            && operands.release.contains(&input.index) =>
+                                    {
+                                        input.index
+                                    }
+                                    _ => u32::MAX,
+                                }
+                            },
                             store: matches!(instruction, StoreLocal(_)),
                             rebind: value.rebind,
                         },
@@ -458,8 +921,9 @@ impl Program {
                             store: matches!(instruction, StoreGlobal(_)),
                         },
                         Jump(value) | JumpIf(value) => PreparedInstruction::Jump {
-                            target: function.labels[&value.label],
+                            target: labels[&value.label],
                             conditional: matches!(instruction, JumpIf(_)),
+                            negate: value.negate,
                         },
                         _ => PreparedInstruction::Operand,
                     });
@@ -478,7 +942,29 @@ impl Program {
                             .transpose()?,
                     );
                 }
-                function.declaration.instructions = Default::default();
+                {
+                    slots::verify_types(&function, &decoded, &constant_types, &signatures, &path)?;
+                    for (pc, operands) in function.operands.iter().enumerate() {
+                        let operation = match &mut function.execution[pc] {
+                            PreparedInstruction::Unary(operation)
+                            | PreparedInstruction::Binary(operation)
+                            | PreparedInstruction::CompareBranch {
+                                operator: operation,
+                                ..
+                            } => operation,
+                            _ => continue,
+                        };
+                        for (index, input) in operands.inputs.iter().enumerate() {
+                            let typ = match input.kind {
+                                0 => &function.slot_types[input.index as usize],
+                                2 => &function.local_types[input.index as usize],
+                                _ => &constant_types[input.index as usize],
+                            };
+                            operation.bind(index, typ, decoded.types())?;
+                        }
+                    }
+                }
+                function.declaration.code = None;
                 functions.insert((module.clone(), declaration.id.clone()), Arc::new(function));
             }
         }
@@ -505,7 +991,7 @@ impl Program {
         };
         for ((module, id), index) in &program.functions {
             let function = &program.function_table[*index];
-            for instruction in &function.code {
+            for instruction in function.code.iter() {
                 match instruction {
                     Instruction::CallDirect(call) | Instruction::TailCallDirect(call) => {
                         let target = program.function(
@@ -586,10 +1072,11 @@ impl Program {
                     ))
                 })
                 .collect::<Result<Vec<_>, RuntimeError>>()?;
-            Arc::get_mut(&mut program.function_table[index])
-                .unwrap()
-                .targets = targets;
+            let function = Arc::get_mut(&mut program.function_table[index]).unwrap();
+            function.targets = targets;
+            function.code.compact(&function.execution);
         }
+        program.decoded.release_function_bodies();
         Ok(program)
     }
 
@@ -686,16 +1173,33 @@ fn valid_address(
             })
 }
 
-fn verify_stack(function: &PreparedFunction, path: &str) -> Result<usize, RuntimeError> {
-    let mut heights = vec![None; function.code.len() + 1];
-    heights[0] = Some(0usize);
-    let mut pending = VecDeque::from([0usize]);
-    let mut maximum = 0;
+fn verify_control_flow(
+    function: &PreparedFunction,
+    labels: &HashMap<String, usize>,
+    path: &str,
+) -> Result<(), RuntimeError> {
     // Validate labels and counts even in unreachable instructions.
-    for instruction in &function.code {
+    for instruction in function.code.iter() {
         match instruction {
+            Instruction::CompareBranch(payload) if !labels.contains_key(&payload.label) => {
+                return Err(RuntimeError::new("invalid_jump", path, &payload.label));
+            }
+            Instruction::TypeDispatch(payload) => {
+                if !labels.contains_key(&payload.default)
+                    || payload
+                        .cases
+                        .iter()
+                        .any(|case| !labels.contains_key(&case.label))
+                {
+                    return Err(RuntimeError::new(
+                        "invalid_jump",
+                        path,
+                        "unknown type dispatch label",
+                    ));
+                }
+            }
             Instruction::Jump(jump) | Instruction::JumpIf(jump)
-                if !function.labels.contains_key(&jump.label) =>
+                if !labels.contains_key(&jump.label) =>
             {
                 return Err(RuntimeError::new("invalid_jump", path, &jump.label));
             }
@@ -723,100 +1227,41 @@ fn verify_stack(function: &PreparedFunction, path: &str) -> Result<usize, Runtim
             _ => {}
         }
     }
-    while let Some(pc) = pending.pop_front() {
-        let height = heights[pc].unwrap();
-        if pc == function.code.len() {
-            if height != 0 {
-                return Err(RuntimeError::new(
-                    "invalid_return",
-                    path,
-                    "fallthrough with operand values",
-                ));
-            }
-            continue;
-        }
-        use Instruction::*;
-        let instruction = &function.code[pc];
-        let (pop, push) = match instruction {
-            Const(_) | Zero(_) | LoadLocal(_) | LoadUpvalue(_) | LoadGlobal(_) | AddressOf(_)
-            | MakeClosure(_) | LoadExport(_) | Recover => (0, 1),
-            MapIterNext(_) => (0, 3),
-            MapIterClose(_) => (0, 0),
-            Pop | MapIterInit(_) | StoreLocal(_) | StoreUpvalue(_) | StoreGlobal(_) | JumpIf(_)
-            | Panic | DeferPush(_) => (1, 0),
-            Unary(_) | LoadField(_) | LoadIndirect | Convert(_) | TypeAssert(_) | Len | Cap
-            | MapKeys => (1, 1),
-            TypeAssertOk(_) => (1, 2),
-            Binary(_) | LoadIndex | Copy | StringRuneAt | StringNextRuneIndex => (2, 1),
-            LoadIndexOk => (2, 2),
-            Slice => (4, 1),
-            Clear => (1, 0),
-            Delete => (2, 0),
-            MakeSlice(value) => (if value.has_capacity { 2 } else { 1 }, 1),
-            MakeMap(value) => (
-                value.entry_count as usize * 2 + usize::from(value.has_capacity),
-                1,
-            ),
-            Append(value) => (value.count as usize + 1, 1),
-            StoreIndirect | StoreField(_) => (2, 0),
-            StoreIndex => (3, 0),
-            MakeStruct(value) => (value.fields.len(), 1),
-            MakeSequence(value) => (value.element_count as usize, 1),
-            CallFfi(_) => (2, 3),
-            CallInterface(value) => (value.arg_count as usize + 1, value.result_count as usize),
-            CallIntrinsic(value) => (value.arg_count as usize, value.result_count as usize),
-            Spawn(value) => (value.arg_count as usize + 1, 0),
-            MakeWaitable(_) | WaitableRecv | WaitableCanRecv | WaitableCanSend => (1, 1),
-            WaitableRecvOk | WaitableTryRecv => (1, 2),
-            WaitableTrySend => (2, 1),
-            WaitableSend => (2, 0),
-            WaitableClose => (1, 0),
-            CallDirect(value) => (value.arg_count as usize, value.result_count as usize),
-            TailCallDirect(value) => (value.arg_count as usize, 0),
-            CallValue(value) => (value.arg_count as usize + 1, value.result_count as usize),
-            Return(value) => (value.result_count as usize, 0),
-            Jump(_) | InitModule(_) | Label(_) | Select(_) => (0, 0),
-        };
-        let next_height = height
-            .checked_sub(pop)
-            .and_then(|height| height.checked_add(push))
-            .ok_or_else(|| {
-                RuntimeError::new("invalid_stack", path, format!("stack underflow at {pc}"))
-            })?;
-        maximum = maximum.max(next_height);
-        if matches!(instruction, Return(_) | TailCallDirect(_)) && height != pop {
+    slots::verify(function, labels, path)
+}
+
+fn instruction_arity(
+    instruction: &Instruction,
+    path: &str,
+) -> Result<(usize, usize), RuntimeError> {
+    if let Some(arity) = instruction.fixed_arity() {
+        return Ok(arity);
+    }
+    use Instruction::*;
+    let arity = match instruction {
+        MakeSlice(value) => (if value.has_capacity { 2 } else { 1 }, 1),
+        MakeMap(value) => (
+            value.entry_count as usize * 2 + usize::from(value.has_capacity),
+            1,
+        ),
+        Append(value) => (value.count as usize + 1, 1),
+        MakeStruct(value) => (value.fields.len(), 1),
+        MakeSequence(value) => (value.element_count as usize, 1),
+        CallInterface(value) => (value.arg_count as usize + 1, value.result_count as usize),
+        CallIntrinsic(value) => (value.arg_count as usize, value.result_count as usize),
+        Spawn(value) => (value.arg_count as usize + 1, 0),
+        CallDirect(value) => (value.arg_count as usize, value.result_count as usize),
+        TailCallDirect(value) => (value.arg_count as usize, 0),
+        CallValue(value) => (value.arg_count as usize + 1, value.result_count as usize),
+        Return(value) => (value.result_count as usize, 0),
+        CallFfi(value) => (value.arg_count as usize, value.result_count as usize),
+        _ => {
             return Err(RuntimeError::new(
-                "invalid_stack",
+                "invalid_operand",
                 path,
-                "return leaves operands on stack",
+                "missing payload operand arity",
             ));
         }
-        let mut successors = Vec::with_capacity(2);
-        match instruction {
-            Jump(jump) => successors.push(function.labels[&jump.label]),
-            JumpIf(jump) => {
-                successors.push(function.labels[&jump.label]);
-                successors.push(pc + 1);
-            }
-            Return(_) | Panic | TailCallDirect(_) => {}
-            _ => successors.push(pc + 1),
-        }
-        for successor in successors {
-            match heights[successor] {
-                Some(previous) if previous != next_height => {
-                    return Err(RuntimeError::new(
-                        "invalid_stack",
-                        path,
-                        "inconsistent branch stack height",
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    heights[successor] = Some(next_height);
-                    pending.push_back(successor);
-                }
-            }
-        }
-    }
-    Ok(maximum)
+    };
+    Ok(arity)
 }

@@ -14,15 +14,15 @@ func TestInstantiateCompletesRootInitialization(t *testing.T) {
 	artifact.Constants = []ir.Constant{{ID: "const.true", Type: testType("Bool"), Value: json.RawMessage(`true`)}}
 	artifact.Globals = []ir.Global{{ID: "global.ready", Type: testType("Bool")}}
 	artifact.Functions = []ir.Function{
-		{ID: moduleInitFunctionID, Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.true"})},
-			{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.ready"})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		}},
-		{ID: "fn.entry", Signature: testSignature("function() Bool"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpLoadGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.ready"})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-		}},
+		{ID: moduleInitFunctionID, Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.true"}},
+			{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.ready"}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
+		{ID: "fn.entry", Signature: testSignature("function() Bool"), Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+			{Op: ir.OpLoadGlobal, Payload: ir.GlobalPayload{Global: "global.ready"}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})},
 	}
 	instance, err := patchTestProgram(t, artifact, "instance-init").Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
@@ -88,11 +88,11 @@ func TestInstantiateFailureClosesFFISession(t *testing.T) {
 	artifact := ir.NewArtifact("instance/init-panic", "main")
 	artifact.Constants = []ir.Constant{{ID: "const.failure", Type: testType("String"), Value: json.RawMessage(`"init failed"`)}}
 	artifact.Functions = []ir.Function{
-		{ID: moduleInitFunctionID, Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.failure"})},
-			{Op: string(ir.OpPanic)},
-		}},
-		{ID: "fn.entry", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}}},
+		{ID: moduleInitFunctionID, Signature: testSignature("function() Void"), Code: testSlotCode([]string{"String"}, []ir.Instruction{
+			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.failure"}},
+			{Op: ir.OpPanic},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})},
+		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})},
 	}
 	bridge := &instanceLifecycleBridge{}
 	if _, err := patchTestProgram(t, artifact, "instance-init-panic").Instantiate(context.Background(), InstanceOptions{FFI: bridge}); err == nil {

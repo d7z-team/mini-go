@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -335,27 +334,15 @@ func (l *lowerer) lowerTypeSwitchWithLabel(stmt ast.Statement, scope *funcScope,
 		subjectType = l.expressionType(*stmt.Expr, switchScope)
 	}
 	subjectLocal := l.newSyntheticLocal(switchScope, "typeswitch.subject", subjectType)
-	subjectRef := ir.Expression{Kind: ir.ExprLocal, Local: subjectLocal}
 	out = append(out, ir.Statement{Kind: ir.StmtStoreLocal, Local: subjectLocal, Expr: subject})
+	dispatch := ir.Statement{Kind: ir.StmtTypeDispatch, Local: subjectLocal, Label: defaultLabel}
 	for i, clause := range stmt.Cases {
 		if clause.Default {
+			dispatch.DefaultLocal = caseVars[i]
 			continue
 		}
 		if clause.Nil {
-			nilExpr := ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(subjectType), Value: json.RawMessage("null")}
-			cond := ir.Expression{Kind: ir.ExprBinary, Operator: "==", Left: &subjectRef, Right: &nilExpr}
-			if caseVars[i] != "" {
-				out = append(out, ir.Statement{
-					Kind:  ir.StmtStoreLocal,
-					Local: caseVars[i],
-					Expr:  subjectRef,
-				})
-			}
-			out = append(out, ir.Statement{
-				Kind:  ir.StmtJumpIf,
-				Expr:  cond,
-				Label: caseLabels[i],
-			})
+			dispatch.TypeCases = append(dispatch.TypeCases, ir.TypeCase{Label: caseLabels[i], Binding: caseVars[i], Original: true})
 		}
 		for typeIndex, typ := range clause.Types {
 			targetType := ""
@@ -369,45 +356,13 @@ func (l *lowerer) lowerTypeSwitchWithLabel(stmt ast.Statement, scope *funcScope,
 				l.add("hirgen.typeswitch.case.type", "type switch case requires a concrete type", clause.Span)
 				return nil, false
 			}
-			valueLocal := l.newSyntheticLocal(switchScope, "typeswitch.value", targetType)
-			okLocal := l.newSyntheticLocal(switchScope, "typeswitch.ok", "Bool")
-			assertExpr := ir.Expression{Kind: ir.ExprTypeAssertOK, Type: l.hirType(targetType), Operand: &subjectRef}
-			out = append(out, ir.Statement{
-				Kind: ir.StmtStoreResults,
-				Expr: assertExpr,
-				Targets: []ir.StoreTarget{
-					{Kind: "local", Local: valueLocal},
-					{Kind: "local", Local: okLocal},
-				},
-			})
-			if caseVars[i] != "" {
-				valueExpr := ir.Expression{Kind: ir.ExprLocal, Local: valueLocal}
-				if clause.Nil || len(clause.Types) != 1 {
-					valueExpr = subjectRef
-				}
-				out = append(out, ir.Statement{
-					Kind:  ir.StmtStoreLocal,
-					Local: caseVars[i],
-					Expr:  valueExpr,
-				})
-			}
-			out = append(out, ir.Statement{
-				Kind:  ir.StmtJumpIf,
-				Expr:  ir.Expression{Kind: ir.ExprLocal, Local: okLocal},
-				Label: caseLabels[i],
+			dispatch.TypeCases = append(dispatch.TypeCases, ir.TypeCase{
+				Type: l.hirType(targetType), Label: caseLabels[i], Binding: caseVars[i],
+				Original: clause.Nil || len(clause.Types) != 1,
 			})
 		}
 	}
-	if defaultLabel != endLabel {
-		if defaultIndex := typeSwitchDefaultIndex(stmt.Cases); defaultIndex >= 0 && caseVars[defaultIndex] != "" {
-			out = append(out, ir.Statement{
-				Kind:  ir.StmtStoreLocal,
-				Local: caseVars[defaultIndex],
-				Expr:  subjectRef,
-			})
-		}
-	}
-	out = append(out, ir.Statement{Kind: ir.StmtJump, Label: defaultLabel})
+	out = append(out, dispatch)
 	for i, clause := range stmt.Cases {
 		out = append(out, ir.Statement{Kind: ir.StmtLabel, Label: caseLabels[i]})
 		fallthroughLabel := ""
@@ -506,13 +461,4 @@ func (l *lowerer) typeSwitchCaseImplements(subjectType, targetType string) bool 
 		return true
 	}
 	return l.implementsInterfaceType(targetType, subjectType)
-}
-
-func typeSwitchDefaultIndex(cases []ast.CaseClause) int {
-	for i, clause := range cases {
-		if clause.Default {
-			return i
-		}
-	}
-	return -1
 }

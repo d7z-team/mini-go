@@ -14,45 +14,53 @@ import (
 
 const embedDirective = "//go:embed"
 
-func scanEmbedDirectives(scanned scanner.Result) (map[int][]string, map[int]source.Span, []source.Diagnostic) {
+func scanEmbedDirectives(scanned scanner.Document) (map[int][]string, map[int]source.Span, []source.Diagnostic) {
+	if !scanned.MayContainLexeme(embedDirective) {
+		return nil, nil, nil
+	}
 	directives := map[int][]string{}
 	spans := map[int]source.Span{}
 	var diagnostics []source.Diagnostic
-	for index, element := range scanned.Elements {
-		if element.Kind != scanner.ElementLineComment || !strings.HasPrefix(element.Lexeme, embedDirective) {
+	for index := 0; index < scanned.ElementCount(); index++ {
+		if scanned.ElementKind(index) != scanner.ElementLineComment {
+			continue
+		}
+		element := scanned.ElementRecord(index)
+		if !strings.HasPrefix(element.Lexeme, embedDirective) {
 			continue
 		}
 		if len(element.Lexeme) > len(embedDirective) && !unicode.IsSpace(rune(element.Lexeme[len(embedDirective)])) {
 			continue
 		}
+		span := scanned.Element(index).Span
 		patterns, err := parseEmbedPatterns(strings.TrimSpace(element.Lexeme[len(embedDirective):]))
 		if err != nil {
 			diagnostics = append(diagnostics, source.Diagnostic{
 				Code: "parser.embed.directive", Severity: source.SeverityError,
-				Message: err.Error(), Primary: element.Span,
+				Message: err.Error(), Primary: span,
 			})
 			continue
 		}
-		target := nextDirectiveToken(scanned.Elements, index+1)
+		target := nextDirectiveToken(scanned, index+1)
 		if target < 0 {
 			diagnostics = append(diagnostics, source.Diagnostic{
 				Code: "parser.embed.declaration", Severity: source.SeverityError,
-				Message: "//go:embed must precede a package variable declaration", Primary: element.Span,
+				Message: "//go:embed must precede a package variable declaration", Primary: span,
 			})
 			continue
 		}
-		offset := scanned.Elements[target].Span.Start.Offset
+		offset := scanned.ElementRecord(target).Start
 		directives[offset] = append(directives[offset], patterns...)
 		if _, exists := spans[offset]; !exists {
-			spans[offset] = element.Span
+			spans[offset] = span
 		}
 	}
 	return directives, spans, diagnostics
 }
 
-func nextDirectiveToken(elements []scanner.Element, start int) int {
-	for index := start; index < len(elements); index++ {
-		switch elements[index].Kind {
+func nextDirectiveToken(document scanner.Document, start int) int {
+	for index := start; index < document.ElementCount(); index++ {
+		switch document.ElementKind(index) {
 		case scanner.ElementWhitespace, scanner.ElementNewline, scanner.ElementLineComment, scanner.ElementBlockComment:
 			continue
 		case scanner.ElementToken:

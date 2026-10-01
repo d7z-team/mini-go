@@ -83,10 +83,42 @@ func Required(checked check.CheckedProgram, dependencies map[string]cache.Packag
 	if checked.Info == nil || len(checked.Info.GenericDecls) != 0 || len(checked.Info.Instances) != 0 {
 		return true
 	}
-	// Imported inference and function-value contexts may not have an Instance
-	// fact until rewriting, so templates conservatively retain the full pass.
-	for _, dependency := range dependencies {
-		if len(dependency.GenericTemplates) != 0 {
+	// A transitive dependency may export templates that this package never
+	// references. Their presence alone must not clone and re-check the AST.
+	var templates map[string]map[string]bool
+	for module, dependency := range dependencies {
+		if len(dependency.GenericTemplates) == 0 {
+			continue
+		}
+		if templates == nil {
+			templates = make(map[string]map[string]bool)
+		}
+		names := make(map[string]bool, len(dependency.GenericTemplates))
+		for _, template := range dependency.GenericTemplates {
+			names[template.Name] = true
+		}
+		templates[module] = names
+	}
+	if len(templates) == 0 {
+		return false
+	}
+	// Inference and function-value contexts can precede Instance facts. The
+	// selected package member and dot-import object still identify the template.
+	for _, selection := range checked.Info.Selections {
+		if selection.Kind == check.SelectionPackageMember && templates[selection.ModulePath][selection.Name] {
+			return true
+		}
+	}
+	for _, id := range checked.Info.Uses {
+		object := checked.Info.Objects[id]
+		if templates[object.ModulePath][object.ExportName] {
+			return true
+		}
+	}
+	// Explicit source types can contain an instance below a slice, field or
+	// signature without a value-expression Instance entry.
+	for _, info := range checked.Info.Types {
+		if info.Type.Valid() && !checked.Info.TypeExact(info.Type) {
 			return true
 		}
 	}
@@ -133,7 +165,7 @@ func ApplyWithLimits(checked check.CheckedProgram, dependencies map[string]cache
 		for j := range out.Files[i].Decls {
 			decl := out.Files[i].Decls[j]
 			if decl.Kind == ast.DeclFunc && decl.Func.Receiver != nil {
-				s.registerMethod(genericReceiverName(decl.Func.Receiver.Type), decl.Func, decl.Func.Receiver.Type.Kind == ast.TypePointer)
+				s.registerMethod(genericReceiverName(decl.Func.Receiver.Type), *decl.Func, decl.Func.Receiver.Type.Kind == ast.TypePointer)
 			}
 		}
 	}
@@ -203,7 +235,6 @@ func ApplyWithLimits(checked check.CheckedProgram, dependencies map[string]cache
 		}
 	}
 	s.retainImportInitializers(&out, checked.Program)
-	ast.AssignNodeIDs(&out)
 	return out, s.diagnostics.Diagnostics(), nil
 }
 
@@ -270,7 +301,7 @@ func (s *genericSpecializer) instantiateFunction(name string, args []ast.TypeExp
 	s.activeNamedTypes = previousNamedTypes
 	s.activeReferences = previousReferences
 	s.activeReferenceOffsets = previousReferenceOffsets
-	s.generatedFunc[generatedName] = decl.Func
+	s.generatedFunc[generatedName] = *decl.Func
 	s.output = append(s.output, specializedDecl{decl: decl, file: generic.file})
 	delete(s.activeDecl, "function:"+name)
 	return generatedName
@@ -331,7 +362,7 @@ func (s *genericSpecializer) instantiateType(name string, args []ast.TypeExpr, s
 		s.activeReferenceOffsets = methodTemplate.referenceOffsets
 		s.rewriteDecl(&method, substitutions)
 		setSpecializedReceiver(method.Func.Receiver, generatedName)
-		s.registerMethod(generatedName, method.Func, pointer)
+		s.registerMethod(generatedName, *method.Func, pointer)
 		s.output = append(s.output, specializedDecl{decl: method, file: methodTemplate.file})
 	}
 	s.activeAlias = previousAlias

@@ -1,3 +1,4 @@
+import type { WorkerConnection, WorkerPort } from "./protocol.js";
 import type {
   RPCBindOptions,
   RPCConnectOptions,
@@ -75,17 +76,10 @@ export type RPCResponse =
   | { kind: "providerSettled"; id: number; retained: readonly number[] }
   | { kind: "resourceClose"; id: number; resource: number };
 
-export interface RPCWorkerConnection {
-  send(message: RPCRequest): void;
-  listen(message: (value: RPCResponse) => void, failure: (reason: unknown) => void): void;
-  terminate(): void;
-}
+export type RPCWorkerConnection = WorkerConnection<RPCRequest, RPCResponse>;
 
 export type RPCWorkerFactory = (options: RPCConnectOptions) => RPCWorkerConnection;
 
-export interface RPCWorkerPort {
-  send(message: RPCResponse): void;
-  listen(handler: (message: RPCRequest) => void): void;
-}
+export type RPCWorkerPort = WorkerPort<RPCRequest, RPCResponse>;
 
 export type RPCWorkerStats = Omit<RPCStats, "wasmBytes">;

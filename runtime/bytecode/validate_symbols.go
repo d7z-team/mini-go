@@ -7,6 +7,58 @@ import (
 	"strings"
 )
 
+// Only symbol-relevant shape is retained; no decoded instructions or type
+// graphs are kept alive by a sealed archive.
+type packageSymbolLayout struct {
+	globals   []string
+	functions map[string]functionSymbolLayout
+}
+
+type functionSymbolLayout struct {
+	locals, upvalues []string
+	pcCount          int
+}
+
+func packageSymbolLayoutFor(artifact *Artifact, validated bool) (packageSymbolLayout, error) {
+	layout := packageSymbolLayout{
+		globals:   make([]string, len(artifact.Globals)),
+		functions: make(map[string]functionSymbolLayout, len(artifact.Functions)),
+	}
+	for i, global := range artifact.Globals {
+		layout.globals[i] = global.ID
+	}
+	for _, function := range artifact.Functions {
+		if function.Code == nil {
+			return packageSymbolLayout{}, errors.New("missing slot code")
+		}
+		shape := functionSymbolLayout{
+			locals:   make([]string, len(function.Locals)),
+			upvalues: make([]string, len(function.Upvalues)),
+		}
+		for i, local := range function.Locals {
+			shape.locals[i] = local.ID
+		}
+		for i, upvalue := range function.Upvalues {
+			shape.upvalues[i] = upvalue.ID
+		}
+		for _, instruction := range function.Code.Instructions {
+			if !validated {
+				if !IsKnownOpcode(instruction.Op) {
+					return packageSymbolLayout{}, newCodedValidationError(ValidationOpcodeUnknown, "instructions", errors.New("unknown opcode"))
+				}
+				if _, err := function.Code.Descriptors.Payload(instruction.Op, instruction.Descriptor); err != nil {
+					return packageSymbolLayout{}, err
+				}
+			}
+			if instruction.Op != OpLabel {
+				shape.pcCount++
+			}
+		}
+		layout.functions[function.ID] = shape
+	}
+	return layout, nil
+}
+
 // ValidateProgramSymbols verifies a complete sidecar against one immutable
 // execution image. Validation does not mutate either input.
 func ValidateProgramSymbols(image *ExecutionImage, symbols *ProgramSymbols) error {
@@ -30,6 +82,12 @@ func ValidateProgramSymbols(image *ExecutionImage, symbols *ProgramSymbols) erro
 		pkg, ok := symbols.Packages[modulePath]
 		if !ok {
 			return fmt.Errorf("program symbols missing package %q", modulePath)
+		}
+		if archive.validated != nil && archive.validated.hash == archive.ArtifactHash && archive.hasCanonicalProof() {
+			if err := validatePackageSymbolLayout(archive.validated.module, archive.ArtifactHash, archive.validated.symbols, &pkg); err != nil {
+				return fmt.Errorf("validate package symbols %q: %w", modulePath, err)
+			}
+			continue
 		}
 		artifact, err := DecodeJSON(archive.Artifact)
 		if err != nil {
@@ -58,7 +116,15 @@ func ValidatePackageSymbols(artifact *Artifact, codeHash string, symbols *Packag
 	if artifact == nil || symbols == nil {
 		return errors.New("artifact and package symbols are required")
 	}
-	if symbols.ModulePath != artifact.Module.Path || symbols.CodeHash != codeHash || !validSymbolHash(codeHash) {
+	layout, err := packageSymbolLayoutFor(artifact, false)
+	if err != nil {
+		return err
+	}
+	return validatePackageSymbolLayout(artifact.Module.Path, codeHash, layout, symbols)
+}
+
+func validatePackageSymbolLayout(module, codeHash string, layout packageSymbolLayout, symbols *PackageSymbols) error {
+	if symbols.ModulePath != module || symbols.CodeHash != codeHash || !validSymbolHash(codeHash) {
 		return errors.New("package symbols code identity mismatch")
 	}
 	if symbols.SourceHash != "" && !validSymbolHash(symbols.SourceHash) {
@@ -68,9 +134,9 @@ func ValidatePackageSymbols(artifact *Artifact, codeHash string, symbols *Packag
 	if err != nil {
 		return err
 	}
-	globals := make(map[string]struct{}, len(artifact.Globals))
-	for _, global := range artifact.Globals {
-		globals[global.ID] = struct{}{}
+	globals := make(map[string]struct{}, len(layout.globals))
+	for _, global := range layout.globals {
+		globals[global] = struct{}{}
 	}
 	if len(symbols.Globals) != len(globals) {
 		return errors.New("global symbol count mismatch")
@@ -81,9 +147,9 @@ func ValidatePackageSymbols(artifact *Artifact, codeHash string, symbols *Packag
 		}
 		delete(globals, global.ID)
 	}
-	functions := make(map[string]Function, len(artifact.Functions))
-	for _, function := range artifact.Functions {
-		functions[function.ID] = function
+	functions := make(map[string]functionSymbolLayout, len(layout.functions))
+	for id, function := range layout.functions {
+		functions[id] = function
 	}
 	if len(symbols.Functions) != len(functions) {
 		return errors.New("function symbol count mismatch")
@@ -123,24 +189,19 @@ func validateSymbolFiles(input []SourceFile) (map[string]struct{}, error) {
 	return files, nil
 }
 
-func validateFunctionSymbols(code Function, symbols *FunctionSymbols, files map[string]struct{}) error {
+func validateFunctionSymbols(code functionSymbolLayout, symbols *FunctionSymbols, files map[string]struct{}) error {
 	if err := validateSymbolLocation(symbols.Declaration, files); err != nil {
 		return fmt.Errorf("declaration: %w", err)
 	}
-	locals := make(map[string]struct{}, len(code.Locals))
-	for _, local := range code.Locals {
-		locals[local.ID] = struct{}{}
+	locals := make(map[string]struct{}, len(code.locals))
+	for _, local := range code.locals {
+		locals[local] = struct{}{}
 	}
 	if len(symbols.Locals) != len(locals) {
 		return errors.New("local symbol count mismatch")
 	}
 	scopes := make(map[int]struct{}, len(symbols.Scopes))
-	pcCount := 0
-	for _, instruction := range code.Instructions {
-		if instruction.Op != string(OpLabel) {
-			pcCount++
-		}
-	}
+	pcCount := code.pcCount
 	for index, scope := range symbols.Scopes {
 		if scope.ID <= 0 {
 			return fmt.Errorf("scope %d has invalid id", index)
@@ -176,9 +237,9 @@ func validateFunctionSymbols(code Function, symbols *FunctionSymbols, files map[
 		}
 		delete(locals, local.ID)
 	}
-	upvalues := make(map[string]struct{}, len(code.Upvalues))
-	for _, upvalue := range code.Upvalues {
-		upvalues[upvalue.ID] = struct{}{}
+	upvalues := make(map[string]struct{}, len(code.upvalues))
+	for _, upvalue := range code.upvalues {
+		upvalues[upvalue] = struct{}{}
 	}
 	if len(symbols.Upvalues) != len(upvalues) {
 		return errors.New("upvalue symbol count mismatch")

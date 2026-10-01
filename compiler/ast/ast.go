@@ -46,11 +46,28 @@ type Decl struct {
 	NodeID NodeID      `json:"node_id,omitempty"`
 	Kind   DeclKind    `json:"kind"`
 	Span   source.Span `json:"span,omitempty"`
-	Import ImportDecl  `json:"import,omitempty"`
-	Const  ValueDecl   `json:"const,omitempty"`
-	Var    ValueDecl   `json:"var,omitempty"`
-	Type   TypeDecl    `json:"type,omitempty"`
-	Func   FuncDecl    `json:"func,omitempty"`
+	Import *ImportDecl `json:"import,omitempty"`
+	Const  *ValueDecl  `json:"const,omitempty"`
+	Var    *ValueDecl  `json:"var,omitempty"`
+	Type   *TypeDecl   `json:"type,omitempty"`
+	Func   *FuncDecl   `json:"func,omitempty"`
+}
+
+func (decl Decl) hasPayload() bool {
+	switch decl.Kind {
+	case DeclImport:
+		return decl.Import != nil
+	case DeclConst:
+		return decl.Const != nil
+	case DeclVar:
+		return decl.Var != nil
+	case DeclType:
+		return decl.Type != nil
+	case DeclFunc:
+		return decl.Func != nil
+	default:
+		return true
+	}
 }
 
 type ImportDecl struct {
@@ -260,7 +277,7 @@ type Expression struct {
 	Name       string       `json:"name,omitempty"`
 	NameID     Identifier   `json:"name_identifier,omitempty"`
 	Literal    string       `json:"literal,omitempty"`
-	Type       TypeExpr     `json:"type,omitempty"`
+	Type       *TypeExpr    `json:"type,omitempty"`
 	TypeSwitch bool         `json:"type_switch,omitempty"`
 	Operator   string       `json:"operator,omitempty"`
 	Left       *Expression  `json:"left,omitempty"`
@@ -270,16 +287,14 @@ type Expression struct {
 	Args       []Expression `json:"args,omitempty"`
 	Ellipsis   bool         `json:"ellipsis,omitempty"`
 	Field      string       `json:"field,omitempty"`
-	FieldID    Identifier   `json:"field_identifier,omitempty"`
 	Index      *Expression  `json:"index,omitempty"`
 	Start      *Expression  `json:"start,omitempty"`
 	End        *Expression  `json:"end,omitempty"`
 	Max        *Expression  `json:"max,omitempty"`
-	Elements   []Expression `json:"elements,omitempty"`
-	Entries    []KeyValue   `json:"entries,omitempty"`
-	Items      []KeyValue   `json:"items,omitempty"`
-	EmbedFiles []EmbedFile  `json:"embed_files,omitempty"`
-	Func       FuncDecl     `json:"func,omitempty"`
+	// Items keeps keyed and unkeyed composite operands in source order.
+	Items      []KeyValue  `json:"items,omitempty"`
+	EmbedFiles []EmbedFile `json:"embed_files,omitempty"`
+	Func       *FuncDecl   `json:"func,omitempty"`
 }
 
 type KeyValue struct {

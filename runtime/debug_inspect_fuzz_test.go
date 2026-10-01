@@ -95,20 +95,23 @@ func FuzzDebuggerBreakpointUpdates(f *testing.F) {
 		debugger := NewDebugger()
 		artifact := ir.NewArtifact("fuzz/main", "main")
 		instructions := make([]ir.Instruction, 0, 34)
+		var operands [][2][]uint32
 		locations := make([]testInstructionLocation, 0, 33)
 		for line := 1; line <= 32; line++ {
 			instructions = append(instructions,
-				ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-				ir.Instruction{Op: string(ir.OpPop)},
+				ir.Instruction{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+				ir.Instruction{Op: ir.OpPop},
 			)
 			locations = append(locations, testInstructionLocation{function: "fn.entry", pc: len(instructions) - 2, line: line, column: 1})
+			operands = append(operands, [2][]uint32{nil, {0}}, [2][]uint32{{0}, nil})
 		}
 		instructions = append(instructions,
-			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			ir.Instruction{Op: string(ir.OpPop)},
-			ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
+			ir.Instruction{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+			ir.Instruction{Op: ir.OpPop},
+			ir.Instruction{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
 		)
-		artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Instructions: instructions}}
+		operands = append(operands, [2][]uint32{nil, {0}}, [2][]uint32{{0}, nil}, [2][]uint32{})
+		artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Bool"}, instructions, operands)}}
 		artifact.Exports = []ir.Export{{Name: "Run", Kind: "function", ID: "fn.entry"}}
 		locations = append(locations, testInstructionLocation{function: "fn.entry", pc: len(instructions) - 3, file: "other.mgo", line: 5, column: 1})
 		setTestInstructionLocations(t, &artifact, locations...)

@@ -1,0 +1,49 @@
+package main
+
+func ordered(a, b int) int {
+	if !(a < b) { return 1 }
+	if a >= b { return 2 }
+	if !(b > a) { return 3 }
+	if b <= a { return 4 }
+	if a == b { return 5 }
+	if !(a != b) { return 6 }
+	return 0
+}
+
+func effect(p *int) int {
+	*p = 99
+	return 2
+}
+
+func record(trace *int, digit int, value bool) bool {
+	*trace = *trace * 10 + digit
+	return value
+}
+
+func predicate(trace *int, a, b, c bool) bool {
+	defer func() { *trace = *trace * 10 + 9 }()
+	return record(trace, 1, a) && (record(trace, 2, b) || record(trace, 3, c))
+}
+
+func Main() int {
+	if ordered(-9223372036854775808, 9223372036854775807) != 0 { return 1 }
+	if ordered(1, 1) != 1 { return 2 }
+	x := 1
+	if x >= effect(&x) { return 3 }
+	if x != 99 { return 4 }
+	f := 0.0
+	nan := f / f
+	if nan == nan || nan < f || nan <= f || nan > f || nan >= f { return 5 }
+	if !(nan != nan) { return 6 }
+	if !("a" < "b") { return 7 }
+	trace := 0
+	if predicate(&trace, false, true, true) || trace != 19 { return 8 }
+	trace = 0
+	if !predicate(&trace, true, true, false) || trace != 129 { return 9 }
+	trace = 0
+	if predicate(&trace, true, false, false) || trace != 1239 { return 10 }
+	trace = 0
+	if !(record(&trace, 1, false) || record(&trace, 2, true)) && record(&trace, 3, true) { return 11 }
+	if trace != 12 { return 12 }
+	return 42
+}

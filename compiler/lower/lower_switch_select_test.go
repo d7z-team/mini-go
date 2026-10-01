@@ -18,21 +18,21 @@ func TestLowerControlFlowUsesExplicitLabels(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtIf,
-						Cond: &ast.Expression{Kind: ast.ExprLiteral, Literal: "true", Type: boolType},
+						Cond: &ast.Expression{Kind: ast.ExprLiteral, Literal: "true", Type: &boolType},
 						Body: ast.BlockStmt{},
 					}, {
 						Kind: ast.StmtFor,
-						Cond: &ast.Expression{Kind: ast.ExprLiteral, Literal: "false", Type: boolType},
+						Cond: &ast.Expression{Kind: ast.ExprLiteral, Literal: "false", Type: &boolType},
 						Body: ast.BlockStmt{},
 					}, {
 						Kind: ast.StmtSwitch,
-						Expr: &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+						Expr: &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 						Cases: []ast.CaseClause{{
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}},
 							Body:   ast.BlockStmt{},
 						}, {
 							Default: true,
@@ -64,17 +64,17 @@ func TestLowerSwitchTagEvaluatesOnce(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Next",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtSwitch,
@@ -83,9 +83,9 @@ func TestLowerSwitchTagEvaluatesOnce(t *testing.T) {
 							Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Next"}),
 						},
 						Cases: []ast.CaseClause{{
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}},
 						}, {
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}},
 						}},
 					}}},
 				},
@@ -130,19 +130,19 @@ func TestLowerSwitchFallthroughJumpsToNextCase(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtSwitch,
-						Expr: &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+						Expr: &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 						Cases: []ast.CaseClause{{
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}},
 							Body: ast.BlockStmt{Stmts: []ast.Statement{{
 								Kind: ast.StmtBranch,
 								Op:   "fallthrough",
 							}}},
 						}, {
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: intType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}},
 							Body:   ast.BlockStmt{},
 						}},
 					}}},
@@ -191,7 +191,7 @@ func TestLowerSelectDefaultAndEmptySelect(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "WithDefault",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -200,14 +200,14 @@ func TestLowerSelectDefaultAndEmptySelect(t *testing.T) {
 							Default: true,
 							Body: ast.BlockStmt{Stmts: []ast.Statement{{
 								Kind:    ast.StmtReturn,
-								Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: intType}},
+								Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: &intType}},
 							}}},
 						}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Empty",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtSelect,
@@ -245,19 +245,19 @@ func TestLowerSelectDescribesReceiveDestinations(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Params:  []ast.Field{{Name: "ch", Type: chanType}},
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"out"},
 							Type:  intType,
 							Values: []ast.Expression{{
 								Kind:    ast.ExprLiteral,
 								Literal: "0",
-								Type:    intType,
+								Type:    &intType,
 							}},
 						}}},
 					}, {
@@ -313,7 +313,7 @@ func TestLowerSelectBindsSendValueBeforeCommunication(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Params:  []ast.Field{{Name: "ch", Type: chanType}},
 					Results: []ast.Field{{Type: intType}},
@@ -323,12 +323,12 @@ func TestLowerSelectBindsSendValueBeforeCommunication(t *testing.T) {
 							Comm: &ast.Statement{
 								Kind:  ast.StmtSend,
 								Left:  []ast.Expression{{Kind: ast.ExprIdent, Name: "ch"}},
-								Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: intType}},
+								Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: &intType}},
 							},
 						}},
 					}, {
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}},
@@ -366,19 +366,19 @@ func TestLowerSelectDefaultKeepsCommunicationCases(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Params:  []ast.Field{{Name: "ch", Type: chanType}},
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"out"},
 							Type:  intType,
 							Values: []ast.Expression{{
 								Kind:    ast.ExprLiteral,
 								Literal: "0",
-								Type:    intType,
+								Type:    &intType,
 							}},
 						}}},
 					}, {
@@ -397,7 +397,7 @@ func TestLowerSelectDefaultKeepsCommunicationCases(t *testing.T) {
 							Comm: &ast.Statement{
 								Kind:  ast.StmtSend,
 								Left:  []ast.Expression{{Kind: ast.ExprIdent, Name: "ch"}},
-								Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: intType}},
+								Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: &intType}},
 							},
 						}, {
 							Default: true,

@@ -78,13 +78,13 @@ type TypeRef struct {
 func (r TypeRef) Valid() bool {
 	switch r.Kind {
 	case Void, Any:
-		return r.Primitive == PrimitiveInvalid && emptyTypeKey(r.Named) && r.Node == ""
+		return r.Primitive == PrimitiveInvalid && r.Named.ModulePath == "" && r.Named.DeclID == "" && r.Node == ""
 	case Primitive:
-		return r.Primitive != PrimitiveInvalid && emptyTypeKey(r.Named) && r.Node == ""
+		return r.Primitive != PrimitiveInvalid && r.Named.ModulePath == "" && r.Named.DeclID == "" && r.Node == ""
 	case Named:
 		return (r.Named.ModulePath != "" && r.Named.DeclID != "") || r.Node != ""
 	default:
-		return r.Node != "" && r.Primitive == PrimitiveInvalid && emptyTypeKey(r.Named)
+		return r.Node != "" && r.Primitive == PrimitiveInvalid && r.Named.ModulePath == "" && r.Named.DeclID == ""
 	}
 }
 
@@ -178,4 +178,5 @@ type typeTableCache struct {
 	sync.RWMutex
 	underlying map[TypeRef]TypeRef
 	formatted  map[TypeRef]string
+	exact      map[TypeRef]bool
 }

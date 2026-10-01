@@ -55,7 +55,7 @@ func Apply(program hir.Program, level Level) (hir.Program, error) {
 			if err != nil {
 				return hir.Program{}, fmt.Errorf("function %s: %w", out.Functions[index].ID, err)
 			}
-			body, _ = removeDeadPureLocalStores(body)
+			body, _ = removeDeadPureLocalStores(body, out.Functions[index].ResultLocals)
 			out.Functions[index].Body = body
 		}
 	}
@@ -95,6 +95,7 @@ func cloneStatements(statements []hir.Statement) []hir.Statement {
 	out := append([]hir.Statement(nil), statements...)
 	for index := range out {
 		out[index].SourcePoints = append([]hir.Location(nil), statements[index].SourcePoints...)
+		out[index].TypeCases = append([]hir.TypeCase(nil), statements[index].TypeCases...)
 	}
 	return out
 }
@@ -110,6 +111,8 @@ func optimizeBody(body []hir.Statement, constants map[string]json.RawMessage) ([
 		body, passChanged = foldConstantBranches(body, constants)
 		changed = changed || passChanged
 		body, passChanged = coalesceLabels(body)
+		changed = changed || passChanged
+		body, passChanged = simplifyBranchFallthrough(body)
 		changed = changed || passChanged
 		var err error
 		body, passChanged, err = threadJumps(body)
@@ -141,8 +144,9 @@ func foldConstantBranches(body []hir.Statement, constants map[string]json.RawMes
 		if statement.Kind == hir.StmtJumpIf {
 			if value, ok := constantBool(statement.Expr, constants); ok {
 				changed = true
-				if value {
+				if value != statement.BranchNegated {
 					statement.Kind = hir.StmtJump
+					statement.BranchNegated = false
 					statement.Expr = hir.Expression{}
 				} else {
 					pending = appendUniqueLocations(pending, statement.SourcePoints)
@@ -158,6 +162,30 @@ func foldConstantBranches(body []hir.Statement, constants map[string]json.RawMes
 	}
 	if len(pending) != 0 && len(out) != 0 {
 		out[len(out)-1].SourcePoints = appendUniqueLocations(out[len(out)-1].SourcePoints, pending)
+	}
+	return out, changed
+}
+
+// simplifyBranchFallthrough changes only the polarity of the conditional edge.
+// Inverting a comparison operator would be incorrect for unordered floats.
+func simplifyBranchFallthrough(body []hir.Statement) ([]hir.Statement, bool) {
+	out := make([]hir.Statement, 0, len(body))
+	changed := false
+	for index := 0; index < len(body); index++ {
+		statement := body[index]
+		if statement.Kind == hir.StmtJumpIf && index+2 < len(body) && body[index+1].Kind == hir.StmtJump {
+			for next := index + 2; next < len(body) && body[next].Kind == hir.StmtLabel; next++ {
+				if body[next].Label == statement.Label {
+					statement.Label = body[index+1].Label
+					statement.BranchNegated = !statement.BranchNegated
+					statement.SourcePoints = appendUniqueLocations(statement.SourcePoints, body[index+1].SourcePoints)
+					index++
+					changed = true
+					break
+				}
+			}
+		}
+		out = append(out, statement)
 	}
 	return out, changed
 }
@@ -200,7 +228,7 @@ func coalesceLabels(body []hir.Statement) ([]hir.Statement, bool) {
 		return out, changed
 	}
 	for index := range out {
-		if out[index].Kind != hir.StmtJump && out[index].Kind != hir.StmtJumpIf {
+		if out[index].Kind != hir.StmtJump && out[index].Kind != hir.StmtJumpIf && out[index].Kind != hir.StmtTypeDispatch {
 			continue
 		}
 		for {
@@ -209,6 +237,15 @@ func coalesceLabels(body []hir.Statement) ([]hir.Statement, bool) {
 				break
 			}
 			out[index].Label = target
+		}
+		for i := range out[index].TypeCases {
+			for {
+				target, exists := aliases[out[index].TypeCases[i].Label]
+				if !exists {
+					break
+				}
+				out[index].TypeCases[i].Label = target
+			}
 		}
 	}
 	return out, true
@@ -271,6 +308,19 @@ func retainReachable(body []hir.Statement) ([]hir.Statement, bool, error) {
 		reachable[index] = true
 		statement := body[index]
 		switch statement.Kind {
+		case hir.StmtTypeDispatch:
+			target, exists := labels[statement.Label]
+			if !exists {
+				return nil, false, fmt.Errorf("type dispatch references unknown label %q", statement.Label)
+			}
+			queue = append(queue, target)
+			for _, match := range statement.TypeCases {
+				target, exists := labels[match.Label]
+				if !exists {
+					return nil, false, fmt.Errorf("type dispatch references unknown label %q", match.Label)
+				}
+				queue = append(queue, target)
+			}
 		case hir.StmtJump:
 			target, exists := labels[statement.Label]
 			if !exists {
@@ -316,8 +366,11 @@ func removeRedundantJumps(body []hir.Statement) ([]hir.Statement, bool) {
 func removeUnreferencedLabels(body []hir.Statement) ([]hir.Statement, bool) {
 	referenced := make(map[string]struct{})
 	for _, statement := range body {
-		if statement.Kind == hir.StmtJump || statement.Kind == hir.StmtJumpIf {
+		if statement.Kind == hir.StmtJump || statement.Kind == hir.StmtJumpIf || statement.Kind == hir.StmtTypeDispatch {
 			referenced[statement.Label] = struct{}{}
+		}
+		for _, match := range statement.TypeCases {
+			referenced[match.Label] = struct{}{}
 		}
 	}
 	remove := make([]bool, len(body))

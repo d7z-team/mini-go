@@ -8,22 +8,27 @@ use mini_go::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use support::slot_code;
 
 #[test]
 fn mutex_zero_state_try_lock_and_reuse() {
-    let address = json!({"op":"address_of","payload":{"kind":"local","local":"state"}});
+    let address = (
+        "address_of",
+        json!({"kind":"local","local":"state"}),
+        json!({"outputs":[0]}),
+    );
     let image = support::image(json!({
-        "type_table":{"nodes":[{"id":"state","kind":9,"direction":1,"elem":{"kind":3,"primitive":1}}]},
+        "type_table":{"nodes":[{"id":"state","kind":9,"direction":1,"elem":{"kind":3,"primitive":1}},
+            {"id":"pointer","kind":8,"elem":{"kind":9,"node":"state"}}]},
         "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":1},{"kind":3,"primitive":1}]},
             "locals":[{"id":"state","type":{"kind":9,"node":"state"}}],
-            "instructions":[
-                address,{"op":"call_intrinsic","payload":{"id":"sync.mutex_try_lock","arg_count":1,"result_count":1}},
-                address,{"op":"call_intrinsic","payload":{"id":"sync.mutex_try_lock","arg_count":1,"result_count":1}},
-                address,{"op":"call_intrinsic","payload":{"id":"sync.mutex_unlock","arg_count":1}},
-                address,{"op":"call_intrinsic","payload":{"id":"sync.mutex_lock","arg_count":1}},
-                address,{"op":"call_intrinsic","payload":{"id":"sync.mutex_unlock","arg_count":1}},
-                {"op":"return","payload":{"result_count":2}}
-            ]}]
+            "code":slot_code(json!([{"kind":8,"node":"pointer"},{"kind":3,"primitive":1},{"kind":3,"primitive":1}]), &[
+                address.clone(),("call_intrinsic",json!({"id":"sync.mutex_try_lock","arg_count":1,"result_count":1}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+                address.clone(),("call_intrinsic",json!({"id":"sync.mutex_try_lock","arg_count":1,"result_count":1}),json!({"inputs":[[0,0]],"outputs":[2],"release":[0]})),
+                address.clone(),("call_intrinsic",json!({"id":"sync.mutex_unlock","arg_count":1}),json!({"inputs":[[0,0]],"release":[0]})),
+                address.clone(),("call_intrinsic",json!({"id":"sync.mutex_lock","arg_count":1}),json!({"inputs":[[0,0]],"release":[0]})),
+                address,("call_intrinsic",json!({"id":"sync.mutex_unlock","arg_count":1}),json!({"inputs":[[0,0]],"release":[0]})),
+                ("return",json!({"result_count":2}),json!({"inputs":[[0,1],[0,2]],"release":[1,2]}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();

@@ -30,8 +30,8 @@ type Config struct {
 }
 
 type indexedOccurrence struct {
-	analysis.Occurrence
-	URI        DocumentURI
+	// The immutable package owns the occurrence array for this snapshot.
+	*analysis.Occurrence
 	ModulePath string
 	Key        string
 }

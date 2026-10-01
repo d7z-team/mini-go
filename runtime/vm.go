@@ -211,8 +211,8 @@ type InstanceOptions struct {
 	ffiSession   ffi.Session
 }
 
-// GuestProfileOptions enables bounded instruction sampling for one execution.
-// A zero SampleEvery disables profiling without adding work to ordinary runs.
+// GuestProfileOptions enables bounded PC sampling.
+// Zero values disable profiling in ordinary runs.
 type GuestProfileOptions struct {
 	SampleEvery uint64
 	MaxEntries  int

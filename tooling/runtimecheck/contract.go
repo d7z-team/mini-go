@@ -105,12 +105,7 @@ func GenerateRustContract(sources fs.FS) ([]byte, error) {
 	names := make([]string, len(contract.Intrinsics))
 	out.WriteString("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum Intrinsic {\n")
 	for index, intrinsic := range contract.Intrinsics {
-		var name strings.Builder
-		for _, part := range strings.FieldsFunc(string(intrinsic.ID), func(r rune) bool { return r == '.' || r == '_' }) {
-			name.WriteString(strings.ToUpper(part[:1]))
-			name.WriteString(part[1:])
-		}
-		names[index] = name.String()
+		names[index] = rustVariantName(string(intrinsic.ID))
 		fmt.Fprintf(&out, "    %s,\n", names[index])
 	}
 	out.WriteString("}\nimpl Intrinsic {\n    pub fn from_id(id: &str) -> Option<Self> { Some(match id {\n")
@@ -137,6 +132,7 @@ func GenerateRustContract(sources fs.FS) ([]byte, error) {
 	models := []any{
 		bytecode.ExecutionImage{},
 		bytecode.Artifact{},
+		bytecode.Instruction{},
 		bytecode.ProgramSymbols{},
 		bytecode.ConstPayload{},
 		bytecode.LocalPayload{},
@@ -144,6 +140,10 @@ func GenerateRustContract(sources fs.FS) ([]byte, error) {
 		bytecode.GlobalPayload{},
 		bytecode.AddressPayload{},
 		bytecode.TypePayload{},
+		bytecode.TypeDispatchPayload{},
+		bytecode.CompareBranchPayload{},
+		bytecode.FieldPathPayload{},
+		bytecode.TypeCase{},
 		bytecode.OperatorPayload{},
 		bytecode.MakeSequencePayload{},
 		bytecode.MakeMapPayload{},
@@ -174,7 +174,76 @@ func GenerateRustContract(sources fs.FS) ([]byte, error) {
 		return nil, g.err
 	}
 	for _, model := range g.order {
-		g.emit(model)
+		if model == reflect.TypeFor[bytecode.Instruction]() {
+			out.WriteString("\n#[derive(Clone, Debug, Serialize, serde::Deserialize)]\n#[serde(tag=\"op\", content=\"payload\", deny_unknown_fields)]\npub enum Instruction {\n")
+			for _, opcode := range contract.Spec.Opcodes {
+				variant := rustVariantName(opcode.Op)
+				fmt.Fprintf(&out, "    #[serde(rename=%q)]\n    %s", opcode.Op, variant)
+				if opcode.Payload != "" {
+					payload := ""
+					for _, descriptor := range models {
+						name := reflect.TypeOf(descriptor).Name()
+						if strings.ToLower(strings.TrimSuffix(name, "Payload")) == strings.ReplaceAll(opcode.Payload, "_", "") {
+							payload = name
+						}
+					}
+					if payload == "" {
+						return nil, fmt.Errorf("missing instruction payload %s", opcode.Payload)
+					}
+					fmt.Fprintf(&out, "(%s)", payload)
+				}
+				out.WriteString(",\n")
+			}
+			out.WriteString("}\nimpl Instruction {pub fn opcode(&self)-> &'static str {match self {\n")
+			for _, opcode := range contract.Spec.Opcodes {
+				variant := rustVariantName(opcode.Op)
+				if opcode.Payload != "" {
+					variant += "(_)"
+				}
+				fmt.Fprintf(&out, "Self::%s=>%q,\n", variant, opcode.Op)
+			}
+			out.WriteString("}}}\n")
+			out.WriteString("impl Instruction { pub fn fixed_arity(&self) -> Option<(usize, usize)> { match self {\n")
+			for _, opcode := range contract.Spec.Opcodes {
+				variant := rustVariantName(opcode.Op)
+				if opcode.Payload != "" {
+					variant += "(_)"
+				}
+				switch opcode.Arity.Kind {
+				case "fixed":
+					if opcode.Arity.Inputs < 0 || opcode.Arity.Outputs < 0 {
+						return nil, fmt.Errorf("negative operand arity for %s", opcode.Op)
+					}
+					fmt.Fprintf(&out, "Self::%s => Some((%d, %d)),\n", variant, opcode.Arity.Inputs, opcode.Arity.Outputs)
+				case "payload":
+					if opcode.Payload == "" || opcode.Arity.Inputs != 0 || opcode.Arity.Outputs != 0 {
+						return nil, fmt.Errorf("invalid payload operand arity for %s", opcode.Op)
+					}
+					fmt.Fprintf(&out, "Self::%s => None,\n", variant)
+				default:
+					return nil, fmt.Errorf("missing operand arity for %s", opcode.Op)
+				}
+			}
+			out.WriteString("}}}\n")
+			out.WriteString("impl DescriptorTables { pub fn instruction(&self, op: u16, index: u32) -> Option<Instruction> { Some(match op {\n")
+			for _, opcode := range contract.Spec.Opcodes {
+				variant := rustVariantName(opcode.Op)
+				identity, ok := bytecode.ParseOpcode(opcode.Op)
+				if !ok {
+					return nil, fmt.Errorf("unknown opcode %s", opcode.Op)
+				}
+				fmt.Fprintf(&out, "%d => Instruction::%s", identity, variant)
+				if opcode.Payload != "" {
+					fmt.Fprintf(&out, "(self.r#%s.get(index as usize)?.clone())", strings.ReplaceAll(opcode.Payload, "_", ""))
+				} else {
+					out.WriteString(" /* no descriptor */")
+				}
+				out.WriteString(",\n")
+			}
+			out.WriteString("_ => return None,\n}) } }\n")
+		} else {
+			g.emit(model)
+		}
 	}
 	// Primitive and kind names are compiler-owned; derive the complete numeric
 	// groups from their iota declarations, failing if that representation changes.
@@ -224,7 +293,7 @@ type rustModelGenerator struct {
 }
 
 func (g *rustModelGenerator) collect(t reflect.Type) {
-	if t == reflect.TypeFor[json.RawMessage]() {
+	if t == reflect.TypeFor[json.RawMessage]() || t == reflect.TypeFor[bytecode.Payload]() {
 		return
 	}
 	switch t.Kind() {
@@ -250,7 +319,7 @@ func (g *rustModelGenerator) collect(t reflect.Type) {
 }
 
 func (g *rustModelGenerator) rustType(t reflect.Type) string {
-	if t == reflect.TypeFor[json.RawMessage]() {
+	if t == reflect.TypeFor[json.RawMessage]() || t == reflect.TypeFor[bytecode.Payload]() {
 		return "Option<Box<serde_json::value::RawValue>>"
 	}
 	if t == reflect.TypeFor[[]byte]() {
@@ -277,6 +346,10 @@ func (g *rustModelGenerator) rustType(t reflect.Type) string {
 		return "i64"
 	case reflect.Uint8:
 		return "u8"
+	case reflect.Uint16:
+		return "u16"
+	case reflect.Uint32:
+		return "u32"
 	case reflect.Uint64:
 		return "u64"
 	default:
@@ -286,6 +359,30 @@ func (g *rustModelGenerator) rustType(t reflect.Type) string {
 }
 
 func (g *rustModelGenerator) emit(t reflect.Type) {
+	if t == reflect.TypeFor[bytecode.SlotInstruction]() || t == reflect.TypeFor[bytecode.Operand]() {
+		var names, typesList []string
+		for index := range t.NumField() {
+			names = append(names, strings.ToLower(t.Field(index).Name))
+			typesList = append(typesList, g.rustType(t.Field(index).Type))
+		}
+		tuple := "(" + strings.Join(typesList, ",") + ")"
+		fmt.Fprintf(g.out, "\n#[derive(Clone,Debug,Default,Serialize,serde::Deserialize)]\n#[serde(from=%q,into=%q)]\npub struct %s {\n", tuple, tuple, t.Name())
+		for index, name := range names {
+			fmt.Fprintf(g.out, "pub %s: %s,\n", name, typesList[index])
+		}
+		g.out.WriteString("}\n")
+		fmt.Fprintf(g.out, "impl From<%s> for %s {fn from(value:%s)->Self {Self {", tuple, t.Name(), tuple)
+		for index, name := range names {
+			fmt.Fprintf(g.out, "%s:value.%d,", name, index)
+		}
+		g.out.WriteString("}}}\n")
+		fmt.Fprintf(g.out, "impl From<%s> for %s {fn from(value:%s)->Self {( ", t.Name(), tuple, t.Name())
+		for _, name := range names {
+			fmt.Fprintf(g.out, "value.%s,", name)
+		}
+		g.out.WriteString(")}}\n")
+		return
+	}
 	derive := "Clone, Debug, Default, Serialize"
 	if t == reflect.TypeFor[types.TypeRef]() || t == reflect.TypeFor[types.TypeKey]() {
 		derive += ", PartialEq, Eq, Hash"
@@ -314,10 +411,10 @@ func (g *rustModelGenerator) emit(t reflect.Type) {
 				skip = "crate::contract::map_is_empty"
 			case reflect.String:
 				skip = "String::is_empty"
-			case reflect.Bool, reflect.Int, reflect.Int64, reflect.Uint8, reflect.Uint64:
+			case reflect.Bool, reflect.Int, reflect.Int64, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 				skip = "crate::contract::is_default"
 			}
-			if field.Type == reflect.TypeFor[json.RawMessage]() {
+			if field.Type == reflect.TypeFor[json.RawMessage]() || field.Type == reflect.TypeFor[bytecode.Payload]() {
 				skip = "Option::is_none"
 			}
 			if skip != "" {
@@ -347,11 +444,20 @@ func (g *rustModelGenerator) emit(t reflect.Type) {
 		case reflect.Slice:
 			kind = "value"
 		}
-		if field.Type == reflect.TypeFor[json.RawMessage]() {
+		if field.Type == reflect.TypeFor[json.RawMessage]() || field.Type == reflect.TypeFor[bytecode.Payload]() {
 			kind = "raw"
 		}
 		fmt.Fprintf(&decoding, "    r#%s: %q => %s,\n", identifier.String(), name, kind)
 	}
 	g.out.WriteString("}\n")
 	fmt.Fprintf(g.out, "crate::contract::go_object!(%s {\n%s});\n", t.Name(), decoding.String())
+}
+
+func rustVariantName(identifier string) string {
+	var name strings.Builder
+	for _, part := range strings.FieldsFunc(identifier, func(r rune) bool { return r == '.' || r == '_' }) {
+		name.WriteString(strings.ToUpper(part[:1]))
+		name.WriteString(part[1:])
+	}
+	return name.String()
 }

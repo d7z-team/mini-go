@@ -344,7 +344,11 @@ func TestCompileCacheVerifyDetectsWrongHit(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := cache.New(backend)
-	if _, err := store.StoreCompile(action, wrongArtifact, wrongSymbols, wrongData); err != nil {
+	sealed, err := cache.SealArtifact(wrongArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StoreCompile(action, sealed, wrongSymbols, wrongData); err != nil {
 		t.Fatal(err)
 	}
 	_, err = compileWorkspace([]workspace.SourcePackage{pkg}, testWorkspaceOptions{Cache: backend, CacheVerify: true})

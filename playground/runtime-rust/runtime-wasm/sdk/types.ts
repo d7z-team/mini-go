@@ -115,6 +115,12 @@ export interface Stats {
   heapObjects: bigint;
   heapPeakBytes: bigint;
   heapAllocatedBytes: bigint;
+  gcCollections: bigint;
+  gcScannedObjects: bigint;
+  gcTracedObjects: bigint;
+  gcScannedEdges: bigint;
+  gcReclaimedBytes: bigint;
+  gcNanos: bigint;
   memoryBytes: bigint;
   memoryPeakBytes: bigint;
   memoryAllocatedBytes: bigint;

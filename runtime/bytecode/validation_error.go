@@ -30,13 +30,19 @@ const (
 	ValidationSchemaMismatch             = "ir.schema.mismatch"
 	ValidationValueUnsupported           = "ir.value.unsupported"
 	ValidationTypeMethodDuplicate        = "ir.type.method.duplicate"
-	ValidationStackUnderflow             = "ir.stack.underflow"
-	ValidationStackUnbalanced            = "ir.stack.unbalanced"
 	ValidationFailed                     = "ir.validation.failed"
 )
 
 func newValidationError(path string, err error) ValidationError {
 	return ValidationError{Code: ValidationFailed, Path: path, Err: err}
+}
+
+func prependValidationPath(path string, err error) error {
+	if issue, ok := err.(ValidationError); ok {
+		issue.Path = path + issue.Path
+		return issue
+	}
+	return newValidationError(path, err)
 }
 
 func newCodedValidationError(code, path string, err error) ValidationError {

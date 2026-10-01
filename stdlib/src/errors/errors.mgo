@@ -55,7 +55,7 @@
 // because the former will succeed if err wraps an [*io/fs.PathError].
 package errors
 
-import "reflect"
+import "reflect/inspect"
 
 type errorString struct {
 	text string
@@ -80,8 +80,6 @@ type matcher interface {
 type aser interface {
 	As(any) bool
 }
-
-var errorType = reflect.TypeOf((*error)(nil)).Elem()
 
 // ErrUnsupported indicates that a requested operation cannot be performed,
 // because it is unsupported. For example, a call to [os.Link] when using a
@@ -191,16 +189,15 @@ func As(err error, target any) bool {
 	if target == nil {
 		panic("errors: target cannot be nil")
 	}
-	targetValue := reflect.ValueOf(target)
-	if targetValue.Kind() != reflect.Pointer || targetValue.IsNil() {
+	kind, _, isNil := inspect.Describe(target, false)
+	if kind != inspect.Pointer || isNil {
 		panic("errors: target must be a non-nil pointer")
 	}
-	targetElem := targetValue.Elem()
-	targetType := targetElem.Type()
-	if targetType.Kind() != reflect.Interface && !targetType.Implements(errorType) {
+	elementKind, _, _ := inspect.Describe(target, true)
+	if elementKind != inspect.Interface && !inspect.ElementImplements(target, (*error)(nil)) {
 		panic("errors: target must be a non-nil pointer to an interface or error type")
 	}
-	return as(err, target, targetElem)
+	return as(err, target)
 }
 
 // AsType finds the first error in err's tree that matches the type E, and
@@ -224,11 +221,9 @@ func AsType[E error](err error) (E, bool) {
 	return target, false
 }
 
-func as(err error, target any, targetElem reflect.Value) bool {
+func as(err error, target any) bool {
 	for err != nil {
-		candidate := reflect.ValueOf(err)
-		if candidate.Type().AssignableTo(targetElem.Type()) {
-			targetElem.Set(candidate)
+		if inspect.Assign(target, err) {
 			return true
 		}
 		if custom, ok := err.(aser); ok {
@@ -238,7 +233,7 @@ func as(err error, target any, targetElem reflect.Value) bool {
 		}
 		if many, ok := err.(multiUnwrapper); ok {
 			for _, child := range many.Unwrap() {
-				if as(child, target, targetElem) {
+				if as(child, target) {
 					return true
 				}
 			}
@@ -250,8 +245,8 @@ func as(err error, target any, targetElem reflect.Value) bool {
 }
 
 func sameError(left error, right error) bool {
-	rightType := reflect.TypeOf(right)
-	if rightType.Kind() == reflect.Invalid || !rightType.Comparable() {
+	kind, comparable, _ := inspect.Describe(right, false)
+	if kind == inspect.Invalid || !comparable {
 		return false
 	}
 	return left == right

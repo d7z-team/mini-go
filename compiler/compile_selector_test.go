@@ -1,7 +1,6 @@
 package compiler
 
 import (
-	"encoding/json"
 	"testing"
 
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
@@ -216,12 +215,12 @@ func Main(template *Template) { template.mu.Lock() }
 	}
 	artifact := result.Artifact
 	if function, _, ok := artifactFunctionByName(artifact, result.Symbols, "Main"); ok {
-		for _, instruction := range function.Instructions {
-			if instruction.Op != string(ir.OpAddressOf) {
+		for _, instruction := range functionOperations(t, function) {
+			if instruction.Op != ir.OpAddressOf {
 				continue
 			}
 			var payload ir.AddressPayload
-			if err := json.Unmarshal(instruction.Payload, &payload); err != nil {
+			if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 				t.Fatal(err)
 			}
 			if len(payload.Path) == 2 && payload.Path[0].Field == "common" && payload.Path[1].Field == "mu" {

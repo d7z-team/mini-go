@@ -22,14 +22,18 @@ func FloatRepresentable(value Rational, bits int) bool {
 	if !value.Valid() || bits != 32 && bits != 64 {
 		return false
 	}
-	exponent, precision := 1024, 53
+	// Exact overflow midpoints: 2^128 - 2^103 and 2^1024 - 2^970.
+	// These are properties of the two target formats, not per-value work.
+	cutoff := "179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792"
 	if bits == 32 {
-		exponent, precision = 128, 24
+		cutoff = "340282356779733661637539395458142568448"
 	}
-	cutoff, _ := SubtractUnsignedDecimal(Pow2UnsignedDecimal(exponent), Pow2UnsignedDecimal(exponent-precision-1))
-	limit, _ := NewRational(cutoff, "1")
 	value.Numerator = strings.TrimPrefix(value.Numerator, "-")
-	return CompareRational(value, limit) < 0
+	// A canonical rational's positive denominator is at least one.
+	if len(value.Numerator) < len(cutoff) {
+		return true
+	}
+	return CompareRational(value, Rational{Numerator: cutoff, Denominator: "1"}) < 0
 }
 
 func SignedIntegerBounds(bits int) (string, string) {

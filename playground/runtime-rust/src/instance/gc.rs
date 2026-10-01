@@ -10,6 +10,16 @@ impl Instance {
         let bytes = value.logical_bytes()?.checked_add(128).ok_or_else(|| {
             RuntimeError::new("allocation_limit", "local", "logical size overflow")
         })?;
+        self.allocate_private_storage(value, bytes)
+    }
+
+    // Frame preparation may reserve the final parameter size while its value
+    // remains rooted in the caller until the entire frame is ready to commit.
+    pub(super) fn allocate_private_storage(
+        &mut self,
+        value: Value,
+        bytes: u64,
+    ) -> Result<crate::heap::OwnedValue<Value>, RuntimeError> {
         value.trace(&mut |handle| self.running.transient_roots.push(handle));
         match self.heap.own(value, bytes) {
             Ok(value) => Ok(value),
@@ -44,10 +54,6 @@ impl Instance {
         self.memory.retain_revisions(is_live_revision);
         self.constant_values
             .retain(|(generation, _), _| is_live_revision(*generation));
-        self.call_bindings
-            .get_mut()
-            .unwrap()
-            .retain(|(generation, _, _), _| is_live_revision(*generation));
     }
 
     pub(super) fn collect_rooted(&mut self) -> Result<usize, RuntimeError> {
@@ -73,7 +79,7 @@ impl Instance {
         self.collection_roots = roots;
         let released = outcome?;
         let stats = self.heap.stats();
-        self.collect_after_bytes = stats.total_allocated_bytes.saturating_add(
+        self.collect_after_bytes = stats.gc_pressure_bytes.saturating_add(
             (stats.live_bytes / 2)
                 .max(256 << 10)
                 .min(self.limits.max_heap_bytes.saturating_sub(stats.live_bytes))
@@ -96,7 +102,7 @@ impl Instance {
         })?;
         value.trace(&mut |handle| self.running.transient_roots.push(handle));
         let stats = self.heap.stats();
-        if stats.total_allocated_bytes >= self.collect_after_bytes
+        if stats.gc_pressure_bytes >= self.collect_after_bytes
             || stats.live_objects >= self.collect_after_objects
         {
             self.collect_rooted()?;
@@ -133,7 +139,7 @@ impl Instance {
         let fits = self.heap.replacements_fit(replacements)?;
         let stats = self.heap.stats();
         if !fits
-            || stats.total_allocated_bytes >= self.collect_after_bytes
+            || stats.gc_pressure_bytes >= self.collect_after_bytes
             || stats.live_objects >= self.collect_after_objects
         {
             if !collection.immediate {
@@ -164,7 +170,7 @@ mod tests {
     fn task_handoff_retains_transient_roots_until_the_owner_releases_them() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -192,23 +198,26 @@ mod tests {
     fn parked_task_owns_suspended_frames_and_allocation_values() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
         vm.start("default", Vec::new()).unwrap();
         let frame_root = vm.allocate(Value::int(41)).unwrap();
         let allocation_root = vm.allocate(Value::int(42)).unwrap();
+        let delivery_root = vm.allocate(Value::int(43)).unwrap();
         let pointer = |root| Value {
             typ: TypeIdentity::Any,
-            data: Data::Pointer(Address {
+            data: Data::Pointer(std::sync::Arc::new(Address {
                 identity: Arc::default(),
                 root,
                 path: Vec::new(),
-            }),
+            })),
         };
         let mut suspended = vm.running.frames.pop().unwrap();
-        suspended.stack.push(pointer(frame_root));
+        suspended.returning = Some(vec![pointer(frame_root)]);
+        suspended.continuation = Some(frame::Continuation::TailReturn(1));
+        suspended.push_result(pointer(delivery_root));
         vm.running.suspended_frames.push(suspended);
         vm.running.allocation_roots.push(pointer(allocation_root));
         vm.running.transient_roots.clear();
@@ -216,12 +225,14 @@ mod tests {
         vm.collect_at_boundary().unwrap();
         assert_eq!(vm.heap.get(frame_root).unwrap().integer().unwrap(), 41);
         assert_eq!(vm.heap.get(allocation_root).unwrap().integer().unwrap(), 42);
+        assert_eq!(vm.heap.get(delivery_root).unwrap().integer().unwrap(), 43);
         let task = vm.blocked.iter_mut().next().unwrap();
         task.suspended_frames.clear();
         task.allocation_roots.clear();
         vm.collect_at_boundary().unwrap();
         assert!(vm.heap.get(frame_root).is_err());
         assert!(vm.heap.get(allocation_root).is_err());
+        assert!(vm.heap.get(delivery_root).is_err());
         vm.close().unwrap();
     }
 
@@ -230,7 +241,7 @@ mod tests {
         for preparing in [true, false] {
             let program = test_helpers::program_with_artifact(|artifact| {
                 artifact["functions"] = serde_json::json!([
-                    {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
                 ]);
             });
             let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -266,20 +277,18 @@ mod tests {
         let programs = [program_with_constant(10), program_with_constant(20)];
         let mut vm = Instance::new(programs[0].clone(), ExecutionLimits::default()).unwrap();
         let allocated = vm.heap_stats().total_allocated_bytes;
+        let bindings = vm.logical_functions.len();
         for index in 0..10_000 {
             let old = vm.revision.generation;
             vm.constant_values.insert((old, 0), Value::int(42));
-            vm.call_bindings
-                .get_mut()
-                .unwrap()
-                .insert((old, 0, 0), (old, 0));
             vm.memory
                 .recycle_frame_storage(old, 0, 0, memory::GuestFrameAccounting::default());
             let plan = vm.prepare_patch(programs[(index + 1) % 2].clone()).unwrap();
             vm.apply_patch(plan).unwrap();
             assert!(vm.retired_revisions.is_empty());
             assert!(vm.constant_values.is_empty());
-            assert!(vm.call_bindings.get_mut().unwrap().is_empty());
+            assert_eq!(vm.logical_functions.len(), bindings);
+            assert_eq!(vm.call_targets.len(), bindings);
             assert!(vm.memory.take_frame(old, 0, 0).is_none());
         }
         assert_eq!(vm.retained_revisions().len(), 1);
@@ -294,13 +303,13 @@ mod tests {
         let closure = vm
             .allocate(Value {
                 typ: TypeIdentity::Any,
-                data: Data::Function(FunctionValue {
+                data: Data::Function(std::sync::Arc::new(FunctionValue {
                     index: Some(0),
                     revision: Some(vm.revision.clone()),
                     module: "examples/arithmetic".into(),
                     function: "fn.Main".into(),
                     captures: vec![],
-                }),
+                })),
             })
             .unwrap();
         vm.globals
@@ -310,10 +319,6 @@ mod tests {
         let current = vm.revision.generation;
         for generation in [old, current] {
             vm.constant_values.insert((generation, 0), Value::int(42));
-            vm.call_bindings
-                .get_mut()
-                .unwrap()
-                .insert((generation, 0, 0), (current, 0));
             vm.memory.recycle_frame_storage(
                 generation,
                 0,
@@ -332,20 +337,8 @@ mod tests {
         vm.collect_garbage().unwrap();
         assert!(vm.retired_revisions.is_empty());
         assert!(!vm.constant_values.contains_key(&(old, 0)));
-        assert!(
-            !vm.call_bindings
-                .get_mut()
-                .unwrap()
-                .contains_key(&(old, 0, 0))
-        );
         assert!(vm.memory.take_frame(old, 0, 0).is_none());
         assert!(vm.constant_values.contains_key(&(current, 0)));
-        assert!(
-            vm.call_bindings
-                .get_mut()
-                .unwrap()
-                .contains_key(&(current, 0, 0))
-        );
         assert!(vm.memory.take_frame(current, 0, 0).is_some());
         vm.close().unwrap();
     }

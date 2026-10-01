@@ -43,6 +43,7 @@ type lowerer struct {
 	typeTable                  *types.TypeTable
 	typeParser                 *types.Parser
 	typeRefs                   map[string]types.TypeRef
+	semanticTypeText           map[types.TypeRef]string
 	resolvedTypes              map[string]string
 	namedUnderlyingTypes       map[string]string
 	relations                  types.Relations

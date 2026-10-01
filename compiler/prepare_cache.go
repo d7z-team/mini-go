@@ -200,8 +200,9 @@ func prepareBuiltResult(request Request, built Result, mode string, manifest []c
 		}()
 	}
 	image, symbols, err := linkProgram(linkRequest{
-		Context:    request.Context,
-		CompilerID: Identity(), ContractID: ir.ExecutionContract,
+		validatedBodies: true,
+		Context:         request.Context,
+		CompilerID:      Identity(), ContractID: ir.ExecutionContract,
 		Target: built.Target,
 		Root:   request.Root, Entries: entries,
 		Artifacts: built.Artifacts, Symbols: built.PackageSymbols, Order: built.Order,

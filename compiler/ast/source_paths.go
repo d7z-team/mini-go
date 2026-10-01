@@ -8,13 +8,17 @@ func RewriteDeclSourcePaths(decl *Decl, rewrite func(string) string) {
 		return
 	}
 	rewriteSpan(&decl.Span, rewrite)
-	rewriteSpan(&decl.Import.PathSpan, rewrite)
-	rewriteIdentifier(&decl.Import.AliasID, rewrite)
+	if !decl.hasPayload() {
+		return
+	}
 	switch decl.Kind {
+	case DeclImport:
+		rewriteSpan(&decl.Import.PathSpan, rewrite)
+		rewriteIdentifier(&decl.Import.AliasID, rewrite)
 	case DeclConst:
-		rewriteValueDeclPaths(&decl.Const, rewrite)
+		rewriteValueDeclPaths(decl.Const, rewrite)
 	case DeclVar:
-		rewriteValueDeclPaths(&decl.Var, rewrite)
+		rewriteValueDeclPaths(decl.Var, rewrite)
 	case DeclType:
 		rewriteIdentifier(&decl.Type.NameID, rewrite)
 		for i := range decl.Type.TypeParams {
@@ -22,7 +26,7 @@ func RewriteDeclSourcePaths(decl *Decl, rewrite func(string) string) {
 		}
 		rewriteTypePaths(&decl.Type.Type, rewrite)
 	case DeclFunc:
-		rewriteFuncPaths(&decl.Func, rewrite)
+		rewriteFuncPaths(decl.Func, rewrite)
 	}
 }
 
@@ -158,8 +162,7 @@ func rewriteExpressionPaths(expr *Expression, rewrite func(string) string) {
 	}
 	rewriteSpan(&expr.Span, rewrite)
 	rewriteIdentifier(&expr.NameID, rewrite)
-	rewriteIdentifier(&expr.FieldID, rewrite)
-	rewriteTypePaths(&expr.Type, rewrite)
+	rewriteTypePaths(expr.Type, rewrite)
 	rewriteExpressionPaths(expr.Left, rewrite)
 	rewriteExpressionPaths(expr.Right, rewrite)
 	rewriteExpressionPaths(expr.Operand, rewrite)
@@ -171,17 +174,12 @@ func rewriteExpressionPaths(expr *Expression, rewrite func(string) string) {
 	rewriteExpressionPaths(expr.Start, rewrite)
 	rewriteExpressionPaths(expr.End, rewrite)
 	rewriteExpressionPaths(expr.Max, rewrite)
-	for i := range expr.Elements {
-		rewriteExpressionPaths(&expr.Elements[i], rewrite)
+	for i := range expr.Items {
+		rewriteExpressionPaths(expr.Items[i].Key, rewrite)
+		rewriteExpressionPaths(&expr.Items[i].Value, rewrite)
 	}
-	for _, entries := range [][]KeyValue{expr.Entries, expr.Items} {
-		for i := range entries {
-			rewriteExpressionPaths(entries[i].Key, rewrite)
-			rewriteExpressionPaths(&entries[i].Value, rewrite)
-		}
-	}
-	if expr.Kind == ExprFunc {
-		rewriteFuncPaths(&expr.Func, rewrite)
+	if expr.Kind == ExprFunc && expr.Func != nil {
+		rewriteFuncPaths(expr.Func, rewrite)
 	}
 }
 

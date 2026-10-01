@@ -12,7 +12,7 @@ import (
 
 func (l *lowerer) validateMapCompositeEntries(expr ast.Expression, keyType string, scope *funcScope) bool {
 	seen := map[string]struct{}{}
-	for _, entry := range compositeEntries(expr) {
+	for _, entry := range expr.Items {
 		if entry.Key == nil {
 			l.add("hirgen.composite.map.key.missing", "map composite entry requires a key", expr.Span)
 			return false
@@ -31,24 +31,14 @@ func (l *lowerer) validateMapCompositeEntries(expr ast.Expression, keyType strin
 }
 
 func (l *lowerer) lowerComposite(expr ast.Expression, scope *funcScope) (ir.Expression, bool) {
-	typ := l.resolveSourceTypeInScope(expr.Type, scope)
+	typ := l.resolveSourceTypePtr(expr.Type, scope)
 	composite, structured := l.semanticCompositeFact(expr)
 	if structured && composite.Type.Valid() && composite.TypeExact {
 		typ = l.formatSemanticType(composite.Type)
 	}
 	switch l.compositeKind(expr) {
 	case "array":
-		if len(expr.Items) != 0 {
-			return l.lowerArrayCompositeItems(expr, scope, typ)
-		}
-		if len(expr.Entries) != 0 {
-			return l.lowerKeyedArrayComposite(expr, scope, typ)
-		}
-		assignments := make([]arrayAssignment, 0, len(expr.Elements))
-		for index, element := range expr.Elements {
-			assignments = append(assignments, arrayAssignment{index: int64(index), value: element})
-		}
-		return l.lowerArrayAssignments(expr, scope, typ, assignments, int64(len(assignments)-1))
+		return l.lowerArrayCompositeItems(expr, scope, typ)
 	case "map":
 		keyType, valueType, _ := l.mapKeyValueTypes(typ)
 		if structured {
@@ -61,8 +51,8 @@ func (l *lowerer) lowerComposite(expr ast.Expression, scope *funcScope) (ir.Expr
 		if !l.validateMapCompositeEntries(expr, keyType, scope) {
 			return ir.Expression{}, false
 		}
-		entries := make([]ir.MapEntry, 0, len(compositeEntries(expr)))
-		for _, entry := range compositeEntries(expr) {
+		entries := make([]ir.MapEntry, 0, len(expr.Items))
+		for _, entry := range expr.Items {
 			key, ok := l.lowerCompositeValueInType(*entry.Key, keyType, scope)
 			if !ok {
 				return ir.Expression{}, false
@@ -79,17 +69,21 @@ func (l *lowerer) lowerComposite(expr ast.Expression, scope *funcScope) (ir.Expr
 		if structured {
 			literalFields = l.semanticStructLiteralFields(expr, composite)
 		}
-		if len(expr.Elements) != 0 && len(expr.Entries) != 0 {
-			l.add("hirgen.composite.struct.mixed", "struct composite literal cannot mix keyed and unkeyed elements", expr.Span)
-			return ir.Expression{}, false
+		unkeyed := len(expr.Items) != 0 && expr.Items[0].Key == nil
+		for _, item := range expr.Items {
+			if (item.Key == nil) != unkeyed {
+				l.add("hirgen.composite.struct.mixed", "struct composite literal cannot mix keyed and unkeyed elements", expr.Span)
+				return ir.Expression{}, false
+			}
 		}
-		if len(expr.Elements) != 0 {
-			if len(literalFields) != len(expr.Elements) {
+		if unkeyed {
+			if len(literalFields) != len(expr.Items) {
 				l.add("hirgen.composite.struct.field_count", "struct composite element count must match field count", expr.Span)
 				return ir.Expression{}, false
 			}
-			values := make([]ir.FieldValue, 0, len(expr.Elements))
-			for i, element := range expr.Elements {
+			values := make([]ir.FieldValue, 0, len(expr.Items))
+			for i, item := range expr.Items {
+				element := item.Value
 				field := literalFields[i]
 				if field.name == "" {
 					l.add("hirgen.composite.struct.field", "struct composite element requires a named field", field.span)
@@ -114,7 +108,7 @@ func (l *lowerer) lowerComposite(expr ast.Expression, scope *funcScope) (ir.Expr
 			}
 			return ir.Expression{Kind: ir.ExprStruct, Type: l.hirType(typ), Fields: values}, true
 		}
-		entries := compositeEntries(expr)
+		entries := expr.Items
 		if len(entries) == 0 {
 			fields := l.zeroStructFieldValues(literalFields)
 			return ir.Expression{Kind: ir.ExprStruct, Type: l.hirType(typ), Fields: fields}, true
@@ -184,8 +178,8 @@ type structLiteralField struct {
 	external bool
 }
 
-func (l *lowerer) structLiteralFields(typ ast.TypeExpr, canonical string) []structLiteralField {
-	if typ.Kind == ast.TypeStruct || typeString(typ) != "" {
+func (l *lowerer) structLiteralFields(typ *ast.TypeExpr, canonical string) []structLiteralField {
+	if typ != nil && (typ.Kind == ast.TypeStruct || typeString(*typ) != "") {
 		fields := l.structDeclFields(typ)
 		if typ.Kind == ast.TypeStruct || len(fields) != 0 {
 			out := make([]structLiteralField, 0, len(fields))
@@ -260,10 +254,13 @@ func structLiteralFieldByName(fields []structLiteralField, name string) (structL
 	return structLiteralField{}, false
 }
 
-func (l *lowerer) structDeclFields(typ ast.TypeExpr) []ast.Field {
-	structType := typ
+func (l *lowerer) structDeclFields(typ *ast.TypeExpr) []ast.Field {
+	if typ == nil {
+		return nil
+	}
+	structType := *typ
 	if typ.Kind != ast.TypeStruct {
-		if decl, ok := l.typeDeclFor(l.resolveSourceType(typ)); ok {
+		if decl, ok := l.typeDeclFor(l.resolveSourceType(*typ)); ok {
 			structType = decl
 		}
 	}
@@ -271,13 +268,6 @@ func (l *lowerer) structDeclFields(typ ast.TypeExpr) []ast.Field {
 		return nil
 	}
 	return structType.Fields
-}
-
-func compositeEntries(expr ast.Expression) []ast.KeyValue {
-	if len(expr.Items) != 0 {
-		return expr.Items
-	}
-	return expr.Entries
 }
 
 type arrayAssignment struct {
@@ -314,37 +304,10 @@ func (l *lowerer) lowerArrayCompositeItems(expr ast.Expression, scope *funcScope
 	return l.lowerArrayAssignments(expr, scope, typ, assignments, maxIndex)
 }
 
-func (l *lowerer) lowerKeyedArrayComposite(expr ast.Expression, scope *funcScope, typ string) (ir.Expression, bool) {
-	assignments := make([]arrayAssignment, 0, len(expr.Entries))
-	seen := map[int64]struct{}{}
-	maxIndex := int64(-1)
-	for _, entry := range expr.Entries {
-		if entry.Key == nil {
-			l.add("hirgen.composite.array.key", "array composite key must be a non-negative integer constant", expr.Span)
-			return ir.Expression{}, false
-		}
-		index, ok := l.arrayCompositeKeyIndex(*entry.Key, scope)
-		if !ok {
-			l.add("hirgen.composite.array.key", "array composite key must be a non-negative integer constant", entry.Key.Span)
-			return ir.Expression{}, false
-		}
-		if _, exists := seen[index]; exists {
-			l.add("hirgen.composite.array.duplicate", "duplicate array composite index", entry.Key.Span)
-			return ir.Expression{}, false
-		}
-		seen[index] = struct{}{}
-		if index > maxIndex {
-			maxIndex = index
-		}
-		assignments = append(assignments, arrayAssignment{index: index, value: entry.Value})
-	}
-	return l.lowerArrayAssignments(expr, scope, typ, assignments, maxIndex)
-}
-
 func (l *lowerer) lowerArrayAssignments(expr ast.Expression, scope *funcScope, typ string, assignments []arrayAssignment, maxIndex int64) (ir.Expression, bool) {
 	length := maxIndex + 1
 	elemType := ""
-	if expr.Type.Kind == ast.TypeArray && expr.Type.LenInfer {
+	if expr.Type != nil && expr.Type.Kind == ast.TypeArray && expr.Type.LenInfer {
 		if expr.Type.Elem != nil {
 			elemType = l.resolveSourceTypeInScope(*expr.Type.Elem, scope)
 		}
@@ -371,7 +334,7 @@ func (l *lowerer) lowerArrayAssignments(expr ast.Expression, scope *funcScope, t
 		l.add("hirgen.composite.array.length", "array composite length is too large", expr.Span)
 		return ir.Expression{}, false
 	}
-	if expr.Type.Kind == ast.TypeArray && expr.Type.LenInfer {
+	if expr.Type != nil && expr.Type.Kind == ast.TypeArray && expr.Type.LenInfer {
 		typ = arrayTypeString(length, elemType)
 	} else {
 		if composite, ok := l.semanticCompositeFact(expr); ok {
@@ -429,8 +392,8 @@ func (l *lowerer) arrayCompositeLength(expr ast.Expression, typ string, scope *f
 	return lengthValue, true, true
 }
 
-func (l *lowerer) arrayCompositeDeclaredLength(typ ast.TypeExpr, scope *funcScope) (int64, bool, bool) {
-	if typ.Kind != ast.TypeArray {
+func (l *lowerer) arrayCompositeDeclaredLength(typ *ast.TypeExpr, scope *funcScope) (int64, bool, bool) {
+	if typ == nil || typ.Kind != ast.TypeArray {
 		return 0, false, true
 	}
 	if typ.Len == nil {

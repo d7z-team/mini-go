@@ -1,0 +1,46 @@
+package main
+
+type Pair [2]int
+
+type Record struct {
+	Values [2]Pair
+}
+
+func argumentCopy(value Record) Record {
+	value.Values[0][0] = 20
+	return value
+}
+
+func Main() int {
+	original := Record{Values: [2]Pair{{1, 2}, {3, 4}}}
+	copy := argumentCopy(original)
+	if original.Values[0][0] != 1 || copy.Values[0][0] != 20 {
+		panic("array argument must have independent value storage")
+	}
+	pointer := &copy.Values[0]
+	view := pointer[:]
+	view[1] = 22
+	if copy.Values[0] != (Pair{20, 22}) || original.Values[0] != (Pair{1, 2}) {
+		panic("slice must share its array address without changing a value copy")
+	}
+	key := Pair{1, 2}
+	lookup := map[Pair]int{key: 42}
+	key[0] = 9
+	if lookup[Pair{1, 2}] != 42 {
+		panic("map key must retain its array value")
+	}
+	queue := make(chan Record, 1)
+	queue <- copy
+	copy.Values[0][0] = 99
+	received := <-queue
+	if received.Values[0] != (Pair{20, 22}) {
+		panic("channel send must preserve the sent array value")
+	}
+	var boxed any = received
+	received.Values[0][1] = 88
+	unboxed := boxed.(Record)
+	if unboxed.Values[0][1] != 22 {
+		panic("interface boxing must preserve its array value")
+	}
+	return unboxed.Values[0][0] + unboxed.Values[0][1]
+}

@@ -16,24 +16,24 @@ func TestLowerCompoundAssignment(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names:  []string{"x"},
 								Type:   intType,
-								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: intType}},
+								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}},
 							},
 						}},
 					}, {
 						Kind:  ast.StmtAssign,
 						Op:    "+=",
 						Left:  []ast.Expression{{Kind: ast.ExprIdent, Name: "x"}},
-						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: intType}},
+						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}},
 					}, {
 						Kind:    ast.StmtReturn,
 						Results: []ast.Expression{{Kind: ast.ExprIdent, Name: "x"}},
@@ -70,24 +70,24 @@ func TestLowerBitClearAssignment(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names:  []string{"bits"},
 								Type:   intType,
-								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "7", Type: intType}},
+								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "7", Type: &intType}},
 							},
 						}},
 					}, {
 						Kind:  ast.StmtAssign,
 						Op:    "&^=",
 						Left:  []ast.Expression{{Kind: ast.ExprIdent, Name: "bits"}},
-						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: intType}},
+						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}},
 					}, {
 						Kind:    ast.StmtReturn,
 						Results: []ast.Expression{{Kind: ast.ExprIdent, Name: "bits"}},
@@ -118,17 +118,17 @@ func TestLowerIncDecAssignment(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names:  []string{"x"},
 								Type:   intType,
-								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: intType}},
+								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}},
 							},
 						}},
 					}, {
@@ -184,21 +184,19 @@ func TestLowerIncDecIndexAndMemberAssignment(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"arr"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
-									Kind: ast.ExprComposite,
-									Type: arrayType,
-									Elements: []ast.Expression{
-										{Kind: ast.ExprLiteral, Literal: "40", Type: intType},
-									},
+									Kind:  ast.ExprComposite,
+									Type:  &arrayType,
+									Items: []ast.KeyValue{{Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}}},
 								}},
 							},
 						}},
@@ -206,15 +204,15 @@ func TestLowerIncDecIndexAndMemberAssignment(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"box"},
 								Type:  structType,
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: structType,
-									Entries: []ast.KeyValue{{
+									Type: &structType,
+									Items: []ast.KeyValue{{
 										Key:   ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Value"}),
-										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: intType},
+										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: &intType},
 									}},
 								}},
 							},
@@ -225,7 +223,7 @@ func TestLowerIncDecIndexAndMemberAssignment(t *testing.T) {
 						Left: []ast.Expression{{
 							Kind:    ast.ExprIndex,
 							Operand: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "arr"}),
-							Index:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "0", Type: intType}),
+							Index:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}),
 						}},
 					}, {
 						Kind: ast.StmtAssign,
@@ -272,21 +270,19 @@ func TestLowerCompoundIndexAndMemberAssignment(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"arr"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
-									Kind: ast.ExprComposite,
-									Type: arrayType,
-									Elements: []ast.Expression{
-										{Kind: ast.ExprLiteral, Literal: "40", Type: intType},
-									},
+									Kind:  ast.ExprComposite,
+									Type:  &arrayType,
+									Items: []ast.KeyValue{{Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}}},
 								}},
 							},
 						}},
@@ -294,15 +290,15 @@ func TestLowerCompoundIndexAndMemberAssignment(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"box"},
 								Type:  structType,
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: structType,
-									Entries: []ast.KeyValue{{
+									Type: &structType,
+									Items: []ast.KeyValue{{
 										Key:   ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Value"}),
-										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: intType},
+										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: &intType},
 									}},
 								}},
 							},
@@ -313,9 +309,9 @@ func TestLowerCompoundIndexAndMemberAssignment(t *testing.T) {
 						Left: []ast.Expression{{
 							Kind:    ast.ExprIndex,
 							Operand: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "arr"}),
-							Index:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "0", Type: intType}),
+							Index:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}),
 						}},
-						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: intType}},
+						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}},
 					}, {
 						Kind: ast.StmtAssign,
 						Op:   "+=",
@@ -324,7 +320,7 @@ func TestLowerCompoundIndexAndMemberAssignment(t *testing.T) {
 							Operand: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "box"}),
 							Field:   "Value",
 						}},
-						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: intType}},
+						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}},
 					}}},
 				},
 			}},

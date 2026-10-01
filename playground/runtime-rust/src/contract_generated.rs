@@ -2,7 +2,7 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-pub const CONTRACT_JSON: &str = r###"{"compiler_id":"ea65e029b0ee0c7061ef953d185d014a9a352940a55e174ab2318dc3641432a7","execution_format":"mini-go-execution-image","execution_version":15,"execution_contract":"minigo.execution.v16","intrinsic_schema":"minigo.intrinsic.v5","spec":{"format":"mini-go-ir","version":22,"opcode_set":"minigo.ir.v10","symbols_format":"mini-go-program-symbols","symbols_version":1,"symbols_contract":"minigo.symbols.v1","artifact_fields":[{"name":"format","type":"string","required":true,"rule":"must be \"mini-go-ir\""},{"name":"version","type":"int","required":true,"rule":"must match current IR version"},{"name":"opcode_set","type":"string","required":true,"rule":"must be \"minigo.ir.v10\""},{"name":"module","type":"Module","required":true},{"name":"type_table","type":"TypeTable","required":true,"rule":"structured TypeRef graph; no canonical type text"},{"name":"constants","type":"[]Constant"},{"name":"globals","type":"[]Global"},{"name":"functions","type":"[]Function"},{"name":"exports","type":"[]Export"},{"name":"requirements","type":"[]Requirement"}],"module_fields":[{"name":"path","type":"string","required":true},{"name":"package","type":"string","required":true}],"type_ref_fields":[{"name":"kind","type":"TypeKind","required":true},{"name":"primitive","type":"PrimitiveKind"},{"name":"named","type":"{module_path,decl_id}","rule":"stable named identity"},{"name":"node","type":"type-node-id","rule":"references TypeTable.nodes"}],"type_node_fields":[{"name":"id","type":"type-node-id","required":true},{"name":"kind","type":"TypeKind","required":true},{"name":"name","type":"string"},{"name":"primitive","type":"PrimitiveKind"},{"name":"identity","type":"{module_path,decl_id}"},{"name":"alias","type":"bool"},{"name":"alias_target","type":"TypeRef"},{"name":"underlying","type":"TypeRef"},{"name":"elem","type":"TypeRef"},{"name":"key","type":"TypeRef"},{"name":"length","type":"int64","rule":"arrays require a non-negative length"},{"name":"direction","type":"ChannelDir"},{"name":"signature","type":"FunctionSignature"},{"name":"tuple","type":"[]TypeRef"},{"name":"fields","type":"[]Field"},{"name":"methods","type":"[]Method"},{"name":"terms","type":"[]TypeTerm"},{"name":"type_set","type":"bool"},{"name":"constraint","type":"TypeRef","rule":"compiler-only"},{"name":"base","type":"TypeRef","rule":"compiler-only"},{"name":"type_args","type":"[]TypeRef","rule":"compiler-only"}],"function_type_fields":[{"name":"params","type":"[]{type:TypeRef}"},{"name":"results","type":"[]TypeRef"},{"name":"variadic","type":"bool","rule":"requires a final slice parameter"}],"constant_fields":[{"name":"id","type":"string","required":true},{"name":"type","type":"TypeRef","required":true},{"name":"value","type":"json","required":true,"rule":"must decode according to type; byte slice constants use canonical base64 strings; exact untyped numbers use canonical text"},{"name":"untyped","type":"bool"}],"global_fields":[{"name":"id","type":"string","required":true},{"name":"type","type":"TypeRef","required":true}],"function_fields":[{"name":"id","type":"string","required":true},{"name":"revision_local","type":"bool"},{"name":"signature","type":"FunctionSignature","required":true},{"name":"locals","type":"[]Local"},{"name":"result_locals","type":"[]local-id","rule":"must match named result order"},{"name":"upvalues","type":"[]Upvalue"},{"name":"max_stack","type":"int"},{"name":"instructions","type":"[]Instruction"}],"local_fields":[{"name":"id","type":"local-id","required":true},{"name":"type","type":"TypeRef","required":true}],"upvalue_fields":[{"name":"id","type":"upvalue-id","required":true},{"name":"type","type":"TypeRef","required":true}],"instruction_fields":[{"name":"op","type":"opcode","required":true},{"name":"payload","type":"opcode-payload"}],"export_fields":[{"name":"name","type":"string","required":true},{"name":"kind","type":"string","required":true},{"name":"id","type":"string","required":true},{"name":"type","type":"TypeRef","rule":"required for constant exports"},{"name":"untyped","type":"bool","rule":"only valid for constant exports"}],"requirement_fields":[{"name":"kind","type":"string","required":true},{"name":"module_path","type":"string","required":true},{"name":"hash","type":"string"},{"name":"exports","type":"[]string"}],"program_symbol_fields":[{"name":"format","type":"string","required":true},{"name":"version","type":"int","required":true},{"name":"compiler_id","type":"string","required":true},{"name":"contract_id","type":"string","required":true},{"name":"program_hash","type":"sha256-string","required":true},{"name":"optimization","type":"uint8"},{"name":"packages","type":"map[module-path]PackageSymbols","required":true},{"name":"hash","type":"sha256-string","required":true}],"package_symbol_fields":[{"name":"module_path","type":"string","required":true},{"name":"code_hash","type":"sha256-string","required":true},{"name":"source_hash","type":"sha256-string"},{"name":"files","type":"[]SourceFile"},{"name":"globals","type":"[]GlobalSymbol"},{"name":"functions","type":"[]FunctionSymbols"}],"global_symbol_fields":[{"name":"id","type":"global-id","required":true},{"name":"name","type":"string","required":true}],"function_symbol_fields":[{"name":"id","type":"function-id","required":true},{"name":"name","type":"string","required":true},{"name":"generated","type":"bool"},{"name":"declaration","type":"Location"},{"name":"locals","type":"[]LocalSymbol"},{"name":"upvalues","type":"[]UpvalueSymbol"},{"name":"scopes","type":"[]DebugScope"},{"name":"locations","type":"[]InstructionSymbol"}],"local_symbol_fields":[{"name":"id","type":"local-id","required":true},{"name":"name","type":"string"},{"name":"scope","type":"scope-id"},{"name":"generated","type":"bool"},{"name":"declaration","type":"Location"}],"upvalue_symbol_fields":[{"name":"id","type":"upvalue-id","required":true},{"name":"name","type":"string"}],"instruction_symbol_fields":[{"name":"pc","type":"int","required":true},{"name":"points","type":"[]Location","required":true,"rule":"ordered unique source locations; first is primary"}],"debug_scope_fields":[{"name":"id","type":"scope-id","required":true},{"name":"parent","type":"scope-id"},{"name":"ranges","type":"[]PCRange"}],"pc_range_fields":[{"name":"start","type":"int","required":true},{"name":"end","type":"int","required":true,"rule":"half-open final instruction range [start,end)"}],"source_file_fields":[{"name":"id","type":"string","required":true},{"name":"path","type":"string","required":true},{"name":"hash","type":"sha256-string"}],"location_fields":[{"name":"file","type":"debug-file-id-or-path","required":true},{"name":"line","type":"int","required":true,"rule":"positive"},{"name":"column","type":"int","required":true,"rule":"non-negative"}],"validation_limits":[{"name":"MaxTypes","type":"int","rule":"maximum type declarations; non-positive disables this limit"},{"name":"MaxConstants","type":"int","rule":"maximum constants; non-positive disables this limit"},{"name":"MaxGlobals","type":"int","rule":"maximum globals; non-positive disables this limit"},{"name":"MaxFunctions","type":"int","rule":"maximum functions; non-positive disables this limit"},{"name":"MaxExports","type":"int","rule":"maximum exports; non-positive disables this limit"},{"name":"MaxRequirements","type":"int","rule":"maximum module requirements; non-positive disables this limit"},{"name":"MaxInstructions","type":"int","rule":"maximum total instructions; non-positive disables this limit"},{"name":"MaxLocalsPerFunction","type":"int","rule":"maximum locals per function; non-positive disables this limit"},{"name":"MaxUpvaluesPerFunction","type":"int","rule":"maximum upvalues per function; non-positive disables this limit"},{"name":"MaxPayloadBytes","type":"int","rule":"maximum single payload bytes and total instruction payload bytes; non-positive disables this limit"},{"name":"MaxConstantBytes","type":"int","rule":"maximum single constant bytes and total constant bytes; non-positive disables this limit"}],"payloads":[{"name":"select","fields":[{"name":"index","type":"local-id","required":true},{"name":"default","type":"bool"},{"name":"cases","type":"[]select-case","rule":"evaluated channel local and either send local or receive value/ok locals"}]},{"name":"const","fields":[{"name":"constant","type":"constant-id","required":true}]},{"name":"local","fields":[{"name":"local","type":"local-id","required":true},{"name":"rebind","type":"bool","rule":"store_local only: replace the runtime local before a declaration binding is stored"}]},{"name":"upvalue","fields":[{"name":"upvalue","type":"upvalue-id","required":true}]},{"name":"global","fields":[{"name":"global","type":"global-id","required":true}]},{"name":"address","fields":[{"name":"kind","type":"enum(local,upvalue,global,export)","required":true},{"name":"local","type":"local-id"},{"name":"upvalue","type":"upvalue-id"},{"name":"global","type":"global-id"},{"name":"module_path","type":"module-path","rule":"required for export addresses; mutually exclusive with local, upvalue and global ids"},{"name":"export","type":"export-name","rule":"required for export addresses; must resolve to a global variable"},{"name":"path","type":"[]address-segment(field,index,indirect)"}]},{"name":"type","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"variadic","type":"bool","rule":"when true, type must be a function signature with a final Slice<T> parameter"}]},{"name":"operator","fields":[{"name":"operator","type":"string","required":true}]},{"name":"make_sequence","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"element_count","type":"int","required":true,"rule":"non-negative"}]},{"name":"make_map","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"entry_count","type":"int","required":true,"rule":"non-negative key/value pair count"},{"name":"has_capacity","type":"bool","rule":"when true, pop a capacity hint before key/value pairs"}]},{"name":"make_struct","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"fields","type":"[]field-name"}]},{"name":"make_slice","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"has_capacity","type":"bool"}]},{"name":"make_waitable","fields":[{"name":"type","type":"canonical-type","required":true}]},{"name":"count","fields":[{"name":"count","type":"int","required":true,"rule":"non-negative"},{"name":"expand","type":"bool"}]},{"name":"field","fields":[{"name":"field","type":"field-name","required":true}]},{"name":"export","fields":[{"name":"module_path","type":"module-path","required":true},{"name":"export","type":"export-name","required":true}]},{"name":"init_module","fields":[{"name":"module_path","type":"module-path","required":true}]},{"name":"label","fields":[{"name":"label","type":"label","required":true}]},{"name":"jump","fields":[{"name":"label","type":"label","required":true}]},{"name":"call","fields":[{"name":"module_path","type":"module-path","rule":"optional exact target module; omitted for the current module"},{"name":"function","type":"function-id"},{"name":"arg_count","type":"int","required":true,"rule":"non-negative"},{"name":"result_count","type":"int","rule":"non-negative"}]},{"name":"call_interface","fields":[{"name":"interface_type","type":"canonical-type","required":true},{"name":"method","type":"method-name","required":true},{"name":"arg_count","type":"int","required":true,"rule":"non-negative"},{"name":"result_count","type":"int","rule":"non-negative"}]},{"name":"closure","fields":[{"name":"module_path","type":"module-path","rule":"optional exact target module; omitted for the current module"},{"name":"function","type":"function-id","required":true},{"name":"captures","type":"[]address","rule":"local, upvalue or global captures in the creating frame"}]},{"name":"return","fields":[{"name":"result_count","type":"int","required":true,"rule":"non-negative"}]},{"name":"defer","fields":[{"name":"owner_depth","type":"int","rule":"optional non-negative caller depth; omitted or zero registers on the current frame"}]},{"name":"call_ffi","fields":[{"name":"arg_count","type":"int","required":true,"rule":"exactly two: route and payload"},{"name":"result_count","type":"int","required":true,"rule":"exactly three: payload, message, status"}]},{"name":"call_intrinsic","fields":[{"name":"id","type":"intrinsic-id","required":true},{"name":"arg_count","type":"int","required":true,"rule":"non-negative"},{"name":"result_count","type":"int","rule":"non-negative"}]}],"opcodes":[{"op":"select","category":"waitable","payload":"select","stack":"no change","notes":"commit exactly one communication, storing index and receive results in locals; may suspend"},{"op":"const","category":"stack_value","payload":"const","stack":"push constant"},{"op":"zero","category":"stack_value","payload":"type","stack":"push zero value"},{"op":"pop","category":"stack_value","stack":"pop 1"},{"op":"unary","category":"stack_value","payload":"operator","stack":"pop 1, push 1"},{"op":"binary","category":"stack_value","payload":"operator","stack":"pop 2, push 1"},{"op":"load_local","category":"stack_value","payload":"local","stack":"push local"},{"op":"store_local","category":"stack_value","payload":"local","stack":"pop value"},{"op":"load_upvalue","category":"stack_value","payload":"upvalue","stack":"push upvalue"},{"op":"store_upvalue","category":"stack_value","payload":"upvalue","stack":"pop value"},{"op":"load_global","category":"stack_value","payload":"global","stack":"push global"},{"op":"store_global","category":"stack_value","payload":"global","stack":"pop value"},{"op":"label","category":"control","payload":"label","stack":"no change"},{"op":"jump","category":"control","payload":"jump","stack":"no change","terminal":true},{"op":"jump_if","category":"control","payload":"jump","stack":"pop condition"},{"op":"return","category":"control","payload":"return","stack":"pop count","terminal":true},{"op":"panic","category":"control","stack":"pop panic value","terminal":true},{"op":"recover","category":"control","stack":"push recovered panic value"},{"op":"defer_push","category":"control","payload":"defer","stack":"pop function","notes":"owner_depth lets compiler-lowered helper frames register a deferred call on an enclosing source frame"},{"op":"call_value","category":"call","payload":"call","stack":"pop callee and args, push results"},{"op":"call_direct","category":"call","payload":"call","stack":"pop args, push results"},{"op":"tail_call_direct","category":"call","payload":"call","stack":"pop args and complete through target","terminal":true},{"op":"call_interface","category":"call","payload":"call_interface","stack":"pop interface receiver and args, push results","notes":"dynamic dispatch by canonical interface method metadata; not Go source selector syntax"},{"op":"make_closure","category":"call","payload":"closure","stack":"push closure"},{"op":"make_sequence","category":"composite","payload":"make_sequence","stack":"pop elements, push sequence"},{"op":"make_map","category":"composite","payload":"make_map","stack":"pop key/value pairs, push map"},{"op":"make_struct","category":"composite","payload":"make_struct","stack":"pop fields, push struct"},{"op":"make_slice","category":"composite","payload":"make_slice","stack":"pop len[/cap], push slice"},{"op":"make_waitable","category":"resource","payload":"make_waitable","stack":"pop capacity, push waitable resource","notes":"compiler-defined communication resource; backend provides the waitable protocol"},{"op":"load_index","category":"composite","stack":"pop object and index, push value"},{"op":"load_index_ok","category":"composite","stack":"pop map and key, push value and ok"},{"op":"string_rune_at","category":"composite","stack":"pop string and index, push rune"},{"op":"string_next_rune_index","category":"composite","stack":"pop string and index, push next index"},{"op":"slice","category":"composite","stack":"pop object/low/high/max, push slice"},{"op":"len","category":"composite","stack":"pop object, push len"},{"op":"cap","category":"composite","stack":"pop object, push cap"},{"op":"append","category":"composite","payload":"count","stack":"pop slice and values, push slice"},{"op":"delete","category":"composite","stack":"pop map and key"},{"op":"clear","category":"composite","stack":"pop container"},{"op":"copy","category":"composite","stack":"pop dst/src, push copied count"},{"op":"map_keys","category":"composite","stack":"pop map, push array of keys"},{"op":"map_iter_init","category":"composite","payload":"local","stack":"pop map; replace frame-owned iterator identified by local"},{"op":"map_iter_next","category":"composite","payload":"local","stack":"push key, value, ok; skip deleted entries and observe current values"},{"op":"map_iter_close","category":"composite","payload":"local","stack":"no change; release frame-owned iterator"},{"op":"load_field","category":"composite","payload":"field","stack":"pop object, push field"},{"op":"store_index","category":"composite","stack":"pop object/index/value"},{"op":"store_field","category":"composite","payload":"field","stack":"pop object/value"},{"op":"type_assert","category":"type_pointer","payload":"type","stack":"pop value, push asserted value"},{"op":"type_assert_ok","category":"type_pointer","payload":"type","stack":"pop value, push value and ok"},{"op":"convert","category":"type_pointer","payload":"type","stack":"pop value, push converted value"},{"op":"address_of","category":"type_pointer","payload":"address","stack":"push pointer","notes":"export addresses initialize the target module through the scheduler and refer to its global slot"},{"op":"load_indirect","category":"type_pointer","stack":"pop pointer, push value"},{"op":"store_indirect","category":"type_pointer","stack":"pop pointer/value"},{"op":"waitable_send","category":"waitable","stack":"pop waitable/value","notes":"compiler-defined send capability; may block through the generic scheduler"},{"op":"waitable_recv","category":"waitable","stack":"pop waitable, push value","notes":"compiler-defined receive capability"},{"op":"waitable_recv_ok","category":"waitable","stack":"pop waitable, push value/ok","notes":"compiler-defined receive capability with completion state"},{"op":"waitable_can_recv","category":"waitable","stack":"pop waitable, push ready","notes":"receive readiness probe"},{"op":"waitable_try_recv","category":"waitable","stack":"pop waitable, push value/ready","notes":"non-blocking receive attempt"},{"op":"waitable_try_send","category":"waitable","stack":"pop waitable/value, push ready","notes":"non-blocking send attempt"},{"op":"waitable_can_send","category":"waitable","stack":"pop waitable, push ready","notes":"send readiness probe"},{"op":"waitable_close","category":"waitable","stack":"pop waitable","notes":"compiler-defined resource close operation"},{"op":"init_module","category":"module","payload":"init_module","stack":"no change"},{"op":"load_export","category":"module","payload":"export","stack":"push module export"},{"op":"spawn","category":"scheduler","payload":"call","stack":"pop callee and args"},{"op":"call_ffi","category":"host","payload":"call_ffi","stack":"pop route/payload, push payload/message/status","notes":"opaque asynchronous host boundary; status: 0 success, 1 route unavailable, 2 failure"},{"op":"call_intrinsic","category":"runtime","payload":"call_intrinsic","stack":"pop args, push results"}],"type_rules":["TypeRef.kind selects either an inline void/any/primitive/named value or a TypeTable node","named identity is the pair (module_path, decl_id)","slice and array are distinct kinds; array length is a non-negative part of type identity","function variadic metadata is retained in FunctionSignature","type parameters and instances are compiler-only and are rejected by runtime validation"],"hash_rule":"sha256 over EncodeJSON canonical artifact bytes; canonical JSON is validated, emitted with stable struct field order and no trailing newline","requirement_rule":"artifact requirements declare source modules by exact module_path, hash, and exports; loader rejects missing or mismatched requirements before execution","symbol_rule":"ProgramSymbols is an optional immutable sidecar bound to one ProgramHash and exact package CodeHash values; it never changes executable identity"},"intrinsics":[{"ID":"crypto.rand.read","SourceModule":"crypto/rand","SourceFunction":"runtimeRead","Signature":"function(Slice<Uint8>) tuple(Int, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":3,"Effect":1},{"ID":"crypto.sha256.block","SourceModule":"crypto/sha256","SourceFunction":"runtimeBlock","Signature":"function(Array<8, Uint32>, Slice<Uint8>) Array<8, Uint32>","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"ffi.call","SourceModule":"ffi","SourceFunction":"runtimeCall","Signature":"function(String, Slice<Uint8>) tuple(Slice<Uint8>, String, Int)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":3},{"ID":"math.float32_bits","SourceModule":"math","SourceFunction":"runtimeFloat32bits","Signature":"function(Float32) Uint32","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"math.float32_from_bits","SourceModule":"math","SourceFunction":"runtimeFloat32frombits","Signature":"function(Uint32) Float32","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"math.float64_bits","SourceModule":"math","SourceFunction":"runtimeFloat64bits","Signature":"function(Float64) Uint64","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"math.float64_from_bits","SourceModule":"math","SourceFunction":"runtimeFloat64frombits","Signature":"function(Uint64) Float64","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"reflect.array_of","SourceModule":"reflect","SourceFunction":"runtimeArrayOf","Signature":"function(Int, reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.assignable_to","SourceModule":"reflect","SourceFunction":"runtimeAssignableTo","Signature":"function(reflect.Type, reflect.Type) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.chan_of","SourceModule":"reflect","SourceFunction":"runtimeChanOf","Signature":"function(reflect.ChanDir, reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.convertible_to","SourceModule":"reflect","SourceFunction":"runtimeConvertibleTo","Signature":"function(reflect.Type, reflect.Type) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.deep_equal","SourceModule":"reflect","SourceFunction":"runtimeDeepEqual","Signature":"function(Any, Any) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.func_of","SourceModule":"reflect","SourceFunction":"runtimeFuncOf","Signature":"function(Slice<reflect.Type>, Slice<reflect.Type>, Bool) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":0},{"ID":"reflect.implements","SourceModule":"reflect","SourceFunction":"runtimeImplements","Signature":"function(reflect.Type, reflect.Type) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.make_chan","SourceModule":"reflect","SourceFunction":"runtimeMakeChan","Signature":"function(reflect.Type, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.make_func","SourceModule":"reflect","SourceFunction":"runtimeMakeFunc","Signature":"function(reflect.Type, function(Slice<reflect.Value>) Slice<reflect.Value>) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.make_map","SourceModule":"reflect","SourceFunction":"runtimeMakeMap","Signature":"function(reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.make_slice","SourceModule":"reflect","SourceFunction":"runtimeMakeSlice","Signature":"function(reflect.Type, Int, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":0},{"ID":"reflect.map_of","SourceModule":"reflect","SourceFunction":"runtimeMapOf","Signature":"function(reflect.Type, reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.new","SourceModule":"reflect","SourceFunction":"runtimeNew","Signature":"function(reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.pointer_to","SourceModule":"reflect","SourceFunction":"runtimePointerTo","Signature":"function(reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.same_reference","SourceModule":"reflect","SourceFunction":"runtimeSameReference","Signature":"function(reflect.Value, reflect.Value) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.select","SourceModule":"reflect","SourceFunction":"runtimeSelect","Signature":"function(Slice<reflect.SelectCase>) tuple(Int, reflect.Value, Bool, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":5,"Effect":3},{"ID":"reflect.slice_of","SourceModule":"reflect","SourceFunction":"runtimeSliceOf","Signature":"function(reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.struct_of","SourceModule":"reflect","SourceFunction":"runtimeStructOf","Signature":"function(Slice<reflect.StructField>) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.type_descriptor","SourceModule":"reflect","SourceFunction":"runtimeTypeDescriptor","Signature":"function(reflect.Type) tuple(reflect.runtimeTypeData, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.type_field","SourceModule":"reflect","SourceFunction":"runtimeTypeField","Signature":"function(reflect.Type, Int) tuple(reflect.StructField, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.type_method","SourceModule":"reflect","SourceFunction":"runtimeTypeMethod","Signature":"function(reflect.Type, Int) tuple(reflect.Method, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.type_of","SourceModule":"reflect","SourceFunction":"runtimeTypeOf","Signature":"function(Any) reflect.Type","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"reflect.value_addr","SourceModule":"reflect","SourceFunction":"runtimeValueAddr","Signature":"function(reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.value_append","SourceModule":"reflect","SourceFunction":"runtimeValueAppend","Signature":"function(reflect.Value, Slice<reflect.Value>) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.value_append_slice","SourceModule":"reflect","SourceFunction":"runtimeValueAppendSlice","Signature":"function(reflect.Value, reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.value_call","SourceModule":"reflect","SourceFunction":"runtimeValueCall","Signature":"function(reflect.Value, Slice<reflect.Value>, Bool) tuple(Slice<reflect.Value>, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":2},{"ID":"reflect.value_close","SourceModule":"reflect","SourceFunction":"runtimeValueClose","Signature":"function(reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":2,"Effect":1},{"ID":"reflect.value_convert","SourceModule":"reflect","SourceFunction":"runtimeValueConvert","Signature":"function(reflect.Value, reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_copy","SourceModule":"reflect","SourceFunction":"runtimeValueCopy","Signature":"function(reflect.Value, reflect.Value) tuple(Int, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.value_current","SourceModule":"reflect","SourceFunction":"runtimeValueCurrent","Signature":"function(reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.value_elem","SourceModule":"reflect","SourceFunction":"runtimeValueElem","Signature":"function(reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.value_equal","SourceModule":"reflect","SourceFunction":"runtimeValueEqual","Signature":"function(reflect.Value, reflect.Value) tuple(Bool, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_field_by_index","SourceModule":"reflect","SourceFunction":"runtimeValueFieldByIndex","Signature":"function(reflect.Value, Slice<Int>) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_grow","SourceModule":"reflect","SourceFunction":"runtimeValueGrow","Signature":"function(reflect.Value, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_index","SourceModule":"reflect","SourceFunction":"runtimeValueIndex","Signature":"function(reflect.Value, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_method","SourceModule":"reflect","SourceFunction":"runtimeValueMethod","Signature":"function(reflect.Value, reflect.Method) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_of","SourceModule":"reflect","SourceFunction":"runtimeValueOf","Signature":"function(Any) reflect.Value","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"reflect.value_recv","SourceModule":"reflect","SourceFunction":"runtimeValueRecv","Signature":"function(reflect.Value) tuple(reflect.Value, Bool, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":4,"Effect":3},{"ID":"reflect.value_send","SourceModule":"reflect","SourceFunction":"runtimeValueSend","Signature":"function(reflect.Value, reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":3},{"ID":"reflect.value_set","SourceModule":"reflect","SourceFunction":"runtimeValueSet","Signature":"function(reflect.Value, reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_set_cap","SourceModule":"reflect","SourceFunction":"runtimeValueSetCap","Signature":"function(reflect.Value, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_set_len","SourceModule":"reflect","SourceFunction":"runtimeValueSetLen","Signature":"function(reflect.Value, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_set_map_index","SourceModule":"reflect","SourceFunction":"runtimeValueSetMapIndex","Signature":"function(reflect.Value, reflect.Value, reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":3,"ResultCount":2,"Effect":1},{"ID":"reflect.value_slice","SourceModule":"reflect","SourceFunction":"runtimeValueSlice","Signature":"function(reflect.Value, Int, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":0},{"ID":"reflect.value_slice3","SourceModule":"reflect","SourceFunction":"runtimeValueSlice3","Signature":"function(reflect.Value, Int, Int, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":4,"ResultCount":3,"Effect":0},{"ID":"reflect.value_swap","SourceModule":"reflect","SourceFunction":"runtimeValueSwap","Signature":"function(reflect.Value, Int, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":3,"ResultCount":2,"Effect":1},{"ID":"reflect.value_try_recv","SourceModule":"reflect","SourceFunction":"runtimeValueTryRecv","Signature":"function(reflect.Value) tuple(reflect.Value, Bool, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":4,"Effect":1},{"ID":"reflect.value_try_send","SourceModule":"reflect","SourceFunction":"runtimeValueTrySend","Signature":"function(reflect.Value, reflect.Value) tuple(Bool, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.zero","SourceModule":"reflect","SourceFunction":"runtimeZero","Signature":"function(reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"sync.mutex_lock","SourceModule":"sync","SourceFunction":"runtimeMutexLock","Signature":"function(Ptr<Waitable<Bool>>)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":0,"Effect":3},{"ID":"sync.mutex_try_lock","SourceModule":"sync","SourceFunction":"runtimeMutexTryLock","Signature":"function(Ptr<Waitable<Bool>>) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":1},{"ID":"sync.mutex_unlock","SourceModule":"sync","SourceFunction":"runtimeMutexUnlock","Signature":"function(Ptr<Waitable<Bool>>)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":0,"Effect":1},{"ID":"time.now","SourceModule":"time","SourceFunction":"runtimeNow","Signature":"function() tuple(Int64, Int64)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":0,"ResultCount":2,"Effect":4},{"ID":"time.timer_start","SourceModule":"time","SourceFunction":"runtimeTimerStart","Signature":"function(Waitable<Bool>, Int64, Int64)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":3,"ResultCount":0,"Effect":1},{"ID":"time.timer_stop","SourceModule":"time","SourceFunction":"runtimeTimerStop","Signature":"function(Waitable<Bool>) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":1}],"costs":{"byte":1,"map_entry":32,"node":128,"slot":16},"buffer_layout":{"value_bytes":176,"page_bytes":8192,"growth_threshold":256,"small_capacities":[0,1,2,3,4,5,6,7,8,10,10,11,13,13,15,15,17,17,18,19,23,23,23,23,27,27,27,27,30,30,30,34,34,34,34,37,37,37,38,39,46,46,46,46,46,46,46,53,53,53,53,53,53,53,55,55,58,58,58,61,61,61,69,69,69,69,69,69,69,69,77,77,77,77,77,77,77,77,81,81,81,81,93,93,93,93,93,93,93,93,93,93,93,93,104,104,104,104,104,104,104,104,104,104,104,108,108,108,108,116,116,116,116,116,116,116,116,123,123,123,123,123,123,123,139,139,139,139,139,139,139,139,139,139,139,139,139,139,139,139,154,154,154,154,154,154,154,154,154,154,154,154,154,154,154,162,162,162,162,162,162,162,162,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,186,232],"defer_bytes":56,"defer_capacities":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,15,15,18,18,18,20,20,22,22,25,25,25,27,27,31,31,31,31,36,36,36,36,36,41,41,41,41,41,47,47,47,47,47,47,54,54,54,54,54,54,54,57,57,57,61,61,61,61,73,73,73,73,73,73,73,73,73,73,73,73,86,86,86,86,86,86,86,86,86,86,86,86,86,95,95,95,95,95,95,95,95,95,109,109,109,109,109,109,109,109,109,109,109,109,109,109,116,116,116,116,116,116,116,121,121,121,121,121,123,123,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,173,173,173,173,182,182,182,182,182,182,182,182,182,194,194,194,194,194,194,194,194,194,194,194,194,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,255,255,255,255,255,255,255,255,255,255,255,255,255,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,340,340,340,340,340,340,340,340,340,340,340,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,731]}}"###;
+pub const CONTRACT_JSON: &str = r###"{"compiler_id":"a44f4b9a0c49d31129361fc56898789daa9e0c938b795edf8415adfa1a3b3f4c","execution_format":"mini-go-execution-image","execution_version":18,"execution_contract":"minigo.execution.v19","intrinsic_schema":"minigo.intrinsic.v9","spec":{"format":"mini-go-ir","version":30,"opcode_set":"minigo.ir.v15","symbols_format":"mini-go-program-symbols","symbols_version":1,"symbols_contract":"minigo.symbols.v1","artifact_fields":[{"name":"format","type":"string","required":true,"rule":"must be \"mini-go-ir\""},{"name":"version","type":"int","required":true,"rule":"must match current IR version"},{"name":"opcode_set","type":"string","required":true,"rule":"must be \"minigo.ir.v15\""},{"name":"module","type":"Module","required":true},{"name":"type_table","type":"TypeTable","required":true,"rule":"structured TypeRef graph; no canonical type text"},{"name":"constants","type":"[]Constant"},{"name":"globals","type":"[]Global"},{"name":"functions","type":"[]Function"},{"name":"exports","type":"[]Export"},{"name":"requirements","type":"[]Requirement"}],"module_fields":[{"name":"path","type":"string","required":true},{"name":"package","type":"string","required":true}],"type_ref_fields":[{"name":"kind","type":"TypeKind","required":true},{"name":"primitive","type":"PrimitiveKind"},{"name":"named","type":"{module_path,decl_id}","rule":"stable named identity"},{"name":"node","type":"type-node-id","rule":"references TypeTable.nodes"}],"type_node_fields":[{"name":"id","type":"type-node-id","required":true},{"name":"kind","type":"TypeKind","required":true},{"name":"name","type":"string"},{"name":"primitive","type":"PrimitiveKind"},{"name":"identity","type":"{module_path,decl_id}"},{"name":"alias","type":"bool"},{"name":"alias_target","type":"TypeRef"},{"name":"underlying","type":"TypeRef"},{"name":"elem","type":"TypeRef"},{"name":"key","type":"TypeRef"},{"name":"length","type":"int64","rule":"arrays require a non-negative length"},{"name":"direction","type":"ChannelDir"},{"name":"signature","type":"FunctionSignature"},{"name":"tuple","type":"[]TypeRef"},{"name":"fields","type":"[]Field"},{"name":"methods","type":"[]Method"},{"name":"terms","type":"[]TypeTerm"},{"name":"type_set","type":"bool"},{"name":"constraint","type":"TypeRef","rule":"compiler-only"},{"name":"base","type":"TypeRef","rule":"compiler-only"},{"name":"type_args","type":"[]TypeRef","rule":"compiler-only"}],"function_type_fields":[{"name":"params","type":"[]{type:TypeRef}"},{"name":"results","type":"[]TypeRef"},{"name":"variadic","type":"bool","rule":"requires a final slice parameter"}],"constant_fields":[{"name":"id","type":"string","required":true},{"name":"type","type":"TypeRef","required":true},{"name":"value","type":"json","required":true,"rule":"must decode according to type; byte slice constants use canonical base64 strings; exact untyped numbers use canonical text"},{"name":"untyped","type":"bool"}],"global_fields":[{"name":"id","type":"string","required":true},{"name":"type","type":"TypeRef","required":true}],"function_fields":[{"name":"id","type":"string","required":true},{"name":"revision_local","type":"bool"},{"name":"signature","type":"FunctionSignature","required":true},{"name":"locals","type":"[]Local"},{"name":"result_locals","type":"[]local-id","rule":"must match named result order"},{"name":"upvalues","type":"[]Upvalue"},{"name":"code","type":"SlotCode","required":true}],"local_fields":[{"name":"id","type":"local-id","required":true},{"name":"type","type":"TypeRef","required":true}],"upvalue_fields":[{"name":"id","type":"upvalue-id","required":true},{"name":"type","type":"TypeRef","required":true}],"instruction_fields":[{"name":"op","type":"opcode","required":true},{"name":"payload","type":"opcode-payload"}],"slot_code_fields":[{"name":"types","type":"[]TypeRef","rule":"temporary slot types"},{"name":"instructions","type":"[]SlotInstruction"},{"name":"operands","type":"[]SlotOperands"},{"name":"descriptors","type":"DescriptorTables","required":true,"rule":"typed payload tables indexed by instruction descriptor"}],"slot_instruction_fields":[{"name":"0","type":"uint16","required":true,"rule":"numeric opcode; tuple has exactly three elements"},{"name":"1","type":"uint32","required":true,"rule":"index in the opcode's descriptor table"},{"name":"2","type":"uint32","required":true,"rule":"operand record index"}],"slot_operand_fields":[{"name":"0","type":"uint8","required":true,"rule":"0: temporary slot; 1: package constant; 2: private scalar or pointer local; tuple has exactly two elements"},{"name":"1","type":"uint32","required":true,"rule":"index in the selected storage domain"}],"slot_operands_fields":[{"name":"inputs","type":"[]Operand","rule":"values evaluated in source order; direct locals must not be addressable"},{"name":"outputs","type":"[]uint32","rule":"distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len or cap"},{"name":"release","type":"[]uint32","rule":"clear after instruction completion, before entering the next instruction"},{"name":"release_before","type":"[]uint32","rule":"clear on instruction entry, once across suspension and retries"}],"export_fields":[{"name":"name","type":"string","required":true},{"name":"kind","type":"string","required":true},{"name":"id","type":"string","required":true},{"name":"type","type":"TypeRef","rule":"required for constant exports"},{"name":"untyped","type":"bool","rule":"only valid for constant exports"}],"requirement_fields":[{"name":"kind","type":"string","required":true},{"name":"module_path","type":"string","required":true},{"name":"hash","type":"string"},{"name":"exports","type":"[]string"}],"program_symbol_fields":[{"name":"format","type":"string","required":true},{"name":"version","type":"int","required":true},{"name":"compiler_id","type":"string","required":true},{"name":"contract_id","type":"string","required":true},{"name":"program_hash","type":"sha256-string","required":true},{"name":"optimization","type":"uint8"},{"name":"packages","type":"map[module-path]PackageSymbols","required":true},{"name":"hash","type":"sha256-string","required":true}],"package_symbol_fields":[{"name":"module_path","type":"string","required":true},{"name":"code_hash","type":"sha256-string","required":true},{"name":"source_hash","type":"sha256-string"},{"name":"files","type":"[]SourceFile"},{"name":"globals","type":"[]GlobalSymbol"},{"name":"functions","type":"[]FunctionSymbols"}],"global_symbol_fields":[{"name":"id","type":"global-id","required":true},{"name":"name","type":"string","required":true}],"function_symbol_fields":[{"name":"id","type":"function-id","required":true},{"name":"name","type":"string","required":true},{"name":"generated","type":"bool"},{"name":"declaration","type":"Location"},{"name":"locals","type":"[]LocalSymbol"},{"name":"upvalues","type":"[]UpvalueSymbol"},{"name":"scopes","type":"[]DebugScope"},{"name":"locations","type":"[]InstructionSymbol"}],"local_symbol_fields":[{"name":"id","type":"local-id","required":true},{"name":"name","type":"string"},{"name":"scope","type":"scope-id"},{"name":"generated","type":"bool"},{"name":"declaration","type":"Location"}],"upvalue_symbol_fields":[{"name":"id","type":"upvalue-id","required":true},{"name":"name","type":"string"}],"instruction_symbol_fields":[{"name":"pc","type":"int","required":true},{"name":"points","type":"[]Location","required":true,"rule":"ordered unique source locations; first is primary"}],"debug_scope_fields":[{"name":"id","type":"scope-id","required":true},{"name":"parent","type":"scope-id"},{"name":"ranges","type":"[]PCRange"}],"pc_range_fields":[{"name":"start","type":"int","required":true},{"name":"end","type":"int","required":true,"rule":"half-open final instruction range [start,end)"}],"source_file_fields":[{"name":"id","type":"string","required":true},{"name":"path","type":"string","required":true},{"name":"hash","type":"sha256-string"}],"location_fields":[{"name":"file","type":"debug-file-id-or-path","required":true},{"name":"line","type":"int","required":true,"rule":"positive"},{"name":"column","type":"int","required":true,"rule":"non-negative"}],"validation_limits":[{"name":"MaxTypes","type":"int","rule":"maximum type declarations; non-positive disables this limit"},{"name":"MaxConstants","type":"int","rule":"maximum constants; non-positive disables this limit"},{"name":"MaxGlobals","type":"int","rule":"maximum globals; non-positive disables this limit"},{"name":"MaxFunctions","type":"int","rule":"maximum functions; non-positive disables this limit"},{"name":"MaxExports","type":"int","rule":"maximum exports; non-positive disables this limit"},{"name":"MaxRequirements","type":"int","rule":"maximum module requirements; non-positive disables this limit"},{"name":"MaxInstructions","type":"int","rule":"maximum total instructions; non-positive disables this limit"},{"name":"MaxLocalsPerFunction","type":"int","rule":"maximum locals per function; non-positive disables this limit"},{"name":"MaxUpvaluesPerFunction","type":"int","rule":"maximum upvalues per function; non-positive disables this limit"},{"name":"MaxPayloadBytes","type":"int","rule":"maximum single and aggregate logical descriptor bytes, including strings and tables; non-positive disables this limit"},{"name":"MaxConstantBytes","type":"int","rule":"maximum single constant bytes and total constant bytes; non-positive disables this limit"}],"payloads":[{"name":"field_path","fields":[{"name":"type","type":"TypeRef","required":true},{"name":"fields","type":"[]uint32","required":true}]},{"name":"compare_branch","fields":[{"name":"operator","type":"comparison","required":true},{"name":"type","type":"TypeRef","required":true},{"name":"label","type":"label","required":true},{"name":"when","type":"bool","required":true}]},{"name":"type_dispatch","fields":[{"name":"subject","type":"local-id","required":true},{"name":"default","type":"label","required":true},{"name":"default_local","type":"local-id"},{"name":"cases","type":"[]type-case","required":true}]},{"name":"select","fields":[{"name":"index","type":"local-id","required":true},{"name":"default","type":"bool"},{"name":"cases","type":"[]select-case","rule":"evaluated channel local and either send local or receive value/ok locals"}]},{"name":"const","fields":[{"name":"constant","type":"constant-id","required":true}]},{"name":"local","fields":[{"name":"local","type":"local-id","required":true},{"name":"rebind","type":"bool","rule":"store_local only: replace the runtime local before a declaration binding is stored"}]},{"name":"upvalue","fields":[{"name":"upvalue","type":"upvalue-id","required":true}]},{"name":"global","fields":[{"name":"global","type":"global-id","required":true}]},{"name":"address","fields":[{"name":"kind","type":"enum(local,upvalue,global,export)","required":true},{"name":"local","type":"local-id"},{"name":"upvalue","type":"upvalue-id"},{"name":"global","type":"global-id"},{"name":"module_path","type":"module-path","rule":"required for export addresses; mutually exclusive with local, upvalue and global ids"},{"name":"export","type":"export-name","rule":"required for export addresses; must resolve to a global variable"},{"name":"path","type":"[]address-segment(field,index,indirect)"}]},{"name":"type","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"variadic","type":"bool","rule":"when true, type must be a function signature with a final Slice<T> parameter"}]},{"name":"operator","fields":[{"name":"operator","type":"string","required":true}]},{"name":"make_sequence","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"element_count","type":"int","required":true,"rule":"non-negative"}]},{"name":"make_map","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"entry_count","type":"int","required":true,"rule":"non-negative key/value pair count"},{"name":"has_capacity","type":"bool","rule":"when true, the final input is a capacity hint after the key/value pairs"}]},{"name":"make_struct","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"fields","type":"[]field-name"}]},{"name":"make_slice","fields":[{"name":"type","type":"canonical-type","required":true},{"name":"has_capacity","type":"bool"}]},{"name":"make_waitable","fields":[{"name":"type","type":"canonical-type","required":true}]},{"name":"count","fields":[{"name":"count","type":"int","required":true,"rule":"non-negative"},{"name":"expand","type":"bool"}]},{"name":"field","fields":[{"name":"field","type":"field-name","required":true}]},{"name":"export","fields":[{"name":"module_path","type":"module-path","required":true},{"name":"export","type":"export-name","required":true}]},{"name":"init_module","fields":[{"name":"module_path","type":"module-path","required":true}]},{"name":"label","fields":[{"name":"label","type":"label","required":true}]},{"name":"jump","fields":[{"name":"label","type":"label","required":true},{"name":"negate","type":"bool","rule":"jump_if branches when condition differs from negate; defaults to false; ignored by unconditional jump"}]},{"name":"call","fields":[{"name":"module_path","type":"module-path","rule":"optional exact target module; omitted for the current module"},{"name":"function","type":"function-id"},{"name":"arg_count","type":"int","required":true,"rule":"non-negative"},{"name":"result_count","type":"int","rule":"non-negative"}]},{"name":"call_interface","fields":[{"name":"interface_type","type":"canonical-type","required":true},{"name":"method","type":"method-name","required":true},{"name":"arg_count","type":"int","required":true,"rule":"non-negative"},{"name":"result_count","type":"int","rule":"non-negative"}]},{"name":"closure","fields":[{"name":"module_path","type":"module-path","rule":"optional exact target module; omitted for the current module"},{"name":"function","type":"function-id","required":true},{"name":"captures","type":"[]address","rule":"local, upvalue or global captures in the creating frame"}]},{"name":"return","fields":[{"name":"result_count","type":"int","required":true,"rule":"non-negative"}]},{"name":"defer","fields":[{"name":"owner_depth","type":"int","rule":"optional non-negative caller depth; omitted or zero registers on the current frame"}]},{"name":"call_ffi","fields":[{"name":"arg_count","type":"int","required":true,"rule":"exactly two: route and payload"},{"name":"result_count","type":"int","required":true,"rule":"exactly three: payload, message, status"}]},{"name":"call_intrinsic","fields":[{"name":"id","type":"intrinsic-id","required":true},{"name":"arg_count","type":"int","required":true,"rule":"non-negative"},{"name":"result_count","type":"int","rule":"non-negative"}]}],"opcodes":[{"op":"type_dispatch","category":"control","payload":"type_dispatch","operands":"no temporary operands","arity":{"kind":"fixed","inputs":0,"outputs":0},"notes":"select the first matching type case and bind its local"},{"op":"select","category":"waitable","payload":"select","operands":"no temporary operands","arity":{"kind":"fixed","inputs":0,"outputs":0},"notes":"commit exactly one communication, storing index and receive results in locals; may suspend"},{"op":"const","category":"value","payload":"const","operands":"write constant","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"zero","category":"value","payload":"type","operands":"write zero value","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"pop","category":"value","operands":"read 1","arity":{"kind":"fixed","inputs":1,"outputs":0}},{"op":"unary","category":"value","payload":"operator","operands":"read 1, write 1","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"binary","category":"value","payload":"operator","operands":"read 2, write 1","arity":{"kind":"fixed","inputs":2,"outputs":1}},{"op":"load_local","category":"value","payload":"local","operands":"write local","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"store_local","category":"value","payload":"local","operands":"read value","arity":{"kind":"fixed","inputs":1,"outputs":0}},{"op":"load_upvalue","category":"value","payload":"upvalue","operands":"write upvalue","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"store_upvalue","category":"value","payload":"upvalue","operands":"read value","arity":{"kind":"fixed","inputs":1,"outputs":0}},{"op":"load_global","category":"value","payload":"global","operands":"write global","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"store_global","category":"value","payload":"global","operands":"read value","arity":{"kind":"fixed","inputs":1,"outputs":0}},{"op":"label","category":"control","payload":"label","operands":"no temporary operands","arity":{"kind":"fixed","inputs":0,"outputs":0}},{"op":"jump","category":"control","payload":"jump","operands":"no temporary operands","arity":{"kind":"fixed","inputs":0,"outputs":0},"terminal":true},{"op":"jump_if","category":"control","payload":"jump","operands":"read condition","arity":{"kind":"fixed","inputs":1,"outputs":0}},{"op":"return","category":"control","payload":"return","operands":"read count","arity":{"kind":"payload","inputs":0,"outputs":0},"terminal":true},{"op":"panic","category":"control","operands":"read panic value","arity":{"kind":"fixed","inputs":1,"outputs":0},"terminal":true},{"op":"recover","category":"control","operands":"write recovered panic value","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"defer_push","category":"control","payload":"defer","operands":"read function","arity":{"kind":"fixed","inputs":1,"outputs":0},"notes":"owner_depth lets compiler-lowered helper frames register a deferred call on an enclosing source frame"},{"op":"call_value","category":"call","payload":"call","operands":"read callee and args, write results","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"call_direct","category":"call","payload":"call","operands":"read args, write results","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"tail_call_direct","category":"call","payload":"call","operands":"read args and complete through target","arity":{"kind":"payload","inputs":0,"outputs":0},"terminal":true},{"op":"call_interface","category":"call","payload":"call_interface","operands":"read interface receiver and args, write results","arity":{"kind":"payload","inputs":0,"outputs":0},"notes":"dynamic dispatch by canonical interface method metadata; not Go source selector syntax"},{"op":"make_closure","category":"call","payload":"closure","operands":"write closure","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"make_sequence","category":"composite","payload":"make_sequence","operands":"read elements, write sequence","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"make_map","category":"composite","payload":"make_map","operands":"read key/value pairs, write map","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"make_struct","category":"composite","payload":"make_struct","operands":"read fields, write struct","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"make_slice","category":"composite","payload":"make_slice","operands":"read len[/cap], write slice","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"make_waitable","category":"resource","payload":"make_waitable","operands":"read capacity, write waitable resource","arity":{"kind":"fixed","inputs":1,"outputs":1},"notes":"compiler-defined communication resource; backend provides the waitable protocol"},{"op":"load_index","category":"composite","operands":"read object and index, write value","arity":{"kind":"fixed","inputs":2,"outputs":1}},{"op":"load_index_ok","category":"composite","operands":"read map and key, write value and ok","arity":{"kind":"fixed","inputs":2,"outputs":2}},{"op":"string_rune_at","category":"composite","operands":"read string and index, write rune","arity":{"kind":"fixed","inputs":2,"outputs":1}},{"op":"string_next_rune_index","category":"composite","operands":"read string and index, write next index","arity":{"kind":"fixed","inputs":2,"outputs":1}},{"op":"slice","category":"composite","operands":"read object/low/high/max, write slice","arity":{"kind":"fixed","inputs":4,"outputs":1}},{"op":"len","category":"composite","operands":"read object, write len","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"cap","category":"composite","operands":"read object, write cap","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"append","category":"composite","payload":"count","operands":"read slice and values, write slice","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"delete","category":"composite","operands":"read map and key","arity":{"kind":"fixed","inputs":2,"outputs":0}},{"op":"clear","category":"composite","operands":"read container","arity":{"kind":"fixed","inputs":1,"outputs":0}},{"op":"copy","category":"composite","operands":"read dst/src, write copied count","arity":{"kind":"fixed","inputs":2,"outputs":1}},{"op":"map_keys","category":"composite","operands":"read map, write array of keys","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"map_iter_init","category":"composite","payload":"local","operands":"read map; replace frame-owned iterator identified by local","arity":{"kind":"fixed","inputs":1,"outputs":0}},{"op":"map_iter_next","category":"composite","payload":"local","operands":"write key, value, ok; skip deleted entries and observe current values","arity":{"kind":"fixed","inputs":0,"outputs":3}},{"op":"map_iter_close","category":"composite","payload":"local","operands":"no temporary operands; release frame-owned iterator","arity":{"kind":"fixed","inputs":0,"outputs":0}},{"op":"load_field","category":"composite","payload":"field","operands":"read object, write field","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"store_index","category":"composite","operands":"read object/index/value","arity":{"kind":"fixed","inputs":3,"outputs":0}},{"op":"store_field","category":"composite","payload":"field","operands":"read object/value","arity":{"kind":"fixed","inputs":2,"outputs":0}},{"op":"type_assert","category":"type_pointer","payload":"type","operands":"read value, write asserted value","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"type_assert_ok","category":"type_pointer","payload":"type","operands":"read value, write value and ok","arity":{"kind":"fixed","inputs":1,"outputs":2}},{"op":"convert","category":"type_pointer","payload":"type","operands":"read value, write converted value","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"address_of","category":"type_pointer","payload":"address","operands":"write pointer","arity":{"kind":"fixed","inputs":0,"outputs":1},"notes":"export addresses initialize the target module through the scheduler and refer to its global slot"},{"op":"load_indirect","category":"type_pointer","operands":"read pointer, write value","arity":{"kind":"fixed","inputs":1,"outputs":1}},{"op":"store_indirect","category":"type_pointer","operands":"read pointer/value","arity":{"kind":"fixed","inputs":2,"outputs":0}},{"op":"waitable_send","category":"waitable","operands":"read waitable/value","arity":{"kind":"fixed","inputs":2,"outputs":0},"notes":"compiler-defined send capability; may block through the generic scheduler"},{"op":"waitable_recv","category":"waitable","operands":"read waitable, write value","arity":{"kind":"fixed","inputs":1,"outputs":1},"notes":"compiler-defined receive capability"},{"op":"waitable_recv_ok","category":"waitable","operands":"read waitable, write value/ok","arity":{"kind":"fixed","inputs":1,"outputs":2},"notes":"compiler-defined receive capability with completion state"},{"op":"waitable_can_recv","category":"waitable","operands":"read waitable, write ready","arity":{"kind":"fixed","inputs":1,"outputs":1},"notes":"receive readiness probe"},{"op":"waitable_try_recv","category":"waitable","operands":"read waitable, write value/ready","arity":{"kind":"fixed","inputs":1,"outputs":2},"notes":"non-blocking receive attempt"},{"op":"waitable_try_send","category":"waitable","operands":"read waitable/value, write ready","arity":{"kind":"fixed","inputs":2,"outputs":1},"notes":"non-blocking send attempt"},{"op":"waitable_can_send","category":"waitable","operands":"read waitable, write ready","arity":{"kind":"fixed","inputs":1,"outputs":1},"notes":"send readiness probe"},{"op":"waitable_close","category":"waitable","operands":"read waitable","arity":{"kind":"fixed","inputs":1,"outputs":0},"notes":"compiler-defined resource close operation"},{"op":"init_module","category":"module","payload":"init_module","operands":"no temporary operands","arity":{"kind":"fixed","inputs":0,"outputs":0}},{"op":"load_export","category":"module","payload":"export","operands":"write module export","arity":{"kind":"fixed","inputs":0,"outputs":1}},{"op":"spawn","category":"scheduler","payload":"call","operands":"read callee and args","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"call_ffi","category":"host","payload":"call_ffi","operands":"read route/payload, write payload/message/status","arity":{"kind":"payload","inputs":0,"outputs":0},"notes":"opaque asynchronous host boundary; status: 0 success, 1 route unavailable, 2 failure"},{"op":"call_intrinsic","category":"runtime","payload":"call_intrinsic","operands":"read args, write results","arity":{"kind":"payload","inputs":0,"outputs":0}},{"op":"compare_branch","category":"control","payload":"compare_branch","operands":"consume two operands","arity":{"kind":"fixed","inputs":2,"outputs":0},"notes":"compare typed operands and branch with explicit polarity"},{"op":"get_path","category":"value","payload":"field_path","operands":"consume one operand, produce one result","arity":{"kind":"fixed","inputs":1,"outputs":1},"notes":"read a bounded sequence of declared fields"}],"type_rules":["TypeRef.kind selects either an inline void/any/primitive/named value or a TypeTable node","named identity is the pair (module_path, decl_id)","slice and array are distinct kinds; array length is a non-negative part of type identity","function variadic metadata is retained in FunctionSignature","type parameters and instances are compiler-only and are rejected by runtime validation"],"hash_rule":"sha256 over EncodeJSON canonical artifact bytes; canonical JSON is validated, emitted with stable struct field order and no trailing newline","requirement_rule":"artifact requirements declare source modules by exact module_path, hash, and exports; loader rejects missing or mismatched requirements before execution","symbol_rule":"ProgramSymbols is an optional immutable sidecar bound to one ProgramHash and exact package CodeHash values; it never changes executable identity"},"intrinsics":[{"ID":"crypto.rand.read","SourceModule":"crypto/rand","SourceFunction":"runtimeRead","Signature":"function(Slice<Uint8>) tuple(Int, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":3,"Effect":1},{"ID":"crypto.sha256.block","SourceModule":"crypto/sha256","SourceFunction":"runtimeBlock","Signature":"function(Array<8, Uint32>, Slice<Uint8>) Array<8, Uint32>","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"ffi.call","SourceModule":"ffi","SourceFunction":"runtimeCall","Signature":"function(String, Slice<Uint8>) tuple(Slice<Uint8>, String, Int)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":3},{"ID":"math.float32_bits","SourceModule":"math/floatbits","SourceFunction":"runtimeFloat32bits","Signature":"function(Float32) Uint32","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"math.float32_from_bits","SourceModule":"math/floatbits","SourceFunction":"runtimeFloat32frombits","Signature":"function(Uint32) Float32","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"math.float64_bits","SourceModule":"math/floatbits","SourceFunction":"runtimeFloat64bits","Signature":"function(Float64) Uint64","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"math.float64_from_bits","SourceModule":"math/floatbits","SourceFunction":"runtimeFloat64frombits","Signature":"function(Uint64) Float64","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"reflect.array_of","SourceModule":"reflect","SourceFunction":"runtimeArrayOf","Signature":"function(Int, reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.assignable_to","SourceModule":"reflect","SourceFunction":"runtimeAssignableTo","Signature":"function(reflect.Type, reflect.Type) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.chan_of","SourceModule":"reflect","SourceFunction":"runtimeChanOf","Signature":"function(reflect.ChanDir, reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.convertible_to","SourceModule":"reflect","SourceFunction":"runtimeConvertibleTo","Signature":"function(reflect.Type, reflect.Type) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.deep_equal","SourceModule":"reflect","SourceFunction":"runtimeDeepEqual","Signature":"function(Any, Any) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.func_of","SourceModule":"reflect","SourceFunction":"runtimeFuncOf","Signature":"function(Slice<reflect.Type>, Slice<reflect.Type>, Bool) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":0},{"ID":"reflect.implements","SourceModule":"reflect","SourceFunction":"runtimeImplements","Signature":"function(reflect.Type, reflect.Type) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.inspect_assign","SourceModule":"reflect/inspect","SourceFunction":"runtimeAssign","Signature":"function(Any, Any) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":1},{"ID":"reflect.inspect_describe","SourceModule":"reflect/inspect","SourceFunction":"runtimeDescribe","Signature":"function(Any, Bool) tuple(Uint, Bool, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.inspect_element_implements","SourceModule":"reflect/inspect","SourceFunction":"runtimeElementImplements","Signature":"function(Any, Any) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.make_chan","SourceModule":"reflect","SourceFunction":"runtimeMakeChan","Signature":"function(reflect.Type, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.make_func","SourceModule":"reflect","SourceFunction":"runtimeMakeFunc","Signature":"function(reflect.Type, function(Slice<reflect.Value>) Slice<reflect.Value>) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.make_map","SourceModule":"reflect","SourceFunction":"runtimeMakeMap","Signature":"function(reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.make_slice","SourceModule":"reflect","SourceFunction":"runtimeMakeSlice","Signature":"function(reflect.Type, Int, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":0},{"ID":"reflect.map_of","SourceModule":"reflect","SourceFunction":"runtimeMapOf","Signature":"function(reflect.Type, reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.new","SourceModule":"reflect","SourceFunction":"runtimeNew","Signature":"function(reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.pointer_to","SourceModule":"reflect","SourceFunction":"runtimePointerTo","Signature":"function(reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.same_reference","SourceModule":"reflect","SourceFunction":"runtimeSameReference","Signature":"function(reflect.Value, reflect.Value) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":1,"Effect":0},{"ID":"reflect.select","SourceModule":"reflect","SourceFunction":"runtimeSelect","Signature":"function(Slice<reflect.SelectCase>) tuple(Int, reflect.Value, Bool, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":5,"Effect":3},{"ID":"reflect.slice_of","SourceModule":"reflect","SourceFunction":"runtimeSliceOf","Signature":"function(reflect.Type) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.struct_of","SourceModule":"reflect","SourceFunction":"runtimeStructOf","Signature":"function(Slice<reflect.StructField>) tuple(reflect.Type, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.type_descriptor","SourceModule":"reflect","SourceFunction":"runtimeTypeDescriptor","Signature":"function(reflect.Type) tuple(reflect.runtimeTypeData, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.type_field","SourceModule":"reflect","SourceFunction":"runtimeTypeField","Signature":"function(reflect.Type, Int) tuple(reflect.StructField, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.type_kind","SourceModule":"reflect","SourceFunction":"runtimeTypeKind","Signature":"function(reflect.Type) tuple(Uint, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.type_measure","SourceModule":"reflect","SourceFunction":"runtimeTypeMeasure","Signature":"function(reflect.Type, String) tuple(Uint64, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.type_method","SourceModule":"reflect","SourceFunction":"runtimeTypeMethod","Signature":"function(reflect.Type, Int) tuple(reflect.Method, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.type_of","SourceModule":"reflect","SourceFunction":"runtimeTypeOf","Signature":"function(Any) reflect.Type","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"reflect.value_addr","SourceModule":"reflect","SourceFunction":"runtimeValueAddr","Signature":"function(reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.value_append","SourceModule":"reflect","SourceFunction":"runtimeValueAppend","Signature":"function(reflect.Value, Slice<reflect.Value>) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.value_append_slice","SourceModule":"reflect","SourceFunction":"runtimeValueAppendSlice","Signature":"function(reflect.Value, reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.value_call","SourceModule":"reflect","SourceFunction":"runtimeValueCall","Signature":"function(reflect.Value, Slice<reflect.Value>, Bool) tuple(Slice<reflect.Value>, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":2},{"ID":"reflect.value_close","SourceModule":"reflect","SourceFunction":"runtimeValueClose","Signature":"function(reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":2,"Effect":1},{"ID":"reflect.value_convert","SourceModule":"reflect","SourceFunction":"runtimeValueConvert","Signature":"function(reflect.Value, reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_copy","SourceModule":"reflect","SourceFunction":"runtimeValueCopy","Signature":"function(reflect.Value, reflect.Value) tuple(Int, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.value_current","SourceModule":"reflect","SourceFunction":"runtimeValueCurrent","Signature":"function(reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.value_elem","SourceModule":"reflect","SourceFunction":"runtimeValueElem","Signature":"function(reflect.Value) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"reflect.value_equal","SourceModule":"reflect","SourceFunction":"runtimeValueEqual","Signature":"function(reflect.Value, reflect.Value) tuple(Bool, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_field_by_index","SourceModule":"reflect","SourceFunction":"runtimeValueFieldByIndex","Signature":"function(reflect.Value, Slice<Int>) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_grow","SourceModule":"reflect","SourceFunction":"runtimeValueGrow","Signature":"function(reflect.Value, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_index","SourceModule":"reflect","SourceFunction":"runtimeValueIndex","Signature":"function(reflect.Value, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_method","SourceModule":"reflect","SourceFunction":"runtimeValueMethod","Signature":"function(reflect.Value, reflect.Method) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":2,"ResultCount":3,"Effect":0},{"ID":"reflect.value_of","SourceModule":"reflect","SourceFunction":"runtimeValueOf","Signature":"function(Any) reflect.Value","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":1,"Effect":0},{"ID":"reflect.value_recv","SourceModule":"reflect","SourceFunction":"runtimeValueRecv","Signature":"function(reflect.Value) tuple(reflect.Value, Bool, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":4,"Effect":3},{"ID":"reflect.value_send","SourceModule":"reflect","SourceFunction":"runtimeValueSend","Signature":"function(reflect.Value, reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":3},{"ID":"reflect.value_set","SourceModule":"reflect","SourceFunction":"runtimeValueSet","Signature":"function(reflect.Value, reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_set_cap","SourceModule":"reflect","SourceFunction":"runtimeValueSetCap","Signature":"function(reflect.Value, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_set_len","SourceModule":"reflect","SourceFunction":"runtimeValueSetLen","Signature":"function(reflect.Value, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":2,"Effect":1},{"ID":"reflect.value_set_map_index","SourceModule":"reflect","SourceFunction":"runtimeValueSetMapIndex","Signature":"function(reflect.Value, reflect.Value, reflect.Value) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":3,"ResultCount":2,"Effect":1},{"ID":"reflect.value_slice","SourceModule":"reflect","SourceFunction":"runtimeValueSlice","Signature":"function(reflect.Value, Int, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":3,"ResultCount":3,"Effect":0},{"ID":"reflect.value_slice3","SourceModule":"reflect","SourceFunction":"runtimeValueSlice3","Signature":"function(reflect.Value, Int, Int, Int) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":4,"ResultCount":3,"Effect":0},{"ID":"reflect.value_swap","SourceModule":"reflect","SourceFunction":"runtimeValueSwap","Signature":"function(reflect.Value, Int, Int) tuple(String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":3,"ResultCount":2,"Effect":1},{"ID":"reflect.value_try_recv","SourceModule":"reflect","SourceFunction":"runtimeValueTryRecv","Signature":"function(reflect.Value) tuple(reflect.Value, Bool, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":4,"Effect":1},{"ID":"reflect.value_try_send","SourceModule":"reflect","SourceFunction":"runtimeValueTrySend","Signature":"function(reflect.Value, reflect.Value) tuple(Bool, String, Bool)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":2,"ResultCount":3,"Effect":1},{"ID":"reflect.zero","SourceModule":"reflect","SourceFunction":"runtimeZero","Signature":"function(reflect.Type) tuple(reflect.Value, String, Bool)","DynamicResult":{"module_path":"reflect","decl_id":"runtimeType"},"ArgCount":1,"ResultCount":3,"Effect":0},{"ID":"strings.index_byte","SourceModule":"strings","SourceFunction":"runtimeIndexByte","Signature":"function(String, Int, Int, Uint8) Int","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":4,"ResultCount":1,"Effect":0},{"ID":"sync.mutex_lock","SourceModule":"sync","SourceFunction":"runtimeMutexLock","Signature":"function(Ptr<Waitable<Bool>>)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":0,"Effect":3},{"ID":"sync.mutex_try_lock","SourceModule":"sync","SourceFunction":"runtimeMutexTryLock","Signature":"function(Ptr<Waitable<Bool>>) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":1},{"ID":"sync.mutex_unlock","SourceModule":"sync","SourceFunction":"runtimeMutexUnlock","Signature":"function(Ptr<Waitable<Bool>>)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":0,"Effect":1},{"ID":"time.now","SourceModule":"time","SourceFunction":"runtimeNow","Signature":"function() tuple(Int64, Int64)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":0,"ResultCount":2,"Effect":4},{"ID":"time.timer_start","SourceModule":"time","SourceFunction":"runtimeTimerStart","Signature":"function(Waitable<Bool>, Int64, Int64)","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":3,"ResultCount":0,"Effect":1},{"ID":"time.timer_stop","SourceModule":"time","SourceFunction":"runtimeTimerStop","Signature":"function(Waitable<Bool>) Bool","DynamicResult":{"module_path":"","decl_id":""},"ArgCount":1,"ResultCount":1,"Effect":1}],"costs":{"byte":1,"map_entry":32,"node":128,"slot":16},"buffer_layout":{"value_bytes":128,"page_bytes":8192,"growth_threshold":256,"small_capacities":[0,1,2,3,4,5,6,7,8,9,10,11,13,13,15,15,17,17,20,20,20,23,23,23,24,26,26,31,31,31,31,31,37,37,37,37,37,37,41,41,41,41,47,47,47,47,47,47,50,50,50,52,52,53,63,63,63,63,63,63,63,63,63,63,73,73,73,73,73,73,73,73,73,73,75,75,79,79,79,79,84,84,84,84,84,95,95,95,95,95,95,95,95,95,95,95,105,105,105,105,105,105,105,105,105,105,111,111,111,111,111,111,127,127,127,127,127,127,127,127,127,127,127,127,127,127,127,127,143,143,143,143,143,143,143,143,143,143,143,143,143,143,143,143,148,148,148,148,148,159,159,159,159,159,159,159,159,159,159,159,169,169,169,169,169,169,169,169,169,169,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,191,212,212,212,212,212,212,212,212,212,212,212,212,212,212,212,212,212,212,212,212,212,223,223,223,223,223,223,223,223,223,223,223,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,256,320],"defer_bytes":56,"defer_capacities":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,15,15,18,18,18,20,20,22,22,25,25,25,27,27,31,31,31,31,36,36,36,36,36,41,41,41,41,41,47,47,47,47,47,47,54,54,54,54,54,54,54,57,57,57,61,61,61,61,73,73,73,73,73,73,73,73,73,73,73,73,86,86,86,86,86,86,86,86,86,86,86,86,86,95,95,95,95,95,95,95,95,95,109,109,109,109,109,109,109,109,109,109,109,109,109,109,116,116,116,116,116,116,116,121,121,121,121,121,123,123,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,146,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,169,173,173,173,173,182,182,182,182,182,182,182,182,182,194,194,194,194,194,194,194,194,194,194,194,194,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,219,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,242,255,255,255,255,255,255,255,255,255,255,255,255,255,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,292,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,329,340,340,340,340,340,340,340,340,340,340,340,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,365,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,388,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,438,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,486,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,511,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,585,731]}}"###;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intrinsic {
     CryptoRandRead,
@@ -19,6 +19,9 @@ pub enum Intrinsic {
     ReflectDeepEqual,
     ReflectFuncOf,
     ReflectImplements,
+    ReflectInspectAssign,
+    ReflectInspectDescribe,
+    ReflectInspectElementImplements,
     ReflectMakeChan,
     ReflectMakeFunc,
     ReflectMakeMap,
@@ -32,6 +35,8 @@ pub enum Intrinsic {
     ReflectStructOf,
     ReflectTypeDescriptor,
     ReflectTypeField,
+    ReflectTypeKind,
+    ReflectTypeMeasure,
     ReflectTypeMethod,
     ReflectTypeOf,
     ReflectValueAddr,
@@ -61,6 +66,7 @@ pub enum Intrinsic {
     ReflectValueTryRecv,
     ReflectValueTrySend,
     ReflectZero,
+    StringsIndexByte,
     SyncMutexLock,
     SyncMutexTryLock,
     SyncMutexUnlock,
@@ -84,6 +90,9 @@ impl Intrinsic {
         "reflect.deep_equal" => Self::ReflectDeepEqual,
         "reflect.func_of" => Self::ReflectFuncOf,
         "reflect.implements" => Self::ReflectImplements,
+        "reflect.inspect_assign" => Self::ReflectInspectAssign,
+        "reflect.inspect_describe" => Self::ReflectInspectDescribe,
+        "reflect.inspect_element_implements" => Self::ReflectInspectElementImplements,
         "reflect.make_chan" => Self::ReflectMakeChan,
         "reflect.make_func" => Self::ReflectMakeFunc,
         "reflect.make_map" => Self::ReflectMakeMap,
@@ -97,6 +106,8 @@ impl Intrinsic {
         "reflect.struct_of" => Self::ReflectStructOf,
         "reflect.type_descriptor" => Self::ReflectTypeDescriptor,
         "reflect.type_field" => Self::ReflectTypeField,
+        "reflect.type_kind" => Self::ReflectTypeKind,
+        "reflect.type_measure" => Self::ReflectTypeMeasure,
         "reflect.type_method" => Self::ReflectTypeMethod,
         "reflect.type_of" => Self::ReflectTypeOf,
         "reflect.value_addr" => Self::ReflectValueAddr,
@@ -126,6 +137,7 @@ impl Intrinsic {
         "reflect.value_try_recv" => Self::ReflectValueTryRecv,
         "reflect.value_try_send" => Self::ReflectValueTrySend,
         "reflect.zero" => Self::ReflectZero,
+        "strings.index_byte" => Self::StringsIndexByte,
         "sync.mutex_lock" => Self::SyncMutexLock,
         "sync.mutex_try_lock" => Self::SyncMutexTryLock,
         "sync.mutex_unlock" => Self::SyncMutexUnlock,
@@ -149,6 +161,9 @@ impl Intrinsic {
         Self::ReflectDeepEqual => "reflect.deep_equal",
         Self::ReflectFuncOf => "reflect.func_of",
         Self::ReflectImplements => "reflect.implements",
+        Self::ReflectInspectAssign => "reflect.inspect_assign",
+        Self::ReflectInspectDescribe => "reflect.inspect_describe",
+        Self::ReflectInspectElementImplements => "reflect.inspect_element_implements",
         Self::ReflectMakeChan => "reflect.make_chan",
         Self::ReflectMakeFunc => "reflect.make_func",
         Self::ReflectMakeMap => "reflect.make_map",
@@ -162,6 +177,8 @@ impl Intrinsic {
         Self::ReflectStructOf => "reflect.struct_of",
         Self::ReflectTypeDescriptor => "reflect.type_descriptor",
         Self::ReflectTypeField => "reflect.type_field",
+        Self::ReflectTypeKind => "reflect.type_kind",
+        Self::ReflectTypeMeasure => "reflect.type_measure",
         Self::ReflectTypeMethod => "reflect.type_method",
         Self::ReflectTypeOf => "reflect.type_of",
         Self::ReflectValueAddr => "reflect.value_addr",
@@ -191,6 +208,7 @@ impl Intrinsic {
         Self::ReflectValueTryRecv => "reflect.value_try_recv",
         Self::ReflectValueTrySend => "reflect.value_try_send",
         Self::ReflectZero => "reflect.zero",
+        Self::StringsIndexByte => "strings.index_byte",
         Self::SyncMutexLock => "sync.mutex_lock",
         Self::SyncMutexTryLock => "sync.mutex_try_lock",
         Self::SyncMutexUnlock => "sync.mutex_unlock",
@@ -213,6 +231,9 @@ impl Intrinsic {
         Self::ReflectDeepEqual => (2, 1),
         Self::ReflectFuncOf => (3, 3),
         Self::ReflectImplements => (2, 1),
+        Self::ReflectInspectAssign => (2, 1),
+        Self::ReflectInspectDescribe => (2, 3),
+        Self::ReflectInspectElementImplements => (2, 1),
         Self::ReflectMakeChan => (2, 3),
         Self::ReflectMakeFunc => (2, 3),
         Self::ReflectMakeMap => (1, 3),
@@ -226,6 +247,8 @@ impl Intrinsic {
         Self::ReflectStructOf => (1, 3),
         Self::ReflectTypeDescriptor => (1, 3),
         Self::ReflectTypeField => (2, 3),
+        Self::ReflectTypeKind => (1, 3),
+        Self::ReflectTypeMeasure => (2, 3),
         Self::ReflectTypeMethod => (2, 3),
         Self::ReflectTypeOf => (1, 1),
         Self::ReflectValueAddr => (1, 3),
@@ -255,6 +278,7 @@ impl Intrinsic {
         Self::ReflectValueTryRecv => (1, 4),
         Self::ReflectValueTrySend => (2, 3),
         Self::ReflectZero => (1, 3),
+        Self::StringsIndexByte => (4, 1),
         Self::SyncMutexLock => (1, 0),
         Self::SyncMutexTryLock => (1, 1),
         Self::SyncMutexUnlock => (1, 0),
@@ -263,7 +287,7 @@ impl Intrinsic {
         Self::TimeTimerStop => (1, 1),
     } }
     pub fn is_reflect(self) -> bool { matches!(self,
-Self::ReflectArrayOf | Self::ReflectAssignableTo | Self::ReflectChanOf | Self::ReflectConvertibleTo | Self::ReflectDeepEqual | Self::ReflectFuncOf | Self::ReflectImplements | Self::ReflectMakeChan | Self::ReflectMakeFunc | Self::ReflectMakeMap | Self::ReflectMakeSlice | Self::ReflectMapOf | Self::ReflectNew | Self::ReflectPointerTo | Self::ReflectSameReference | Self::ReflectSelect | Self::ReflectSliceOf | Self::ReflectStructOf | Self::ReflectTypeDescriptor | Self::ReflectTypeField | Self::ReflectTypeMethod | Self::ReflectTypeOf | Self::ReflectValueAddr | Self::ReflectValueAppend | Self::ReflectValueAppendSlice | Self::ReflectValueCall | Self::ReflectValueClose | Self::ReflectValueConvert | Self::ReflectValueCopy | Self::ReflectValueCurrent | Self::ReflectValueElem | Self::ReflectValueEqual | Self::ReflectValueFieldByIndex | Self::ReflectValueGrow | Self::ReflectValueIndex | Self::ReflectValueMethod | Self::ReflectValueOf | Self::ReflectValueRecv | Self::ReflectValueSend | Self::ReflectValueSet | Self::ReflectValueSetCap | Self::ReflectValueSetLen | Self::ReflectValueSetMapIndex | Self::ReflectValueSlice | Self::ReflectValueSlice3 | Self::ReflectValueSwap | Self::ReflectValueTryRecv | Self::ReflectValueTrySend | Self::ReflectZero
+Self::ReflectArrayOf | Self::ReflectAssignableTo | Self::ReflectChanOf | Self::ReflectConvertibleTo | Self::ReflectDeepEqual | Self::ReflectFuncOf | Self::ReflectImplements | Self::ReflectInspectAssign | Self::ReflectInspectDescribe | Self::ReflectInspectElementImplements | Self::ReflectMakeChan | Self::ReflectMakeFunc | Self::ReflectMakeMap | Self::ReflectMakeSlice | Self::ReflectMapOf | Self::ReflectNew | Self::ReflectPointerTo | Self::ReflectSameReference | Self::ReflectSelect | Self::ReflectSliceOf | Self::ReflectStructOf | Self::ReflectTypeDescriptor | Self::ReflectTypeField | Self::ReflectTypeKind | Self::ReflectTypeMeasure | Self::ReflectTypeMethod | Self::ReflectTypeOf | Self::ReflectValueAddr | Self::ReflectValueAppend | Self::ReflectValueAppendSlice | Self::ReflectValueCall | Self::ReflectValueClose | Self::ReflectValueConvert | Self::ReflectValueCopy | Self::ReflectValueCurrent | Self::ReflectValueElem | Self::ReflectValueEqual | Self::ReflectValueFieldByIndex | Self::ReflectValueGrow | Self::ReflectValueIndex | Self::ReflectValueMethod | Self::ReflectValueOf | Self::ReflectValueRecv | Self::ReflectValueSend | Self::ReflectValueSet | Self::ReflectValueSetCap | Self::ReflectValueSetLen | Self::ReflectValueSetMapIndex | Self::ReflectValueSlice | Self::ReflectValueSlice3 | Self::ReflectValueSwap | Self::ReflectValueTryRecv | Self::ReflectValueTrySend | Self::ReflectZero
     ) }
 }
 
@@ -635,10 +659,8 @@ pub struct Function {
     pub r#result_locals: crate::contract::GoSlice<String>,
     #[serde(rename = "upvalues", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
     pub r#upvalues: crate::contract::GoSlice<Upvalue>,
-    #[serde(rename = "max_stack", skip_serializing_if = "crate::contract::is_default")]
-    pub r#max_stack: i64,
-    #[serde(rename = "instructions", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#instructions: crate::contract::GoSlice<Instruction>,
+    #[serde(rename = "code")]
+    pub r#code: Option<Box<SlotCode>>,
 }
 crate::contract::go_object!(Function {
     r#id: "id" => scalar,
@@ -647,8 +669,7 @@ crate::contract::go_object!(Function {
     r#locals: "locals" => value,
     r#result_locals: "result_locals" => value,
     r#upvalues: "upvalues" => value,
-    r#max_stack: "max_stack" => scalar,
-    r#instructions: "instructions" => value,
+    r#code: "code" => pointer,
 });
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -679,265 +700,153 @@ crate::contract::go_object!(Upvalue {
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Instruction {
-    #[serde(rename = "op")]
-    pub r#op: String,
-    #[serde(rename = "payload", skip_serializing_if = "Option::is_none")]
-    pub r#payload: Option<Box<serde_json::value::RawValue>>,
+pub struct SlotCode {
+    #[serde(rename = "types", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#types: crate::contract::GoSlice<TypeRef>,
+    #[serde(rename = "instructions", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#instructions: crate::contract::GoSlice<SlotInstruction>,
+    #[serde(rename = "operands", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#operands: crate::contract::GoSlice<SlotOperands>,
+    #[serde(rename = "descriptors")]
+    pub r#descriptors: DescriptorTables,
 }
-crate::contract::go_object!(Instruction {
-    r#op: "op" => scalar,
-    r#payload: "payload" => raw,
+crate::contract::go_object!(SlotCode {
+    r#types: "types" => value,
+    r#instructions: "instructions" => value,
+    r#operands: "operands" => value,
+    r#descriptors: "descriptors" => object,
 });
+
+#[derive(Clone,Debug,Default,Serialize,serde::Deserialize)]
+#[serde(from="(u16,u32,u32)",into="(u16,u32,u32)")]
+pub struct SlotInstruction {
+pub op: u16,
+pub descriptor: u32,
+pub operands: u32,
+}
+impl From<(u16,u32,u32)> for SlotInstruction {fn from(value:(u16,u32,u32))->Self {Self {op:value.0,descriptor:value.1,operands:value.2,}}}
+impl From<SlotInstruction> for (u16,u32,u32) {fn from(value:SlotInstruction)->Self {( value.op,value.descriptor,value.operands,)}}
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Export {
-    #[serde(rename = "name")]
-    pub r#name: String,
-    #[serde(rename = "kind")]
-    pub r#kind: String,
-    #[serde(rename = "id")]
-    pub r#id: String,
-    #[serde(rename = "type")]
-    pub r#type: TypeRef,
-    #[serde(rename = "untyped", skip_serializing_if = "crate::contract::is_default")]
-    pub r#untyped: bool,
+pub struct SlotOperands {
+    #[serde(rename = "inputs", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#inputs: crate::contract::GoSlice<Operand>,
+    #[serde(rename = "outputs", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#outputs: crate::contract::GoSlice<u32>,
+    #[serde(rename = "release", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#release: crate::contract::GoSlice<u32>,
+    #[serde(rename = "release_before", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#release_before: crate::contract::GoSlice<u32>,
 }
-crate::contract::go_object!(Export {
-    r#name: "name" => scalar,
-    r#kind: "kind" => scalar,
-    r#id: "id" => scalar,
-    r#type: "type" => object,
-    r#untyped: "untyped" => scalar,
+crate::contract::go_object!(SlotOperands {
+    r#inputs: "inputs" => value,
+    r#outputs: "outputs" => value,
+    r#release: "release" => value,
+    r#release_before: "release_before" => value,
 });
+
+#[derive(Clone,Debug,Default,Serialize,serde::Deserialize)]
+#[serde(from="(u8,u32)",into="(u8,u32)")]
+pub struct Operand {
+pub kind: u8,
+pub index: u32,
+}
+impl From<(u8,u32)> for Operand {fn from(value:(u8,u32))->Self {Self {kind:value.0,index:value.1,}}}
+impl From<Operand> for (u8,u32) {fn from(value:Operand)->Self {( value.kind,value.index,)}}
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct Requirement {
-    #[serde(rename = "kind")]
-    pub r#kind: String,
-    #[serde(rename = "module_path")]
-    pub r#module_path: String,
-    #[serde(rename = "hash", skip_serializing_if = "String::is_empty")]
-    pub r#hash: String,
-    #[serde(rename = "exports", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#exports: crate::contract::GoSlice<String>,
+pub struct DescriptorTables {
+    #[serde(rename = "const", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#const: crate::contract::GoSlice<ConstPayload>,
+    #[serde(rename = "local", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#local: crate::contract::GoSlice<LocalPayload>,
+    #[serde(rename = "upvalue", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#upvalue: crate::contract::GoSlice<UpvaluePayload>,
+    #[serde(rename = "global", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#global: crate::contract::GoSlice<GlobalPayload>,
+    #[serde(rename = "address", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#address: crate::contract::GoSlice<AddressPayload>,
+    #[serde(rename = "type", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#type: crate::contract::GoSlice<TypePayload>,
+    #[serde(rename = "operator", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#operator: crate::contract::GoSlice<OperatorPayload>,
+    #[serde(rename = "makesequence", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#makesequence: crate::contract::GoSlice<MakeSequencePayload>,
+    #[serde(rename = "makemap", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#makemap: crate::contract::GoSlice<MakeMapPayload>,
+    #[serde(rename = "makestruct", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#makestruct: crate::contract::GoSlice<MakeStructPayload>,
+    #[serde(rename = "makeslice", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#makeslice: crate::contract::GoSlice<MakeSlicePayload>,
+    #[serde(rename = "makewaitable", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#makewaitable: crate::contract::GoSlice<MakeWaitablePayload>,
+    #[serde(rename = "select", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#select: crate::contract::GoSlice<SelectPayload>,
+    #[serde(rename = "count", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#count: crate::contract::GoSlice<CountPayload>,
+    #[serde(rename = "field", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#field: crate::contract::GoSlice<FieldPayload>,
+    #[serde(rename = "export", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#export: crate::contract::GoSlice<ExportPayload>,
+    #[serde(rename = "initmodule", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#initmodule: crate::contract::GoSlice<InitModulePayload>,
+    #[serde(rename = "label", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#label: crate::contract::GoSlice<LabelPayload>,
+    #[serde(rename = "jump", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#jump: crate::contract::GoSlice<JumpPayload>,
+    #[serde(rename = "call", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#call: crate::contract::GoSlice<CallPayload>,
+    #[serde(rename = "callinterface", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#callinterface: crate::contract::GoSlice<CallInterfacePayload>,
+    #[serde(rename = "closure", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#closure: crate::contract::GoSlice<ClosurePayload>,
+    #[serde(rename = "return", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#return: crate::contract::GoSlice<ReturnPayload>,
+    #[serde(rename = "defer", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#defer: crate::contract::GoSlice<DeferPayload>,
+    #[serde(rename = "callffi", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#callffi: crate::contract::GoSlice<CallFFIPayload>,
+    #[serde(rename = "callintrinsic", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#callintrinsic: crate::contract::GoSlice<CallIntrinsicPayload>,
+    #[serde(rename = "typedispatch", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#typedispatch: crate::contract::GoSlice<TypeDispatchPayload>,
+    #[serde(rename = "comparebranch", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#comparebranch: crate::contract::GoSlice<CompareBranchPayload>,
+    #[serde(rename = "fieldpath", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#fieldpath: crate::contract::GoSlice<FieldPathPayload>,
 }
-crate::contract::go_object!(Requirement {
-    r#kind: "kind" => scalar,
-    r#module_path: "module_path" => scalar,
-    r#hash: "hash" => scalar,
-    r#exports: "exports" => value,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ProgramSymbols {
-    #[serde(rename = "format")]
-    pub r#format: String,
-    #[serde(rename = "version")]
-    pub r#version: i64,
-    #[serde(rename = "compiler_id")]
-    pub r#compiler_id: String,
-    #[serde(rename = "contract_id")]
-    pub r#contract_id: String,
-    #[serde(rename = "program_hash")]
-    pub r#program_hash: String,
-    #[serde(rename = "optimization")]
-    pub r#optimization: u8,
-    #[serde(rename = "packages")]
-    pub r#packages: Option<BTreeMap<String, PackageSymbols>>,
-    #[serde(rename = "hash")]
-    pub r#hash: String,
-}
-crate::contract::go_object!(ProgramSymbols {
-    r#format: "format" => scalar,
-    r#version: "version" => scalar,
-    r#compiler_id: "compiler_id" => scalar,
-    r#contract_id: "contract_id" => scalar,
-    r#program_hash: "program_hash" => scalar,
-    r#optimization: "optimization" => scalar,
-    r#packages: "packages" => map,
-    r#hash: "hash" => scalar,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct PackageSymbols {
-    #[serde(rename = "module_path")]
-    pub r#module_path: String,
-    #[serde(rename = "code_hash")]
-    pub r#code_hash: String,
-    #[serde(rename = "source_hash", skip_serializing_if = "String::is_empty")]
-    pub r#source_hash: String,
-    #[serde(rename = "files", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#files: crate::contract::GoSlice<SourceFile>,
-    #[serde(rename = "globals", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#globals: crate::contract::GoSlice<GlobalSymbol>,
-    #[serde(rename = "functions", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#functions: crate::contract::GoSlice<FunctionSymbols>,
-}
-crate::contract::go_object!(PackageSymbols {
-    r#module_path: "module_path" => scalar,
-    r#code_hash: "code_hash" => scalar,
-    r#source_hash: "source_hash" => scalar,
-    r#files: "files" => value,
-    r#globals: "globals" => value,
-    r#functions: "functions" => value,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SourceFile {
-    #[serde(rename = "id")]
-    pub r#id: String,
-    #[serde(rename = "path")]
-    pub r#path: String,
-    #[serde(rename = "hash", skip_serializing_if = "String::is_empty")]
-    pub r#hash: String,
-}
-crate::contract::go_object!(SourceFile {
-    r#id: "id" => scalar,
-    r#path: "path" => scalar,
-    r#hash: "hash" => scalar,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GlobalSymbol {
-    #[serde(rename = "id")]
-    pub r#id: String,
-    #[serde(rename = "name")]
-    pub r#name: String,
-}
-crate::contract::go_object!(GlobalSymbol {
-    r#id: "id" => scalar,
-    r#name: "name" => scalar,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct FunctionSymbols {
-    #[serde(rename = "id")]
-    pub r#id: String,
-    #[serde(rename = "name")]
-    pub r#name: String,
-    #[serde(rename = "generated", skip_serializing_if = "crate::contract::is_default")]
-    pub r#generated: bool,
-    #[serde(rename = "declaration", skip_serializing_if = "Option::is_none")]
-    pub r#declaration: Option<Box<Location>>,
-    #[serde(rename = "locals", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#locals: crate::contract::GoSlice<LocalSymbol>,
-    #[serde(rename = "upvalues", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#upvalues: crate::contract::GoSlice<UpvalueSymbol>,
-    #[serde(rename = "scopes", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#scopes: crate::contract::GoSlice<DebugScope>,
-    #[serde(rename = "locations", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#locations: crate::contract::GoSlice<InstructionSymbol>,
-}
-crate::contract::go_object!(FunctionSymbols {
-    r#id: "id" => scalar,
-    r#name: "name" => scalar,
-    r#generated: "generated" => scalar,
-    r#declaration: "declaration" => pointer,
-    r#locals: "locals" => value,
-    r#upvalues: "upvalues" => value,
-    r#scopes: "scopes" => value,
-    r#locations: "locations" => value,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Location {
-    #[serde(rename = "file")]
-    pub r#file: String,
-    #[serde(rename = "line")]
-    pub r#line: i64,
-    #[serde(rename = "column")]
-    pub r#column: i64,
-}
-crate::contract::go_object!(Location {
-    r#file: "file" => scalar,
-    r#line: "line" => scalar,
-    r#column: "column" => scalar,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct LocalSymbol {
-    #[serde(rename = "id")]
-    pub r#id: String,
-    #[serde(rename = "name", skip_serializing_if = "String::is_empty")]
-    pub r#name: String,
-    #[serde(rename = "scope", skip_serializing_if = "crate::contract::is_default")]
-    pub r#scope: i64,
-    #[serde(rename = "generated", skip_serializing_if = "crate::contract::is_default")]
-    pub r#generated: bool,
-    #[serde(rename = "declaration", skip_serializing_if = "Option::is_none")]
-    pub r#declaration: Option<Box<Location>>,
-}
-crate::contract::go_object!(LocalSymbol {
-    r#id: "id" => scalar,
-    r#name: "name" => scalar,
-    r#scope: "scope" => scalar,
-    r#generated: "generated" => scalar,
-    r#declaration: "declaration" => pointer,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct UpvalueSymbol {
-    #[serde(rename = "id")]
-    pub r#id: String,
-    #[serde(rename = "name", skip_serializing_if = "String::is_empty")]
-    pub r#name: String,
-}
-crate::contract::go_object!(UpvalueSymbol {
-    r#id: "id" => scalar,
-    r#name: "name" => scalar,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct DebugScope {
-    #[serde(rename = "id")]
-    pub r#id: i64,
-    #[serde(rename = "parent", skip_serializing_if = "crate::contract::is_default")]
-    pub r#parent: i64,
-    #[serde(rename = "ranges", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
-    pub r#ranges: crate::contract::GoSlice<PCRange>,
-}
-crate::contract::go_object!(DebugScope {
-    r#id: "id" => scalar,
-    r#parent: "parent" => scalar,
-    r#ranges: "ranges" => value,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct PCRange {
-    #[serde(rename = "start")]
-    pub r#start: i64,
-    #[serde(rename = "end")]
-    pub r#end: i64,
-}
-crate::contract::go_object!(PCRange {
-    r#start: "start" => scalar,
-    r#end: "end" => scalar,
-});
-
-#[derive(Clone, Debug, Default, Serialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct InstructionSymbol {
-    #[serde(rename = "pc")]
-    pub r#pc: i64,
-    #[serde(rename = "points")]
-    pub r#points: crate::contract::GoSlice<Location>,
-}
-crate::contract::go_object!(InstructionSymbol {
-    r#pc: "pc" => scalar,
-    r#points: "points" => value,
+crate::contract::go_object!(DescriptorTables {
+    r#const: "const" => value,
+    r#local: "local" => value,
+    r#upvalue: "upvalue" => value,
+    r#global: "global" => value,
+    r#address: "address" => value,
+    r#type: "type" => value,
+    r#operator: "operator" => value,
+    r#makesequence: "makesequence" => value,
+    r#makemap: "makemap" => value,
+    r#makestruct: "makestruct" => value,
+    r#makeslice: "makeslice" => value,
+    r#makewaitable: "makewaitable" => value,
+    r#select: "select" => value,
+    r#count: "count" => value,
+    r#field: "field" => value,
+    r#export: "export" => value,
+    r#initmodule: "initmodule" => value,
+    r#label: "label" => value,
+    r#jump: "jump" => value,
+    r#call: "call" => value,
+    r#callinterface: "callinterface" => value,
+    r#closure: "closure" => value,
+    r#return: "return" => value,
+    r#defer: "defer" => value,
+    r#callffi: "callffi" => value,
+    r#callintrinsic: "callintrinsic" => value,
+    r#typedispatch: "typedispatch" => value,
+    r#comparebranch: "comparebranch" => value,
+    r#fieldpath: "fieldpath" => value,
 });
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -1208,9 +1117,12 @@ crate::contract::go_object!(LabelPayload {
 pub struct JumpPayload {
     #[serde(rename = "label")]
     pub r#label: String,
+    #[serde(rename = "negate", skip_serializing_if = "crate::contract::is_default")]
+    pub r#negate: bool,
 }
 crate::contract::go_object!(JumpPayload {
     r#label: "label" => scalar,
+    r#negate: "negate" => scalar,
 });
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -1314,6 +1226,683 @@ crate::contract::go_object!(CallIntrinsicPayload {
     r#id: "id" => scalar,
     r#arg_count: "arg_count" => scalar,
     r#result_count: "result_count" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TypeDispatchPayload {
+    #[serde(rename = "subject")]
+    pub r#subject: String,
+    #[serde(rename = "default")]
+    pub r#default: String,
+    #[serde(rename = "default_local", skip_serializing_if = "String::is_empty")]
+    pub r#default_local: String,
+    #[serde(rename = "cases")]
+    pub r#cases: crate::contract::GoSlice<TypeCase>,
+}
+crate::contract::go_object!(TypeDispatchPayload {
+    r#subject: "subject" => scalar,
+    r#default: "default" => scalar,
+    r#default_local: "default_local" => scalar,
+    r#cases: "cases" => value,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TypeCase {
+    #[serde(rename = "type")]
+    pub r#type: TypeRef,
+    #[serde(rename = "label")]
+    pub r#label: String,
+    #[serde(rename = "binding", skip_serializing_if = "String::is_empty")]
+    pub r#binding: String,
+    #[serde(rename = "original", skip_serializing_if = "crate::contract::is_default")]
+    pub r#original: bool,
+}
+crate::contract::go_object!(TypeCase {
+    r#type: "type" => object,
+    r#label: "label" => scalar,
+    r#binding: "binding" => scalar,
+    r#original: "original" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CompareBranchPayload {
+    #[serde(rename = "operator")]
+    pub r#operator: String,
+    #[serde(rename = "type")]
+    pub r#type: TypeRef,
+    #[serde(rename = "label")]
+    pub r#label: String,
+    #[serde(rename = "when")]
+    pub r#when: bool,
+}
+crate::contract::go_object!(CompareBranchPayload {
+    r#operator: "operator" => scalar,
+    r#type: "type" => object,
+    r#label: "label" => scalar,
+    r#when: "when" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FieldPathPayload {
+    #[serde(rename = "type")]
+    pub r#type: TypeRef,
+    #[serde(rename = "fields")]
+    pub r#fields: crate::contract::GoSlice<u32>,
+}
+crate::contract::go_object!(FieldPathPayload {
+    r#type: "type" => object,
+    r#fields: "fields" => value,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Export {
+    #[serde(rename = "name")]
+    pub r#name: String,
+    #[serde(rename = "kind")]
+    pub r#kind: String,
+    #[serde(rename = "id")]
+    pub r#id: String,
+    #[serde(rename = "type")]
+    pub r#type: TypeRef,
+    #[serde(rename = "untyped", skip_serializing_if = "crate::contract::is_default")]
+    pub r#untyped: bool,
+}
+crate::contract::go_object!(Export {
+    r#name: "name" => scalar,
+    r#kind: "kind" => scalar,
+    r#id: "id" => scalar,
+    r#type: "type" => object,
+    r#untyped: "untyped" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Requirement {
+    #[serde(rename = "kind")]
+    pub r#kind: String,
+    #[serde(rename = "module_path")]
+    pub r#module_path: String,
+    #[serde(rename = "hash", skip_serializing_if = "String::is_empty")]
+    pub r#hash: String,
+    #[serde(rename = "exports", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#exports: crate::contract::GoSlice<String>,
+}
+crate::contract::go_object!(Requirement {
+    r#kind: "kind" => scalar,
+    r#module_path: "module_path" => scalar,
+    r#hash: "hash" => scalar,
+    r#exports: "exports" => value,
+});
+
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
+#[serde(tag="op", content="payload", deny_unknown_fields)]
+pub enum Instruction {
+    #[serde(rename="type_dispatch")]
+    TypeDispatch(TypeDispatchPayload),
+    #[serde(rename="select")]
+    Select(SelectPayload),
+    #[serde(rename="const")]
+    Const(ConstPayload),
+    #[serde(rename="zero")]
+    Zero(TypePayload),
+    #[serde(rename="pop")]
+    Pop,
+    #[serde(rename="unary")]
+    Unary(OperatorPayload),
+    #[serde(rename="binary")]
+    Binary(OperatorPayload),
+    #[serde(rename="load_local")]
+    LoadLocal(LocalPayload),
+    #[serde(rename="store_local")]
+    StoreLocal(LocalPayload),
+    #[serde(rename="load_upvalue")]
+    LoadUpvalue(UpvaluePayload),
+    #[serde(rename="store_upvalue")]
+    StoreUpvalue(UpvaluePayload),
+    #[serde(rename="load_global")]
+    LoadGlobal(GlobalPayload),
+    #[serde(rename="store_global")]
+    StoreGlobal(GlobalPayload),
+    #[serde(rename="label")]
+    Label(LabelPayload),
+    #[serde(rename="jump")]
+    Jump(JumpPayload),
+    #[serde(rename="jump_if")]
+    JumpIf(JumpPayload),
+    #[serde(rename="return")]
+    Return(ReturnPayload),
+    #[serde(rename="panic")]
+    Panic,
+    #[serde(rename="recover")]
+    Recover,
+    #[serde(rename="defer_push")]
+    DeferPush(DeferPayload),
+    #[serde(rename="call_value")]
+    CallValue(CallPayload),
+    #[serde(rename="call_direct")]
+    CallDirect(CallPayload),
+    #[serde(rename="tail_call_direct")]
+    TailCallDirect(CallPayload),
+    #[serde(rename="call_interface")]
+    CallInterface(CallInterfacePayload),
+    #[serde(rename="make_closure")]
+    MakeClosure(ClosurePayload),
+    #[serde(rename="make_sequence")]
+    MakeSequence(MakeSequencePayload),
+    #[serde(rename="make_map")]
+    MakeMap(MakeMapPayload),
+    #[serde(rename="make_struct")]
+    MakeStruct(MakeStructPayload),
+    #[serde(rename="make_slice")]
+    MakeSlice(MakeSlicePayload),
+    #[serde(rename="make_waitable")]
+    MakeWaitable(MakeWaitablePayload),
+    #[serde(rename="load_index")]
+    LoadIndex,
+    #[serde(rename="load_index_ok")]
+    LoadIndexOk,
+    #[serde(rename="string_rune_at")]
+    StringRuneAt,
+    #[serde(rename="string_next_rune_index")]
+    StringNextRuneIndex,
+    #[serde(rename="slice")]
+    Slice,
+    #[serde(rename="len")]
+    Len,
+    #[serde(rename="cap")]
+    Cap,
+    #[serde(rename="append")]
+    Append(CountPayload),
+    #[serde(rename="delete")]
+    Delete,
+    #[serde(rename="clear")]
+    Clear,
+    #[serde(rename="copy")]
+    Copy,
+    #[serde(rename="map_keys")]
+    MapKeys,
+    #[serde(rename="map_iter_init")]
+    MapIterInit(LocalPayload),
+    #[serde(rename="map_iter_next")]
+    MapIterNext(LocalPayload),
+    #[serde(rename="map_iter_close")]
+    MapIterClose(LocalPayload),
+    #[serde(rename="load_field")]
+    LoadField(FieldPayload),
+    #[serde(rename="store_index")]
+    StoreIndex,
+    #[serde(rename="store_field")]
+    StoreField(FieldPayload),
+    #[serde(rename="type_assert")]
+    TypeAssert(TypePayload),
+    #[serde(rename="type_assert_ok")]
+    TypeAssertOk(TypePayload),
+    #[serde(rename="convert")]
+    Convert(TypePayload),
+    #[serde(rename="address_of")]
+    AddressOf(AddressPayload),
+    #[serde(rename="load_indirect")]
+    LoadIndirect,
+    #[serde(rename="store_indirect")]
+    StoreIndirect,
+    #[serde(rename="waitable_send")]
+    WaitableSend,
+    #[serde(rename="waitable_recv")]
+    WaitableRecv,
+    #[serde(rename="waitable_recv_ok")]
+    WaitableRecvOk,
+    #[serde(rename="waitable_can_recv")]
+    WaitableCanRecv,
+    #[serde(rename="waitable_try_recv")]
+    WaitableTryRecv,
+    #[serde(rename="waitable_try_send")]
+    WaitableTrySend,
+    #[serde(rename="waitable_can_send")]
+    WaitableCanSend,
+    #[serde(rename="waitable_close")]
+    WaitableClose,
+    #[serde(rename="init_module")]
+    InitModule(InitModulePayload),
+    #[serde(rename="load_export")]
+    LoadExport(ExportPayload),
+    #[serde(rename="spawn")]
+    Spawn(CallPayload),
+    #[serde(rename="call_ffi")]
+    CallFfi(CallFFIPayload),
+    #[serde(rename="call_intrinsic")]
+    CallIntrinsic(CallIntrinsicPayload),
+    #[serde(rename="compare_branch")]
+    CompareBranch(CompareBranchPayload),
+    #[serde(rename="get_path")]
+    GetPath(FieldPathPayload),
+}
+impl Instruction {pub fn opcode(&self)-> &'static str {match self {
+Self::TypeDispatch(_)=>"type_dispatch",
+Self::Select(_)=>"select",
+Self::Const(_)=>"const",
+Self::Zero(_)=>"zero",
+Self::Pop=>"pop",
+Self::Unary(_)=>"unary",
+Self::Binary(_)=>"binary",
+Self::LoadLocal(_)=>"load_local",
+Self::StoreLocal(_)=>"store_local",
+Self::LoadUpvalue(_)=>"load_upvalue",
+Self::StoreUpvalue(_)=>"store_upvalue",
+Self::LoadGlobal(_)=>"load_global",
+Self::StoreGlobal(_)=>"store_global",
+Self::Label(_)=>"label",
+Self::Jump(_)=>"jump",
+Self::JumpIf(_)=>"jump_if",
+Self::Return(_)=>"return",
+Self::Panic=>"panic",
+Self::Recover=>"recover",
+Self::DeferPush(_)=>"defer_push",
+Self::CallValue(_)=>"call_value",
+Self::CallDirect(_)=>"call_direct",
+Self::TailCallDirect(_)=>"tail_call_direct",
+Self::CallInterface(_)=>"call_interface",
+Self::MakeClosure(_)=>"make_closure",
+Self::MakeSequence(_)=>"make_sequence",
+Self::MakeMap(_)=>"make_map",
+Self::MakeStruct(_)=>"make_struct",
+Self::MakeSlice(_)=>"make_slice",
+Self::MakeWaitable(_)=>"make_waitable",
+Self::LoadIndex=>"load_index",
+Self::LoadIndexOk=>"load_index_ok",
+Self::StringRuneAt=>"string_rune_at",
+Self::StringNextRuneIndex=>"string_next_rune_index",
+Self::Slice=>"slice",
+Self::Len=>"len",
+Self::Cap=>"cap",
+Self::Append(_)=>"append",
+Self::Delete=>"delete",
+Self::Clear=>"clear",
+Self::Copy=>"copy",
+Self::MapKeys=>"map_keys",
+Self::MapIterInit(_)=>"map_iter_init",
+Self::MapIterNext(_)=>"map_iter_next",
+Self::MapIterClose(_)=>"map_iter_close",
+Self::LoadField(_)=>"load_field",
+Self::StoreIndex=>"store_index",
+Self::StoreField(_)=>"store_field",
+Self::TypeAssert(_)=>"type_assert",
+Self::TypeAssertOk(_)=>"type_assert_ok",
+Self::Convert(_)=>"convert",
+Self::AddressOf(_)=>"address_of",
+Self::LoadIndirect=>"load_indirect",
+Self::StoreIndirect=>"store_indirect",
+Self::WaitableSend=>"waitable_send",
+Self::WaitableRecv=>"waitable_recv",
+Self::WaitableRecvOk=>"waitable_recv_ok",
+Self::WaitableCanRecv=>"waitable_can_recv",
+Self::WaitableTryRecv=>"waitable_try_recv",
+Self::WaitableTrySend=>"waitable_try_send",
+Self::WaitableCanSend=>"waitable_can_send",
+Self::WaitableClose=>"waitable_close",
+Self::InitModule(_)=>"init_module",
+Self::LoadExport(_)=>"load_export",
+Self::Spawn(_)=>"spawn",
+Self::CallFfi(_)=>"call_ffi",
+Self::CallIntrinsic(_)=>"call_intrinsic",
+Self::CompareBranch(_)=>"compare_branch",
+Self::GetPath(_)=>"get_path",
+}}}
+impl Instruction { pub fn fixed_arity(&self) -> Option<(usize, usize)> { match self {
+Self::TypeDispatch(_) => Some((0, 0)),
+Self::Select(_) => Some((0, 0)),
+Self::Const(_) => Some((0, 1)),
+Self::Zero(_) => Some((0, 1)),
+Self::Pop => Some((1, 0)),
+Self::Unary(_) => Some((1, 1)),
+Self::Binary(_) => Some((2, 1)),
+Self::LoadLocal(_) => Some((0, 1)),
+Self::StoreLocal(_) => Some((1, 0)),
+Self::LoadUpvalue(_) => Some((0, 1)),
+Self::StoreUpvalue(_) => Some((1, 0)),
+Self::LoadGlobal(_) => Some((0, 1)),
+Self::StoreGlobal(_) => Some((1, 0)),
+Self::Label(_) => Some((0, 0)),
+Self::Jump(_) => Some((0, 0)),
+Self::JumpIf(_) => Some((1, 0)),
+Self::Return(_) => None,
+Self::Panic => Some((1, 0)),
+Self::Recover => Some((0, 1)),
+Self::DeferPush(_) => Some((1, 0)),
+Self::CallValue(_) => None,
+Self::CallDirect(_) => None,
+Self::TailCallDirect(_) => None,
+Self::CallInterface(_) => None,
+Self::MakeClosure(_) => Some((0, 1)),
+Self::MakeSequence(_) => None,
+Self::MakeMap(_) => None,
+Self::MakeStruct(_) => None,
+Self::MakeSlice(_) => None,
+Self::MakeWaitable(_) => Some((1, 1)),
+Self::LoadIndex => Some((2, 1)),
+Self::LoadIndexOk => Some((2, 2)),
+Self::StringRuneAt => Some((2, 1)),
+Self::StringNextRuneIndex => Some((2, 1)),
+Self::Slice => Some((4, 1)),
+Self::Len => Some((1, 1)),
+Self::Cap => Some((1, 1)),
+Self::Append(_) => None,
+Self::Delete => Some((2, 0)),
+Self::Clear => Some((1, 0)),
+Self::Copy => Some((2, 1)),
+Self::MapKeys => Some((1, 1)),
+Self::MapIterInit(_) => Some((1, 0)),
+Self::MapIterNext(_) => Some((0, 3)),
+Self::MapIterClose(_) => Some((0, 0)),
+Self::LoadField(_) => Some((1, 1)),
+Self::StoreIndex => Some((3, 0)),
+Self::StoreField(_) => Some((2, 0)),
+Self::TypeAssert(_) => Some((1, 1)),
+Self::TypeAssertOk(_) => Some((1, 2)),
+Self::Convert(_) => Some((1, 1)),
+Self::AddressOf(_) => Some((0, 1)),
+Self::LoadIndirect => Some((1, 1)),
+Self::StoreIndirect => Some((2, 0)),
+Self::WaitableSend => Some((2, 0)),
+Self::WaitableRecv => Some((1, 1)),
+Self::WaitableRecvOk => Some((1, 2)),
+Self::WaitableCanRecv => Some((1, 1)),
+Self::WaitableTryRecv => Some((1, 2)),
+Self::WaitableTrySend => Some((2, 1)),
+Self::WaitableCanSend => Some((1, 1)),
+Self::WaitableClose => Some((1, 0)),
+Self::InitModule(_) => Some((0, 0)),
+Self::LoadExport(_) => Some((0, 1)),
+Self::Spawn(_) => None,
+Self::CallFfi(_) => None,
+Self::CallIntrinsic(_) => None,
+Self::CompareBranch(_) => Some((2, 0)),
+Self::GetPath(_) => Some((1, 1)),
+}}}
+impl DescriptorTables { pub fn instruction(&self, op: u16, index: u32) -> Option<Instruction> { Some(match op {
+1 => Instruction::TypeDispatch(self.r#typedispatch.get(index as usize)?.clone()),
+2 => Instruction::Select(self.r#select.get(index as usize)?.clone()),
+3 => Instruction::Const(self.r#const.get(index as usize)?.clone()),
+4 => Instruction::Zero(self.r#type.get(index as usize)?.clone()),
+5 => Instruction::Pop /* no descriptor */,
+6 => Instruction::Unary(self.r#operator.get(index as usize)?.clone()),
+7 => Instruction::Binary(self.r#operator.get(index as usize)?.clone()),
+8 => Instruction::LoadLocal(self.r#local.get(index as usize)?.clone()),
+9 => Instruction::StoreLocal(self.r#local.get(index as usize)?.clone()),
+10 => Instruction::LoadUpvalue(self.r#upvalue.get(index as usize)?.clone()),
+11 => Instruction::StoreUpvalue(self.r#upvalue.get(index as usize)?.clone()),
+12 => Instruction::LoadGlobal(self.r#global.get(index as usize)?.clone()),
+13 => Instruction::StoreGlobal(self.r#global.get(index as usize)?.clone()),
+14 => Instruction::Label(self.r#label.get(index as usize)?.clone()),
+15 => Instruction::Jump(self.r#jump.get(index as usize)?.clone()),
+16 => Instruction::JumpIf(self.r#jump.get(index as usize)?.clone()),
+17 => Instruction::Return(self.r#return.get(index as usize)?.clone()),
+18 => Instruction::Panic /* no descriptor */,
+19 => Instruction::Recover /* no descriptor */,
+20 => Instruction::DeferPush(self.r#defer.get(index as usize)?.clone()),
+21 => Instruction::CallValue(self.r#call.get(index as usize)?.clone()),
+22 => Instruction::CallDirect(self.r#call.get(index as usize)?.clone()),
+23 => Instruction::TailCallDirect(self.r#call.get(index as usize)?.clone()),
+24 => Instruction::CallInterface(self.r#callinterface.get(index as usize)?.clone()),
+25 => Instruction::MakeClosure(self.r#closure.get(index as usize)?.clone()),
+26 => Instruction::MakeSequence(self.r#makesequence.get(index as usize)?.clone()),
+27 => Instruction::MakeMap(self.r#makemap.get(index as usize)?.clone()),
+28 => Instruction::MakeStruct(self.r#makestruct.get(index as usize)?.clone()),
+29 => Instruction::MakeSlice(self.r#makeslice.get(index as usize)?.clone()),
+30 => Instruction::MakeWaitable(self.r#makewaitable.get(index as usize)?.clone()),
+31 => Instruction::LoadIndex /* no descriptor */,
+32 => Instruction::LoadIndexOk /* no descriptor */,
+33 => Instruction::StringRuneAt /* no descriptor */,
+34 => Instruction::StringNextRuneIndex /* no descriptor */,
+35 => Instruction::Slice /* no descriptor */,
+36 => Instruction::Len /* no descriptor */,
+37 => Instruction::Cap /* no descriptor */,
+38 => Instruction::Append(self.r#count.get(index as usize)?.clone()),
+39 => Instruction::Delete /* no descriptor */,
+40 => Instruction::Clear /* no descriptor */,
+41 => Instruction::Copy /* no descriptor */,
+42 => Instruction::MapKeys /* no descriptor */,
+43 => Instruction::MapIterInit(self.r#local.get(index as usize)?.clone()),
+44 => Instruction::MapIterNext(self.r#local.get(index as usize)?.clone()),
+45 => Instruction::MapIterClose(self.r#local.get(index as usize)?.clone()),
+46 => Instruction::LoadField(self.r#field.get(index as usize)?.clone()),
+47 => Instruction::StoreIndex /* no descriptor */,
+48 => Instruction::StoreField(self.r#field.get(index as usize)?.clone()),
+49 => Instruction::TypeAssert(self.r#type.get(index as usize)?.clone()),
+50 => Instruction::TypeAssertOk(self.r#type.get(index as usize)?.clone()),
+51 => Instruction::Convert(self.r#type.get(index as usize)?.clone()),
+52 => Instruction::AddressOf(self.r#address.get(index as usize)?.clone()),
+53 => Instruction::LoadIndirect /* no descriptor */,
+54 => Instruction::StoreIndirect /* no descriptor */,
+55 => Instruction::WaitableSend /* no descriptor */,
+56 => Instruction::WaitableRecv /* no descriptor */,
+57 => Instruction::WaitableRecvOk /* no descriptor */,
+58 => Instruction::WaitableCanRecv /* no descriptor */,
+59 => Instruction::WaitableTryRecv /* no descriptor */,
+60 => Instruction::WaitableTrySend /* no descriptor */,
+61 => Instruction::WaitableCanSend /* no descriptor */,
+62 => Instruction::WaitableClose /* no descriptor */,
+63 => Instruction::InitModule(self.r#initmodule.get(index as usize)?.clone()),
+64 => Instruction::LoadExport(self.r#export.get(index as usize)?.clone()),
+65 => Instruction::Spawn(self.r#call.get(index as usize)?.clone()),
+66 => Instruction::CallFfi(self.r#callffi.get(index as usize)?.clone()),
+67 => Instruction::CallIntrinsic(self.r#callintrinsic.get(index as usize)?.clone()),
+68 => Instruction::CompareBranch(self.r#comparebranch.get(index as usize)?.clone()),
+69 => Instruction::GetPath(self.r#fieldpath.get(index as usize)?.clone()),
+_ => return None,
+}) } }
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProgramSymbols {
+    #[serde(rename = "format")]
+    pub r#format: String,
+    #[serde(rename = "version")]
+    pub r#version: i64,
+    #[serde(rename = "compiler_id")]
+    pub r#compiler_id: String,
+    #[serde(rename = "contract_id")]
+    pub r#contract_id: String,
+    #[serde(rename = "program_hash")]
+    pub r#program_hash: String,
+    #[serde(rename = "optimization")]
+    pub r#optimization: u8,
+    #[serde(rename = "packages")]
+    pub r#packages: Option<BTreeMap<String, PackageSymbols>>,
+    #[serde(rename = "hash")]
+    pub r#hash: String,
+}
+crate::contract::go_object!(ProgramSymbols {
+    r#format: "format" => scalar,
+    r#version: "version" => scalar,
+    r#compiler_id: "compiler_id" => scalar,
+    r#contract_id: "contract_id" => scalar,
+    r#program_hash: "program_hash" => scalar,
+    r#optimization: "optimization" => scalar,
+    r#packages: "packages" => map,
+    r#hash: "hash" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PackageSymbols {
+    #[serde(rename = "module_path")]
+    pub r#module_path: String,
+    #[serde(rename = "code_hash")]
+    pub r#code_hash: String,
+    #[serde(rename = "source_hash", skip_serializing_if = "String::is_empty")]
+    pub r#source_hash: String,
+    #[serde(rename = "files", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#files: crate::contract::GoSlice<SourceFile>,
+    #[serde(rename = "globals", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#globals: crate::contract::GoSlice<GlobalSymbol>,
+    #[serde(rename = "functions", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#functions: crate::contract::GoSlice<FunctionSymbols>,
+}
+crate::contract::go_object!(PackageSymbols {
+    r#module_path: "module_path" => scalar,
+    r#code_hash: "code_hash" => scalar,
+    r#source_hash: "source_hash" => scalar,
+    r#files: "files" => value,
+    r#globals: "globals" => value,
+    r#functions: "functions" => value,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SourceFile {
+    #[serde(rename = "id")]
+    pub r#id: String,
+    #[serde(rename = "path")]
+    pub r#path: String,
+    #[serde(rename = "hash", skip_serializing_if = "String::is_empty")]
+    pub r#hash: String,
+}
+crate::contract::go_object!(SourceFile {
+    r#id: "id" => scalar,
+    r#path: "path" => scalar,
+    r#hash: "hash" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GlobalSymbol {
+    #[serde(rename = "id")]
+    pub r#id: String,
+    #[serde(rename = "name")]
+    pub r#name: String,
+}
+crate::contract::go_object!(GlobalSymbol {
+    r#id: "id" => scalar,
+    r#name: "name" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FunctionSymbols {
+    #[serde(rename = "id")]
+    pub r#id: String,
+    #[serde(rename = "name")]
+    pub r#name: String,
+    #[serde(rename = "generated", skip_serializing_if = "crate::contract::is_default")]
+    pub r#generated: bool,
+    #[serde(rename = "declaration", skip_serializing_if = "Option::is_none")]
+    pub r#declaration: Option<Box<Location>>,
+    #[serde(rename = "locals", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#locals: crate::contract::GoSlice<LocalSymbol>,
+    #[serde(rename = "upvalues", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#upvalues: crate::contract::GoSlice<UpvalueSymbol>,
+    #[serde(rename = "scopes", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#scopes: crate::contract::GoSlice<DebugScope>,
+    #[serde(rename = "locations", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#locations: crate::contract::GoSlice<InstructionSymbol>,
+}
+crate::contract::go_object!(FunctionSymbols {
+    r#id: "id" => scalar,
+    r#name: "name" => scalar,
+    r#generated: "generated" => scalar,
+    r#declaration: "declaration" => pointer,
+    r#locals: "locals" => value,
+    r#upvalues: "upvalues" => value,
+    r#scopes: "scopes" => value,
+    r#locations: "locations" => value,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Location {
+    #[serde(rename = "file")]
+    pub r#file: String,
+    #[serde(rename = "line")]
+    pub r#line: i64,
+    #[serde(rename = "column")]
+    pub r#column: i64,
+}
+crate::contract::go_object!(Location {
+    r#file: "file" => scalar,
+    r#line: "line" => scalar,
+    r#column: "column" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LocalSymbol {
+    #[serde(rename = "id")]
+    pub r#id: String,
+    #[serde(rename = "name", skip_serializing_if = "String::is_empty")]
+    pub r#name: String,
+    #[serde(rename = "scope", skip_serializing_if = "crate::contract::is_default")]
+    pub r#scope: i64,
+    #[serde(rename = "generated", skip_serializing_if = "crate::contract::is_default")]
+    pub r#generated: bool,
+    #[serde(rename = "declaration", skip_serializing_if = "Option::is_none")]
+    pub r#declaration: Option<Box<Location>>,
+}
+crate::contract::go_object!(LocalSymbol {
+    r#id: "id" => scalar,
+    r#name: "name" => scalar,
+    r#scope: "scope" => scalar,
+    r#generated: "generated" => scalar,
+    r#declaration: "declaration" => pointer,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpvalueSymbol {
+    #[serde(rename = "id")]
+    pub r#id: String,
+    #[serde(rename = "name", skip_serializing_if = "String::is_empty")]
+    pub r#name: String,
+}
+crate::contract::go_object!(UpvalueSymbol {
+    r#id: "id" => scalar,
+    r#name: "name" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DebugScope {
+    #[serde(rename = "id")]
+    pub r#id: i64,
+    #[serde(rename = "parent", skip_serializing_if = "crate::contract::is_default")]
+    pub r#parent: i64,
+    #[serde(rename = "ranges", skip_serializing_if = "crate::contract::GoSlice::is_empty")]
+    pub r#ranges: crate::contract::GoSlice<PCRange>,
+}
+crate::contract::go_object!(DebugScope {
+    r#id: "id" => scalar,
+    r#parent: "parent" => scalar,
+    r#ranges: "ranges" => value,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PCRange {
+    #[serde(rename = "start")]
+    pub r#start: i64,
+    #[serde(rename = "end")]
+    pub r#end: i64,
+}
+crate::contract::go_object!(PCRange {
+    r#start: "start" => scalar,
+    r#end: "end" => scalar,
+});
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InstructionSymbol {
+    #[serde(rename = "pc")]
+    pub r#pc: i64,
+    #[serde(rename = "points")]
+    pub r#points: crate::contract::GoSlice<Location>,
+}
+crate::contract::go_object!(InstructionSymbol {
+    r#pc: "pc" => scalar,
+    r#points: "points" => value,
 });
 #[allow(non_upper_case_globals)]
 pub const Invalid: u8 = 0;

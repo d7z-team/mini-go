@@ -15,28 +15,21 @@ func TestTasksShareOneModuleInitializationAcrossSchedulingQuanta(t *testing.T) {
 	read := root.Functions[0]
 	read.ID = "fn.read"
 	root.Functions = []ir.Function{
-		{ID: "fn.entry", Signature: testSignature("function() Int64"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.worker"})},
-			{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-			{Op: string(ir.OpCallDirect), Payload: testPayload(ir.CallPayload{Function: "fn.read", ResultCount: 1})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-		}},
+		{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{
+			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.worker"}},
+			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
+			{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.read", ResultCount: 1}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}})},
 		read,
-		{ID: "fn.worker", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpCallDirect), Payload: testPayload(ir.CallPayload{Function: "fn.read", ResultCount: 1})},
-			{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.child"})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		}},
+		{ID: "fn.worker", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+			{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.read", ResultCount: 1}},
+			{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.child"}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
 	}
 	root.Globals = append(root.Globals, ir.Global{ID: "global.child", Type: testType("Int64")})
-	var delay []ir.Instruction
-	for range taskInstructionQuantum * 2 {
-		delay = append(delay,
-			ir.Instruction{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.initial"})},
-			ir.Instruction{Op: string(ir.OpPop)},
-		)
-	}
-	dependency.Functions[0].Instructions = append(delay, dependency.Functions[0].Instructions...)
+	insertTestDelay(dependency.Functions[0].Code, 0, taskInstructionQuantum*2)
 	program := patchMultiModuleProgram(t, root, dependency, "shared-init")
 	for _, parallelism := range []int{1, 2, 4} {
 		t.Run(strconv.Itoa(parallelism), func(t *testing.T) {

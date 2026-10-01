@@ -33,6 +33,19 @@ func reflectTypeDescriptor(ctx intrinsicContext, args []vmValue) ([]vmValue, err
 	return []vmValue{reflectTypeDescriptorValue(ctx, info), newVMValue("String", ""), newVMValue("Bool", true)}, nil
 }
 
+func reflectTypeKind(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
+	info, err := reflectResolvedTypeInfo(ctx, args[0])
+	if err != nil {
+		return []vmValue{newVMValue("Uint", uint64(0)), newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
+	}
+	module := reflectRelationModule(ctx)
+	if module == nil {
+		return nil, errors.New("reflect: Type requires module context")
+	}
+	kind := reflectKindCode(module.resolvedRuntimeType(info.Key).Underlying())
+	return []vmValue{newVMValue("Uint", uint64(kind)), newVMValue("String", ""), newVMValue("Bool", true)}, nil
+}
+
 func reflectTypeField(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("reflect.type_field expects 2 arguments, got %d", len(args))
@@ -55,6 +68,49 @@ func reflectTypeField(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	}
 	field := reflectStructFieldValueAt(ctx, info.Fields[int(index)], int(index))
 	return []vmValue{field, newVMValue("String", ""), newVMValue("Bool", true)}, nil
+}
+
+// reflectTypeMeasure returns only immutable scalar metadata. It does not build
+// a guest descriptor or allocate the descriptor's parameter/result slices.
+func reflectTypeMeasure(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
+	info, err := reflectResolvedTypeInfo(ctx, args[0])
+	var result uint64
+	if err == nil {
+		property, ok := args[1].Data.(string)
+		if !ok {
+			return nil, errors.New("reflect.type_measure expects a string property")
+		}
+		switch property {
+		case "fields":
+			result = uint64(len(info.Fields))
+		case "align":
+			result = uint64(info.Align)
+		case "field_align":
+			result = uint64(info.FieldAlign)
+		case "size":
+			result = info.Size
+		case "bits":
+			result = uint64(info.Bits)
+		case "length":
+			module := reflectRelationModule(ctx)
+			if module == nil {
+				err = errors.New("reflect: Type requires module context")
+			} else {
+				length, _, ok := module.resolvedRuntimeType(info.Key).Underlying().ArrayInfo()
+				if !ok {
+					err = errors.New("reflect: Len of non-array type")
+				} else {
+					result = length
+				}
+			}
+		default:
+			err = errors.New("reflect: unknown type measurement")
+		}
+	}
+	if err != nil {
+		return []vmValue{newVMValue("Uint64", uint64(0)), newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
+	}
+	return []vmValue{newVMValue("Uint64", result), newVMValue("String", ""), newVMValue("Bool", true)}, nil
 }
 
 func reflectTypeMethod(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {

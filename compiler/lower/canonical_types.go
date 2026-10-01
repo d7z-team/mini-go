@@ -328,7 +328,7 @@ func (l *lowerer) inferredCompositeTypeExpr(canonical string, span source.Span) 
 		return ast.TypeExpr{Kind: ast.TypeSlice, Elem: &elem, Span: span}
 	}
 	if length, elemRef, ok := view.Array(); ok {
-		lengthExpr := ast.Expression{Kind: ast.ExprLiteral, Literal: strconv.FormatInt(length, 10), Type: ast.TypeExpr{Kind: ast.TypeName, Name: "Int", Span: span}, Span: span}
+		lengthExpr := ast.Expression{Kind: ast.ExprLiteral, Literal: strconv.FormatInt(length, 10), Type: &ast.TypeExpr{Kind: ast.TypeName, Name: "Int", Span: span}, Span: span}
 		elem := l.inferredCompositeTypeExpr(l.typeRefString(elemRef), span)
 		return ast.TypeExpr{Kind: ast.TypeArray, Len: &lengthExpr, Elem: &elem, Span: span}
 	}

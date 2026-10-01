@@ -9,7 +9,7 @@ import (
 )
 
 func TestDebuggerSchemaPanicAfterDeferredCleanup(t *testing.T) {
-	artifact := deferredPanicTestArtifact([]ir.Instruction{{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":0}`)}})
+	artifact := deferredPanicTestArtifact(testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}))
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.main", pc: 3, line: 9, column: 2})
 
 	debugger := NewDebugger()
@@ -58,40 +58,40 @@ func TestDebuggerSchemaNestedDeferredRecoverThenTail(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.tail"}`),
+		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{{
+			Op:      ir.OpMakeClosure,
+			Payload: ir.ClosurePayload{Function: "fn.tail"},
 		}, {
-			Op: string(ir.OpDeferPush),
+			Op: ir.OpDeferPush, Payload: ir.DeferPayload{},
 		}, {
-			Op:      string(ir.OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.recover"}`),
+			Op:      ir.OpMakeClosure,
+			Payload: ir.ClosurePayload{Function: "fn.recover"},
 		}, {
-			Op: string(ir.OpDeferPush),
+			Op: ir.OpDeferPush, Payload: ir.DeferPayload{},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.message"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.message"},
 		}, {
-			Op: string(ir.OpPanic),
-		}},
+			Op: ir.OpPanic,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
 		ID:        "fn.recover",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op: string(ir.OpRecover),
+		Code: testSlotCode([]string{"Any"}, []ir.Instruction{{
+			Op: ir.OpRecover,
 		}, {
-			Op: string(ir.OpPop),
+			Op: ir.OpPop,
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":0}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 0},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}, {
 		ID:        "fn.tail",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":0}`),
-		}},
+		Code: testSlotCode([]string{}, []ir.Instruction{{
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 0},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact,
@@ -187,46 +187,46 @@ func TestDebuggerSchemaRecoverContextClearedForLaterDefer(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.observe"}`),
+		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{{
+			Op:      ir.OpMakeClosure,
+			Payload: ir.ClosurePayload{Function: "fn.observe"},
 		}, {
-			Op: string(ir.OpDeferPush),
+			Op: ir.OpDeferPush, Payload: ir.DeferPayload{},
 		}, {
-			Op:      string(ir.OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.recover"}`),
+			Op:      ir.OpMakeClosure,
+			Payload: ir.ClosurePayload{Function: "fn.recover"},
 		}, {
-			Op: string(ir.OpDeferPush),
+			Op: ir.OpDeferPush, Payload: ir.DeferPayload{},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.message"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.message"},
 		}, {
-			Op: string(ir.OpPanic),
-		}},
+			Op: ir.OpPanic,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
 		ID:        "fn.recover",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op: string(ir.OpRecover),
+		Code: testSlotCode([]string{"Any"}, []ir.Instruction{{
+			Op: ir.OpRecover,
 		}, {
-			Op: string(ir.OpPop),
+			Op: ir.OpPop,
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":0}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 0},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}, {
 		ID:        "fn.observe",
 		Signature: testSignature("function() Void"),
 		Locals:    []ir.Local{{ID: "local.recovered", Type: testType("Any")}},
-		Instructions: []ir.Instruction{{
-			Op: string(ir.OpRecover),
+		Code: testSlotCode([]string{"Any"}, []ir.Instruction{{
+			Op: ir.OpRecover,
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.recovered"}`),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.recovered"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":0}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 0},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.observe", pc: 2, line: 10, column: 2})
@@ -284,30 +284,30 @@ func TestDebuggerSchemaDeferredRepanicReplacesOwnerPanic(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.repanic"}`),
+		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{{
+			Op:      ir.OpMakeClosure,
+			Payload: ir.ClosurePayload{Function: "fn.repanic"},
 		}, {
-			Op: string(ir.OpDeferPush),
+			Op: ir.OpDeferPush, Payload: ir.DeferPayload{},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.owner"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.owner"},
 		}, {
-			Op: string(ir.OpPanic),
-		}},
+			Op: ir.OpPanic,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
 		ID:        "fn.repanic",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op: string(ir.OpRecover),
+		Code: testSlotCode([]string{"Any", "String"}, []ir.Instruction{{
+			Op: ir.OpRecover,
 		}, {
-			Op: string(ir.OpPop),
+			Op: ir.OpPop,
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.replacement"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.replacement"},
 		}, {
-			Op: string(ir.OpPanic),
-		}},
+			Op: ir.OpPanic,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.repanic", pc: 3, line: 8, column: 2})

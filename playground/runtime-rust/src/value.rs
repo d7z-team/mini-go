@@ -108,7 +108,9 @@ pub struct Address {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PointerIdentity {
-    pub key: std::sync::Arc<()>,
+    // Most address temporaries disappear before a census or typed view needs
+    // an origin. Publish the stable key only when that origin is observed.
+    pub key: std::sync::OnceLock<std::sync::Arc<()>>,
     pub original: Option<PointerOrigin>,
     pub path_root: Option<(Handle, usize)>,
     pub array_capacity: Option<usize>,
@@ -124,9 +126,25 @@ pub(crate) struct PointerOrigin {
 }
 
 impl Address {
+    pub(crate) fn reset_identity(&mut self, path_root: Option<(Handle, usize)>) {
+        let identity = std::sync::Arc::make_mut(&mut self.identity);
+        // No external pointer origin can observe an exclusively owned key.
+        // Shared origins retain their identity while this address gets a new one.
+        if identity
+            .key
+            .get()
+            .is_some_and(|key| std::sync::Arc::strong_count(key) != 1)
+        {
+            identity.key = std::sync::OnceLock::new();
+        }
+        identity.original = None;
+        identity.path_root = path_root;
+        identity.array_capacity = None;
+    }
+
     pub(crate) fn pointer_origin(&self) -> PointerOrigin {
         let mut origin = PointerOrigin {
-            key: self.identity.key.clone(),
+            key: self.identity.key.get_or_init(Default::default).clone(),
             root: None,
             slots: 0,
             array: None,
@@ -182,7 +200,23 @@ impl Eq for Address {}
 impl std::hash::Hash for Address {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.root.hash(state);
-        self.location_path().hash(state);
+        self.path
+            .iter()
+            .filter(|segment| !matches!(segment, PathElement::TypeView(_)))
+            .count()
+            .hash(state);
+        for segment in &self.path {
+            match segment {
+                PathElement::ArrayView { start, .. } => PathElement::ArrayView {
+                    start: *start,
+                    length: 0,
+                    typ: TypeIdentity::Any,
+                }
+                .hash(state),
+                PathElement::TypeView(_) => {}
+                _ => segment.hash(state),
+            }
+        }
     }
 }
 
@@ -220,21 +254,23 @@ pub enum Data {
     String(ByteString),
     OpaqueJSON(std::sync::Arc<[u8]>),
     Struct(StructStorage),
-    Array(Vec<Value>),
+    /// Value copies share storage; writes detach through `Arc::make_mut`.
+    /// Logical allocation accounting counts each guest array independently.
+    Array(std::sync::Arc<Vec<Value>>),
     /// Mutable byte backing, referenced through slice and pointer addresses.
     Bytes(Vec<u8>),
-    Slice(SliceValue),
+    Slice(std::sync::Arc<SliceValue>),
     Map(Handle),
-    MapEntries(MapStorage),
+    MapEntries(Box<MapStorage>),
     ResourceRef(Handle),
     Resource(Box<crate::instance::scheduler::Resource>),
-    Interface(Box<Value>),
-    Pointer(Address),
-    Function(FunctionValue),
-    DynamicFunction(Box<Value>),
+    Interface(std::sync::Arc<Value>),
+    Pointer(std::sync::Arc<Address>),
+    Function(std::sync::Arc<FunctionValue>),
+    DynamicFunction(std::sync::Arc<Value>),
     Method {
-        function: FunctionValue,
-        receiver: Option<Box<Value>>,
+        function: std::sync::Arc<FunctionValue>,
+        receiver: Option<std::sync::Arc<Value>>,
     },
 }
 
@@ -295,22 +331,34 @@ impl Value {
             return Ok(16);
         }
         let mut bytes = 16u64;
-        let mut pending = vec![self];
-        while let Some(value) = pending.pop() {
+        let mut pending = Vec::new();
+        let mut value = self;
+        loop {
+            if let Data::Interface(inner) | Data::DynamicFunction(inner) = &value.data {
+                bytes = bytes.checked_add(16).ok_or_else(|| {
+                    RuntimeError::new("allocation_limit", "value", "logical size overflow")
+                })?;
+                value = inner;
+                continue;
+            }
             let extra = match &value.data {
                 Data::String(bytes) => bytes.len() as u64,
                 Data::OpaqueJSON(bytes) => bytes.len() as u64,
                 Data::Bytes(bytes) => 128 + bytes.len() as u64,
                 Data::Struct(fields) => {
-                    pending.extend(fields.values());
-                    128 + fields.len() as u64 * 16
+                    if let Some(bytes) = fields.cached_bytes() {
+                        bytes - 16
+                    } else {
+                        pending.extend(fields.values());
+                        128 + fields.len() as u64 * 16
+                    }
                 }
                 Data::Array(values) => {
-                    pending.extend(values);
+                    pending.extend(values.iter());
                     128 + values.len() as u64 * 16
                 }
                 Data::MapEntries(entries) => {
-                    for (key, value) in entries {
+                    for (key, value) in entries.iter() {
                         pending.push(key);
                         pending.push(value);
                     }
@@ -328,15 +376,16 @@ impl Value {
                     function.captures.len() as u64 * 16
                 }
                 Data::Resource(resource) => resource.logical_bytes(),
-                Data::Interface(value) | Data::DynamicFunction(value) => {
-                    pending.push(value);
-                    16
-                }
                 _ => 0,
             };
             bytes = bytes.checked_add(extra).ok_or_else(|| {
                 RuntimeError::new("allocation_limit", "value", "logical size overflow")
             })?;
+            let Some(next) = pending.pop() else { break };
+            value = next;
+        }
+        if let Data::Struct(fields) = &self.data {
+            fields.cache_bytes(bytes);
         }
         Ok(bytes)
     }
@@ -390,7 +439,7 @@ impl Trace for Data {
             Data::Resource(resource) => resource.trace(visit),
             Data::Interface(value) | Data::DynamicFunction(value) => value.trace(visit),
             Data::MapEntries(entries) => {
-                for (key, value) in entries {
+                for (key, value) in entries.iter() {
                     key.trace(visit);
                     value.trace(visit);
                 }
@@ -414,11 +463,84 @@ impl Trace for Data {
                 }
             }
             Data::Array(values) => {
-                for value in values {
+                for value in values.iter() {
                     value.trace(visit);
                 }
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn pointer_origins_survive_shared_address_reset() {
+        let heap = crate::heap::Heap::new(1, 128).unwrap();
+        let root = heap.allocate(Value::int(42), 128).unwrap();
+        let mut address = Address {
+            root,
+            path: Vec::new(),
+            identity: Arc::default(),
+        };
+        let retained = address.clone();
+        let original = address.pointer_origin();
+        assert!(Arc::ptr_eq(&original.key, &retained.pointer_origin().key));
+        address.reset_identity(Some((root, 2)));
+        let updated = address.pointer_origin();
+        assert!(!Arc::ptr_eq(&original.key, &updated.key));
+        assert!(Arc::ptr_eq(&original.key, &retained.pointer_origin().key));
+        assert_eq!(original.root, Some(root));
+        assert_eq!(original.slots, 0);
+        assert_eq!(updated.slots, 2);
+    }
+
+    #[test]
+    fn array_copies_detach_on_mutation_and_preserve_logical_size() {
+        let nested = Value {
+            typ: TypeIdentity::Any,
+            data: Data::Array(vec![Value::string(b"old".to_vec())].into()),
+        };
+        let original = Value {
+            typ: TypeIdentity::Any,
+            data: Data::Array(vec![nested; 2].into()),
+        };
+        let bytes = original.logical_bytes().unwrap();
+        let mut copied = original.clone();
+        assert_eq!(copied.logical_bytes().unwrap(), bytes);
+        let (Data::Array(original_items), Data::Array(copied_items)) =
+            (&original.data, &mut copied.data)
+        else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(original_items, copied_items));
+        let Data::Array(nested) = &mut Arc::make_mut(copied_items)[0].data else {
+            unreachable!()
+        };
+        Arc::make_mut(nested)[0] = Value::string(b"changed".to_vec());
+        assert_eq!(original.logical_bytes().unwrap(), bytes);
+        assert_eq!(copied.logical_bytes().unwrap(), bytes + 4);
+        for value in original_items.iter() {
+            let Data::Array(nested) = &value.data else {
+                unreachable!()
+            };
+            let Data::String(text) = &nested[0].data else {
+                unreachable!()
+            };
+            assert_eq!(&text[..], b"old");
+        }
+        let Data::Array(items) = &copied.data else {
+            unreachable!()
+        };
+        let Data::Array(untouched) = &items[1].data else {
+            unreachable!()
+        };
+        let Data::String(text) = &untouched[0].data else {
+            unreachable!()
+        };
+        assert_eq!(&text[..], b"old");
     }
 }

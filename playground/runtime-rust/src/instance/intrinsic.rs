@@ -53,12 +53,34 @@ impl Instance {
                 .frames
                 .last_mut()
                 .unwrap()
-                .stack
-                .extend(results);
+                .extend_results(results);
             return Ok(());
         }
         let mut results = Vec::new();
         match intrinsic {
+            StringsIndexByte => {
+                let Data::String(text) = &arguments[0].data else {
+                    return Err(RuntimeError::new("type_error", id, "expected string"));
+                };
+                let start = arguments[1].integer()?;
+                let end = arguments[2].integer()?;
+                let Data::Unsigned(needle) = arguments[3].data else {
+                    return Err(RuntimeError::new("type_error", id, "expected byte"));
+                };
+                if start < 0
+                    || end < start
+                    || end as u64 > text.len() as u64
+                    || end - start > 4096
+                    || !(0..=255).contains(&needle)
+                {
+                    return Err(RuntimeError::new("intrinsic", id, "invalid bounded search"));
+                }
+                let offset = text[start as usize..end as usize]
+                    .iter()
+                    .position(|byte| *byte == needle as u8)
+                    .map_or(-1, |offset| start + offset as i64);
+                results.push(Value::int(offset));
+            }
             MathFloat32Bits | MathFloat64Bits => {
                 let Data::Float(value) = arguments[0].data else {
                     return Err(RuntimeError::new("type_error", id, "expected float"));
@@ -111,7 +133,7 @@ impl Instance {
                     ));
                 }
                 let mut words = [0u32; 8];
-                for (word, value) in words.iter_mut().zip(state) {
+                for (word, value) in words.iter_mut().zip(state.iter()) {
                     let Data::Unsigned(value) = value.data else {
                         return Err(RuntimeError::new(
                             "type_error",
@@ -121,7 +143,7 @@ impl Instance {
                     };
                     *word = value as u32;
                 }
-                let values = self.slice_values(&arguments[1])?;
+                let values = self.slice_bytes(&arguments[1])?;
                 if !values.len().is_multiple_of(64) {
                     return Err(RuntimeError::new(
                         "type_error",
@@ -130,15 +152,7 @@ impl Instance {
                     ));
                 }
                 for block in values.as_chunks::<64>().0 {
-                    let mut bytes = [0u8; 64];
-                    for (byte, value) in bytes.iter_mut().zip(block) {
-                        let Data::Unsigned(value) = value.data else {
-                            return Err(RuntimeError::new("type_error", id, "expected byte"));
-                        };
-                        *byte = u8::try_from(value)
-                            .map_err(|_| RuntimeError::new("type_error", id, "byte overflow"))?;
-                    }
-                    sha2::compress256(&mut words, &[bytes.into()]);
+                    sha2::compress256(&mut words, &[(*block).into()]);
                 }
                 self.charge_guest_object(words.len(), 0)?;
                 results.push(Value {
@@ -150,7 +164,8 @@ impl Instance {
                                 typ: TypeIdentity::Primitive(wire::PrimitiveUint32),
                                 data: Data::Unsigned(u64::from(word)),
                             })
-                            .collect(),
+                            .collect::<Vec<_>>()
+                            .into(),
                     ),
                 });
             }
@@ -277,8 +292,7 @@ impl Instance {
             .frames
             .last_mut()
             .unwrap()
-            .stack
-            .append(&mut results);
+            .extend_results(results.drain(..));
         self.frame_pool
             .recycle_operands(arguments, self.limits.max_frame_cache_bytes);
         self.frame_pool

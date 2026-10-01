@@ -8,7 +8,7 @@ import (
 func TestGuestProfileIsBoundedAndRevisionTagged(t *testing.T) {
 	artifact := patchCallArtifact(1, 2)
 	for functionIndex := range artifact.Functions {
-		for instructionIndex := range artifact.Functions[functionIndex].Instructions {
+		for instructionIndex := range artifact.Functions[functionIndex].Code.Instructions {
 			setTestInstructionLocations(t, &artifact, testInstructionLocation{
 				function: artifact.Functions[functionIndex].ID, pc: instructionIndex, line: instructionIndex + 1, column: 1,
 			})

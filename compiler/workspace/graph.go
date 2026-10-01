@@ -3,9 +3,6 @@ package workspace
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/parser"
@@ -64,87 +61,44 @@ func ParsePackage(pkg SourcePackage) (Package, []source.Diagnostic, error) {
 	return ParsePackageWithLimits(pkg, Limits{})
 }
 
+// OwnedPackage carries finalized syntax until semantic analysis consumes it.
+// Source and Imports are metadata; editing them cannot edit the owned syntax.
+type OwnedPackage struct {
+	Source  SourcePackage
+	Syntax  parser.Package
+	Imports []string
+	Hash    string
+}
+
 func ParsePackageWithLimits(pkg SourcePackage, limits Limits) (Package, []source.Diagnostic, error) {
+	owned, diagnostics, err := ParseOwnedPackageWithLimits(pkg, limits)
+	if err != nil {
+		return Package{}, diagnostics, err
+	}
+	program, documents, _ := owned.Syntax.Take(ast.Limits{})
+	return Package{Source: owned.Source, Documents: documents, Program: program, Imports: owned.Imports, Hash: owned.Hash}, diagnostics, nil
+}
+
+// ParseOwnedPackageWithLimits binds source resources before finalizing a tree
+// that has never been exposed to mutable callers.
+func ParseOwnedPackageWithLimits(pkg SourcePackage, limits Limits) (OwnedPackage, []source.Diagnostic, error) {
 	limits = normalizeLimits(limits)
 	pkg, err := normalizePackage(pkg)
 	if err != nil {
-		return Package{}, nil, err
+		return OwnedPackage{}, nil, err
 	}
-	program, imports, documents, diagnostics := parsePackage(pkg, limits)
 	for i := range pkg.Files {
-		pkg.Files[i].Hash = program.Files[i].Hash
+		if pkg.Files[i].Hash == "" {
+			pkg.Files[i].Hash = source.HashText(pkg.Files[i].Text)
+		}
 	}
-	return Package{Source: pkg, Documents: documents, Program: program, Imports: imports, Hash: packageContentHash(pkg)}, source.NormalizeDiagnostics(diagnostics), nil
-}
-
-func parsePackage(pkg SourcePackage, limits Limits) (ast.Program, []string, []parser.Document, []source.Diagnostic) {
-	program := ast.Program{ModulePath: pkg.ModulePath}
-	imports := map[string]struct{}{}
-	documents := make([]parser.Document, 0, len(pkg.Files))
+	builder := parser.NewPackageBuilder(pkg.ModulePath, pkg.Files, limits.parserLimits())
+	embedDiagnostics := resolveEmbeds(builder, pkg.Resources)
+	syntax, imports, diagnostics := builder.Finalize()
 	collector := source.NewDiagnosticCollector(limits.MaxDiagnostics)
-	nodeCount := 1
-	for _, file := range pkg.Files {
-		if file.OriginPath != "" {
-			file.Path = file.OriginPath
-		}
-		document := parser.ParseDocumentFileWithLimits(pkg.ModulePath, file, limits.parserLimits())
-		documents = append(documents, document)
-		if document.NodeCount > 0 {
-			nodeCount += document.NodeCount - 1
-		}
-		collector.AddAll(document.Diagnostics...)
-		parsed := document.Program
-		if program.Package == "" {
-			program.Package = parsed.Package
-			program.PackageID = parsed.PackageID
-		} else if parsed.Package != "" && parsed.Package != program.Package {
-			diagnostic := workspaceDiagnostic("compiler.package.name.mismatch", fmt.Sprintf("file %q has package %q, want %q", file.Path, parsed.Package, program.Package))
-			if len(parsed.Files) != 0 {
-				diagnostic.Primary = parsed.Files[0].Span
-			}
-			collector.Add(diagnostic)
-		}
-		for _, parsedFile := range parsed.Files {
-			parsedFile.ID = file.ID
-			if file.Hash != "" {
-				parsedFile.Hash = file.Hash
-			}
-			program.Files = append(program.Files, parsedFile)
-			for _, decl := range parsedFile.Decls {
-				if decl.Kind == ast.DeclImport {
-					if decl.Import.IsEmbedMarker() {
-						continue
-					}
-					dependency := strings.TrimSpace(decl.Import.Path)
-					if dependency != "" {
-						imports[dependency] = struct{}{}
-					}
-				}
-			}
-		}
-	}
-	collector.AddAll(resolveEmbeds(&program, pkg.Resources)...)
-	for _, file := range program.Files {
-		for _, decl := range file.Decls {
-			for _, value := range decl.Var.Values {
-				if value.Kind == ast.ExprEmbed {
-					nodeCount++
-				}
-			}
-		}
-	}
-	if nodeCount > limits.MaxASTNodes {
-		collector.Add(workspaceDiagnostic("ast.limit.nodes", "AST node count exceeds compiler limit"))
-	}
-	if source.HasErrors(collector.Diagnostics()) {
-		return program, nil, documents, collector.Diagnostics()
-	}
-	ordered := make([]string, 0, len(imports))
-	for dependency := range imports {
-		ordered = append(ordered, dependency)
-	}
-	sort.Strings(ordered)
-	return program, ordered, documents, collector.Diagnostics()
+	collector.AddAll(diagnostics...)
+	collector.AddAll(embedDiagnostics...)
+	return OwnedPackage{Source: pkg, Syntax: syntax, Imports: imports, Hash: packageContentHash(pkg)}, source.NormalizeDiagnostics(collector.Diagnostics()), nil
 }
 
 func packageContentHash(pkg SourcePackage) string {

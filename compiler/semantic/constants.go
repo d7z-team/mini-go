@@ -30,7 +30,7 @@ func (a *analyzer) indexPackageConstants(program ast.Program) {
 			if decl.Kind != ast.DeclConst {
 				continue
 			}
-			a.bindConstantDecl(decl.Const, scope)
+			a.bindConstantDecl(*decl.Const, scope)
 		}
 	}
 }
@@ -153,7 +153,7 @@ func (a *analyzer) evaluateConstantExpression(expr ast.Expression, scope ScopeID
 			value, ok = constant.Numeric(expr.Literal, "Float64", true)
 		}
 		if ok {
-			if ref := a.resolvedType(expr.Type); ref.Valid() {
+			if ref := a.resolvedTypePtr(expr.Type); ref.Valid() {
 				value.Type = types.FormatWithTable(a.info.TypeTable, ref)
 			}
 		}
@@ -214,7 +214,7 @@ func (a *analyzer) evaluateConstantExpression(expr ast.Expression, scope ScopeID
 		if expr.Operand != nil {
 			value, ok = a.evaluateConstantExpression(*expr.Operand, scope)
 			if ok {
-				value, ok = a.convertConstant(value, a.resolvedType(expr.Type))
+				value, ok = a.convertConstant(value, a.resolvedTypePtr(expr.Type))
 			}
 		}
 	case ast.ExprCall:
@@ -273,9 +273,8 @@ func (a *analyzer) roundTypedConstant(value constant.Value, target types.TypeRef
 		return value
 	}
 	if numeric.Kind == types.NumericFloat {
-		exact, valid := constant.ParseRationalLiteral(value.Text)
-		if rounded, ok := constant.RoundRationalFloat(exact, numeric.Bits); valid && ok {
-			value.Text = rounded.String()
+		if rounded, ok := value.RoundFloat(numeric.Bits); ok {
+			value = rounded
 		}
 	} else {
 		if value.Imag == "" {
@@ -388,8 +387,8 @@ func (a *analyzer) evaluateConstantCall(expr ast.Expression, scope ScopeID) (con
 				}
 				comparison = strings.Compare(left, right)
 			} else {
-				left, leftOK := constant.ParseRationalLiteral(value.Text)
-				right, rightOK := constant.ParseRationalLiteral(next.Text)
+				left, leftOK := value.Rational()
+				right, rightOK := next.Rational()
 				if !leftOK || !rightOK {
 					return constant.Value{}, false
 				}
@@ -408,7 +407,7 @@ func (a *analyzer) constantArrayOperandLength(expr ast.Expression, scope ScopeID
 	for expr.Kind == ast.ExprAddr && expr.Operand != nil {
 		expr = *expr.Operand
 	}
-	if expr.Kind != ast.ExprComposite || expr.Type.Kind != ast.TypeArray {
+	if expr.Kind != ast.ExprComposite || expr.Type == nil || expr.Type.Kind != ast.TypeArray {
 		return 0, false
 	}
 	if !expr.Type.LenInfer {
@@ -485,7 +484,7 @@ func (a *analyzer) arrayLength(expr ast.Expression, scope ScopeID) (int64, bool)
 		a.addDiagnostic(code, message, expr.Span)
 		return types.UnknownArrayLength, false
 	}
-	if rational, parsed := constant.ParseRationalLiteral(value.Text); parsed {
+	if rational, parsed := value.Rational(); parsed {
 		if _, integer := rational.Integer(); !integer {
 			a.addDiagnostic("semantic.array.length.integer", "array length must be an integer constant", expr.Span)
 			return types.UnknownArrayLength, false

@@ -18,11 +18,42 @@ mod support;
 
 #[test]
 fn selected_task_steps_after_its_own_instruction() {
+    let main = support::slot_code(
+        json!([{"kind":wire::Function,"node":"worker.signature"}]),
+        &[
+            (
+                "make_closure",
+                json!({"function":"worker"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "spawn",
+                json!({"arg_count":0}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            ("label", json!({"label":"loop"}), json!({})),
+            ("jump", json!({"label":"loop"}), json!({})),
+        ],
+    );
+    let worker = support::slot_code(
+        json!([{"kind":3,"primitive":3}]),
+        &[
+            (
+                "const",
+                json!({"constant":"answer"}),
+                json!({"outputs":[0]}),
+            ),
+            ("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+            ("label", json!({"label":"loop"}), json!({})),
+            ("jump", json!({"label":"loop"}), json!({})),
+        ],
+    );
     let image = support::image(json!({
+        "type_table":{"nodes":[{"id":"worker.signature","kind":wire::Function,"signature":{}}]},
         "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
         "functions":[
-            {"id":"fn.Main","instructions":[{"op":"make_closure","payload":{"function":"worker"}},{"op":"spawn","payload":{"arg_count":0}},{"op":"label","payload":{"label":"loop"}},{"op":"jump","payload":{"label":"loop"}}]},
-            {"id":"worker","instructions":[{"op":"const","payload":{"constant":"answer"}},{"op":"pop"},{"op":"label","payload":{"label":"loop"}},{"op":"jump","payload":{"label":"loop"}}]}
+            {"id":"fn.Main","code":main},
+            {"id":"worker","code":worker}
         ]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
@@ -57,11 +88,20 @@ fn selected_task_steps_after_its_own_instruction() {
 
 #[test]
 fn panic_stop_preserves_the_frame_before_resuming_unwinding() {
+    let code = support::slot_code(
+        json!([{"kind":3,"primitive":2}]),
+        &[
+            (
+                "const",
+                json!({"constant":"message"}),
+                json!({"outputs":[0]}),
+            ),
+            ("panic", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+        ],
+    );
     let image = support::image(serde_json::json!({
         "constants":[{"id":"message","type":{"kind":3,"primitive":2},"value":"boom"}],
-        "functions":[{"id":"fn.Main","instructions":[
-            {"op":"const","payload":{"constant":"message"}}, {"op":"panic"}
-        ]}]
+        "functions":[{"id":"fn.Main","code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -83,9 +123,7 @@ fn panic_stop_preserves_the_frame_before_resuming_unwinding() {
 fn paged_variables_borrow_only_requested_children_and_expire_on_resume() {
     let image = support::image(serde_json::json!({
         "type_table":{"nodes":[{"id":"array","kind":6,"length":1024,"elem":{"kind":3,"primitive":3}}]},
-        "functions":[{"id":"fn.Main","locals":[{"id":"items","type":{"kind":6,"node":"array"}}],"instructions":[
-            {"op":"return","payload":{}}
-        ]}]
+        "functions":[{"id":"fn.Main","locals":[{"id":"items","type":{"kind":6,"node":"array"}}],"code":support::slot_code(json!([]), &[("return",json!({}),json!({}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -144,16 +182,51 @@ fn paged_variables_borrow_only_requested_children_and_expire_on_resume() {
 }
 
 fn program(base: i64) -> Arc<Program> {
+    let integer = json!({"kind":3,"primitive":3});
+    let main = support::slot_code(
+        json!([integer, integer]),
+        &[
+            ("const", json!({"constant":"base"}), json!({"outputs":[0]})),
+            (
+                "store_local",
+                json!({"local":"n"}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            ("load_local", json!({"local":"n"}), json!({"outputs":[0]})),
+            (
+                "call_direct",
+                json!({"function":"add","arg_count":1,"result_count":1}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+        ],
+    );
+    let add = support::slot_code(
+        json!([integer, integer, integer]),
+        &[
+            ("load_local", json!({"local":"x"}), json!({"outputs":[0]})),
+            ("const", json!({"constant":"delta"}), json!({"outputs":[1]})),
+            (
+                "binary",
+                json!({"operator":"+"}),
+                json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,2]],"release":[2]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "constants":[{"id":"base","type":{"kind":3,"primitive":3},"value":base},{"id":"delta","type":{"kind":3,"primitive":3},"value":22}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"locals":[{"id":"n","type":{"kind":3,"primitive":3}}],"instructions":[
-                {"op":"const","payload":{"constant":"base"}},{"op":"store_local","payload":{"local":"n"}},{"op":"load_local","payload":{"local":"n"}},
-                {"op":"call_direct","payload":{"function":"add","arg_count":1,"result_count":1}},{"op":"return","payload":{"result_count":1}}
-            ]},
-            {"id":"add","signature":{"params":[{"type":{"kind":3,"primitive":3}}],"results":[{"kind":3,"primitive":3}]},"locals":[{"id":"x","type":{"kind":3,"primitive":3}}],"instructions":[
-                {"op":"load_local","payload":{"local":"x"}},{"op":"const","payload":{"constant":"delta"}},{"op":"binary","payload":{"operator":"+"}},{"op":"return","payload":{"result_count":1}}
-            ]}
+            {"id":"fn.Main","signature":{"results":[integer]},"locals":[{"id":"n","type":integer}],"code":main},
+            {"id":"add","signature":{"params":[{"type":integer}],"results":[integer]},"locals":[{"id":"x","type":integer}],"code":add}
         ]
     }));
     let program = Program::load(&image, LoadLimits::default()).unwrap();
@@ -225,6 +298,44 @@ fn source_stops_and_steps_preserve_budget_and_expire_frame_references() {
 }
 
 #[test]
+fn waiting_task_pauses_without_consuming_a_step_and_cancels_cleanly() {
+    let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+    let channel = json!({"kind":wire::Waitable,"node":"channel"});
+    let image = support::image(json!({
+        "type_table":{"nodes":[{"id":"channel","kind":wire::Waitable,"direction":1,"elem":integer}]},
+        "functions":[{"id":"fn.Main","signature":{"results":[integer]},
+            "code":support::slot_code(json!([channel,integer]), &[
+                ("zero",json!({"type":channel}),json!({"outputs":[0]})),
+                ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+                ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))
+            ])}]
+    }));
+    let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
+    let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
+    instance.start("default", Vec::new()).unwrap();
+    instance.poll_steps(2).unwrap();
+    assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Pending);
+    let steps = instance.steps();
+    instance.request_pause();
+    assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Paused);
+    assert_eq!(instance.steps(), steps);
+    let frames = instance.debug_stack().unwrap();
+    assert_eq!(frames[0].function, "fn.Main");
+    assert_eq!(
+        instance.debug_events().last().unwrap().kind,
+        EventKind::Pause
+    );
+    instance.debug_resume(StepMode::Continue).unwrap();
+    assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Pending);
+    instance.request_pause();
+    assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Paused);
+    instance.cancel().unwrap();
+    assert_eq!(instance.stats().paused_tasks, 0);
+    instance.close().unwrap();
+    assert_eq!(instance.heap_stats().live_objects, 0);
+}
+
+#[test]
 fn shared_pause_is_observed_before_an_instruction_and_cancellation_releases_it() {
     let instance = SharedInstance::new(program(20), ExecutionLimits::default()).unwrap();
     let debugger = instance.debugger();
@@ -256,6 +367,7 @@ fn shared_pause_is_observed_before_an_instruction_and_cancellation_releases_it()
 #[test]
 fn patch_rebinds_breakpoints_and_expires_inspection_without_rewriting_old_frames() {
     let mut instance = Instance::new(program(20), ExecutionLimits::default()).unwrap();
+    instance.start_profile(1, 128).unwrap();
     instance.set_breakpoints("test", "main.mgo", &[3]).unwrap();
     instance.start("default", vec![]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Paused);
@@ -287,5 +399,47 @@ fn patch_rebinds_breakpoints_and_expires_inspection_without_rewriting_old_frames
     instance.debug_resume(StepMode::Continue).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
     assert_eq!(instance.results()[0].integer().unwrap(), 62);
+    let profile = instance.profile();
+    assert_eq!(profile.dropped, 0);
+    assert_eq!(
+        profile
+            .samples
+            .iter()
+            .map(|sample| sample.count)
+            .sum::<u64>(),
+        instance.steps()
+    );
+    for generation in [1, 2] {
+        assert!(
+            profile
+                .samples
+                .iter()
+                .any(|sample| sample.generation == generation)
+        );
+    }
+    for sample in profile.samples {
+        let expected = match sample.function.as_str() {
+            "fn.Main" => [
+                "const",
+                "store_local",
+                "load_local",
+                "call_direct",
+                "return",
+            ][sample.pc],
+            "add" => ["load_local", "const", "binary", "return"][sample.pc],
+            name => panic!("unexpected profiled function {name}"),
+        };
+        assert_eq!(sample.opcode, expected);
+        assert!(!sample.locations.is_empty());
+        assert_eq!(
+            sample.program_hash,
+            if sample.generation == 1 {
+                &retained.program_hash
+            } else {
+                &current.program_hash
+            }
+            .as_str()
+        );
+    }
     instance.close().unwrap();
 }

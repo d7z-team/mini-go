@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/d7z-team/mini-go/compiler"
 	"github.com/d7z-team/mini-go/compiler/workspace"
 )
 
@@ -116,6 +117,25 @@ func (e *Engine) Sources() (workspace.SourceSet, error) {
 		changes = append(changes, workspace.SourceChange{ModulePath: document.Identity.ModulePath, Path: document.Identity.Path, Text: document.Text})
 	}
 	return workspace.Overlay(e.baseSource, changes)
+}
+
+// Prepare builds the supplied source revision under this engine's limits.
+// The compiler reuses immutable analysis only when the complete graph, target
+// and limits match; changed or partially analyzed inputs take the normal path.
+func (e *Engine) Prepare(request compiler.Request) (compiler.PrepareResult, error) {
+	if request.Limits.MaxFiles <= 0 || request.Limits.MaxFiles > e.limits.MaxFiles {
+		request.Limits.MaxFiles = e.limits.MaxFiles
+	}
+	if request.Limits.MaxSourceBytes <= 0 || request.Limits.MaxSourceBytes > e.limits.MaxFileBytes {
+		request.Limits.MaxSourceBytes = e.limits.MaxFileBytes
+	}
+	if request.Limits.MaxDiagnostics <= 0 || request.Limits.MaxDiagnostics > e.limits.MaxDiagnostics {
+		request.Limits.MaxDiagnostics = e.limits.MaxDiagnostics
+	}
+	if e.snapshot != nil && !e.snapshot.partial {
+		request.PreviousAnalysis = &e.snapshot.checked.AnalysisResult
+	}
+	return compiler.Prepare(request)
 }
 
 // ReplaceWorkspace prepares a new base while retaining open buffers. The

@@ -2,8 +2,8 @@ package constant
 
 // Complex constructs an exact complex value from realPart numeric components.
 func Complex(realPart, imaginaryPart Value, typ string, untyped bool) (Value, bool) {
-	r, rok := ParseRationalLiteral(realPart.Text)
-	i, iok := ParseRationalLiteral(imaginaryPart.Text)
+	r, rok := realPart.Rational()
+	i, iok := imaginaryPart.Rational()
 	return Value{Real: r.String(), Imag: i.String(), Type: typ, Untyped: untyped}, rok && iok
 }
 

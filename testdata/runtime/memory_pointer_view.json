@@ -1,34 +1,450 @@
 {
-  "module":{"path":"test","package":"main"},
-  "type_table":{"nodes":[
-    {"id":"a","kind":4,"name":"A","identity":{"module_path":"test","decl_id":"A"},"underlying":{"kind":3,"primitive":3}},
-    {"id":"b","kind":4,"name":"B","identity":{"module_path":"test","decl_id":"B"},"underlying":{"kind":3,"primitive":3}},
-    {"id":"pa","kind":8,"elem":{"kind":4,"named":{"module_path":"test","decl_id":"A"}}},
-    {"id":"pb","kind":8,"elem":{"kind":4,"named":{"module_path":"test","decl_id":"B"}}},
-    {"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}
-  ]},
-  "constants":[{"id":"length","type":{"kind":3,"primitive":3},"value":32}],
-  "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"locals":[
-    {"id":"a","type":{"kind":4,"named":{"module_path":"test","decl_id":"A"}}},
-    {"id":"p","type":{"kind":8,"node":"pa"}},
-    {"id":"q","type":{"kind":8,"node":"pb"}},
-    {"id":"r","type":{"kind":8,"node":"pa"}}
-  ],"instructions":[
-    {"op":"address_of","payload":{"kind":"local","local":"a"}},
-    {"op":"store_local","payload":{"local":"p"}},
-    {"op":"load_local","payload":{"local":"p"}},
-    {"op":"convert","payload":{"type":{"kind":8,"node":"pb"}}},
-    {"op":"store_local","payload":{"local":"q"}},
-    {"op":"load_local","payload":{"local":"q"}},
-    {"op":"convert","payload":{"type":{"kind":8,"node":"pa"}}},
-    {"op":"store_local","payload":{"local":"r"}},
-    {"op":"const","payload":{"constant":"length"}},
-    {"op":"make_slice","payload":{"type":{"kind":5,"node":"bytes"}}},
-    {"op":"pop"},
-    {"op":"const","payload":{"constant":"length"}},
-    {"op":"make_slice","payload":{"type":{"kind":5,"node":"bytes"}}},
-    {"op":"pop"},
-    {"op":"zero","payload":{"type":{"kind":3,"primitive":3}}},
-    {"op":"return","payload":{"result_count":1}}
-  ]}]
+  "module": {
+    "path": "test",
+    "package": "main"
+  },
+  "type_table": {
+    "nodes": [
+      {
+        "id": "a",
+        "kind": 4,
+        "name": "A",
+        "identity": {
+          "module_path": "test",
+          "decl_id": "A"
+        },
+        "underlying": {
+          "kind": 3,
+          "primitive": 3
+        }
+      },
+      {
+        "id": "b",
+        "kind": 4,
+        "name": "B",
+        "identity": {
+          "module_path": "test",
+          "decl_id": "B"
+        },
+        "underlying": {
+          "kind": 3,
+          "primitive": 3
+        }
+      },
+      {
+        "id": "pa",
+        "kind": 8,
+        "elem": {
+          "kind": 4,
+          "named": {
+            "module_path": "test",
+            "decl_id": "A"
+          }
+        }
+      },
+      {
+        "id": "pb",
+        "kind": 8,
+        "elem": {
+          "kind": 4,
+          "named": {
+            "module_path": "test",
+            "decl_id": "B"
+          }
+        }
+      },
+      {
+        "id": "bytes",
+        "kind": 5,
+        "elem": {
+          "kind": 3,
+          "primitive": 9
+        }
+      }
+    ]
+  },
+  "constants": [
+    {
+      "id": "length",
+      "type": {
+        "kind": 3,
+        "primitive": 3
+      },
+      "value": 32
+    }
+  ],
+  "functions": [
+    {
+      "id": "fn.Main",
+      "signature": {
+        "results": [
+          {
+            "kind": 3,
+            "primitive": 3
+          }
+        ]
+      },
+      "locals": [
+        {
+          "id": "a",
+          "type": {
+            "kind": 4,
+            "named": {
+              "module_path": "test",
+              "decl_id": "A"
+            }
+          }
+        },
+        {
+          "id": "p",
+          "type": {
+            "kind": 8,
+            "node": "pa"
+          }
+        },
+        {
+          "id": "q",
+          "type": {
+            "kind": 8,
+            "node": "pb"
+          }
+        },
+        {
+          "id": "r",
+          "type": {
+            "kind": 8,
+            "node": "pa"
+          }
+        }
+      ],
+      "code": {
+        "types": [
+          {
+            "kind": 8,
+            "node": "pa"
+          },
+          {
+            "kind": 8,
+            "node": "pb"
+          },
+          {
+            "kind": 3,
+            "primitive": 3
+          },
+          {
+            "kind": 5,
+            "node": "bytes"
+          }
+        ],
+        "descriptors": {
+          "address": [
+            {
+              "kind": "local",
+              "local": "a"
+            }
+          ],
+          "local": [
+            {
+              "local": "p"
+            },
+            {
+              "local": "p"
+            },
+            {
+              "local": "q"
+            },
+            {
+              "local": "q"
+            },
+            {
+              "local": "r"
+            }
+          ],
+          "type": [
+            {
+              "type": {
+                "kind": 8,
+                "node": "pb"
+              }
+            },
+            {
+              "type": {
+                "kind": 8,
+                "node": "pa"
+              }
+            },
+            {
+              "type": {
+                "kind": 3,
+                "primitive": 3
+              }
+            }
+          ],
+          "const": [
+            {
+              "constant": "length"
+            },
+            {
+              "constant": "length"
+            }
+          ],
+          "makeslice": [
+            {
+              "type": {
+                "kind": 5,
+                "node": "bytes"
+              }
+            },
+            {
+              "type": {
+                "kind": 5,
+                "node": "bytes"
+              }
+            }
+          ],
+          "return": [
+            {
+              "result_count": 1
+            }
+          ]
+        },
+        "instructions": [
+          [
+            52,
+            0,
+            0
+          ],
+          [
+            9,
+            0,
+            1
+          ],
+          [
+            8,
+            1,
+            2
+          ],
+          [
+            51,
+            0,
+            3
+          ],
+          [
+            9,
+            2,
+            4
+          ],
+          [
+            8,
+            3,
+            5
+          ],
+          [
+            51,
+            1,
+            6
+          ],
+          [
+            9,
+            4,
+            7
+          ],
+          [
+            3,
+            0,
+            8
+          ],
+          [
+            29,
+            0,
+            9
+          ],
+          [
+            5,
+            0,
+            10
+          ],
+          [
+            3,
+            1,
+            11
+          ],
+          [
+            29,
+            1,
+            12
+          ],
+          [
+            5,
+            0,
+            13
+          ],
+          [
+            4,
+            2,
+            14
+          ],
+          [
+            17,
+            0,
+            15
+          ]
+        ],
+        "operands": [
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ]
+          },
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ],
+            "outputs": [
+              1
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                1
+              ]
+            ],
+            "release": [
+              1
+            ]
+          },
+          {
+            "outputs": [
+              1
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                1
+              ]
+            ],
+            "release": [
+              1
+            ],
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ]
+          },
+          {
+            "outputs": [
+              2
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                2
+              ]
+            ],
+            "release": [
+              2
+            ],
+            "outputs": [
+              3
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                3
+              ]
+            ],
+            "release": [
+              3
+            ]
+          },
+          {
+            "outputs": [
+              2
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                2
+              ]
+            ],
+            "release": [
+              2
+            ],
+            "outputs": [
+              3
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                3
+              ]
+            ],
+            "release": [
+              3
+            ]
+          },
+          {
+            "outputs": [
+              2
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                2
+              ]
+            ],
+            "release": [
+              2
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

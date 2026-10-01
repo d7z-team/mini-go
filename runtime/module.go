@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/d7z-team/mini-go/compiler/types"
 )
@@ -53,9 +54,7 @@ type moduleInstance struct {
 	revision               *instanceRevision
 	vm                     *vm
 	state                  *moduleState
-	constantMu             sync.Mutex
-	constantData           []vmValue
-	constantSet            []bool
+	constantData           []cachedConstant
 	globalCells            []*slot
 	framePoolMu            sync.Mutex
 	framePools             map[string][]*frame
@@ -81,6 +80,16 @@ type moduleInstance struct {
 	interfaceImplementationCache metadataCache[string, boolResolution]
 	typeInfoCache                metadataCache[types.TypeID, TypeInfo]
 	reflectTypeDescriptorCache   metadataCache[string, vmValue]
+}
+
+type cachedConstant struct {
+	mu     sync.Mutex
+	result atomic.Pointer[constantResult]
+}
+
+type constantResult struct {
+	value vmValue
+	err   error
 }
 
 type qualifiedTypeResolution struct {
@@ -213,16 +222,15 @@ func (m *moduleInstance) clone() *moduleInstance {
 	if m == nil {
 		return nil
 	}
-	m.constantMu.Lock()
-	constantData := append([]vmValue(nil), m.constantData...)
-	constantSet := append([]bool(nil), m.constantSet...)
-	m.constantMu.Unlock()
+	constantData := make([]cachedConstant, len(m.constantData))
+	for i := range m.constantData {
+		constantData[i].result.Store(m.constantData[i].result.Load())
+	}
 	cloned := &moduleInstance{
 		executable:   m.executable,
 		registry:     m.registry,
 		state:        &moduleState{globals: make(map[string]*slot, len(m.state.globals)), initState: m.state.initState, initErr: m.state.initErr},
 		constantData: constantData,
-		constantSet:  constantSet,
 		globalCells:  make([]*slot, len(m.globalCells)),
 	}
 	if m.state.initState == moduleInitializing {
@@ -247,8 +255,7 @@ func newModuleInstance(executable *executable) *moduleInstance {
 	instance := &moduleInstance{
 		executable:   executable,
 		state:        &moduleState{globals: make(map[string]*slot, len(executable.Artifact.Globals))},
-		constantData: make([]vmValue, len(executable.Artifact.Constants)),
-		constantSet:  make([]bool, len(executable.Artifact.Constants)),
+		constantData: make([]cachedConstant, len(executable.Artifact.Constants)),
 		globalCells:  make([]*slot, len(executable.Artifact.Globals)),
 		framePools:   make(map[string][]*frame),
 	}
@@ -281,25 +288,22 @@ func bindModuleState(executable *executable, state *moduleState) (*moduleInstanc
 }
 
 func (m *moduleInstance) constantValueAt(index int) (vmValue, error) {
-	m.constantMu.Lock()
-	if m.constantSet[index] {
-		value := m.constantData[index]
-		m.constantMu.Unlock()
-		return value, nil
+	entry := &m.constantData[index]
+	if result := entry.result.Load(); result != nil {
+		return result.value, result.err
 	}
-	m.constantMu.Unlock()
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if result := entry.result.Load(); result != nil {
+		return result.value, result.err
+	}
 	constant := m.executable.Artifact.Constants[index]
 	value, err := m.decodeConstant(m.runtimeType(constant.Type), constant.Value)
 	if err != nil {
-		return vmValue{}, fmt.Errorf("constant %s: %w", constant.ID, err)
+		err = fmt.Errorf("constant %s: %w", constant.ID, err)
 	}
-	m.constantMu.Lock()
-	defer m.constantMu.Unlock()
-	if !m.constantSet[index] {
-		m.constantData[index] = value
-		m.constantSet[index] = true
-	}
-	return m.constantData[index], nil
+	entry.result.Store(&constantResult{value: value, err: err})
+	return value, err
 }
 
 func (m *moduleInstance) constantValue(id string) (vmValue, bool, error) {

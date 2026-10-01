@@ -23,6 +23,15 @@ type compileDiagnosticCase struct {
 	code   string
 }
 
+func functionOperations(t *testing.T, function ir.Function) []ir.Instruction {
+	t.Helper()
+	operations, err := function.Operations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return operations
+}
+
 func (r compiledPackage) EncodeJSON() ([]byte, error) {
 	if !r.OK() {
 		return nil, errors.New("cannot encode artifact with diagnostics")
@@ -45,14 +54,14 @@ func (r compiledPackage) Disassemble() (string, error) {
 }
 
 func compilePackage(pkg SourcePackage) (compiledPackage, error) {
-	parsed, diagnostics, err := workspace.ParsePackage(pkg)
+	parsed, diagnostics, err := workspace.ParseOwnedPackageWithLimits(pkg, workspace.Limits{})
 	if err != nil {
 		return compiledPackage{}, err
 	}
 	if len(diagnostics) != 0 {
 		return compiledPackage{Diagnostics: diagnostics}, nil
 	}
-	return compileParsedPackageWithLimits(context.Background(), parsed.Program, lower.Options{}, nil, normalizeCompilerLimits(Limits{}), OptimizationDefault)
+	return compileParsedPackageWithLimits(context.Background(), parsed, nil, lower.Options{}, nil, normalizeCompilerLimits(Limits{}), OptimizationDefault)
 }
 
 func compileTestSource(modulePath, path, source string) (compiledPackage, error) {
@@ -126,7 +135,7 @@ func artifactFunctionByName(artifact ir.Artifact, symbols ir.PackageSymbols, nam
 			return function, functionSymbols, true
 		}
 	}
-	return ir.Function{}, ir.FunctionSymbols{}, false
+	return ir.Function{Code: &ir.SlotCode{}}, ir.FunctionSymbols{}, false
 }
 
 func packageGlobalNames(symbols ir.PackageSymbols) map[string]string {

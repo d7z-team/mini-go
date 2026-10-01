@@ -82,15 +82,15 @@ func TestExportAddressInitializationFailure(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root, dependency := exportAddressArtifacts()
 			if cancel {
-				dependency.Functions[0].Instructions = []ir.Instruction{
-					{Op: string(ir.OpLabel), Payload: testPayload(ir.LabelPayload{Label: "loop"})},
-					{Op: string(ir.OpJump), Payload: testPayload(ir.JumpPayload{Label: "loop"})},
-				}
+				dependency.Functions[0].Code = testSlotCode(nil, []ir.Instruction{
+					{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "loop"}},
+					{Op: ir.OpJump, Payload: ir.JumpPayload{Label: "loop"}},
+				}, [][2][]uint32{{nil, nil}, {nil, nil}})
 			} else {
-				dependency.Functions[0].Instructions = []ir.Instruction{
-					{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.initial"})},
-					{Op: string(ir.OpPanic)},
-				}
+				dependency.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{
+					{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.initial"}},
+					{Op: ir.OpPanic},
+				}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 			}
 			instance, err := patchMultiModuleProgram(t, root, dependency, name).Instantiate(context.Background(), InstanceOptions{})
 			if err != nil {
@@ -149,11 +149,11 @@ func TestModuleExportsObserveInitializationState(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root, dependency := exportAddressArtifacts()
 			if !test.address {
-				root.Functions[0].Instructions = []ir.Instruction{
-					{Op: string(ir.OpLoadExport), Payload: testPayload(ir.ExportPayload{ModulePath: dependency.Module.Path, Export: "Item"})},
-					{Op: string(ir.OpLoadField), Payload: testPayload(ir.FieldPayload{Field: "N"})},
-					{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-				}
+				root.Functions[0].Code = testSlotCode([]string{"struct{N:Int64}", "Int64"}, []ir.Instruction{
+					{Op: ir.OpLoadExport, Payload: ir.ExportPayload{ModulePath: dependency.Module.Path, Export: "Item"}},
+					{Op: ir.OpLoadField, Payload: ir.FieldPayload{Field: "N"}},
+					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+				}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}})
 			}
 			instance, err := patchMultiModuleProgram(t, root, dependency, test.name).Instantiate(context.Background(), InstanceOptions{})
 			if err != nil {

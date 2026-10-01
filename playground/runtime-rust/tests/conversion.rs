@@ -11,23 +11,61 @@ use std::sync::Arc;
 #[test]
 fn byte_append_growth_keeps_the_old_backing_and_copies_only_visible_bytes() {
     let slice = json!({"kind":wire::Slice,"node":"bytes"});
+    let integer = json!({"kind":3,"primitive":3});
+    let byte = json!({"kind":3,"primitive":9});
+    let code = support::slot_code(
+        json!([slice, byte, slice, integer]),
+        &[
+            (
+                "load_local",
+                json!({"local":"input"}),
+                json!({"outputs":[0]}),
+            ),
+            ("const", json!({"constant":"byte"}), json!({"outputs":[1]})),
+            (
+                "append",
+                json!({"count":1}),
+                json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]}),
+            ),
+            (
+                "store_local",
+                json!({"local":"grown"}),
+                json!({"inputs":[[0,2]],"release":[2]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"grown"}),
+                json!({"outputs":[2]}),
+            ),
+            ("zero", json!({"type":integer}), json!({"outputs":[3]})),
+            ("const", json!({"constant":"byte"}), json!({"outputs":[1]})),
+            (
+                "store_index",
+                json!({}),
+                json!({"inputs":[[0,2],[0,3],[0,1]],"release":[2,3,1]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"input"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"grown"}),
+                json!({"outputs":[2]}),
+            ),
+            (
+                "return",
+                json!({"result_count":2}),
+                json!({"inputs":[[0,0],[0,2]],"release":[0,2]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":wire::Slice,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"byte","type":{"kind":3,"primitive":9},"value":255}],
         "functions":[{"id":"fn.Main","signature":{"params":[{"type":slice}],"results":[slice,slice]},
-            "locals":[{"id":"input","type":slice},{"id":"grown","type":slice}],"instructions":[
-                {"op":"load_local","payload":{"local":"input"}},
-                {"op":"const","payload":{"constant":"byte"}},
-                {"op":"append","payload":{"count":1}},
-                {"op":"store_local","payload":{"local":"grown"}},
-                {"op":"load_local","payload":{"local":"grown"}},
-                {"op":"zero","payload":{"type":{"kind":3,"primitive":3}}},
-                {"op":"const","payload":{"constant":"byte"}},
-                {"op":"store_index"},
-                {"op":"load_local","payload":{"local":"input"}},
-                {"op":"load_local","payload":{"local":"grown"}},
-                {"op":"return","payload":{"result_count":2}}
-            ]}]
+            "locals":[{"id":"input","type":slice},{"id":"grown","type":slice}],"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
     let mut instance = Instance::new(
@@ -59,6 +97,64 @@ fn byte_backing_mutation_preserves_pointer_aliases_with_a_byte_sized_budget() {
     let slice = json!({"kind":wire::Slice,"node":"bytes"});
     let array = json!({"kind":wire::Array,"node":"pair"});
     let pointer = json!({"kind":wire::Pointer,"node":"pointer"});
+    let code = support::slot_code(
+        json!([slice,pointer,array,{"kind":3,"primitive":3},{"kind":3,"primitive":9}]),
+        &[
+            (
+                "load_local",
+                json!({"local":"input"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "convert",
+                json!({"type":pointer}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+            (
+                "store_local",
+                json!({"local":"pointer"}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"pointer"}),
+                json!({"outputs":[1]}),
+            ),
+            ("zero", json!({"type":array}), json!({"outputs":[2]})),
+            (
+                "store_indirect",
+                json!({}),
+                json!({"inputs":[[0,1],[0,2]],"release":[1,2]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"input"}),
+                json!({"outputs":[0]}),
+            ),
+            ("const", json!({"constant":"one"}), json!({"outputs":[3]})),
+            ("const", json!({"constant":"byte"}), json!({"outputs":[4]})),
+            (
+                "store_index",
+                json!({}),
+                json!({"inputs":[[0,0],[0,3],[0,4]],"release":[0,3,4]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"input"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"pointer"}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "return",
+                json!({"result_count":2}),
+                json!({"inputs":[[0,0],[0,1]],"release":[0,1]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[
             {"id":"bytes","kind":wire::Slice,"elem":{"kind":3,"primitive":9}},
@@ -68,21 +164,7 @@ fn byte_backing_mutation_preserves_pointer_aliases_with_a_byte_sized_budget() {
         "constants":[{"id":"one","type":{"kind":3,"primitive":3},"value":1},
             {"id":"byte","type":{"kind":3,"primitive":9},"value":255}],
         "functions":[{"id":"fn.Main","signature":{"params":[{"type":slice}],"results":[slice,pointer]},
-            "locals":[{"id":"input","type":slice},{"id":"pointer","type":pointer}],"instructions":[
-                {"op":"load_local","payload":{"local":"input"}},
-                {"op":"convert","payload":{"type":pointer}},
-                {"op":"store_local","payload":{"local":"pointer"}},
-                {"op":"load_local","payload":{"local":"pointer"}},
-                {"op":"zero","payload":{"type":array}},
-                {"op":"store_indirect"},
-                {"op":"load_local","payload":{"local":"input"}},
-                {"op":"const","payload":{"constant":"one"}},
-                {"op":"const","payload":{"constant":"byte"}},
-                {"op":"store_index"},
-                {"op":"load_local","payload":{"local":"input"}},
-                {"op":"load_local","payload":{"local":"pointer"}},
-                {"op":"return","payload":{"result_count":2}}
-            ]}]
+            "locals":[{"id":"input","type":slice},{"id":"pointer","type":pointer}],"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
     let mut instance = Instance::new(
@@ -122,21 +204,58 @@ fn repeated_pointer_type_views_write_original_storage_and_survive_in_snapshots()
     let b = json!({"kind":4,"node":"B","named":{"module_path":"test","decl_id":"B"}});
     let pa = json!({"kind":8,"node":"pointer.A"});
     let pb = json!({"kind":8,"node":"pointer.B"});
-    let mut code = vec![json!({"op":"address_of","payload":{"kind":"local","local":"value"}})];
+    let mut operations = vec![(
+        "address_of",
+        json!({"kind":"local","local":"value"}),
+        json!({"outputs":[0]}),
+    )];
     for index in 0..3001 {
-        code.push(
-            json!({"op":"convert","payload":{"type":if index % 2 == 0 { &pb } else { &pa }}}),
-        );
+        let source = index % 2;
+        let target = 1 - source;
+        operations.push((
+            "convert",
+            json!({"type":if target == 1 { &pb } else { &pa }}),
+            json!({"inputs":[[0,source]],"outputs":[target],"release":[source]}),
+        ));
     }
-    code.extend([
-        json!({"op":"store_local","payload":{"local":"pointer"}}),
-        json!({"op":"load_local","payload":{"local":"pointer"}}),
-        json!({"op":"const","payload":{"constant":"answer"}}),
-        json!({"op":"store_indirect"}),
-        json!({"op":"load_local","payload":{"local":"pointer"}}),
-        json!({"op":"load_local","payload":{"local":"value"}}),
-        json!({"op":"return","payload":{"result_count":2}}),
+    operations.extend([
+        (
+            "store_local",
+            json!({"local":"pointer"}),
+            json!({"inputs":[[0,1]],"release":[1]}),
+        ),
+        (
+            "load_local",
+            json!({"local":"pointer"}),
+            json!({"outputs":[1]}),
+        ),
+        (
+            "const",
+            json!({"constant":"answer"}),
+            json!({"outputs":[2]}),
+        ),
+        (
+            "store_indirect",
+            json!({}),
+            json!({"inputs":[[0,1],[0,2]],"release":[1,2]}),
+        ),
+        (
+            "load_local",
+            json!({"local":"pointer"}),
+            json!({"outputs":[1]}),
+        ),
+        (
+            "load_local",
+            json!({"local":"value"}),
+            json!({"outputs":[3]}),
+        ),
+        (
+            "return",
+            json!({"result_count":2}),
+            json!({"inputs":[[0,1],[0,3]],"release":[1,3]}),
+        ),
     ]);
+    let code = support::slot_code(json!([pa, pb, b, a]), &operations);
     let image = support::image(json!({
         "type_table":{"nodes":[
             {"id":"A","kind":4,"identity":{"module_path":"test","decl_id":"A"},"underlying":{"kind":3,"primitive":3}},
@@ -145,7 +264,7 @@ fn repeated_pointer_type_views_write_original_storage_and_survive_in_snapshots()
         ]},
         "constants":[{"id":"answer","type":b,"value":42}],
         "functions":[{"id":"fn.Main","signature":{"results":[pb,a]},
-            "locals":[{"id":"value","type":a},{"id":"pointer","type":pb}],"instructions":code}]
+            "locals":[{"id":"value","type":a},{"id":"pointer","type":pb}],"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
     let expected = program
@@ -185,6 +304,26 @@ fn array_pointer_conversion_preserves_snapshot_view_and_faults_on_short_input() 
         } else {
             &pointer
         };
+        let code = support::slot_code(
+            json!([slice, target]),
+            &[
+                (
+                    "load_local",
+                    json!({"local":"input"}),
+                    json!({"outputs":[0]}),
+                ),
+                (
+                    "convert",
+                    json!({"type":target}),
+                    json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+                ),
+                (
+                    "return",
+                    json!({"result_count":1}),
+                    json!({"inputs":[[0,1]],"release":[1]}),
+                ),
+            ],
+        );
         let image = support::image(json!({
             "type_table":{"nodes":[
                 {"id":"slice","kind":wire::Slice,"elem":{"kind":3,"primitive":3}},
@@ -192,11 +331,7 @@ fn array_pointer_conversion_preserves_snapshot_view_and_faults_on_short_input() 
                 {"id":"pointer","kind":wire::Pointer,"elem":array}
             ]},
             "functions":[{"id":"fn.Main","signature":{"params":[{"type":slice}],"results":[target]},
-                "locals":[{"id":"input","type":slice}],"instructions":[
-                    {"op":"load_local","payload":{"local":"input"}},
-                    {"op":"convert","payload":{"type":target}},
-                    {"op":"return","payload":{"result_count":1}}
-                ]}]
+                "locals":[{"id":"input","type":slice}],"code":code}]
         }));
         let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
         let typ = program

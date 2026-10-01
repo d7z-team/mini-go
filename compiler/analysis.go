@@ -2,11 +2,12 @@ package compiler
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/hex"
 	"sort"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/identity"
 	"github.com/d7z-team/mini-go/compiler/parser"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/source"
@@ -90,15 +91,15 @@ func analyzePackages(request AnalysisRequest, retainFacts bool) (AnalysisResult,
 			return AnalysisResult{}, err
 		}
 		header := graph.Packages[modulePath]
-		var identity strings.Builder
-		identity.WriteString(header.Hash)
+		var sourceIdentity strings.Builder
+		sourceIdentity.WriteString(header.Hash)
 		for _, resource := range header.Source.Resources {
-			identity.WriteByte(0)
-			identity.WriteString(resource.Path)
-			identity.WriteByte(0)
-			identity.WriteString(resource.Hash)
+			sourceIdentity.WriteByte(0)
+			sourceIdentity.WriteString(resource.Path)
+			sourceIdentity.WriteByte(0)
+			sourceIdentity.WriteString(resource.Hash)
 		}
-		result.SourceHashes[modulePath] = source.HashText(identity.String())
+		result.SourceHashes[modulePath] = source.HashText(sourceIdentity.String())
 		dependencies := make([]string, 0, len(header.Imports))
 		dependencyFacts := semanticDependencies(header.Imports, func(path string) ([]check.DependencyExport, []string, bool) {
 			members, ok := exports[path]
@@ -129,7 +130,7 @@ func analyzePackages(request AnalysisRequest, retainFacts bool) (AnalysisResult,
 				continue
 			}
 		}
-		parsed, diagnostics, parseErr := workspace.ParsePackageWithLimits(header.Source, limits)
+		parsed, diagnostics, parseErr := workspace.ParseOwnedPackageWithLimits(header.Source, limits)
 		result.Stats.PackagesParsed++
 		if parseErr != nil {
 			return AnalysisResult{}, parseErr
@@ -144,12 +145,12 @@ func analyzePackages(request AnalysisRequest, retainFacts bool) (AnalysisResult,
 			}
 			continue
 		}
-		sourceChecked, err := analyzeProgram(ctx, parsed.Program, dependencyFacts, input.Limits)
+		sourceChecked, documents, err := analyzeParsedProgram(ctx, parsed.Syntax, dependencyFacts, input.Limits)
 		if err != nil {
 			return AnalysisResult{}, err
 		}
 		result.Stats.PackagesAnalyzed++
-		pkg := AnalyzedPackage{Checked: sourceChecked, Documents: append([]parser.Document(nil), parsed.Documents...), Diagnostics: append([]source.Diagnostic(nil), sourceChecked.Info.Diagnostics...)}
+		pkg := AnalyzedPackage{Checked: sourceChecked, Documents: documents, Diagnostics: append([]source.Diagnostic(nil), sourceChecked.Info.Diagnostics...)}
 		result.Diagnostics = append(result.Diagnostics, pkg.Diagnostics...)
 		if !source.HasErrors(pkg.Diagnostics) {
 			exports[modulePath] = DependencyExports(sourceChecked.Info)
@@ -168,14 +169,22 @@ func analyzePackages(request AnalysisRequest, retainFacts bool) (AnalysisResult,
 				dependencyTypes = append(dependencyTypes, pkg)
 			}
 		}
-		encoded, encodeErr := json.Marshal(struct {
-			Exports []check.DependencyExport
-			Types   []check.DependencyPackage
-		}{exports[modulePath], dependencyTypes})
+		identityWriter := identity.New("mini-go/analysis-exports/binary/v1")
+		identityWriter.Bool(exports[modulePath] != nil)
+		identityWriter.Uint(uint64(len(exports[modulePath])))
+		for _, member := range exports[modulePath] {
+			check.EncodeIdentityDependencyExport(identityWriter, member)
+		}
+		identityWriter.Bool(dependencyTypes != nil)
+		identityWriter.Uint(uint64(len(dependencyTypes)))
+		for _, dependency := range dependencyTypes {
+			check.EncodeIdentityDependencyPackage(identityWriter, dependency)
+		}
+		digest, encodeErr := identityWriter.Sum()
 		if encodeErr != nil {
 			return AnalysisResult{}, encodeErr
 		}
-		result.ExportHashes[modulePath] = source.HashText(string(encoded))
+		result.ExportHashes[modulePath] = hex.EncodeToString(digest[:])
 		result.Stats.PackageCacheMisses++
 		if !retainFacts {
 			pkg.Checked = check.CheckedProgram{}
@@ -196,10 +205,26 @@ func analyzeProgram(ctx context.Context, program ast.Program, dependencies []che
 	if err := ctx.Err(); err != nil {
 		return check.CheckedProgram{}, err
 	}
-	checked := check.WithOptions(program, check.AnalyzeOptions{Dependencies: dependencies})
+	checked := check.WithOptions(program, check.AnalyzeOptions{Dependencies: dependencies, Limits: ast.Limits{
+		MaxDepth: limits.MaxSyntaxDepth, MaxNodes: limits.MaxASTNodes, MaxDiagnostics: limits.MaxDiagnostics,
+	}})
 	if err := ctx.Err(); err != nil {
 		return check.CheckedProgram{}, err
 	}
 	checked.Info.Diagnostics = boundedDiagnostics(checked.Info.Diagnostics, limits.MaxDiagnostics)
 	return checked, nil
+}
+
+func analyzeParsedProgram(ctx context.Context, input parser.Package, dependencies []check.DependencyPackage, limits Limits) (check.CheckedProgram, []parser.Document, error) {
+	if err := ctx.Err(); err != nil {
+		return check.CheckedProgram{}, nil, err
+	}
+	checked, documents := check.WithParsed(input, check.AnalyzeOptions{Dependencies: dependencies, Limits: ast.Limits{
+		MaxDepth: limits.MaxSyntaxDepth, MaxNodes: limits.MaxASTNodes, MaxDiagnostics: limits.MaxDiagnostics,
+	}})
+	if err := ctx.Err(); err != nil {
+		return check.CheckedProgram{}, nil, err
+	}
+	checked.Info.Diagnostics = boundedDiagnostics(checked.Info.Diagnostics, limits.MaxDiagnostics)
+	return checked, documents, nil
 }

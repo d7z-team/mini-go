@@ -15,6 +15,59 @@ func (vm *vm) executeInstruction(task *executionTask, frame *frame, inst *prepar
 
 func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *preparedInstruction) error {
 	switch inst.op {
+	case preparedTypeDispatch:
+		dispatch := inst.dispatch
+		if !frame.typeDispatchActive {
+			frame.typeDispatchValue = frame.localCells[dispatch.subject].load()
+			frame.typeDispatchActive = true
+		}
+		value := frame.typeDispatchValue
+		if frame.typeDispatchIndex == 0 && dispatch.concreteEnd > 0 {
+			dynamic, present, err := frame.module.unwrapDynamicInterfaceValue(value, "type switch")
+			if err != nil {
+				return err
+			}
+			key, known := typeDispatchIdentity{}, !present
+			if present {
+				key, known = typeDispatchIdentityOf(dynamic.Type)
+			}
+			if known {
+				frame.typeDispatchIndex = dispatch.concreteEnd
+				if index, found := dispatch.concrete[key]; found {
+					frame.typeDispatchIndex = index
+				}
+			}
+		}
+		target, binding := dispatch.fallback, dispatch.fallbackLocal
+		if frame.typeDispatchIndex < len(dispatch.cases) {
+			match := dispatch.cases[frame.typeDispatchIndex]
+			matched := isNilDynamicInterface(frame.module, value)
+			selected := value
+			if match.typ.Valid() {
+				var err error
+				selected, matched, err = frame.module.matchTypeAssertion(value, match.typ, false)
+				if err != nil {
+					return err
+				}
+			}
+			if !matched {
+				frame.typeDispatchIndex++
+				frame.pc--
+				return nil
+			}
+			if !match.original {
+				value = selected
+			}
+			target, binding = match.target, match.binding
+		}
+		if binding >= 0 {
+			if err := frame.localCells[binding].store(value); err != nil {
+				return err
+			}
+		}
+		frame.typeDispatchIndex, frame.pc = 0, target
+		frame.typeDispatchValue, frame.typeDispatchActive = vmValue{}, false
+		return nil
 	case preparedPanic, preparedDeferPush, preparedRecover, preparedLoadExport, preparedInitModule,
 		preparedCallDirect, preparedTailCallDirect, preparedCallValue, preparedCallInterface, preparedSpawn,
 		preparedWaitableSend, preparedWaitableRecv, preparedWaitableRecvOK,
@@ -45,21 +98,31 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		out, err := frame.module.evalUnary(inst.operator, value)
+		out, err := frame.module.evalUnary(inst.operator, value, inst.numericInputs[0])
 		if err != nil {
 			return err
 		}
 		frame.push(out)
-	case preparedBinary:
+	case preparedBinary, preparedCompareBranch:
 		left, right, err := frame.pop2()
 		if err != nil {
 			return err
 		}
-		out, err := frame.module.evalBinary(inst.operator, left, right)
+		out, err := frame.module.evalBinary(inst.operator, left, right, inst.numericInputs)
 		if err != nil {
 			return err
 		}
-		frame.push(out)
+		if inst.op == preparedCompareBranch {
+			matched, err := truthy(out)
+			if err != nil {
+				return err
+			}
+			if matched == inst.comparison.When {
+				frame.pc = inst.jumpPC
+			}
+		} else {
+			frame.push(out)
+		}
 	case preparedTypeAssert:
 		payload := inst.typeOperand
 		value, err := frame.pop()
@@ -355,6 +418,34 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
+	case preparedGetPath:
+		object, err := frame.pop()
+		if err != nil {
+			return err
+		}
+		for _, step := range inst.path {
+			if step.indirect {
+				object, err = derefPointer(object)
+				if err != nil {
+					return err
+				}
+			}
+			storage, ok := object.Data.(*vmStruct)
+			if !ok || storage == nil {
+				return errors.New("field path requires a struct")
+			}
+			object, ok = storage.fieldAt(step.index)
+			if !ok {
+				object = storage.initializeField(step.index, frame.module.zeroValue(step.typ))
+			}
+			if !object.Type.Equal(step.typ) {
+				object, err = frame.module.convertValue(object, step.typ)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		frame.push(object)
 	case preparedLoadField:
 		payload := inst.field
 		object, err := frame.pop()
@@ -531,7 +622,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		if ok {
+		if ok != inst.jump.Negate {
 			frame.pc = inst.jumpPC
 		}
 	case preparedMakeClosure:

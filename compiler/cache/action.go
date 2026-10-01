@@ -9,18 +9,19 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/d7z-team/mini-go/compiler/identity"
 	"github.com/d7z-team/mini-go/compiler/target"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 const (
 	Format  = "mini-go-compile-cache"
-	Version = 26
+	Version = 29
 
-	packageActionDomain   = "minigo/package-action/v25\x00"
+	packageActionDomain   = "mini-go/package-action/binary/v1"
 	packageManifestDomain = "minigo/package-manifest/v5\x00"
-	prepareActionDomain   = "minigo/prepare-action/v10\x00"
-	symbolActionDomain    = "minigo/symbol-action/v1\x00"
+	prepareActionDomain   = "mini-go/prepare-action/binary/v1"
+	symbolActionDomain    = "mini-go/symbol-action/binary/v1"
 )
 
 // Cache stores compiler-derived package and execution-image state and owns
@@ -28,7 +29,7 @@ const (
 type Cache interface {
 	LookupCompileManifest(Action) (ManifestLookup, error)
 	LookupCompile(Action) (Lookup, error)
-	StoreCompile(action Action, artifact ir.Artifact, symbols ir.PackageSymbols, packageData PackageData) (Manifest, error)
+	StoreCompile(action Action, artifact CompiledArtifact, symbols ir.PackageSymbols, packageData PackageData) (Manifest, error)
 	LookupPrepare(PrepareAction) (PrepareLookup, error)
 	StorePrepare(PrepareAction, PreparedOutput) error
 	LookupSymbols(SymbolAction) (SymbolLookup, error)
@@ -161,11 +162,14 @@ func NewCompileAction(compiler string, buildTarget target.Target, modulePath, pa
 }
 
 func (a Action) ID() (ActionID, error) {
-	data, err := a.MaterialJSON()
+	data, err := a.normalized()
 	if err != nil {
 		return ActionID{}, err
 	}
-	return hashAction(packageActionDomain, data), nil
+	w := identity.New(packageActionDomain)
+	EncodeIdentityAction(w, data)
+	sum, err := w.Sum()
+	return ActionID(sum), err
 }
 
 func (a Action) Key() (string, error) {
@@ -183,11 +187,14 @@ func NewPrepareAction(compiler, contract string, buildTarget target.Target, mode
 }
 
 func (a PrepareAction) ID() (ActionID, error) {
-	data, err := a.MaterialJSON()
+	data, err := a.normalized()
 	if err != nil {
 		return ActionID{}, err
 	}
-	return hashAction(prepareActionDomain, data), nil
+	w := identity.New(prepareActionDomain)
+	EncodeIdentityPrepareAction(w, data)
+	sum, err := w.Sum()
+	return ActionID(sum), err
 }
 
 func (a PrepareAction) Key() (string, error) {
@@ -196,9 +203,17 @@ func (a PrepareAction) Key() (string, error) {
 }
 
 func (a PrepareAction) MaterialJSON() ([]byte, error) {
-	normalizedTarget, err := target.Normalize(a.Target)
+	canonical, err := a.normalized()
 	if err != nil {
 		return nil, err
+	}
+	return canonicalJSON(canonical)
+}
+
+func (a PrepareAction) normalized() (PrepareAction, error) {
+	normalizedTarget, err := target.Normalize(a.Target)
+	if err != nil {
+		return PrepareAction{}, err
 	}
 	canonical := a
 	canonical.Target = normalizedTarget
@@ -226,7 +241,7 @@ func (a PrepareAction) MaterialJSON() ([]byte, error) {
 	}
 	sort.Strings(canonical.Capabilities)
 	canonical.Capabilities = slices.Compact(canonical.Capabilities)
-	return canonicalJSON(canonical)
+	return canonical, nil
 }
 
 func NewSymbolAction(compiler, programHash, sourceGraphHash string, optimization uint8) SymbolAction {
@@ -238,11 +253,10 @@ func NewSymbolAction(compiler, programHash, sourceGraphHash string, optimization
 }
 
 func (a SymbolAction) ID() (ActionID, error) {
-	data, err := a.MaterialJSON()
-	if err != nil {
-		return ActionID{}, err
-	}
-	return hashAction(symbolActionDomain, data), nil
+	w := identity.New(symbolActionDomain)
+	EncodeIdentitySymbolAction(w, a.normalized())
+	sum, err := w.Sum()
+	return ActionID(sum), err
 }
 
 func (a SymbolAction) Key() (string, error) {
@@ -251,17 +265,29 @@ func (a SymbolAction) Key() (string, error) {
 }
 
 func (a SymbolAction) MaterialJSON() ([]byte, error) {
+	return canonicalJSON(a.normalized())
+}
+
+func (a SymbolAction) normalized() SymbolAction {
 	canonical := a
 	canonical.Compiler = strings.TrimSpace(canonical.Compiler)
 	canonical.ProgramHash = strings.TrimSpace(canonical.ProgramHash)
 	canonical.SourceGraphHash = strings.TrimSpace(canonical.SourceGraphHash)
-	return canonicalJSON(canonical)
+	return canonical
 }
 
 func (a Action) MaterialJSON() ([]byte, error) {
-	normalizedTarget, err := target.Normalize(a.Target)
+	canonical, err := a.normalized()
 	if err != nil {
 		return nil, err
+	}
+	return canonicalJSON(canonical)
+}
+
+func (a Action) normalized() (Action, error) {
+	normalizedTarget, err := target.Normalize(a.Target)
+	if err != nil {
+		return Action{}, err
 	}
 	canonical := a
 	canonical.PackageID = strings.TrimSpace(canonical.PackageID)
@@ -275,7 +301,7 @@ func (a Action) MaterialJSON() ([]byte, error) {
 	sort.Slice(canonical.DependencyHashes, func(i, j int) bool {
 		return canonical.DependencyHashes[i].ModulePath < canonical.DependencyHashes[j].ModulePath
 	})
-	return canonicalJSON(canonical)
+	return canonical, nil
 }
 
 func hashAction(domain string, material []byte) ActionID {

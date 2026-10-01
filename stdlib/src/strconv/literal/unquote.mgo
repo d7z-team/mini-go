@@ -1,0 +1,207 @@
+// Package literal decodes Go-style quoted literals without numeric formatting or Unicode tables.
+package literal
+
+import "unicode/utf8"
+
+type syntaxError struct{}
+
+func (syntaxError) Error() string {
+	return "invalid syntax"
+}
+
+// ErrSyntax reports a malformed quoted literal.
+var ErrSyntax error = syntaxError{}
+
+// Unquote interprets s as a single-quoted, double-quoted,
+// or backquoted Go string literal, returning the string value
+// that s quotes.  (If s is single-quoted, it would be a Go
+// character literal; Unquote returns the corresponding
+// one-character string. For an empty character literal
+// Unquote returns the empty string.)
+func Unquote(s string) (string, error) {
+	if len(s) < 2 {
+		return "", ErrSyntax
+	}
+	quote := s[0]
+	if quote != '"' && quote != '\'' && quote != '`' || s[len(s) - 1] != quote {
+		return "", ErrSyntax
+	}
+	end := len(s) - 1
+	out := make([]byte, 0, end - 1)
+	if quote == '`' {
+		for i := 1; i < end; i++ {
+			if s[i] == '`' {
+				return "", ErrSyntax
+			}
+			if s[i] != '\r' {
+				out = append(out, s[i])
+			}
+		}
+		return string(out), nil
+	}
+	count := 0
+	for offset := 1; offset < end; {
+		if s[offset] == '\n' {
+			return "", ErrSyntax
+		}
+		value, multibyte, next, err := decodeQuotedChar(s, offset, quote)
+		if err != nil || next > end {
+			return "", ErrSyntax
+		}
+		if value < utf8.RuneSelf || !multibyte {
+			out = append(out, byte(value))
+		} else {
+			out = utf8.AppendRune(out, value)
+		}
+		offset = next
+		count++
+	}
+	if quote == '\'' && count != 1 {
+		return "", ErrSyntax
+	}
+	return string(out), nil
+}
+
+// QuotedPrefix returns the valid quoted string at the beginning of s.
+func QuotedPrefix(s string) (string, error) {
+	if len(s) < 2 || s[0] != '"' && s[0] != '\'' && s[0] != '`' {
+		return "", ErrSyntax
+	}
+	quote := s[0]
+	escaped := false
+	for i := 1; i < len(s); i++ {
+		value := s[i]
+		if quote != '`' && value == '\\' && !escaped {
+			escaped = true
+			continue
+		}
+		if value == quote && !escaped {
+			prefix := s[:i + 1]
+			if _, err := Unquote(prefix); err != nil {
+				return "", err
+			}
+			var ok error
+			return prefix, ok
+		}
+		escaped = false
+		if value == '\n' && quote != '`' {
+			break
+		}
+	}
+	return "", ErrSyntax
+}
+
+// UnquoteChar decodes the first character or byte in the escaped string
+// or character literal represented by the string s.
+// It returns four values:
+//
+//  1. value, the decoded Unicode code point or byte value;
+//  2. multibyte, a boolean indicating whether the decoded character requires a multibyte UTF-8 representation;
+//  3. tail, the remainder of the string after the character; and
+//  4. an error that will be nil if the character is syntactically valid.
+//
+// The second argument, quote, specifies the type of literal being parsed
+// and therefore which escaped quote character is permitted.
+// If set to a single quote, it permits the sequence \' and disallows unescaped '.
+// If set to a double quote, it permits \" and disallows unescaped ".
+// If set to zero, it does not permit either escape and allows both quote characters to appear unescaped.
+func UnquoteChar(s string, quote byte) (rune, bool, string, error) {
+	value, multibyte, next, err := decodeQuotedChar(s, 0, quote)
+	if err != nil {
+		return 0, false, "", err
+	}
+	return value, multibyte, s[next:], nil
+}
+
+// Decode by offset so a long literal does not repeatedly copy its remaining tail.
+func decodeQuotedChar(s string, offset int, quote byte) (rune, bool, int, error) {
+	if offset >= len(s) {
+		return 0, false, offset, ErrSyntax
+	}
+	c := s[offset]
+	if c == quote && (quote == '\'' || quote == '"') {
+		return 0, false, offset, ErrSyntax
+	}
+	if c >= utf8.RuneSelf {
+		end := offset + utf8.UTFMax
+		if end > len(s) {
+			end = len(s)
+		}
+		r, size := utf8.DecodeRuneInString(s[offset:end])
+		return r, true, offset + size, nil
+	}
+	if c != '\\' {
+		return rune(c), false, offset + 1, nil
+	}
+	if offset + 1 >= len(s) {
+		return 0, false, offset, ErrSyntax
+	}
+	c = s[offset + 1]
+	next := offset + 2
+	switch c {
+		case 'a':
+			return '\a', false, next, nil
+		case 'b':
+			return '\b', false, next, nil
+		case 'f':
+			return '\f', false, next, nil
+		case 'n':
+			return '\n', false, next, nil
+		case 'r':
+			return '\r', false, next, nil
+		case 't':
+			return '\t', false, next, nil
+		case 'v':
+			return '\v', false, next, nil
+		case '\\':
+			return '\\', false, next, nil
+		case '\'', '"':
+			if c == quote {
+				return rune(c), false, next, nil
+			}
+		case 'x', 'u', 'U':
+			digits := 2
+			if c == 'u' {
+				digits = 4
+			} else if c == 'U' {
+				digits = 8
+			}
+			if next + digits > len(s) {
+				return 0, false, offset, ErrSyntax
+			}
+			value := 0
+			for i := 0; i < digits; i++ {
+				ch := s[next + i]
+				digit := 0
+				switch {
+					case ch >= '0' && ch <= '9':
+						digit = int(ch - '0')
+					case ch >= 'a' && ch <= 'f':
+						digit = int(ch - 'a') + 10
+					case ch >= 'A' && ch <= 'F':
+						digit = int(ch - 'A') + 10
+					default:
+						return 0, false, offset, ErrSyntax
+				}
+				value = value * 16 + digit
+			}
+			if c == 'x' || utf8.ValidRune(rune(value)) {
+				return rune(value), c != 'x', next + digits, nil
+			}
+		default:
+			if c >= '0' && c <= '7' && next + 2 <= len(s) {
+				value := int(c - '0')
+				for i := 0; i < 2; i++ {
+					ch := s[next + i]
+					if ch < '0' || ch > '7' {
+						return 0, false, offset, ErrSyntax
+					}
+					value = value * 8 + int(ch - '0')
+				}
+				if value <= 255 {
+					return rune(value), false, next + 2, nil
+				}
+			}
+	}
+	return 0, false, offset, ErrSyntax
+}

@@ -16,7 +16,7 @@ func TestLowerNilLiteral(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: anyType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -24,7 +24,7 @@ func TestLowerNilLiteral(t *testing.T) {
 						Results: []ast.Expression{{
 							Kind:    ast.ExprLiteral,
 							Literal: "nil",
-							Type:    anyType,
+							Type:    &anyType,
 						}},
 					}}},
 				},
@@ -48,7 +48,7 @@ func TestLowerFunctionLiteralCapturesLocal(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	fnExpr := ast.Expression{
 		Kind: ast.ExprFunc,
-		Func: ast.FuncDecl{
+		Func: &ast.FuncDecl{
 			Results: []ast.Field{{Type: intType}},
 			Body: ast.BlockStmt{Stmts: []ast.Statement{{
 				Kind: ast.StmtAssign,
@@ -57,7 +57,7 @@ func TestLowerFunctionLiteralCapturesLocal(t *testing.T) {
 					Kind:     ast.ExprBinary,
 					Operator: "+",
 					Left:     &ast.Expression{Kind: ast.ExprIdent, Name: "x"},
-					Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+					Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 				}},
 			}, {
 				Kind:    ast.StmtReturn,
@@ -72,17 +72,17 @@ func TestLowerFunctionLiteralCapturesLocal(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names:  []string{"x"},
 								Type:   intType,
-								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "41", Type: intType}},
+								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "41", Type: &intType}},
 							},
 						}},
 					}, {
@@ -134,22 +134,22 @@ func TestLowerFunctionLiteralLocalDeclType(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"next"},
 								Values: []ast.Expression{{
 									Kind: ast.ExprFunc,
-									Func: ast.FuncDecl{
+									Func: &ast.FuncDecl{
 										Results: []ast.Field{{Type: intType}},
 										Body: ast.BlockStmt{Stmts: []ast.Statement{{
 											Kind:    ast.StmtReturn,
-											Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: intType}},
+											Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: &intType}},
 										}}},
 									},
 								}},
@@ -187,7 +187,7 @@ func TestLowerFunctionIdentifierLocalDeclType(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "AddOne",
 					Params:  []ast.Field{{Name: "x", Type: intType}},
 					Results: []ast.Field{{Type: intType}},
@@ -197,20 +197,20 @@ func TestLowerFunctionIdentifierLocalDeclType(t *testing.T) {
 							Kind:     ast.ExprBinary,
 							Operator: "+",
 							Left:     &ast.Expression{Kind: ast.ExprIdent, Name: "x"},
-							Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+							Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 						}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names:  []string{"f"},
 								Values: []ast.Expression{{Kind: ast.ExprIdent, Name: "AddOne"}},
 							},
@@ -220,7 +220,7 @@ func TestLowerFunctionIdentifierLocalDeclType(t *testing.T) {
 						Results: []ast.Expression{{
 							Kind:   ast.ExprCall,
 							Callee: &ast.Expression{Kind: ast.ExprIdent, Name: "f"},
-							Args:   []ast.Expression{{Kind: ast.ExprLiteral, Literal: "41", Type: intType}},
+							Args:   []ast.Expression{{Kind: ast.ExprLiteral, Literal: "41", Type: &intType}},
 						}},
 					}}},
 				},

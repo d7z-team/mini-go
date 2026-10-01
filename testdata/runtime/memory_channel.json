@@ -1,27 +1,286 @@
 {
-  "module": {"path": "test", "package": "main"},
-  "type_table": {"nodes": [{"id": "channel", "kind": 9, "direction": 1, "elem": {"kind": 3, "primitive": 3}}]},
-  "constants": [{"id": "capacity", "type": {"kind": 3, "primitive": 3}, "value": 1}, {"id": "answer", "type": {"kind": 3, "primitive": 3}, "value": 42}],
-  "functions": [{
-    "id": "fn.Main",
-    "signature": {"results": [{"kind": 3, "primitive": 3}, {"kind": 3, "primitive": 1}]},
-    "locals": [
-      {"id": "channel", "type": {"kind": 9, "node": "channel"}},
-      {"id": "index", "type": {"kind": 3, "primitive": 3}},
-      {"id": "value", "type": {"kind": 3, "primitive": 3}},
-      {"id": "ok", "type": {"kind": 3, "primitive": 1}}
-    ],
-    "instructions": [
-      {"op": "const", "payload": {"constant": "capacity"}},
-      {"op": "make_waitable", "payload": {"type": {"kind": 9, "node": "channel"}}},
-      {"op": "store_local", "payload": {"local": "channel"}},
-      {"op": "load_local", "payload": {"local": "channel"}},
-      {"op": "const", "payload": {"constant": "answer"}},
-      {"op": "waitable_send"},
-      {"op": "select", "payload": {"index": "index", "cases": [{"channel": "channel", "value": "value", "ok": "ok"}]}},
-      {"op": "load_local", "payload": {"local": "value"}},
-      {"op": "load_local", "payload": {"local": "ok"}},
-      {"op": "return", "payload": {"result_count": 2}}
+  "module": {
+    "path": "test",
+    "package": "main"
+  },
+  "type_table": {
+    "nodes": [
+      {
+        "id": "channel",
+        "kind": 9,
+        "direction": 1,
+        "elem": {
+          "kind": 3,
+          "primitive": 3
+        }
+      }
     ]
-  }]
+  },
+  "constants": [
+    {
+      "id": "capacity",
+      "type": {
+        "kind": 3,
+        "primitive": 3
+      },
+      "value": 1
+    },
+    {
+      "id": "answer",
+      "type": {
+        "kind": 3,
+        "primitive": 3
+      },
+      "value": 42
+    }
+  ],
+  "functions": [
+    {
+      "id": "fn.Main",
+      "signature": {
+        "results": [
+          {
+            "kind": 3,
+            "primitive": 3
+          },
+          {
+            "kind": 3,
+            "primitive": 1
+          }
+        ]
+      },
+      "locals": [
+        {
+          "id": "channel",
+          "type": {
+            "kind": 9,
+            "node": "channel"
+          }
+        },
+        {
+          "id": "index",
+          "type": {
+            "kind": 3,
+            "primitive": 3
+          }
+        },
+        {
+          "id": "value",
+          "type": {
+            "kind": 3,
+            "primitive": 3
+          }
+        },
+        {
+          "id": "ok",
+          "type": {
+            "kind": 3,
+            "primitive": 1
+          }
+        }
+      ],
+      "code": {
+        "types": [
+          {
+            "kind": 3,
+            "primitive": 3
+          },
+          {
+            "kind": 9,
+            "node": "channel"
+          },
+          {
+            "kind": 3,
+            "primitive": 1
+          }
+        ],
+        "descriptors": {
+          "const": [
+            {
+              "constant": "capacity"
+            },
+            {
+              "constant": "answer"
+            }
+          ],
+          "makewaitable": [
+            {
+              "type": {
+                "kind": 9,
+                "node": "channel"
+              }
+            }
+          ],
+          "local": [
+            {
+              "local": "channel"
+            },
+            {
+              "local": "channel"
+            },
+            {
+              "local": "value"
+            },
+            {
+              "local": "ok"
+            }
+          ],
+          "select": [
+            {
+              "index": "index",
+              "cases": [
+                {
+                  "channel": "channel",
+                  "value": "value",
+                  "ok": "ok"
+                }
+              ]
+            }
+          ],
+          "return": [
+            {
+              "result_count": 2
+            }
+          ]
+        },
+        "instructions": [
+          [
+            3,
+            0,
+            0
+          ],
+          [
+            30,
+            0,
+            1
+          ],
+          [
+            9,
+            0,
+            2
+          ],
+          [
+            8,
+            1,
+            3
+          ],
+          [
+            3,
+            1,
+            4
+          ],
+          [
+            55,
+            0,
+            5
+          ],
+          [
+            2,
+            0,
+            6
+          ],
+          [
+            8,
+            2,
+            7
+          ],
+          [
+            8,
+            3,
+            8
+          ],
+          [
+            17,
+            0,
+            9
+          ]
+        ],
+        "operands": [
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ],
+            "outputs": [
+              1
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                1
+              ]
+            ],
+            "release": [
+              1
+            ]
+          },
+          {
+            "outputs": [
+              1
+            ]
+          },
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                1
+              ],
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              1,
+              0
+            ]
+          },
+          {},
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "outputs": [
+              2
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                2
+              ]
+            ],
+            "release": [
+              0,
+              2
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

@@ -65,7 +65,17 @@ func Lower(checked check.CheckedProgram, options Options) (ir.Program, []source.
 	}
 	l.collectDotImports(program)
 	l.collectTopLevelSymbols(program)
-	l.rewriteLocalTypes(&program)
+	// Checked programs may belong to a published analysis snapshot. Local
+	// type rewriting is the only syntax mutation performed by lowering.
+	// Keep ordinary packages shared and copy syntax before that mutation.
+	for _, object := range checked.Info.Objects {
+		if object.Kind == check.ObjectType && object.Node != 0 && object.Scope != checked.Info.PackageScope {
+			program = ast.CloneProgram(program)
+			l.rewriteLocalTypes(&program)
+			break
+		}
+	}
+	l.semanticTypeText = map[types.TypeRef]string{}
 	l.resolvedTypes = map[string]string{}
 	l.namedUnderlyingTypes = map[string]string{}
 	if len(l.diagnostics) != 0 {

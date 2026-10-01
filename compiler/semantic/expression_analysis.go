@@ -14,7 +14,10 @@ func (a *analyzer) analyzeExpr(expr *ast.Expression, scope ScopeID) {
 		return
 	}
 	a.info.NodeScopes[expr.NodeID] = scope
-	info := ExprInfo{Type: a.typeOf(expr.Type), Mode: ExprValue, Category: Value}
+	info := ExprInfo{Mode: ExprValue, Category: Value}
+	if expr.Type != nil {
+		info.Type = a.typeOf(*expr.Type)
+	}
 	if expr.Kind == ast.ExprIdent {
 		if expr.Name == "_" {
 			info.Category = ValueBlank
@@ -44,7 +47,7 @@ func (a *analyzer) analyzeExpr(expr *ast.Expression, scope ScopeID) {
 		}
 	}
 	a.info.Exprs[expr.NodeID] = info
-	a.analyzeType(&expr.Type, scope)
+	a.analyzeType(expr.Type, scope)
 	a.analyzeExpr(expr.Left, scope)
 	a.analyzeExpr(expr.Right, scope)
 	a.analyzeExpr(expr.Operand, scope)
@@ -59,8 +62,8 @@ func (a *analyzer) analyzeExpr(expr *ast.Expression, scope ScopeID) {
 	if expr.Kind == ast.ExprComposite {
 		a.analyzeCompositeElements(expr, scope)
 	}
-	if expr.Kind == ast.ExprFunc {
-		a.analyzeFunc(&expr.Func, scope, "")
+	if expr.Kind == ast.ExprFunc && expr.Func != nil {
+		a.analyzeFunc(expr.Func, scope, "")
 	}
 	if expr.Kind == ast.ExprIndex || expr.Kind == ast.ExprIndexList {
 		a.classifyBracket(expr)
@@ -81,8 +84,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 	switch expr.Kind {
 	case ast.ExprIdent:
 		if signature, ok := a.info.Relations.View(info.Type).Function(); ok && validFunctionSignature(signature) {
-			info.Signature = signature
-			info.HasSignature = true
+			info.Signature = &signature
 		}
 	case ast.ExprLiteral:
 		info = a.finalizeLiteral(expr, info)
@@ -91,11 +93,13 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 	case ast.ExprBinary:
 		info = a.finalizeBinary(expr, info)
 	case ast.ExprFunc:
+		if expr.Func == nil {
+			break
+		}
 		signature := a.functionTypeSignature(expr.Func.Params, expr.Func.Results)
 		if validFunctionSignature(signature) {
 			info.Type = a.storeFunctionType(expr.NodeID, "function", signature)
-			info.Signature = signature
-			info.HasSignature = true
+			info.Signature = &signature
 			info.Mode = ExprValue
 		}
 	case ast.ExprComposite:
@@ -106,7 +110,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 			info.Mode = ExprValue
 		}
 	case ast.ExprConvert, ast.ExprAssert:
-		if typ := a.resolvedType(expr.Type); typ.Valid() {
+		if typ := a.resolvedTypePtr(expr.Type); typ.Valid() {
 			info.Type = typ
 			info.Mode = ExprValue
 			if expr.Kind == ast.ExprConvert && expr.Operand != nil && a.info.Exprs[expr.Operand.NodeID].Mode == ExprConstant {
@@ -197,7 +201,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 				if key, _, ok := view.Map(); ok {
 					a.validateAssignments([]ast.Expression{*expr.Index}, []types.TypeRef{key})
 				} else if value, ok := a.evaluateConstantExpression(*expr.Index, a.info.NodeScopes[expr.NodeID]); ok && a.info.TypeExact(operand.Type) && (view.Shape() == types.Array || view.Shape() == types.Slice || view.Shape() == types.Pointer || view.Shape() == types.Primitive) {
-					rational, valid := constant.ParseRationalLiteral(value.Text)
+					rational, valid := value.Rational()
 					integer, integral := rational.Integer()
 					index, fits := constant.SignedDecimalInt64(integer)
 					bound, _, bounded := view.Array()
@@ -329,7 +333,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 		}
 		call := a.info.Calls[expr.NodeID]
 		call.Kind = CallFunction
-		if selection := callee.Selection; selection.Kind == SelectionMethod {
+		if selection := a.info.Selections[expr.Callee.NodeID]; selection.Kind == SelectionMethod {
 			if selection.Interface {
 				call.Kind = CallInterfaceMethod
 			} else {
@@ -365,8 +369,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 			}
 		}
 		a.info.Calls[expr.NodeID] = call
-		info.Signature = types.FunctionSignature{}
-		info.HasSignature = false
+		info.Signature = nil
 		info.Results = append([]types.TypeRef(nil), signature.Results...)
 		switch len(signature.Results) {
 		case 0:
@@ -376,8 +379,7 @@ func (a *analyzer) finalizeExpr(expr *ast.Expression) {
 			info.Type = signature.Results[0]
 			info.Mode = ExprValue
 			if resultSignature, ok := a.info.Relations.View(info.Type).Function(); ok {
-				info.Signature = resultSignature
-				info.HasSignature = true
+				info.Signature = &resultSignature
 			}
 		default:
 			info.Type = types.TypeRef{}

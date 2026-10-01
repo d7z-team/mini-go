@@ -12,6 +12,48 @@ type record struct {
 	C float64
 }
 
+func TestFixedWidthOrdersPreserveSliceViews(t *testing.T) {
+	for _, order := range []binary.ByteOrder{binary.LittleEndian, binary.BigEndian} {
+		backing := make([]byte, 24)
+		view := backing[3:19]
+		order.PutUint16(view, 0x1234)
+		order.PutUint32(view[2:], 0x89abcdef)
+		order.PutUint64(view[6:], 0xfedcba9876543210)
+		if order.Uint16(view) != 0x1234 || order.Uint32(view[2:]) != 0x89abcdef || order.Uint64(view[6:]) != 0xfedcba9876543210 || backing[2] != 0 || backing[19] != 0 {
+			t.Fatal("fixed width slice view")
+		}
+	}
+	for _, order := range []binary.AppendByteOrder{binary.LittleEndian, binary.BigEndian} {
+		backing := make([]byte, 16)
+		view := backing[2:2:10]
+		view = order.AppendUint16(view, 0xffff)
+		view = order.AppendUint32(view, 0xffffffff)
+		if len(view) != 6 || cap(view) != 8 || backing[2] != 255 || backing[7] != 255 {
+			t.Fatal("append retained backing")
+		}
+		view = order.AppendUint64(view, 0xffffffffffffffff)
+		if len(view) != 14 || backing[8] != 0 || view[13] != 255 {
+			t.Fatal("append growth copied view")
+		}
+	}
+}
+
+func TestShortFixedWidthWriteDoesNotPartiallyMutate(t *testing.T) {
+	data := []byte{1, 2, 3}
+	panicked := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				panicked = true
+			}
+		}()
+		binary.BigEndian.PutUint64(data, 42)
+	}()
+	if !panicked || data[0] != 1 || data[1] != 2 || data[2] != 3 {
+		t.Fatal("short write mutated backing")
+	}
+}
+
 func TestOrdersVarintsAndStructuredData(t *testing.T) {
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, uint64(0x0102030405060708))

@@ -21,7 +21,7 @@ func (l *lowerer) rewriteLocalTypes(program *ast.Program) {
 			if decl.Kind != ast.DeclFunc {
 				continue
 			}
-			l.rewriteLocalTypeFunc(&decl.Func, localTypeEnvironment{})
+			l.rewriteLocalTypeFunc(decl.Func, localTypeEnvironment{})
 		}
 	}
 }
@@ -159,7 +159,7 @@ func (l *lowerer) rewriteLocalTypeExpression(expr *ast.Expression, env localType
 	if expr == nil {
 		return
 	}
-	l.rewriteLocalTypeExpr(&expr.Type, env)
+	l.rewriteLocalTypeExpr(expr.Type, env)
 	if expr.Kind == ast.ExprIdent {
 		typ := env[strings.TrimSpace(expr.Name)]
 		if typ != "" {
@@ -199,15 +199,6 @@ func (l *lowerer) rewriteLocalTypeExpression(expr *ast.Expression, env localType
 	for i := range expr.Args {
 		l.rewriteLocalTypeExpression(&expr.Args[i], env)
 	}
-	for i := range expr.Elements {
-		l.rewriteLocalTypeExpression(&expr.Elements[i], env)
-	}
-	for i := range expr.Entries {
-		if expr.Entries[i].Key != nil {
-			l.rewriteLocalTypeExpression(expr.Entries[i].Key, env)
-		}
-		l.rewriteLocalTypeExpression(&expr.Entries[i].Value, env)
-	}
 	for i := range expr.Items {
 		if expr.Items[i].Key != nil {
 			l.rewriteLocalTypeExpression(expr.Items[i].Key, env)
@@ -215,7 +206,7 @@ func (l *lowerer) rewriteLocalTypeExpression(expr *ast.Expression, env localType
 		l.rewriteLocalTypeExpression(&expr.Items[i].Value, env)
 	}
 	if expr.Kind == ast.ExprFunc {
-		l.rewriteLocalTypeFunc(&expr.Func, env)
+		l.rewriteLocalTypeFunc(expr.Func, env)
 	}
 }
 

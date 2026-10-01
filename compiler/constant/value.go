@@ -5,16 +5,55 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 // Value is a source-level exact fact. Text is a canonical arbitrary precision
 // number or Go-quoted string and Type is the source type identity.
 type Value struct {
-	Text    string
-	Type    string
-	Untyped bool
-	Real    string
-	Imag    string
+	Text            string
+	Type            string
+	Untyped         bool
+	Real            string
+	Imag            string
+	canonicalNumber string
+	numeratorEnd    int
+}
+
+// Rational returns the exact numeric value. Constructor-owned facts are tied
+// to their immutable text; edited or decoded values are parsed normally.
+func (value Value) Rational() (Rational, bool) {
+	if value.canonicalNumber != "" && value.Text == value.canonicalNumber {
+		if value.numeratorEnd != 0 {
+			return Rational{Numerator: value.Text[:value.numeratorEnd], Denominator: value.Text[value.numeratorEnd+1:]}, true
+		}
+		return Rational{Numerator: value.Text, Denominator: "1"}, true
+	}
+	return ParseRationalLiteral(value.Text)
+}
+
+// RoundFloat rounds a numeric fact to an IEEE float32 or float64 value while
+// preserving its source type and retaining the resulting exact rational.
+func (value Value) RoundFloat(bits int) (Value, bool) {
+	number, valid := value.Rational()
+	if !valid || bits != 32 && bits != 64 {
+		return Value{}, false
+	}
+	rounded, valid := RoundRationalFloat(number, bits)
+	if !valid {
+		return Value{}, false
+	}
+	return numericFact(rounded, value.Type, value.Untyped), true
+}
+
+func numericFact(number Rational, typ string, untyped bool) Value {
+	text := number.String()
+	value := Value{Text: text, Type: typ, Untyped: untyped, canonicalNumber: text}
+	if number.Denominator != "1" {
+		value.numeratorEnd = len(number.Numerator)
+	}
+	return value
 }
 
 type Kind uint8
@@ -55,7 +94,7 @@ func Integer(text, typ string, untyped bool) (Value, bool) {
 	if !ok {
 		return Value{}, false
 	}
-	return Value{Text: text, Type: strings.TrimSpace(typ), Untyped: untyped}, true
+	return numericFact(Rational{Numerator: text, Denominator: "1"}, strings.TrimSpace(typ), untyped), true
 }
 
 // Numeric canonicalizes an exact integer or rational value.
@@ -64,7 +103,7 @@ func Numeric(text, typ string, untyped bool) (Value, bool) {
 	if !ok {
 		return Value{}, false
 	}
-	return Value{Text: value.String(), Type: strings.TrimSpace(typ), Untyped: untyped}, true
+	return numericFact(value, strings.TrimSpace(typ), untyped), true
 }
 
 // FromJSON decodes the numeric representation used at compiler artifact
@@ -91,7 +130,9 @@ func FromJSON(raw json.RawMessage, typ string, untyped bool) (Value, bool) {
 	}
 	var text string
 	if typ == "String" {
-		if json.Unmarshal(raw, &text) != nil {
+		var err error
+		text, err = bytecode.DecodeStringConstant(raw)
+		if err != nil {
 			return Value{}, false
 		}
 		return String(text, typ, untyped), true
@@ -137,7 +178,7 @@ func ParseIntegerLiteral(text string) (Value, bool) {
 	}
 	if digits == "" {
 		if text == "0" {
-			return Value{Text: "0", Type: "Int", Untyped: true}, true
+			return numericFact(Rational{Numerator: "0", Denominator: "1"}, "Int", true), true
 		}
 		return Value{}, false
 	}
@@ -150,7 +191,7 @@ func ParseIntegerLiteral(text string) (Value, bool) {
 		if digits == "0" {
 			sign = ""
 		}
-		return Value{Text: sign + digits, Type: "Int", Untyped: true}, true
+		return numericFact(Rational{Numerator: sign + digits, Denominator: "1"}, "Int", true), true
 	}
 	firstDigit := integerDigit(rune(digits[0]))
 	if firstDigit < 0 || firstDigit >= base {
@@ -161,7 +202,7 @@ func ParseIntegerLiteral(text string) (Value, bool) {
 		if parsed != 0 {
 			value = sign + value
 		}
-		return Value{Text: value, Type: "Int", Untyped: true}, true
+		return numericFact(Rational{Numerator: value, Denominator: "1"}, "Int", true), true
 	}
 	value := "0"
 	for _, digit := range digits {
@@ -173,7 +214,7 @@ func ParseIntegerLiteral(text string) (Value, bool) {
 		value, _ = AddSignedDecimal(value, strconv.Itoa(n))
 	}
 	value, ok := NormalizeSignedDecimal(sign + value)
-	return Value{Text: value, Type: "Int", Untyped: true}, ok
+	return numericFact(Rational{Numerator: value, Denominator: "1"}, "Int", true), ok
 }
 
 // Unary applies a constant unary operator.
@@ -197,13 +238,12 @@ func Unary(operator string, value Value) (Value, bool) {
 		return value, true
 	}
 	if operator == "+" || operator == "-" {
-		rational, valid := ParseRationalLiteral(value.Text)
+		rational, valid := value.Rational()
 		if valid {
 			if operator == "-" {
 				rational, valid = NegateRational(rational)
 			}
-			value.Text = rational.String()
-			return value, valid
+			return numericFact(rational, value.Type, value.Untyped), valid
 		}
 	}
 	var out string
@@ -222,8 +262,7 @@ func Unary(operator string, value Value) (Value, bool) {
 	if !ok {
 		return Value{}, false
 	}
-	value.Text = out
-	return value, true
+	return numericFact(Rational{Numerator: out, Denominator: "1"}, value.Type, value.Untyped), true
 }
 
 // Binary applies a constant binary operator.
@@ -278,8 +317,8 @@ func Binary(operator string, left, right Value) (Value, bool) {
 			}
 			comparison = strings.Compare(l, r)
 		} else {
-			l, lok := ParseRationalLiteral(left.Text)
-			r, rok := ParseRationalLiteral(right.Text)
+			l, lok := left.Rational()
+			r, rok := right.Rational()
 			if !lok || !rok {
 				return Value{}, false
 			}
@@ -318,8 +357,8 @@ func Binary(operator string, left, right Value) (Value, bool) {
 	}
 	if (operator == "+" || operator == "-" || operator == "*" || operator == "/") &&
 		(!integerType(left.Type) || !integerType(right.Type)) {
-		leftValue, leftOK := ParseRationalLiteral(left.Text)
-		rightValue, rightOK := ParseRationalLiteral(right.Text)
+		leftValue, leftOK := left.Rational()
+		rightValue, rightOK := right.Rational()
 		if !leftOK || !rightOK {
 			return Value{}, false
 		}
@@ -338,12 +377,11 @@ func Binary(operator string, left, right Value) (Value, bool) {
 		if !ok {
 			return Value{}, false
 		}
-		left.Text = result.String()
 		if integerType(left.Type) && !integerType(right.Type) {
 			left.Type = right.Type
 		}
 		left.Untyped = left.Untyped && right.Untyped
-		return left, true
+		return numericFact(result, left.Type, left.Untyped), true
 	}
 	var out string
 	var ok bool
@@ -379,7 +417,7 @@ func Binary(operator string, left, right Value) (Value, bool) {
 	if !ok {
 		return Value{}, false
 	}
-	left.Text = out
+	left = numericFact(Rational{Numerator: out, Denominator: "1"}, left.Type, left.Untyped)
 	if operator == "<<" || operator == ">>" {
 		return left, true
 	}
@@ -392,7 +430,7 @@ func Binary(operator string, left, right Value) (Value, bool) {
 
 // Int64 returns the exact integer when it is representable by int64.
 func (value Value) Int64() (int64, bool) {
-	rational, ok := ParseRationalLiteral(value.Text)
+	rational, ok := value.Rational()
 	if !ok {
 		return 0, false
 	}
@@ -416,10 +454,9 @@ func (value Value) JSON() json.RawMessage {
 		return json.RawMessage(value.Text)
 	}
 	if text, err := strconv.Unquote(value.Text); err == nil {
-		raw, _ := json.Marshal(text)
-		return raw
+		return bytecode.EncodeStringConstant(text)
 	}
-	if rational, ok := ParseRationalLiteral(value.Text); ok {
+	if rational, ok := value.Rational(); ok {
 		if integer, integerOK := rational.Integer(); integerOK {
 			if _, int64OK := SignedDecimalInt64(integer); int64OK {
 				return json.RawMessage(integer)

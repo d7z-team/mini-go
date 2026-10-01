@@ -2,6 +2,7 @@
 *.iml
 coverage.txt
 coverage.html
+*.test
 bin/
 /target/
 .gradle/

@@ -1,0 +1,6 @@
+package helper
+
+func Accumulate(target *int, value int) int {
+	*target += value
+	return -1
+}

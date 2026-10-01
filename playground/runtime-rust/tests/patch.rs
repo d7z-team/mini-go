@@ -12,6 +12,21 @@ use std::sync::Arc;
 
 #[test]
 fn method_rebinding_rejects_patch_and_preserves_existing_receiver_metadata() {
+    let body = support::slot_code(
+        json!([{"kind":3,"primitive":3}]),
+        &[
+            (
+                "const",
+                json!({"constant":"answer"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let build = |function: &str| {
         Arc::new(Program::load(&support::image(json!({
             "type_table":{"nodes":[{"id":"number","kind":4,
@@ -21,14 +36,13 @@ fn method_rebinding_rejects_patch_and_preserves_existing_receiver_metadata() {
                     "signature":{"results":[{"kind":3,"primitive":3}]},"function_id":function,"module_path":"test"}]}]},
             "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
             "functions":[
-                {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                    {"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}]},
+                {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":body},
                 {"id":"first","signature":{"params":[{"type":{"kind":4,"named":{"module_path":"test","decl_id":"Number"}}}],"results":[{"kind":3,"primitive":3}]},
                     "locals":[{"id":"self","type":{"kind":4,"named":{"module_path":"test","decl_id":"Number"}}}],
-                    "instructions":[{"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}]},
+                    "code":body},
                 {"id":"second","signature":{"params":[{"type":{"kind":4,"named":{"module_path":"test","decl_id":"Number"}}}],"results":[{"kind":3,"primitive":3}]},
                     "locals":[{"id":"self","type":{"kind":4,"named":{"module_path":"test","decl_id":"Number"}}}],
-                    "instructions":[{"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}]}
+                    "code":body}
             ]
         })), LoadLimits::default()).unwrap())
     };
@@ -80,7 +94,7 @@ fn patch_global_allocation_failure_preserves_heap_results_and_generation() {
     let mut target = program(42, false).image().clone();
     let extra: wire::ExecutionImage = serde_json::from_slice(&support::image(json!({
         "globals":[{"id":"first","type":{"kind":3,"primitive":3}},{"id":"second","type":{"kind":3,"primitive":3}}],
-        "functions":[{"id":"fn.Main","instructions":[{"op":"return","payload":{}}]}]
+        "functions":[{"id":"fn.Main","code":support::slot_code(json!([]), &[("return", json!({}), json!({}))])}]
     }))).unwrap();
     let mut archive = extra.packages.unwrap().remove("test").unwrap();
     let mut artifact: wire::Artifact =
@@ -130,27 +144,56 @@ fn patch_global_allocation_failure_preserves_heap_results_and_generation() {
 }
 
 fn program(number: i64, closure: bool) -> Arc<Program> {
-    let call = if closure {
-        json!({"op":"call_value","payload":{"result_count":1}})
-    } else {
-        json!({"op":"call_direct","payload":{"function":"value","result_count":1}})
-    };
-    let mut instructions = vec![];
+    let integer = json!({"kind":3,"primitive":3});
+    let mut operations = vec![];
     if closure {
-        instructions.push(json!({"op":"make_closure","payload":{"function":"value"}}));
+        operations.push((
+            "make_closure",
+            json!({"function":"value"}),
+            json!({"outputs":[0]}),
+        ));
+        operations.push((
+            "call_value",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+        ));
     } else {
-        instructions.push(json!({"op":"const","payload":{"constant":"n"}}));
-        instructions.push(json!({"op":"pop"}));
+        operations.push(("const", json!({"constant":"n"}), json!({"outputs":[0]})));
+        operations.push(("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})));
+        operations.push((
+            "call_direct",
+            json!({"function":"value","result_count":1}),
+            json!({"outputs":[1]}),
+        ));
     }
-    instructions.push(call);
-    instructions.push(json!({"op":"return","payload":{"result_count":1}}));
+    operations.push((
+        "return",
+        json!({"result_count":1}),
+        json!({"inputs":[[0,1]],"release":[1]}),
+    ));
+    let first_type = if closure {
+        json!({"kind":wire::Function,"node":"value.signature"})
+    } else {
+        integer.clone()
+    };
+    let code = support::slot_code(json!([first_type, integer]), &operations);
+    let value = support::slot_code(
+        json!([integer]),
+        &[
+            ("const", json!({"constant":"n"}), json!({"outputs":[0]})),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
+        "type_table":{"nodes":[{"id":"value.signature","kind":wire::Function,"signature":{"results":[integer]}}]},
         "constants":[{"id":"n","type":{"kind":3,"primitive":3},"value":number}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":instructions},
-            {"id":"value","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"const","payload":{"constant":"n"}},{"op":"return","payload":{"result_count":1}}
-            ]}
+            {"id":"fn.Main","signature":{"results":[integer]},"code":code},
+            {"id":"value","signature":{"results":[integer]},"code":value}
         ]
     }));
     Arc::new(Program::load(&image, LoadLimits::default()).unwrap())
@@ -158,16 +201,29 @@ fn program(number: i64, closure: bool) -> Arc<Program> {
 
 #[test]
 fn anonymous_types_are_resolved_in_their_frame_revision() {
+    let array = json!({"kind":6,"node":"source.array"});
+    let body = support::slot_code(
+        json!([array,{"kind":3,"primitive":3}]),
+        &[
+            ("zero", json!({"type":array}), json!({"outputs":[0]})),
+            ("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+            ("zero", json!({"type":array}), json!({"outputs":[0]})),
+            (
+                "len",
+                json!({}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+        ],
+    );
     let build = |length| {
         Arc::new(Program::load(&support::image(json!({
             "type_table":{"nodes":[{"id":"source.array","kind":6,"length":length,"elem":{"kind":3,"primitive":3}}]},
-            "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"zero","payload":{"type":{"kind":6,"node":"source.array"}}},
-                {"op":"pop"},
-                {"op":"zero","payload":{"type":{"kind":6,"node":"source.array"}}},
-                {"op":"len"},
-                {"op":"return","payload":{"result_count":1}}
-            ]}]
+            "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":body}]
         })), LoadLimits::default()).unwrap())
     };
     let mut instance = Instance::new(build(2), ExecutionLimits::default()).unwrap();
@@ -217,23 +273,85 @@ fn active_frames_keep_code_and_named_calls_use_the_published_revision() {
 }
 
 #[test]
+fn logical_calls_rebind_after_function_reordering_without_affecting_other_instances() {
+    let old = program(20, false);
+    let target = program(42, false);
+    let package = target
+        .image()
+        .packages
+        .as_ref()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let mut artifact: serde_json::Value =
+        serde_json::from_str(package.artifact.as_ref().unwrap().get()).unwrap();
+    artifact["functions"].as_array_mut().unwrap().reverse();
+    let reordered =
+        Arc::new(Program::load(&support::image(artifact), LoadLimits::default()).unwrap());
+    let mut first = Instance::new(old.clone(), ExecutionLimits::default()).unwrap();
+    let mut second = Instance::new(old, ExecutionLimits::default()).unwrap();
+    for vm in [&mut first, &mut second] {
+        vm.start("default", vec![]).unwrap();
+        assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Running);
+    }
+    let plan = first.prepare_patch(reordered).unwrap();
+    first.apply_patch(plan).unwrap();
+    for (vm, expected) in [(&mut first, 42), (&mut second, 20)] {
+        while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
+        assert_eq!(vm.results()[0].integer().unwrap(), expected);
+        vm.close().unwrap();
+    }
+}
+
+#[test]
 fn deferred_closure_runs_old_code_then_releases_the_revision() {
+    let integer = json!({"kind":3,"primitive":3});
+    let main = support::slot_code(
+        json!([{"kind":wire::Function,"node":"save.signature"},integer]),
+        &[
+            (
+                "make_closure",
+                json!({"function":"save"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "defer_push",
+                json!({"owner_depth":0}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            (
+                "load_global",
+                json!({"global":"answer"}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+        ],
+    );
+    let save = support::slot_code(
+        json!([integer]),
+        &[
+            ("const", json!({"constant":"n"}), json!({"outputs":[0]})),
+            (
+                "store_global",
+                json!({"global":"answer"}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            ("return", json!({}), json!({})),
+        ],
+    );
     let build = |number| {
         Arc::new(Program::load(&support::image(json!({
+        "type_table":{"nodes":[{"id":"save.signature","kind":wire::Function,"signature":{}}]},
         "constants":[{"id":"n","type":{"kind":3,"primitive":3},"value":number}],
         "globals":[{"id":"answer","type":{"kind":3,"primitive":3}}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"make_closure","payload":{"function":"save"}},
-                {"op":"defer_push","payload":{"owner_depth":0}},
-                {"op":"load_global","payload":{"global":"answer"}},
-                {"op":"return","payload":{"result_count":1}}
-            ]},
-            {"id":"save","instructions":[
-                {"op":"const","payload":{"constant":"n"}},
-                {"op":"store_global","payload":{"global":"answer"}},
-                {"op":"return","payload":{}}
-            ]}
+            {"id":"fn.Main","signature":{"results":[integer]},"code":main},
+            {"id":"save","code":save}
         ]
     })), LoadLimits::default()).unwrap())
     };
@@ -283,17 +401,41 @@ fn plans_are_bound_to_owner_and_base_and_failure_preserves_execution() {
 fn compatible_patch_preserves_globals_and_shape_failure_preserves_revision() {
     let build = |delta: i64, primitive: u8| {
         let typ = json!({"kind":3,"primitive":primitive});
+        let body = support::slot_code(
+            json!([typ, typ, typ]),
+            &[
+                (
+                    "load_global",
+                    json!({"global":"counter"}),
+                    json!({"outputs":[0]}),
+                ),
+                ("const", json!({"constant":"delta"}), json!({"outputs":[1]})),
+                (
+                    "binary",
+                    json!({"operator":"+"}),
+                    json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]}),
+                ),
+                (
+                    "store_global",
+                    json!({"global":"counter"}),
+                    json!({"inputs":[[0,2]],"release":[2]}),
+                ),
+                (
+                    "load_global",
+                    json!({"global":"counter"}),
+                    json!({"outputs":[0]}),
+                ),
+                (
+                    "return",
+                    json!({"result_count":1}),
+                    json!({"inputs":[[0,0]],"release":[0]}),
+                ),
+            ],
+        );
         let image = support::image(json!({
             "constants":[{"id":"delta","type":typ,"value":delta}],
             "globals":[{"id":"counter","type":typ}],
-            "functions":[{"id":"fn.Main","signature":{"results":[typ]},"instructions":[
-                {"op":"load_global","payload":{"global":"counter"}},
-                {"op":"const","payload":{"constant":"delta"}},
-                {"op":"binary","payload":{"operator":"+"}},
-                {"op":"store_global","payload":{"global":"counter"}},
-                {"op":"load_global","payload":{"global":"counter"}},
-                {"op":"return","payload":{"result_count":1}}
-            ]}]
+            "functions":[{"id":"fn.Main","signature":{"results":[typ]},"code":body}]
         }));
         Arc::new(Program::load(&image, LoadLimits::default()).unwrap())
     };

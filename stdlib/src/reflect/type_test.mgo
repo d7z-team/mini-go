@@ -129,6 +129,35 @@ func TestReflectTypeLayoutAndChannelDirection(t *testing.T) {
 	})
 }
 
+func TestScalarMetadataOfNamedAndDynamicTypes(t *testing.T) {
+	type Words [4]int16
+	named := reflect.TypeOf(Words{})
+	dynamic := reflect.ArrayOf(4, reflect.TypeOf(int16(0)))
+	for _, typ := range []reflect.Type{named, dynamic} {
+		if typ.Len() != 4 || typ.Size() != 8 || typ.Align() != 2 || typ.FieldAlign() != 2 {
+			t.Fatalf("array metadata mismatch for %v", typ)
+		}
+	}
+	structure := reflect.StructOf([]reflect.StructField{{Name: "Value", Type: named}})
+	if structure.NumField() != 1 || structure.Size() != 8 || structure.Align() != 2 {
+		t.Fatal("dynamic struct metadata mismatch")
+	}
+	field := structure.Field(0)
+	field.Index[0] = 99
+	if structure.NumField() != 1 || structure.Field(0).Index[0] != 0 {
+		t.Fatal("metadata query shared mutable field result")
+	}
+	expectPanic(t, func() {
+		_ = reflect.TypeOf(1).Len()
+	})
+	expectPanic(t, func() {
+		_ = named.Bits()
+	})
+	expectPanic(t, func() {
+		_ = named.NumField()
+	})
+}
+
 func TestReflectTypeIteratorsAndFieldMatcher(t *testing.T) {
 	typ := reflect.TypeOf(sample{})
 	names := ""

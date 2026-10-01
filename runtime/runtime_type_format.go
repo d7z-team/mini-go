@@ -214,8 +214,8 @@ func (t vmType) Underlying() vmType {
 	if t.Table == nil || t.Ref.Kind != types.Named {
 		return t
 	}
-	if t.hasUnderlying {
-		return t.derived(t.underlyingRef)
+	if t.underlyingRef != nil {
+		return t.derived(*t.underlyingRef)
 	}
 	return t.derived(t.Table.Underlying(t.Ref))
 }

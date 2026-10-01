@@ -8,6 +8,8 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+
+	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func TestRevisionRootsByteArrayPointerRespectsBudget(t *testing.T) {
@@ -92,7 +94,7 @@ func TestRevisionInspectionExplainsFramesClosuresAndPendingTarget(t *testing.T) 
 			t.Fatalf("root: %+v", root)
 		}
 		frame = frame || root.Function == "fn.entry"
-		closure = closure || root.Function == "fn.literal.1" && strings.Contains(root.Path, "stack")
+		closure = closure || root.Function == "fn.literal.1" && strings.Contains(root.Path, "slot")
 	}
 	if !roots.Complete || !frame || !closure {
 		t.Fatalf("roots: %+v", roots)
@@ -158,6 +160,7 @@ func TestRevisionRootsBoundsCyclicAndSharedGlobalValues(t *testing.T) {
 func TestRevisionRootsGlobalReferenceReleasesRetiredCodeNaturally(t *testing.T) {
 	artifact := patchGlobalArtifact(1)
 	artifact.Globals[0].Type = testType("Any")
+	artifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 	base := patchTestProgram(t, artifact, "global-pin-old")
 	next := patchTestProgram(t, artifact, "global-pin-new")
 	instance, err := base.Instantiate(t.Context(), InstanceOptions{})

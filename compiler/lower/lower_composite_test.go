@@ -20,7 +20,7 @@ func TestLowerCompositeAndSliceExpressions(t *testing.T) {
 		}},
 	}
 	intLiteral := func(value string) ast.Expression {
-		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType}
+		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType}
 	}
 	program, diagnostics := lowerTestProgram(ast.Program{
 		ModulePath: "example/main",
@@ -29,20 +29,20 @@ func TestLowerCompositeAndSliceExpressions(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"xs"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
-									Kind:     ast.ExprComposite,
-									Type:     arrayType,
-									Elements: []ast.Expression{intLiteral("1"), intLiteral("2"), intLiteral("3")},
+									Kind:  ast.ExprComposite,
+									Type:  &arrayType,
+									Items: []ast.KeyValue{{Value: intLiteral("1")}, {Value: intLiteral("2")}, {Value: intLiteral("3")}},
 								}},
 							},
 						}},
@@ -50,7 +50,7 @@ func TestLowerCompositeAndSliceExpressions(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"sliced"},
 								Type:  intType,
 								Values: []ast.Expression{{
@@ -72,20 +72,20 @@ func TestLowerCompositeAndSliceExpressions(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"mapped"},
 								Type:  intType,
 								Values: []ast.Expression{{
 									Kind: ast.ExprIndex,
 									Operand: ptrExpr(ast.Expression{
 										Kind: ast.ExprComposite,
-										Type: mapType,
-										Entries: []ast.KeyValue{{
-											Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "k", Type: stringType}),
+										Type: &mapType,
+										Items: []ast.KeyValue{{
+											Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "k", Type: &stringType}),
 											Value: intLiteral("42"),
 										}},
 									}),
-									Index: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "k", Type: stringType}),
+									Index: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "k", Type: &stringType}),
 								}},
 							},
 						}},
@@ -95,8 +95,8 @@ func TestLowerCompositeAndSliceExpressions(t *testing.T) {
 							Kind: ast.ExprSelector,
 							Operand: ptrExpr(ast.Expression{
 								Kind: ast.ExprComposite,
-								Type: structType,
-								Entries: []ast.KeyValue{{
+								Type: &structType,
+								Items: []ast.KeyValue{{
 									Key:   ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Value"}),
 									Value: intLiteral("42"),
 								}},
@@ -139,9 +139,9 @@ func TestLowerElidedCompositeLiteralTypeFromTarget(t *testing.T) {
 	pointLiteral := func(value string) ast.Expression {
 		return ast.Expression{
 			Kind: ast.ExprComposite,
-			Entries: []ast.KeyValue{{
+			Items: []ast.KeyValue{{
 				Key:   ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "X"}),
-				Value: ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType},
+				Value: ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType},
 			}},
 		}
 	}
@@ -152,22 +152,22 @@ func TestLowerElidedCompositeLiteralTypeFromTarget(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "Point", Type: pointStruct},
+				Type: &ast.TypeDecl{Name: "Point", Type: pointStruct},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"points"},
 								Type:  pointsType,
 								Values: []ast.Expression{{
-									Kind:     ast.ExprComposite,
-									Type:     pointsType,
-									Elements: []ast.Expression{pointLiteral("1")},
+									Kind:  ast.ExprComposite,
+									Type:  &pointsType,
+									Items: []ast.KeyValue{{Value: pointLiteral("1")}},
 								}},
 							},
 						}},
@@ -175,13 +175,13 @@ func TestLowerElidedCompositeLiteralTypeFromTarget(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"ptrs"},
 								Type:  pointPtrsType,
 								Values: []ast.Expression{{
-									Kind:     ast.ExprComposite,
-									Type:     pointPtrsType,
-									Elements: []ast.Expression{pointLiteral("2")},
+									Kind:  ast.ExprComposite,
+									Type:  &pointPtrsType,
+									Items: []ast.KeyValue{{Value: pointLiteral("2")}},
 								}},
 							},
 						}},
@@ -214,7 +214,7 @@ func TestLowerElidedCompositeLiteralTypeFromTarget(t *testing.T) {
 func TestLowerKeyedArrayCompositeFillsZeros(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	intLiteral := func(value string) ast.Expression {
-		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType}
+		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType}
 	}
 	arrayType := ast.TypeExpr{Kind: ast.TypeArray, Len: ptrExpr(intLiteral("5")), Elem: &intType}
 	program, diagnostics := lowerTestProgram(ast.Program{
@@ -224,20 +224,20 @@ func TestLowerKeyedArrayCompositeFillsZeros(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"xs"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: arrayType,
-									Entries: []ast.KeyValue{{
+									Type: &arrayType,
+									Items: []ast.KeyValue{{
 										Key:   ptrExpr(intLiteral("2")),
 										Value: intLiteral("40"),
 									}, {
@@ -249,7 +249,7 @@ func TestLowerKeyedArrayCompositeFillsZeros(t *testing.T) {
 						}},
 					}, {
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}},
@@ -285,7 +285,7 @@ func TestLowerKeyedArrayCompositeFillsZeros(t *testing.T) {
 func TestLowerMixedArrayCompositePreservesItemOrder(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	intLiteral := func(value string) ast.Expression {
-		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType}
+		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType}
 	}
 	arrayType := ast.TypeExpr{Kind: ast.TypeSlice, Elem: &intType}
 	program, diagnostics := lowerTestProgram(ast.Program{
@@ -295,18 +295,18 @@ func TestLowerMixedArrayCompositePreservesItemOrder(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"xs"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: arrayType,
+									Type: &arrayType,
 									Items: []ast.KeyValue{{
 										Value: intLiteral("1"),
 									}, {
@@ -350,7 +350,7 @@ func TestLowerSliceShorthandDefaults(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	arrayType := ast.TypeExpr{Kind: ast.TypeSlice, Elem: &intType}
 	intLiteral := func(value string) ast.Expression {
-		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType}
+		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType}
 	}
 	identXS := ast.Expression{Kind: ast.ExprIdent, Name: "xs"}
 	program, diagnostics := lowerTestProgram(ast.Program{
@@ -360,20 +360,20 @@ func TestLowerSliceShorthandDefaults(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"xs"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
-									Kind:     ast.ExprComposite,
-									Type:     arrayType,
-									Elements: []ast.Expression{intLiteral("1"), intLiteral("2"), intLiteral("3")},
+									Kind:  ast.ExprComposite,
+									Type:  &arrayType,
+									Items: []ast.KeyValue{{Value: intLiteral("1")}, {Value: intLiteral("2")}, {Value: intLiteral("3")}},
 								}},
 							},
 						}},
@@ -381,7 +381,7 @@ func TestLowerSliceShorthandDefaults(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"lowDefault"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
@@ -395,7 +395,7 @@ func TestLowerSliceShorthandDefaults(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"highDefault"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
@@ -409,7 +409,7 @@ func TestLowerSliceShorthandDefaults(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"fullDefault"},
 								Type:  arrayType,
 								Values: []ast.Expression{{

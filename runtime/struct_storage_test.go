@@ -5,6 +5,60 @@ import (
 	"testing"
 )
 
+func TestFlatStructCopyDetachesFieldsOnWrite(t *testing.T) {
+	value := newRuntimeStructValue(nil, "struct{A:Int,B:Any}", map[string]vmValue{
+		"A": newVMValue("Int", int64(1)),
+		"B": newVMValue("Any", newVMValue("Int", int64(2))),
+	})
+	var module *moduleInstance
+	original := value.Data.(*vmStruct)
+	copied := module.cloneValueForStore(value).Data.(*vmStruct)
+	if &original.values[0] != &copied.values[0] {
+		t.Fatal("flat struct copy did not share its immutable fields")
+	}
+	setRuntimeStructField(copied, "A", newVMValue("Int", int64(3)))
+	if &original.values[0] == &copied.values[0] {
+		t.Fatal("field write did not detach copied storage")
+	}
+	for _, check := range []struct {
+		storage *vmStruct
+		want    int64
+	}{
+		{original, 1},
+		{copied, 3},
+	} {
+		got, ok := structValueField(check.storage, "A")
+		if !ok || got.materializedData() != check.want {
+			t.Fatalf("copied field = %v, want %d", got, check.want)
+		}
+	}
+	updatedStructValue(original, "A", newVMValue("Int", int64(4)))
+	got, _ := structValueField(copied, "A")
+	if got.materializedData() != int64(3) {
+		t.Fatalf("write to original reached copy: %v", got)
+	}
+}
+
+func TestStructCopyKeepsNestedArrayValuesIndependent(t *testing.T) {
+	module := &moduleInstance{}
+	original := module.zeroValue("struct{Items:Array<2, Int>}")
+	copied := module.cloneValueForStore(original)
+	originalArray, err := loadFieldValue(module, original, "Items")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := originalArray.Data.(*vmArray).setValueAt(1, newVMValue("Int", int64(42))); err != nil {
+		t.Fatal(err)
+	}
+	copyArray, err := loadFieldValue(module, copied, "Items")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := copyArray.Data.(*vmArray).valueAt(1).materializedData(); got != int64(0) {
+		t.Fatalf("array mutation reached copied struct: %v", got)
+	}
+}
+
 func TestStructStorageConcurrentFieldsAndValueCopies(t *testing.T) {
 	value := newRuntimeStructValue(nil, "struct{A:Int,B:Int}", map[string]vmValue{
 		"A": newVMValue("Int", int64(0)), "B": newVMValue("Int", int64(0)),

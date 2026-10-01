@@ -7,7 +7,7 @@
 Mini-Go 是使用 Go-like 语法的嵌入式脚本引擎。Go 应用直接编译并调用脚本，Rust 应用执行同一字节码，
 浏览器与 Node.js 通过 WebAssembly SDK 接入；`mini-go` CLI 也可以独立运行 `.mgo` 文件。
 
-**[快速开始](#快速开始) · [嵌入 Go](#在-go-中使用) · [使用指南](./USAGE.md) · [标准库](./docs/reference/README.md) · [RPC](./RPC.md)**
+**[快速开始](#快速开始) · [Go](./USAGE.md) · [Rust](./playground/runtime-rust/README.md) · [浏览器 / Node.js](./playground/runtime-rust/runtime-wasm/README.md) · [RPC](./RPC.md)**
 
 ## 主要功能
 
@@ -17,8 +17,7 @@ Mini-Go 是使用 Go-like 语法的嵌入式脚本引擎。Go 应用直接编译
 - **多环境接入**：Go runtime、Rust runtime，以及面向浏览器和 Node.js 的 TypeScript SDK。
 - **工具链**：本地源码装配、编译缓存、格式化、LSP、DAP 和 VS Code 扩展。
 
-随引擎提供字符串、容器、编码、模板等精选标准库。Mini-Go 面向脚本场景，语言与 API 的支持范围见
-[使用指南](./USAGE.md)和[标准库参考](./docs/reference/README.md)。
+精选标准库覆盖字符串、容器、编码、模板等常用脚本能力。支持的 API 见[标准库参考](./docs/reference/README.md)。
 
 ## 安装
 
@@ -70,20 +69,18 @@ Program 可复用，实例状态相互独立。[使用指南](USAGE.md)包含完
 | Rust 原生 | [`mini-go` crate](https://crates.io/crates/mini-go) · [运行时与可选编译工具](./playground/runtime-rust/README.md) |
 | 浏览器与 Node.js | `npm install @d7z-team/mini-go@git` · [TypeScript SDK](./playground/runtime-rust/runtime-wasm/README.md) |
 
-Rust 与 npm 分发均包含匹配的编译器资源。快照安装见组件指南，版本规则与发布流程见
-[开发指南](./DEVELOPMENT.md#rust-与-npm-发布)。
+Rust 与 npm 包均包含匹配的编译器资源，安装和部署方式见对应组件指南。
 
 ## 文档
 
-| 文档 | 内容 |
+| 任务 | 指南 |
 | --- | --- |
-| [使用指南](./USAGE.md) | 嵌入 API、CLI、源码装配、执行控制与调试 |
-| [RPC 使用指南](./RPC.md) | 声明接口、生成多语言 binding、跨语言调用和资源关闭 |
-| [标准库参考](./docs/reference/README.md) | 从源码生成的包与 API 文档 |
-| [VS Code 扩展](./vscode-ext/README.md) | 语法高亮与语言服务配置 |
-| [架构](./ARCHITECTURE.md) | 组件边界、数据流、状态所有权与生命周期 |
-| [开发指南](./DEVELOPMENT.md) | 生成、测试、跨语言验证与性能诊断 |
-| [共享测试数据](./testdata/README.md) | 跨后端语料、预期与更新入口 |
+| 嵌入 Go 或使用 CLI | [使用指南](./USAGE.md) |
+| 定义和接入 RPC 服务 | [RPC 指南](./RPC.md) |
+| 查询标准库 API | [生成参考](./docs/reference/README.md) |
+| 配置编辑器 | [VS Code 扩展](./vscode-ext/README.md) |
+| 理解组件边界和状态归属 | [架构](./ARCHITECTURE.md) |
+| 构建、测试、诊断和发布 | [开发指南](./DEVELOPMENT.md) |
 
 [go-ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml/badge.svg
 [go-ci]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml

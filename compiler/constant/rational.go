@@ -28,6 +28,9 @@ func NewRational(numerator, denominator string) (Rational, bool) {
 	if numerator == "0" {
 		return Rational{Numerator: "0", Denominator: "1"}, true
 	}
+	if denominator == "1" {
+		return Rational{Numerator: numerator, Denominator: denominator}, true
+	}
 	absNumerator := strings.TrimPrefix(numerator, "-")
 	divisor := gcdCanonicalDecimal(absNumerator, denominator)
 	if divisor != "1" {

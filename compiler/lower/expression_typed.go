@@ -42,7 +42,7 @@ func (l *lowerer) lowerExpressionInTypeOptions(expr ast.Expression, targetType s
 	if targetType != "" && l.isNilAssignableType(targetType) && isNilLiteral(expr) {
 		return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(l.resolveType(targetType)), Value: json.RawMessage("null")}, true
 	}
-	if expr.Kind == ast.ExprComposite && expr.Type.Kind == ast.TypeInvalid {
+	if expr.Kind == ast.ExprComposite && (expr.Type == nil || expr.Type.Kind == ast.TypeInvalid) {
 		if !allowElidedComposite {
 			l.add("hirgen.composite.elided_context", "elided composite literal type is only valid inside another composite literal", expr.Span)
 			return ir.Expression{}, false
@@ -344,7 +344,8 @@ func (l *lowerer) lowerElidedCompositeInType(expr ast.Expression, targetType str
 	}
 	if elemType, ok := l.pointerElementType(targetType); ok {
 		composite := expr
-		composite.Type = l.inferredCompositeTypeExpr(elemType, expr.Span)
+		typ := l.inferredCompositeTypeExpr(elemType, expr.Span)
+		composite.Type = &typ
 		value, ok := l.lowerComposite(composite, scope)
 		if !ok {
 			return ir.Expression{}, false
@@ -354,7 +355,8 @@ func (l *lowerer) lowerElidedCompositeInType(expr ast.Expression, targetType str
 		return ir.Expression{Kind: ir.ExprLet, Local: local, Bind: &value, Body: &addr}, true
 	}
 	composite := expr
-	composite.Type = l.inferredCompositeTypeExpr(targetType, expr.Span)
+	typ := l.inferredCompositeTypeExpr(targetType, expr.Span)
+	composite.Type = &typ
 	return l.lowerComposite(composite, scope)
 }
 

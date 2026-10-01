@@ -6,17 +6,45 @@ import (
 	"testing"
 )
 
+func TestValidationReadsPayloadEditsBetweenAnalyses(t *testing.T) {
+	artifact := NewArtifact("example/module", "main")
+	artifact.Functions = []Function{{
+		ID:        "fn.main",
+		Signature: testSignature("function() Void"),
+		Code:      testSlotCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
+	}}
+	if err := testValidateArtifact(&artifact); err != nil {
+		t.Fatal(err)
+	}
+	code := artifact.Functions[0].Code
+	for _, count := range []int{1, -1} {
+		code.Descriptors.Return[0].ResultCount = count
+		if err := testValidateArtifact(&artifact); err == nil {
+			t.Fatalf("accepted modified result count %d", count)
+		}
+	}
+	code.Descriptors.Return[0].ResultCount = 0
+	code.Instructions[0].Descriptor = 1
+	if err := testValidateArtifact(&artifact); err == nil {
+		t.Fatal("accepted out-of-range descriptor after a prior successful validation")
+	}
+	code.Instructions[0].Descriptor = 0
+	if err := testValidateArtifact(&artifact); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateArtifactRejectsUnknownExportRequirement(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpLoadExport),
-			Payload: json.RawMessage(`{"module_path":"example/lib","export":"Missing"}`),
+		Code: testSlotCode([]string{"Any"}, []Instruction{{
+			Op:      OpLoadExport,
+			Payload: ExportPayload{ModulePath: "example/lib", Export: "Missing"},
 		}, {
-			Op: string(OpPop),
-		}},
+			Op: OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -30,10 +58,10 @@ func TestValidateArtifactRejectsUnknownInitModuleRequirement(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpInitModule),
-			Payload: json.RawMessage(`{"module_path":"example/lib"}`),
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op:      OpInitModule,
+			Payload: InitModulePayload{ModulePath: "example/lib"},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -99,10 +127,10 @@ func TestValidateArtifactRejectsUnknownJumpLabel(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpJump),
-			Payload: json.RawMessage(`{"label":"missing"}`),
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op:      OpJump,
+			Payload: JumpPayload{Label: "missing"},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -116,9 +144,9 @@ func TestValidateArtifactRejectsUnknownOpcode(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op: "invalid_opcode",
-		}},
+		Code: testSlotCode([]string{}, []Instruction{{
+			Op: Opcode(65535),
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -128,11 +156,8 @@ func TestValidateArtifactRejectsUnknownOpcode(t *testing.T) {
 }
 
 func TestValidateInstructionRejectsDuplicateStructFields(t *testing.T) {
-	payload, err := json.Marshal(MakeStructPayload{Type: testType("struct{Value:Int64}"), Fields: []string{"Value", "Value"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = validateInstruction("instruction", Instruction{Op: string(OpMakeStruct), Payload: payload})
+	payload := MakeStructPayload{Type: testType("struct{Value:Int64}"), Fields: []string{"Value", "Value"}}
+	err := validateInstruction("instruction", &Instruction{Op: OpMakeStruct, Payload: payload})
 	if err == nil || !strings.Contains(err.Error(), `duplicate struct field "Value"`) {
 		t.Fatalf("expected duplicate struct field error, got %v", err)
 	}
@@ -144,13 +169,13 @@ func TestValidateArtifactWithLimitsRejectsInstructionLimit(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: json.RawMessage(`{"constant":"c.zero"}`),
+		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{Constant: "c.zero"},
 		}, {
-			Op:      string(OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      OpReturn,
+			Payload: ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	limits := DefaultValidationLimits()
 	limits.MaxInstructions = 1

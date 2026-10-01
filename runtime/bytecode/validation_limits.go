@@ -42,18 +42,20 @@ func validateArtifactLimits(a *Artifact, limits ValidationLimits) error {
 	totalInstructions := 0
 	totalPayloadBytes := 0
 	for i, fn := range a.Functions {
-		path := fmt.Sprintf("functions[%d]", i)
-		if err := validateCountLimit(path+".locals", len(fn.Locals), limits.MaxLocalsPerFunction); err != nil {
-			return err
+		if limits.MaxLocalsPerFunction > 0 && len(fn.Locals) > limits.MaxLocalsPerFunction {
+			return validateCountLimit(fmt.Sprintf("functions[%d].locals", i), len(fn.Locals), limits.MaxLocalsPerFunction)
 		}
-		if err := validateCountLimit(path+".upvalues", len(fn.Upvalues), limits.MaxUpvaluesPerFunction); err != nil {
-			return err
+		if limits.MaxUpvaluesPerFunction > 0 && len(fn.Upvalues) > limits.MaxUpvaluesPerFunction {
+			return validateCountLimit(fmt.Sprintf("functions[%d].upvalues", i), len(fn.Upvalues), limits.MaxUpvaluesPerFunction)
 		}
-		totalInstructions += len(fn.Instructions)
-		for j, inst := range fn.Instructions {
-			totalPayloadBytes += len(inst.Payload)
-			if err := validateCountLimit(fmt.Sprintf("%s.instructions[%d].payload_bytes", path, j), len(inst.Payload), limits.MaxPayloadBytes); err != nil {
-				return err
+		if fn.Code != nil {
+			totalInstructions += len(fn.Code.Instructions)
+			totalPayloadBytes += fn.Code.Descriptors.Bytes() + len(fn.Code.Instructions)*12 + len(fn.Code.Types)*32
+			if limits.MaxLocalsPerFunction > 0 && len(fn.Code.Types) > limits.MaxLocalsPerFunction {
+				return validateCountLimit(fmt.Sprintf("functions[%d].code.types", i), len(fn.Code.Types), limits.MaxLocalsPerFunction)
+			}
+			for _, operands := range fn.Code.Operands {
+				totalPayloadBytes += len(operands.Inputs)*8 + (len(operands.Outputs)+len(operands.Release)+len(operands.ReleaseBefore))*4
 			}
 		}
 	}
@@ -66,8 +68,8 @@ func validateArtifactLimits(a *Artifact, limits ValidationLimits) error {
 	totalConstantBytes := 0
 	for i, constant := range a.Constants {
 		totalConstantBytes += len(constant.Value)
-		if err := validateCountLimit(fmt.Sprintf("constants[%d].value_bytes", i), len(constant.Value), limits.MaxConstantBytes); err != nil {
-			return err
+		if limits.MaxConstantBytes > 0 && len(constant.Value) > limits.MaxConstantBytes {
+			return validateCountLimit(fmt.Sprintf("constants[%d].value_bytes", i), len(constant.Value), limits.MaxConstantBytes)
 		}
 	}
 	return validateCountLimit("constant_value_bytes", totalConstantBytes, limits.MaxConstantBytes)

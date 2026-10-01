@@ -41,7 +41,7 @@ func (s *genericSpecializer) rewriteGenericFunctionValue(expr *ast.Expression, t
 		return
 	}
 
-	*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprIdent, Name: generated, Type: target, Span: expr.Span}
+	*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprIdent, Name: generated, Type: &target, Span: expr.Span}
 }
 
 func (s *genericSpecializer) rewriteSemanticCallArgumentContexts(expr *ast.Expression, substitutions map[string]ast.TypeExpr) {
@@ -84,28 +84,15 @@ func (s *genericSpecializer) rewriteCallArgumentContexts(args []ast.Expression, 
 }
 
 func (s *genericSpecializer) rewriteCompositeFunctionValues(expr *ast.Expression, substitutions map[string]ast.TypeExpr) {
-	target := s.underlyingTypeExpr(cloneGenericType(expr.Type), map[string]bool{})
+	if expr.Type == nil {
+		return
+	}
+	target := s.underlyingTypeExpr(cloneGenericType(*expr.Type), map[string]bool{})
 	substituteGenericType(&target, substitutions)
 	switch target.Kind {
-	case ast.TypeArray, ast.TypeSlice:
+	case ast.TypeArray, ast.TypeSlice, ast.TypeMap:
 		if target.Elem == nil {
 			return
-		}
-		for i := range expr.Elements {
-			s.rewriteGenericFunctionValue(&expr.Elements[i], *target.Elem, substitutions)
-		}
-		for i := range expr.Entries {
-			s.rewriteGenericFunctionValue(&expr.Entries[i].Value, *target.Elem, substitutions)
-		}
-		for i := range expr.Items {
-			s.rewriteGenericFunctionValue(&expr.Items[i].Value, *target.Elem, substitutions)
-		}
-	case ast.TypeMap:
-		if target.Elem == nil {
-			return
-		}
-		for i := range expr.Entries {
-			s.rewriteGenericFunctionValue(&expr.Entries[i].Value, *target.Elem, substitutions)
 		}
 		for i := range expr.Items {
 			s.rewriteGenericFunctionValue(&expr.Items[i].Value, *target.Elem, substitutions)
@@ -115,19 +102,11 @@ func (s *genericSpecializer) rewriteCompositeFunctionValues(expr *ast.Expression
 		for _, field := range target.Fields {
 			fields[field.Name] = field.Type
 		}
-		for i := range expr.Elements {
-			if i < len(target.Fields) {
-				s.rewriteGenericFunctionValue(&expr.Elements[i], target.Fields[i].Type, substitutions)
-			}
-		}
-		for i := range expr.Entries {
-			if expr.Entries[i].Key != nil {
-				s.rewriteGenericFunctionValue(&expr.Entries[i].Value, fields[expr.Entries[i].Key.Name], substitutions)
-			}
-		}
 		for i := range expr.Items {
 			if expr.Items[i].Key != nil {
 				s.rewriteGenericFunctionValue(&expr.Items[i].Value, fields[expr.Items[i].Key.Name], substitutions)
+			} else if i < len(target.Fields) {
+				s.rewriteGenericFunctionValue(&expr.Items[i].Value, target.Fields[i].Type, substitutions)
 			}
 		}
 	}
@@ -138,5 +117,6 @@ func (s *genericSpecializer) setGeneratedCallResult(expr *ast.Expression, genera
 	if !ok || len(decl.Results) != 1 {
 		return
 	}
-	expr.Type = decl.Results[0].Type
+	target := cloneGenericType(decl.Results[0].Type)
+	expr.Type = &target
 }

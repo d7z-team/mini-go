@@ -19,21 +19,21 @@ func TestLowerTopLevelConstAndVar(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names:  []string{"Answer"},
 					Type:   intType,
-					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: intType}},
+					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}},
 				},
 			}, {
 				Kind: ast.DeclVar,
-				Var: ast.ValueDecl{
+				Var: &ast.ValueDecl{
 					Names:  []string{"Offset"},
 					Type:   intType,
-					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: intType}},
+					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -88,7 +88,7 @@ func TestLowerMultipleInitFunctionsThroughSyntheticEntry(t *testing.T) {
 		Package:    "main",
 		Files: []ast.File{{
 			Path: "invalid.mgo",
-			Decls: []ast.Decl{{Kind: ast.DeclFunc, Func: ast.FuncDecl{
+			Decls: []ast.Decl{{Kind: ast.DeclFunc, Func: &ast.FuncDecl{
 				Name:   "init",
 				Params: []ast.Field{{Name: "value", Type: intType}},
 			}}},
@@ -103,10 +103,10 @@ func TestLowerMultipleInitFunctionsThroughSyntheticEntry(t *testing.T) {
 		Package:    "main",
 		Files: []ast.File{{
 			Path:  "first.mgo",
-			Decls: []ast.Decl{{Kind: ast.DeclFunc, Func: ast.FuncDecl{Name: "init"}}},
+			Decls: []ast.Decl{{Kind: ast.DeclFunc, Func: &ast.FuncDecl{Name: "init"}}},
 		}, {
 			Path:  "second.mgo",
-			Decls: []ast.Decl{{Kind: ast.DeclFunc, Func: ast.FuncDecl{Name: "init"}}},
+			Decls: []ast.Decl{{Kind: ast.DeclFunc, Func: &ast.FuncDecl{Name: "init"}}},
 		}},
 	})
 	if len(diagnostics) != 0 {
@@ -140,20 +140,20 @@ func TestLowerTopLevelNamedConstAlias(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names:  []string{"Base"},
 					Type:   intType,
-					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: intType}},
+					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names:  []string{"Answer"},
 					Values: []ast.Expression{{Kind: ast.ExprIdent, Name: "Base"}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -190,10 +190,10 @@ func TestLowerTypeAliasDoesNotCreateRuntimeType(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "MyInt", Type: intType, Alias: true},
+				Type: &ast.TypeDecl{Name: "MyInt", Type: intType, Alias: true},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Params:  []ast.Field{{Name: "v", Type: aliasType}},
 					Results: []ast.Field{{Type: aliasType}},
@@ -232,13 +232,13 @@ func TestLowerNamedResultBareReturn(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Name: "answer", Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:  ast.StmtAssign,
 						Left:  []ast.Expression{{Kind: ast.ExprIdent, Name: "answer"}},
-						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: intType}},
+						Right: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: &intType}},
 					}, {
 						Kind: ast.StmtReturn,
 					}}},
@@ -272,26 +272,26 @@ func TestLowerMultiResultLocalVarInfersFunctionResultTypes(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Pair",
 					Results: []ast.Field{{Type: intType}, {Type: stringType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtReturn,
 						Results: []ast.Expression{
-							{Kind: ast.ExprLiteral, Literal: "42", Type: intType},
-							{Kind: ast.ExprLiteral, Literal: `"ok"`, Type: stringType},
+							{Kind: ast.ExprLiteral, Literal: "42", Type: &intType},
+							{Kind: ast.ExprLiteral, Literal: `"ok"`, Type: &stringType},
 						},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"n", "s"},
 								Values: []ast.Expression{{
 									Kind:   ast.ExprCall,
@@ -329,27 +329,27 @@ func TestLowerBlankIdentifierDiscardTarget(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Pair",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtReturn,
 						Results: []ast.Expression{
-							{Kind: ast.ExprLiteral, Literal: "40", Type: intType},
-							{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
+							{Kind: ast.ExprLiteral, Literal: "40", Type: &intType},
+							{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
 						},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"_", "y"},
 								Values: []ast.Expression{{
 									Kind:   ast.ExprCall,
@@ -396,7 +396,20 @@ func TestLowerBlankIdentifierDiscardTarget(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected IR Main function, got %#v", artifact.Functions)
 	}
-	if _, ok := findInstruction(fn.Instructions, string(ir.OpPop)); !ok {
-		t.Fatalf("expected discard target to lower to pop, got %#v", fn.Instructions)
+	for _, operation := range fn.Code.Instructions {
+		if operation.Op != ir.OpCallDirect {
+			continue
+		}
+		operands := fn.Code.Operands[operation.Operands]
+		if len(operands.Outputs) != 2 {
+			t.Fatalf("pair result destinations = %#v", operands.Outputs)
+		}
+		for _, released := range operands.Release {
+			if released == operands.Outputs[0] {
+				return
+			}
+		}
+		t.Fatal("discarded result remains live after its call")
 	}
+	t.Fatal("pair call not emitted")
 }

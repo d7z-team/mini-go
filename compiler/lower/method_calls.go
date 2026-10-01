@@ -36,7 +36,7 @@ func (l *lowerer) lowerMethodCall(expr ast.Expression, scope *funcScope) (ir.Exp
 			Field:       interfaceMethod.Method,
 			Operand:     &receiver,
 			Args:        args,
-			ResultCount: len(interfaceMethod.Signature.Results),
+			ResultCount: len(interfaceMethod.Signature.Results), ResultTypes: interfaceMethod.Signature.Results,
 		}, true
 	}
 	method, _, ok := l.semanticMethodInfo(selector)
@@ -67,7 +67,7 @@ func (l *lowerer) lowerMethodCall(expr ast.Expression, scope *funcScope) (ir.Exp
 		ModulePath:  method.ModulePath,
 		Function:    method.FunctionID,
 		Args:        args,
-		ResultCount: len(method.Signature.Results),
+		ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results,
 	}, true
 }
 
@@ -107,7 +107,7 @@ func (l *lowerer) lowerOperatorCall(expr ast.Expression, scope *funcScope) (ir.E
 		}
 		return ir.Expression{
 			Kind: ir.ExprCallInterface, Type: method.InterfaceType, Field: method.Method,
-			Operand: &receiver, Args: args, ResultCount: len(method.Signature.Results),
+			Operand: &receiver, Args: args, ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results,
 		}, true
 	}
 	method, found := l.methodInfoFromSelection(selection)
@@ -131,7 +131,7 @@ func (l *lowerer) lowerOperatorCall(expr ast.Expression, scope *funcScope) (ir.E
 	}
 	return ir.Expression{
 		Kind: ir.ExprCallDirect, ModulePath: method.ModulePath, Function: method.FunctionID,
-		Args: args, ResultCount: len(method.Signature.Results),
+		Args: args, ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results,
 	}, true
 }
 

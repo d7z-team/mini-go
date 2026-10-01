@@ -66,6 +66,7 @@ impl Trace for MapWrite {
 }
 
 struct PreparedMapWrite {
+    hash: u64,
     expected: std::sync::Weak<Value>,
     bytes: u64,
     position: Option<usize>,
@@ -106,7 +107,7 @@ impl Instance {
         let expected = Arc::downgrade(&snapshot);
         drop(snapshot);
         self.heap
-            .update(root, &expected, bytes, edges_unchanged, |backing| {
+            .update(root, expected, bytes, edges_unchanged, |backing| {
                 let Data::MapEntries(entries) = &mut backing.data else {
                     unreachable!()
                 };
@@ -135,7 +136,8 @@ impl Instance {
         let index = usize::try_from(key.integer()?)
             .map_err(|_| RuntimeError::new("panic", "store_index", "negative index"))?;
         let address = match object.data {
-            Data::Pointer(mut address) => {
+            Data::Pointer(address) => {
+                let mut address = Arc::unwrap_or_clone(address);
                 address.path.push(PathElement::Index(index));
                 address
             }
@@ -147,7 +149,7 @@ impl Instance {
                         "index outside slice",
                     ));
                 }
-                let mut address = slice.storage;
+                let mut address = slice.storage.clone();
                 address.path.push(PathElement::Index(slice.start + index));
                 address
             }
@@ -188,7 +190,8 @@ impl Instance {
         let Data::MapEntries(entries) = &snapshot.data else {
             return Err(RuntimeError::new("invalid_map", "map", "invalid backing"));
         };
-        let position = entries.find(&write.key, &self.types)?;
+        let hash = entries.key_hash(&write.key);
+        let position = entries.find_hashed(&write.key, hash, &self.types)?;
         let mut old_edges = Vec::new();
         let mut new_edges = Vec::new();
         write.value.trace(&mut |handle| new_edges.push(handle));
@@ -237,6 +240,7 @@ impl Instance {
             write.charged_entry = true;
         }
         Ok(Some(PreparedMapWrite {
+            hash,
             expected: Arc::downgrade(&snapshot),
             bytes,
             position,
@@ -251,7 +255,7 @@ impl Instance {
     ) -> Result<bool, RuntimeError> {
         self.heap.update(
             write.root,
-            &prepared.expected,
+            prepared.expected,
             prepared.bytes,
             prepared.same_edges,
             |backing| {
@@ -261,7 +265,7 @@ impl Instance {
                 if let Some(index) = prepared.position {
                     entries.set_value(index, write.value.clone());
                 } else {
-                    entries.insert(write.key.clone(), write.value.clone());
+                    entries.insert_hashed(write.key.clone(), write.value.clone(), prepared.hash);
                 }
             },
         )
@@ -348,6 +352,8 @@ impl Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use test_helpers::slot_code;
 
     #[test]
     fn bytecode_write_yields_for_collection_and_resumes_at_the_following_instruction() {
@@ -363,18 +369,17 @@ mod tests {
             artifact["functions"] = serde_json::json!([{
                 "id":"fn.Main", "signature":{"results":[{"kind":3,"primitive":3}]},
                 "locals":[{"id":"map","type":{"kind":7,"node":"map"}}],
-                "instructions":[
-                    {"op":"make_map","payload":{"type":{"kind":7,"node":"map"}}},
-                    {"op":"store_local","payload":{"local":"map"}},
-                    {"op":"load_local","payload":{"local":"map"}},
-                    {"op":"const","payload":{"constant":"key"}},
-                    {"op":"const","payload":{"constant":"answer"}},
-                    {"op":"store_index"},
-                    {"op":"load_local","payload":{"local":"map"}},
-                    {"op":"const","payload":{"constant":"key"}},
-                    {"op":"load_index"},
-                    {"op":"return","payload":{"result_count":1}}
-                ]
+                "code":slot_code(json!([{"kind":7,"node":"map"},{"kind":3,"primitive":3},{"kind":3,"primitive":3}]), &[
+                    ("make_map",json!({"type":{"kind":7,"node":"map"}}),json!({"outputs":[0]})),
+                    ("store_local",json!({"local":"map"}),json!({"inputs":[[0,0]],"release":[0]})),
+                    ("load_local",json!({"local":"map"}),json!({"outputs":[0]})),
+                    ("const",json!({"constant":"key"}),json!({"outputs":[1]})),
+                    ("const",json!({"constant":"answer"}),json!({"outputs":[2]})),
+                    ("store_index",json!({}),json!({"inputs":[[0,0],[0,1],[0,2]],"release":[0,1,2]})),
+                    ("load_local",json!({"local":"map"}),json!({"outputs":[0]})),
+                    ("const",json!({"constant":"key"}),json!({"outputs":[1]})),
+                    ("load_index",json!({}),json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]})),
+                    ("return",json!({"result_count":1}),json!({"inputs":[[0,2]],"release":[2]}))])
             }]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -401,7 +406,7 @@ mod tests {
         for cancel in [false, true] {
             let program = test_helpers::program_with_artifact(|artifact| {
                 artifact["functions"] = serde_json::json!([
-                    {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
                 ]);
             });
             let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -421,11 +426,11 @@ mod tests {
                     typ: TypeIdentity::Pointer(Arc::new(TypeIdentity::Primitive(
                         wire::PrimitiveInt,
                     ))),
-                    data: Data::Pointer(Address {
+                    data: Data::Pointer(std::sync::Arc::new(Address {
                         identity: Arc::default(),
                         root: pointee,
                         path: Vec::new(),
-                    }),
+                    })),
                 },
                 charged_entry: false,
             }));
@@ -474,7 +479,7 @@ mod tests {
     fn write_pressure_that_collection_cannot_resolve_fails_without_replaying() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -510,7 +515,7 @@ mod tests {
     fn conflicted_map_write_keeps_operands_across_gc_and_does_not_repeat_entry_charge() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -524,11 +529,11 @@ mod tests {
         let pointee = vm.allocate(Value::int(42)).unwrap();
         let value = Value {
             typ: TypeIdentity::Pointer(Arc::new(TypeIdentity::Primitive(wire::PrimitiveInt))),
-            data: Data::Pointer(Address {
+            data: Data::Pointer(std::sync::Arc::new(Address {
                 identity: Arc::default(),
                 root: pointee,
                 path: Vec::new(),
-            }),
+            })),
         };
         let mut write = MapWrite {
             root,
@@ -589,7 +594,7 @@ mod tests {
     fn cancelling_a_task_discards_its_uncommitted_map_write() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -618,7 +623,7 @@ mod tests {
     fn pending_address_write_keeps_its_value_and_resumes_without_a_bytecode_step() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -633,11 +638,11 @@ mod tests {
             .unwrap();
         let value = Value {
             typ,
-            data: Data::Pointer(Address {
+            data: Data::Pointer(std::sync::Arc::new(Address {
                 identity: Arc::default(),
                 root: pointee,
                 path: Vec::new(),
-            }),
+            })),
         };
         vm.running.pending_write = Some(PendingWrite::Address {
             address: Address {
@@ -666,7 +671,7 @@ mod tests {
     fn pending_delete_keeps_its_map_alive_and_preserves_other_entries() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -677,7 +682,7 @@ mod tests {
         let root = vm
             .allocate(Value {
                 typ: TypeIdentity::Any,
-                data: Data::MapEntries(entries),
+                data: Data::MapEntries(Box::new(entries)),
             })
             .unwrap();
         vm.running.pending_write = Some(PendingWrite::Delete {

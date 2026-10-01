@@ -1,14 +1,14 @@
 # 集成测试
 
 本目录通过公开 API 验证跨 compiler/runtime、宿主和进程的行为。
-单个包独立拥有的测试留在所属包，根包只保留 facade API 测试。
+包内单元测试与跨后端共享数据的分工见[测试组织](../DEVELOPMENT.md#测试组织)。
 
 ## 场景与数据
 
 | 范围 | 数据来源 |
 | --- | --- |
 | 诊断、求值顺序、类型、缓存与优化一致性 | 本目录的 `testdata/`，按行为组织 |
-| RPC 的 VM 调用、服务发布与跨语言通信 | 根 [testdata/rpc](../testdata/rpc/README.md) |
+| RPC 的 VM 调用、服务发布与跨语言通信 | 根 [RPC 一致性数据](../testdata/README.md#rpc-一致性数据) |
 | Go/Rust 原生标准库宿主与调试 | 根 [共享测试数据](../testdata/README.md) |
 
 ## 运行

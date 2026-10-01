@@ -7,36 +7,45 @@ import (
 )
 
 func (p *parser) current() scanner.Token {
-	if p.pos >= len(p.tokens) {
+	if p.pos >= p.lexical.TokenCount() {
 		return scanner.Token{Kind: token.EOF}
 	}
-	return p.tokens[p.pos]
+	if !p.cursorValid || p.cursorIndex != p.pos {
+		p.cursorToken = p.lexical.Token(p.pos)
+		p.cursorIndex, p.cursorValid = p.pos, true
+	}
+	return p.cursorToken
 }
 
 func (p *parser) previous() scanner.Token {
 	if p.pos == 0 {
 		return p.current()
 	}
-	return p.tokens[p.pos-1]
+	return p.lexical.Token(p.pos - 1)
 }
 
 func (p *parser) peek(distance int) scanner.Token {
 	index := p.pos + distance
-	if index >= len(p.tokens) {
+	if index >= p.lexical.TokenCount() {
 		return scanner.Token{Kind: token.EOF}
 	}
-	return p.tokens[index]
+	return p.lexical.Token(index)
 }
 
 func (p *parser) at(kind token.Kind) bool {
-	return p.current().Kind == kind
+	if p.pos >= p.lexical.TokenCount() {
+		return kind == token.EOF
+	}
+	return p.lexical.TokenKind(p.pos) == kind
 }
 
 func (p *parser) match(kind token.Kind) bool {
 	if !p.at(kind) {
 		return false
 	}
-	p.advance()
+	if p.pos < p.lexical.TokenCount() {
+		p.pos++
+	}
 	return true
 }
 
@@ -50,7 +59,7 @@ func (p *parser) matchIdent(name string) bool {
 
 func (p *parser) advance() scanner.Token {
 	current := p.current()
-	if p.pos < len(p.tokens) {
+	if p.pos < p.lexical.TokenCount() {
 		p.pos++
 	}
 	return current

@@ -124,7 +124,7 @@ func TestStoreCompilePublishesStateAndManifest(t *testing.T) {
 	store := New(backend)
 	input := testCacheAction("example/main", "main", []SourceFile{{Path: "main.mgo", Hash: "source-hash", Selected: true}}, nil)
 	artifact := ir.NewArtifact("example/main", "main")
-	stored, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact))
+	stored, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact))
 	if err != nil {
 		t.Fatalf("StoreCompile failed: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestLookupTreatsCorruptOutputAsMiss(t *testing.T) {
 	store := New(backend)
 	input := testCacheAction("example/main", "main", nil, nil)
 	artifact := ir.NewArtifact("example/main", "main")
-	if _, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err != nil {
+	if _, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err != nil {
 		t.Fatal(err)
 	}
 	actionID, _ := input.ID()
@@ -211,7 +211,7 @@ func TestCompileActionChangesMiss(t *testing.T) {
 	input := testCacheAction("example/main", "main", nil, []Dependency{{ModulePath: "example/lib", ExportHash: "old-export"}})
 	artifact := ir.NewArtifact("example/main", "main")
 	artifact.Requirements = []ir.Requirement{{Kind: "source", ModulePath: "example/lib"}}
-	if _, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err != nil {
+	if _, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err != nil {
 		t.Fatal(err)
 	}
 	for _, changed := range []Action{
@@ -230,7 +230,7 @@ func TestStoreRejectsInvalidPackageState(t *testing.T) {
 	artifact := ir.NewArtifact("example/main", "main")
 	wrong := mustPackageData(t, artifact)
 	wrong.ModulePath = "example/other"
-	if _, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), wrong); err == nil {
+	if _, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), wrong); err == nil {
 		t.Fatal("mismatched export data was stored")
 	}
 }
@@ -239,12 +239,12 @@ func TestStoreAcceptsCompileOnlyDependency(t *testing.T) {
 	store := New(NewMemoryBackend())
 	input := testCacheAction("example/main", "main", nil, []Dependency{{ModulePath: "example/dependency", ExportHash: "compile-time-export"}})
 	artifact := ir.NewArtifact("example/main", "main")
-	if _, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err != nil {
+	if _, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err != nil {
 		t.Fatalf("StoreCompile rejected compile-only dependency: %v", err)
 	}
 
 	artifact.Requirements = []ir.Requirement{{Kind: "source", ModulePath: "example/unknown", Hash: strings.Repeat("0", 64)}}
-	if _, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err == nil {
+	if _, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err == nil {
 		t.Fatal("StoreCompile accepted a dependency-bound package artifact")
 	}
 }
@@ -274,7 +274,7 @@ func TestStorePublishesActionAfterOutput(t *testing.T) {
 
 	outputFailure := &faultBackend{Backend: NewMemoryBackend(), failPutOutput: true}
 	store := New(outputFailure)
-	if _, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err == nil {
+	if _, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err == nil {
 		t.Fatal("StoreCompile succeeded after output failure")
 	}
 	actionID, _ := input.ID()
@@ -284,7 +284,7 @@ func TestStorePublishesActionAfterOutput(t *testing.T) {
 
 	actionFailure := &faultBackend{Backend: NewMemoryBackend(), failPutAction: true}
 	store = New(actionFailure)
-	if _, err := store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err == nil {
+	if _, err := store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact)); err == nil {
 		t.Fatal("StoreCompile succeeded after action failure")
 	}
 	if _, found, _ := actionFailure.GetAction(actionID); found {
@@ -309,7 +309,7 @@ func TestBackendErrorsAreReported(t *testing.T) {
 		if operation == "get-action" || operation == "get-output" {
 			_, err = store.LookupCompile(input)
 		} else {
-			_, err = store.StoreCompile(input, artifact, mustPackageSymbols(t, artifact), mustPackageData(t, artifact))
+			_, err = store.StoreCompile(input, mustSealArtifact(t, artifact), mustPackageSymbols(t, artifact), mustPackageData(t, artifact))
 		}
 		if err == nil {
 			t.Fatalf("%s failure was not reported", operation)
@@ -396,45 +396,4 @@ func (b *faultBackend) PutAction(id ActionID, entry Entry) error {
 		return errors.New("put action failed")
 	}
 	return b.Backend.PutAction(id, entry)
-}
-
-func testCacheAction(modulePath, packageName string, sources []SourceFile, dependencies []Dependency) Action {
-	return Action{
-		Format: Format, Version: Version, Compiler: ir.CompilerIdentity,
-		IRFormat: ir.Format, IRVersion: ir.CurrentVersion, OpcodeSet: ir.OpcodeSet, IntrinsicSchema: ir.IntrinsicSchema,
-		ModulePath: modulePath, Package: packageName, SourceFiles: sources,
-		DependencyHashes: dependencies,
-	}
-}
-
-func mustPackageData(t *testing.T, artifact ir.Artifact) PackageData {
-	t.Helper()
-	data, err := FromArtifact(artifact)
-	if err != nil {
-		t.Fatalf("project export data: %v", err)
-	}
-	return data
-}
-
-func mustPackageSymbols(t *testing.T, artifact ir.Artifact) ir.PackageSymbols {
-	t.Helper()
-	codeHash, err := ir.Hash(&artifact)
-	if err != nil {
-		t.Fatalf("hash artifact symbols: %v", err)
-	}
-	symbols := ir.PackageSymbols{ModulePath: artifact.Module.Path, CodeHash: codeHash}
-	for _, global := range artifact.Globals {
-		symbols.Globals = append(symbols.Globals, ir.GlobalSymbol{ID: global.ID, Name: global.ID})
-	}
-	for _, function := range artifact.Functions {
-		functionSymbols := ir.FunctionSymbols{ID: function.ID, Name: function.ID}
-		for _, local := range function.Locals {
-			functionSymbols.Locals = append(functionSymbols.Locals, ir.LocalSymbol{ID: local.ID, Name: local.ID})
-		}
-		for _, upvalue := range function.Upvalues {
-			functionSymbols.Upvalues = append(functionSymbols.Upvalues, ir.UpvalueSymbol{ID: upvalue.ID, Name: upvalue.ID})
-		}
-		symbols.Functions = append(symbols.Functions, functionSymbols)
-	}
-	return symbols
 }

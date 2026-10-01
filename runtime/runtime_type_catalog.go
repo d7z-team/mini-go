@@ -9,7 +9,7 @@ import (
 func (m *moduleInstance) resolvedRuntimeType(value any) vmType {
 	switch value := value.(type) {
 	case vmType:
-		if value.Ref.Kind != types.Named || value.hasUnderlying {
+		if value.Ref.Kind != types.Named || value.underlyingRef != nil {
 			if value.Table != nil || m == nil || m.executable == nil {
 				return value
 			}

@@ -57,11 +57,11 @@ func TestLowerProducesImportAndPanicInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lower failed: %v", err)
 	}
-	instructions := artifact.Functions[0].Instructions
-	if got := instructions[0].Op; got != string(ir.OpInitModule) {
+	instructions := functionOperations(t, artifact.Functions[0])
+	if got := instructions[0].Op; got != ir.OpInitModule {
 		t.Fatalf("expected init_module instruction, got %q", got)
 	}
-	if got := instructions[2].Op; got != string(ir.OpPanic) {
+	if got := instructions[1].Op; got != ir.OpPanic {
 		t.Fatalf("expected panic instruction, got %q", got)
 	}
 }
@@ -88,8 +88,8 @@ func TestLowerProducesDeferInstruction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lower failed: %v", err)
 	}
-	instructions := artifact.Functions[1].Instructions
-	if got := instructions[1].Op; got != string(ir.OpDeferPush) {
+	instructions := functionOperations(t, artifact.Functions[1])
+	if got := instructions[1].Op; got != ir.OpDeferPush {
 		t.Fatalf("expected defer_push instruction, got %q", got)
 	}
 }
@@ -111,8 +111,8 @@ func TestLowerProducesRecoverExpression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lower failed: %v", err)
 	}
-	instructions := artifact.Functions[0].Instructions
-	if got := instructions[0].Op; got != string(ir.OpRecover) {
+	instructions := functionOperations(t, artifact.Functions[0])
+	if got := instructions[0].Op; got != ir.OpRecover {
 		t.Fatalf("expected recover instruction, got %q", got)
 	}
 }

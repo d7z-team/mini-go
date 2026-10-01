@@ -154,7 +154,7 @@ export class LanguageService {
       throw error;
     }
   }
-  private stop(peer: Peer, error: unknown): Failure | undefined {
+  private terminatePeer(peer: Peer, error: unknown): Failure | undefined {
     if (peer.dead) return;
     peer.dead = true;
     let cleanupError: Failure | undefined;
@@ -205,10 +205,10 @@ export class LanguageService {
         try {
           peer.connection.send({ kind: "compilerCancel", generation: peer.generation, id });
         } catch (error) {
-          this.stop(peer, error);
+          this.terminatePeer(peer, error);
           return;
         }
-        hardStop = setTimeout(() => this.stop(peer, signal.reason), 2000);
+        hardStop = setTimeout(() => this.terminatePeer(peer, signal.reason), 2000);
       };
       peer.waiting = {
         id,
@@ -223,7 +223,7 @@ export class LanguageService {
             );
           }
           if (signal.aborted) {
-            this.stop(peer, signal.reason);
+            this.terminatePeer(peer, signal.reason);
             return;
           }
           if (reply.error) {
@@ -231,7 +231,7 @@ export class LanguageService {
             if (reply.reusable) {
               cleanup();
               reject(error);
-            } else this.stop(peer, error);
+            } else this.terminatePeer(peer, error);
             return;
           }
           try {
@@ -239,7 +239,7 @@ export class LanguageService {
               throw new ToolsError("budget", "compiler restore state too large");
             commit?.(reply);
           } catch (error) {
-            this.stop(peer, error);
+            this.terminatePeer(peer, error);
             return;
           }
           cleanup();
@@ -248,7 +248,7 @@ export class LanguageService {
             try {
               peer.connection.send({ kind: "compilerAck", generation: peer.generation, id });
             } catch (error) {
-              this.stop(peer, error);
+              this.terminatePeer(peer, error);
             }
           }
         },
@@ -257,7 +257,7 @@ export class LanguageService {
       try {
         send();
       } catch (error) {
-        this.stop(peer, error);
+        this.terminatePeer(peer, error);
       }
     });
   }
@@ -280,7 +280,7 @@ export class LanguageService {
           return;
         peer.waiting.accept(reply);
       },
-      (error) => this.stop(peer, error),
+      (error) => this.terminatePeer(peer, error),
     );
     try {
       await this.exchange(peer, 0, signal, () =>
@@ -294,7 +294,7 @@ export class LanguageService {
       );
       return peer;
     } catch (error) {
-      this.stop(peer, error);
+      this.terminatePeer(peer, error);
       throw error;
     }
   }
@@ -490,11 +490,11 @@ export class LanguageService {
           );
           return {
             cleanupError: previous
-              ? this.stop(previous, new ToolsError("closed", "compiler upgraded"))
+              ? this.terminatePeer(previous, new ToolsError("closed", "compiler upgraded"))
               : undefined,
           };
         } catch (error) {
-          this.stop(candidate, error);
+          this.terminatePeer(candidate, error);
           throw error;
         }
       },
@@ -510,7 +510,7 @@ export class LanguageService {
       job.reject(closedError);
     }
     this.active?.controller.abort(closedError);
-    if (this.peer) this.stop(this.peer, closedError);
+    if (this.peer) this.terminatePeer(this.peer, closedError);
     this.restore = new Uint8Array();
     this.image = new Uint8Array();
     if (!this.active) this.closed.resolve();

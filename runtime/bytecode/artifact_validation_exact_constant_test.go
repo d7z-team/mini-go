@@ -51,10 +51,10 @@ func TestArtifactValidationRejectsUntypedConstantInRuntimeInstruction(t *testing
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: testPayload(ConstPayload{Constant: "const.Third"}),
-		}},
+		Code: testSlotCode([]string{"Float64"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{Constant: "const.Third"},
+		}}, [][2][]uint32{{nil, {0}}}),
 	}}
 	err := testValidateArtifact(&artifact)
 	if err == nil || !strings.Contains(err.Error(), "cannot be used by runtime instructions") {

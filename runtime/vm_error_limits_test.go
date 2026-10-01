@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -17,6 +16,7 @@ func TestVMRejectsMissingModuleRequirement(t *testing.T) {
 		Exports:    []string{"Value"},
 	}}
 	artifact.Functions = []ir.Function{{
+		Code:      &ir.SlotCode{},
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 	}}
@@ -48,6 +48,7 @@ func TestVMRejectsMissingDependencyExport(t *testing.T) {
 func TestVMRejectsModuleHashMismatch(t *testing.T) {
 	libArtifact := ir.NewArtifact("example/lib", "lib")
 	libArtifact.Functions = []ir.Function{{
+		Code:      &ir.SlotCode{},
 		ID:        "fn.value",
 		Signature: testSignature("function() Void"),
 	}}
@@ -68,6 +69,7 @@ func TestVMRejectsModuleHashMismatch(t *testing.T) {
 		Exports:    []string{"Value"},
 	}}
 	mainArtifact.Functions = []ir.Function{{
+		Code:      &ir.SlotCode{},
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 	}}
@@ -81,7 +83,7 @@ func TestVMRejectsModuleHashMismatch(t *testing.T) {
 func TestVMRejectsModuleRequirementCycle(t *testing.T) {
 	dependency := ir.NewArtifact("example/dependency", "dependency")
 	dependency.Requirements = []ir.Requirement{{Kind: ir.RequirementSource, ModulePath: "example/main"}}
-	dependency.Functions = []ir.Function{{ID: "fn.dependency", Signature: testSignature("function() Void")}}
+	dependency.Functions = []ir.Function{{Code: &ir.SlotCode{}, ID: "fn.dependency", Signature: testSignature("function() Void")}}
 	modules := newModuleRegistry()
 	executable, err := newLoader().load(dependency)
 	if err != nil {
@@ -92,7 +94,7 @@ func TestVMRejectsModuleRequirementCycle(t *testing.T) {
 	}
 	root := ir.NewArtifact("example/main", "main")
 	root.Requirements = []ir.Requirement{{Kind: ir.RequirementSource, ModulePath: "example/dependency"}}
-	root.Functions = []ir.Function{{ID: "fn.main", Signature: testSignature("function() Void")}}
+	root.Functions = []ir.Function{{Code: &ir.SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 	if _, err := loadTestEngineWithOptions(root, InstanceOptions{modules: modules}); err == nil || !strings.Contains(err.Error(), "module dependency cycle") {
 		t.Fatalf("module cycle error = %v", err)
 	}
@@ -103,14 +105,14 @@ func TestVMNilChannelReceiveReportsBlocked(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int64>")}),
+		Code: testSlotCode([]string{"Waitable<Int64>", "Int64"}, []ir.Instruction{{
+			Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int64>")},
 		}, {
-			Op: string(ir.OpWaitableRecv),
+			Op: ir.OpWaitableRecv,
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -133,21 +135,21 @@ func TestVMNilChannelReceiveReportsBlocked(t *testing.T) {
 
 func TestVMReportsEveryBlockedExecutionContext(t *testing.T) {
 	wait := []ir.Instruction{
-		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
-		{Op: string(ir.OpWaitableRecv)},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
+		{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
+		{Op: ir.OpWaitableRecv},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
 	}
 	artifact := ir.NewArtifact("example/all-blocked", "main")
 	artifact.Functions = []ir.Function{
 		{
 			ID: "fn.main", Signature: testSignature("function() Void"),
-			Instructions: append([]ir.Instruction{
-				{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.child"})},
-				{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-			}, wait...),
+			Code: testSlotCode([]string{"function() Void", "Waitable<Int>", "Int"}, append([]ir.Instruction{
+				{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
+				{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
+			}, wait...), [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, {2}}, {{2}, nil}, {nil, nil}}),
 		},
-		{ID: "fn.child", Signature: testSignature("function() Void"), Instructions: wait},
+		{ID: "fn.child", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Waitable<Int>", "Int"}, wait, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}, {nil, nil}})},
 	}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	vm, err := loadTestEngine(artifact)
@@ -174,12 +176,12 @@ func TestVMReportsEveryBlockedExecutionContext(t *testing.T) {
 func TestLibraryIdleDoesNotReportForegroundDeadlock(t *testing.T) {
 	artifact := ir.NewArtifact("example/library-idle", "main")
 	artifact.Functions = []ir.Function{{
-		ID: "fn.main", Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
-			{Op: string(ir.OpWaitableRecv)},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-		},
+		ID: "fn.main", Signature: testSignature("function() Int"),
+		Code: testSlotCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
+			{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
+			{Op: ir.OpWaitableRecv},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	vm, err := loadTestEngine(artifact)
 	if err != nil {
@@ -202,13 +204,13 @@ func TestVMEnforcesStepLimitInsideLoopAndKeepsLibraryOpen(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpLabel),
-			Payload: json.RawMessage(`{"label":"loop"}`),
+		Code: testSlotCode([]string{}, []ir.Instruction{{
+			Op:      ir.OpLabel,
+			Payload: ir.LabelPayload{Label: "loop"},
 		}, {
-			Op:      string(ir.OpJump),
-			Payload: json.RawMessage(`{"label":"loop"}`),
-		}},
+			Op:      ir.OpJump,
+			Payload: ir.JumpPayload{Label: "loop"},
+		}}, [][2][]uint32{{nil, nil}, {nil, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 

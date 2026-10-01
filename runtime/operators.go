@@ -7,9 +7,9 @@ import (
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
-func (m *moduleInstance) evalUnary(operator preparedOperator, value vmValue) (vmValue, error) {
+func (m *moduleInstance) evalUnary(operator preparedOperator, value vmValue, numeric types.PrimitiveKind) (vmValue, error) {
 	resultType := value.Type
-	value = m.numericOperandValue(value)
+	value = m.numericOperandValue(value, numeric)
 	switch operator {
 	case operatorNot:
 		out, ok := value.Data.(bool)
@@ -85,10 +85,10 @@ func (m *moduleInstance) evalUnary(operator preparedOperator, value vmValue) (vm
 	}
 }
 
-func (m *moduleInstance) evalBinary(operator preparedOperator, left, right vmValue) (vmValue, error) {
+func (m *moduleInstance) evalBinary(operator preparedOperator, left, right vmValue, numeric [2]types.PrimitiveKind) (vmValue, error) {
 	resultType := left.Type
-	left = m.numericOperandValue(left)
-	right = m.numericOperandValue(right)
+	left = m.numericOperandValue(left, numeric[0])
+	right = m.numericOperandValue(right, numeric[1])
 	if out, handled, err := evalIntegerBinary(operator, left, right); handled {
 		if err == nil && out.scalarKind != 0 {
 			out.Type = resultType
@@ -270,8 +270,12 @@ func evalIntegerBinary(operator preparedOperator, left, right vmValue) (vmValue,
 	return vmValue{}, false, nil
 }
 
-func (m *moduleInstance) numericOperandValue(value vmValue) vmValue {
+func (m *moduleInstance) numericOperandValue(value vmValue, primitive types.PrimitiveKind) vmValue {
 	if value.Type.Ref.Kind == types.Primitive {
+		return value
+	}
+	if primitive != types.PrimitiveInvalid {
+		value.Type = vmType{Ref: types.Builtin(primitive)}
 		return value
 	}
 	underlyingType := value.Type.Underlying()

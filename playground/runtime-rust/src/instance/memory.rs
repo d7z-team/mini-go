@@ -29,7 +29,7 @@ impl OperandRoots {
                 Data::String(bytes) => self.bytes = self.bytes.saturating_add(bytes.len() as u64),
                 Data::Array(values) => {
                     self.bytes = self.bytes.saturating_add(128 + values.len() as u64 * 16);
-                    pending.extend(values);
+                    pending.extend(values.iter());
                 }
                 Data::Interface(value) | Data::DynamicFunction(value) => {
                     self.bytes = self.bytes.saturating_add(128);
@@ -348,7 +348,20 @@ impl Instance {
             }
             sizer
                 .pending
-                .extend(frame.stack.iter().map(|value| &value.data));
+                .extend(frame.delivery.values.iter().map(|value| &value.data));
+            sizer
+                .pending
+                .extend(frame.slot_values.iter().flatten().map(|value| &value.data));
+            sizer
+                .pending
+                .extend(frame.slot_constants.iter().map(|(_, value)| &value.data));
+            if let Some(inputs) = &frame.operand_census {
+                for index in inputs.clone() {
+                    if let Some(value) = frame.input_at(frame.slot_pc.unwrap(), index) {
+                        sizer.pending.push(&value.data);
+                    }
+                }
+            }
             sizer.add(frame.popped_roots.bytes);
             sizer.pending.extend(&frame.popped_roots.data);
             for handle in &frame.popped_roots.slots {
@@ -356,6 +369,9 @@ impl Instance {
             }
             if let Some(values) = &frame.returning {
                 sizer.pending.extend(values.iter().map(|value| &value.data));
+            }
+            if let Some(value) = &frame.type_dispatch_value {
+                sizer.pending.push(&value.data);
             }
             if let Some(value) = &frame.panic {
                 sizer.pending.push(&value.data);
@@ -371,9 +387,6 @@ impl Instance {
             }
         }
         for task in self.tasks() {
-            sizer
-                .pending
-                .extend(task.retry_operands.iter().map(|value| &value.data));
             match &task.pending_write {
                 Some(mutation::PendingWrite::Map(write)) => {
                     sizer.slot(write.root)?;
@@ -620,7 +633,7 @@ impl<'a> GuestSizer<'a> {
                         unreachable!()
                     };
                     self.add(128 + entries.len() as u64 * 32);
-                    for (key, value) in entries {
+                    for (key, value) in entries.iter() {
                         self.pending.push(&key.data);
                         self.pending.push(&value.data);
                     }

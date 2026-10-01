@@ -133,7 +133,7 @@ runtime-rust-lint: runtime-artifacts ## Rust 格式检查与全 feature/target C
 
 runtime-rust-test: runtime-artifacts ## Rust VM 测试与 release 编译会话和协议测试
 	@cargo test $(cargo_flags)
-	@cargo test $(cargo_flags) --release -p mini-go --features language-server --lib --test compiler_session --test compiler_entry --test lsp --test language_sources
+	@cargo test $(cargo_flags) --release -p mini-go --features language-server,rpc --no-fail-fast --lib --test compiler_session --test compiler_entry --test lsp --test language_sources
 
 runtime-rust-rpc-test: ## Rust RPC、生成绑定与 Gateway 测试
 	@cargo test $(cargo_flags) --features rpc --test 'rpc_*' --test cancellation
@@ -176,9 +176,9 @@ runtime-wasm-test: runtime-wasm-build testdata/runtime/execution.json.gz _rpc-go
 	@MINIGO_WASM_FIXTURES="$(wasm_fixtures)" cargo test $(cargo_flags) --test wasm_driver
 	@MINIGO_WASM_FIXTURES="$(wasm_fixtures)" MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" $(npm) test
 
-runtime-compiler-test: runtime-wasm-build ## Rust、Node 与 Chromium 编译器/语言工具测试
-	@cargo test $(cargo_flags) --release -p mini-go --features compiler,dap --test compiler_entry --test compiler_session
-	@cd $(wasm_dir) && node --test tests/compiler.test.js tests/tools.test.js tests/tools_fault.test.js
+runtime-compiler-test: runtime-wasm-build _rpc-go-peer ## Rust、Node 与 Chromium 编译器/语言工具测试
+	@cargo test $(cargo_flags) --release -p mini-go --features compiler,dap,rpc --test compiler_entry --test compiler_session
+	@cd $(wasm_dir) && MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" node --test --test-concurrency=1 tests/compiler.test.js tests/tools.test.js tests/tools_fault.test.js
 
 runtime-wasm-pack: _npm-deps ## 通过 prepack 构建 npm tarball
 	@mkdir -p "$(WASM_PACK_OUTPUT)"

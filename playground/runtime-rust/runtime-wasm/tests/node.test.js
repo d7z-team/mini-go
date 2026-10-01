@@ -87,7 +87,20 @@ test(
       const snapshot = await execution.result;
       await execution.settled;
       if (name !== "host") assert.equal(snapshot.roots[0].data.Integer, 42n);
-      assert.equal((await vm.stats()).ffiCalls, 0n);
+      const stats = await vm.stats();
+      assert.equal(stats.ffiCalls, 0n);
+      for (const field of [
+        "gcCollections",
+        "gcScannedObjects",
+        "gcTracedObjects",
+        "gcScannedEdges",
+        "gcReclaimedBytes",
+        "gcNanos",
+      ]) {
+        assert.equal(typeof stats[field], "bigint");
+        assert.ok(stats[field] >= 0n);
+      }
+      assert.ok(stats.gcTracedObjects <= stats.gcScannedObjects);
       await vm.close();
     }
     for (const [name, input] of [

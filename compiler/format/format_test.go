@@ -59,6 +59,18 @@ func TestSourceLeavesInvalidDocumentUnchanged(t *testing.T) {
 	}
 }
 
+func TestSourceIndentsElidedCompositeFromItsOwnBrace(t *testing.T) {
+	input := "package sample\nvar values = map[string]map[string]int{\n\"outer\": {\n\"inner\": 1,\n},\n}\n"
+	formatted := format.Source("sample", "main.mgo", input)
+	if len(formatted.Diagnostics) != 0 || !strings.Contains(formatted.Text, "\t\"outer\": {\n\t\t\"inner\": 1,\n\t},") {
+		t.Fatalf("nested composite formatting: %v\n%s", formatted.Diagnostics, formatted.Text)
+	}
+	again := format.Source("sample", "main.mgo", formatted.Text)
+	if len(again.Diagnostics) != 0 || again.Text != formatted.Text {
+		t.Fatalf("formatting is not stable: %v\n%s", again.Diagnostics, again.Text)
+	}
+}
+
 func TestSourcePreservesImportsAndFormatsUnaryOperators(t *testing.T) {
 	input := "package main\nimport \"z\"\nimport \"a\"\nfunc main() { _ = -1 - -2 }\n"
 	result := format.Source("example/main", "main.mgo", input)

@@ -230,7 +230,9 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 			args = callFrame.module.qualifyValuesForArgumentBoundary(args)
 		}
 		childID := machine.vm.nextSpawnExecutionContextID()
-		childFrame, err := machine.vm.newExecutionFrame(target, ref.FunctionID, args, ref.upvalues, childID, payload.ResultCount, false)
+		// Spawn has no caller result slots; the child's declared return values
+		// are discarded when its task completes.
+		childFrame, err := machine.vm.newExecutionFrame(target, ref.FunctionID, args, ref.upvalues, childID, -1, false)
 		if err != nil {
 			return taskYield{}, true, err
 		}
@@ -335,15 +337,14 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 
 func (machine *executionMachine) enterDirectTailCall(task *executionTask, current *executionFrame, target *moduleInstance, function loadedFunction, payload *ir.CallPayload) error {
 	callFrame := current.frame
-	if payload == nil || payload.ArgCount < 0 || len(callFrame.stack) < payload.ArgCount {
-		argCount := 0
-		if payload != nil {
-			argCount = payload.ArgCount
-		}
-		return fmt.Errorf("tail call stack underflow: need %d values, have %d", argCount, len(callFrame.stack))
+	if payload == nil {
+		return errors.New("tail call missing descriptor")
 	}
-	start := len(callFrame.stack) - payload.ArgCount
-	args := append([]vmValue(nil), callFrame.stack[start:]...)
+	inputs, err := callFrame.popN(payload.ArgCount)
+	if err != nil {
+		return err
+	}
+	args := append([]vmValue(nil), inputs...)
 	qualify := target.modulePath() != callFrame.module.modulePath()
 	if qualify {
 		args = callFrame.module.qualifyValuesForArgumentBoundary(args)
@@ -378,8 +379,6 @@ func (machine *executionMachine) enterDirectTailCall(task *executionTask, curren
 		caller.completion = &frameCompletion{returnValues: append([]vmValue(nil), normalized...)}
 		return nil
 	}
-	clear(callFrame.stack[start:])
-	callFrame.stack = callFrame.stack[:start]
 	task.frames = append(task.frames, callee)
 	return nil
 }

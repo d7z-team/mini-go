@@ -1,7 +1,6 @@
 package compiler
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -101,12 +100,12 @@ func Main() {
 		if !ok {
 			continue
 		}
-		for _, inst := range fn.Instructions {
-			if inst.Op != string(ir.OpDeferPush) {
+		for _, inst := range functionOperations(t, fn) {
+			if inst.Op != ir.OpDeferPush {
 				continue
 			}
 			var payload ir.DeferPayload
-			if err := json.Unmarshal(inst.Payload, &payload); err != nil {
+			if err := ir.ReadInstructionPayload(inst.Payload, &payload); err != nil {
 				t.Fatalf("defer_push payload decode failed: %v", err)
 			}
 			if payload.OwnerDepth != 2 {

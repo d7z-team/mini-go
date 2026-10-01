@@ -8,6 +8,22 @@ import (
 	"github.com/d7z-team/mini-go/compiler/token"
 )
 
+func TestLexicalViewsExpandSourceSpansInEitherDirection(t *testing.T) {
+	for _, text := range []string{"", "plain", "a\r\n中文\n\xfflast\n", "\n\n"} {
+		file := source.NewFile("sample", "sample.mgo", text)
+		document := ScanDocument(file, Limits{})
+		for i := 0; i < document.TokenCount(); i++ {
+			for _, index := range []int{i, document.TokenCount() - i - 1, i} {
+				record := document.TokenRecord(index)
+				want, _ := file.Span(record.Start, record.End)
+				if got := document.Token(index).Span; got != want {
+					t.Fatalf("%q token %d span %+v, want %+v", text, index, got, want)
+				}
+			}
+		}
+	}
+}
+
 func TestScanPackageFunctionTokens(t *testing.T) {
 	source := "package main\n\nfunc Add(a int, b int) int {\n\treturn a + b\n}\n"
 	result := Scan("main.mgo", source)
@@ -63,6 +79,57 @@ func TestScanLiteralsAndUnicodeIdentifiers(t *testing.T) {
 	}
 }
 
+func TestScannerASCIIRunsPreserveUnicodeBoundariesAndTrivia(t *testing.T) {
+	name := strings.Repeat("a_1Z", 2049) + "世界" + "_٢_tail"
+	padding := strings.Repeat(" \t\r", 3000)
+	text := "package main\n" + padding + "var " + name + " = 1\n"
+	result := Scan("runs.mgo", text)
+	if len(result.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", result.Diagnostics)
+	}
+	if !hasLexeme(result.Tokens, token.Ident, name) {
+		t.Fatal("mixed ASCII and Unicode identifier was split")
+	}
+	file := source.NewFile("sample", "runs.mgo", text)
+	for _, tok := range result.Tokens {
+		want, ok := file.Span(tok.Span.Start.Offset, tok.Span.End.Offset)
+		if !ok || tok.Span != want {
+			t.Fatalf("token %s span %+v, want %+v", tok.Kind, tok.Span, want)
+		}
+	}
+}
+
+func TestScanIdentifierStopsBeforeInvalidUTF8(t *testing.T) {
+	result := Scan("invalid-identifier.mgo", "name_\xfftail")
+	if !hasDiagnostic(result.Diagnostics, "scanner.utf8.invalid") {
+		t.Fatalf("expected invalid UTF-8 diagnostic, got %+v", result.Diagnostics)
+	}
+	for _, want := range []struct {
+		index int
+		kind  token.Kind
+		text  string
+		start int
+		end   int
+	}{
+		{0, token.Ident, "name_", 0, 5},
+		{1, token.Illegal, "\xff", 5, 6},
+		{2, token.Ident, "tail", 6, 10},
+	} {
+		got := result.Tokens[want.index]
+		if got.Kind != want.kind || got.Lexeme != want.text || got.Span.Start.Offset != want.start || got.Span.End.Offset != want.end {
+			t.Fatalf("token %d = %+v, want %s %q [%d:%d]", want.index, got, want.kind, want.text, want.start, want.end)
+		}
+	}
+}
+
+func BenchmarkScanASCIIIdentifiers(b *testing.B) {
+	text := "package main\n" + strings.Repeat("var alpha_0123456789 = beta_0123456789\n", 256)
+	b.ReportAllocs()
+	for b.Loop() {
+		Scan("bench.mgo", text)
+	}
+}
+
 func TestScanNumericLiteralUnderscores(t *testing.T) {
 	valid := []string{
 		"1_000",
@@ -103,13 +170,17 @@ func TestScanRejectsHexFloatWithoutExponentAndInvalidOctalDigits(t *testing.T) {
 		{literal: "0x1.f", code: "scanner.number.hex_exponent"},
 		{literal: "08", code: "scanner.number.octal_digit"},
 		{literal: "09i", code: "scanner.number.octal_digit"},
+		{literal: "0_8", code: "scanner.number.octal_digit"},
+		{literal: "0__7", code: "scanner.number.underscore"},
+		{literal: "0b٢", code: "scanner.number.digits"},
+		{literal: "123世界", code: "scanner.number.suffix"},
 	} {
 		result := Scan("invalid-number.mgo", test.literal)
 		if !hasDiagnostic(result.Diagnostics, test.code) {
 			t.Fatalf("%s: expected %s, got %+v", test.literal, test.code, result.Diagnostics)
 		}
 	}
-	for _, literal := range []string{"0x1.fp2", "0x.8p0", "0755", "08.0", "08e1", ".5", ".5i"} {
+	for _, literal := range []string{"0x1.fp2", "0x.8p0", "0755", "0_755", "08.0", "08e1", "0_8e1i", "0b_101", "0o_77", "0x_Ff", ".5", ".5i"} {
 		result := Scan("valid-number.mgo", literal)
 		if len(result.Diagnostics) != 0 {
 			t.Fatalf("%s: unexpected diagnostics: %+v", literal, result.Diagnostics)

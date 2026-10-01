@@ -17,15 +17,9 @@ func TestSchedulerRotatesRunnableTasks(t *testing.T) {
 
 func TestTaskSliceReturnsAtQuantumWithoutReadyPeers(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/bounded-slice", "main")
-	var instructions []ir.Instruction
-	for range taskInstructionQuantum * 2 {
-		instructions = append(instructions,
-			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			ir.Instruction{Op: string(ir.OpPop)},
-		)
-	}
-	instructions = append(instructions, ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})})
-	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function()"), Instructions: instructions}}
+	code := testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	insertTestDelay(code, 0, taskInstructionQuantum*2)
+	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function()"), Code: code}}
 	instance, err := patchTestProgram(t, artifact, "bounded-slice").Instantiate(t.Context(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -57,39 +51,26 @@ func testSchedulerRotation(t *testing.T, budgets []int) {
 		{ID: "global.ready", Type: testType("Bool")},
 		{ID: "global.observed", Type: testType("Bool")},
 	}
-	child := make([]ir.Instruction, 0, taskInstructionQuantum*2+4)
-	for range taskInstructionQuantum * 2 {
-		child = append(child,
-			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			ir.Instruction{Op: string(ir.OpPop)},
-		)
-	}
-	child = append(child,
-		ir.Instruction{Op: string(ir.OpLoadGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.ready"})},
-		ir.Instruction{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.observed"})},
-		ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	)
+	child := testSlotCode([]string{"Bool"}, []ir.Instruction{
+		{Op: ir.OpLoadGlobal, Payload: ir.GlobalPayload{Global: "global.ready"}},
+		{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.observed"}},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})
+	insertTestDelay(child, 0, taskInstructionQuantum*2)
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.child"})},
-			{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-			{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.true"})},
-			{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.ready"})},
-		},
+		Code: testSlotCode([]string{"function() Void", "Bool"}, []ir.Instruction{
+			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
+			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
+			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.true"}},
+			{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.ready"}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
 		ID: "fn.child", RevisionLocal: true,
-		Signature: testSignature("function() Void"), Instructions: child,
+		Signature: testSignature("function() Void"), Code: child,
 	}}
-	for range taskInstructionQuantum * 2 {
-		artifact.Functions[0].Instructions = append(artifact.Functions[0].Instructions,
-			ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			ir.Instruction{Op: string(ir.OpPop)},
-		)
-	}
-	artifact.Functions[0].Instructions = append(artifact.Functions[0].Instructions,
-		ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	)
+	insertTestDelay(artifact.Functions[0].Code, 4, taskInstructionQuantum*2)
+	appendTestSlotCode(artifact.Functions[0].Code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	vm := pollSchedulerArtifact(t, artifact, budgets)
 	observed := vm.rootModule().state.globals["global.observed"].load()

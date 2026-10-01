@@ -6,12 +6,14 @@ import (
 
 	"github.com/d7z-team/mini-go/compiler/cache"
 	"github.com/d7z-team/mini-go/compiler/lower"
+	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/workspace"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 type workspaceCompiler struct {
+	bindDependencies    bool
 	request             Request
 	buildCache          *workspaceBuildCache
 	graph               *resolvedSourceGraph
@@ -24,9 +26,10 @@ type workspaceCompiler struct {
 	dependencies        dependencyTraversal
 	diagnostics         []source.Diagnostic
 	stats               Stats
+	previousAnalysis    *AnalysisResult
 }
 
-func compileWorkspace(request Request, buildCache *workspaceBuildCache) (Result, error) {
+func compileWorkspace(request Request, buildCache *workspaceBuildCache, bindDependencies bool) (Result, error) {
 	if err := request.Context.Err(); err != nil {
 		return Result{}, err
 	}
@@ -46,7 +49,7 @@ func compileWorkspace(request Request, buildCache *workspaceBuildCache) (Result,
 	}
 	packages := len(headerGraph.Packages)
 	build := &workspaceCompiler{
-		request: request, buildCache: buildCache, graph: newResolvedSourceGraph(headerGraph), stats: stats,
+		request: request, buildCache: buildCache, graph: newResolvedSourceGraph(headerGraph), stats: stats, bindDependencies: bindDependencies,
 		artifacts:           make(map[string]ir.Artifact, packages),
 		symbols:             make(map[string]ir.PackageSymbols, packages),
 		exports:             make(map[string]cache.PackageData, packages),
@@ -54,6 +57,10 @@ func compileWorkspace(request Request, buildCache *workspaceBuildCache) (Result,
 		packageActionHashes: make(map[string]string, packages),
 		exportHash:          make(map[string]string, packages),
 		dependencies:        newDependencyTraversal(packages),
+	}
+	if previous := request.PreviousAnalysis; previous != nil && previous.GraphHash == headerGraph.Hash &&
+		previous.Target.Equal(headerGraph.Target) && previous.Limits == request.Limits && !source.HasErrors(previous.Diagnostics) {
+		build.previousAnalysis = previous
 	}
 	if err := build.compilePackage(request.Root); err != nil {
 		return Result{}, err
@@ -109,7 +116,7 @@ func (c *workspaceCompiler) compilePackage(modulePath string) error {
 		return err
 	}
 
-	artifact, symbols, data, cached, err := c.loadOrCompilePackage(pkg)
+	artifact, symbols, data, _, err := c.loadOrCompilePackage(pkg)
 	if err != nil || source.HasErrors(c.diagnostics) {
 		return err
 	}
@@ -125,20 +132,20 @@ func (c *workspaceCompiler) compilePackage(modulePath string) error {
 			return nil
 		}
 	}
-	if !finalizeDirectArtifactRequirements(modulePath, &artifact, c.boundArtifactHashes, &c.diagnostics) {
-		return nil
-	}
-	hash, err := ir.Hash(&artifact)
-	if err != nil {
-		return err
-	}
-	if cached.Hit && cached.ReuseArtifact {
+	hash := data.ArtifactHash
+	if c.bindDependencies {
+		if !finalizeDirectArtifactRequirements(modulePath, &artifact, c.boundArtifactHashes, &c.diagnostics) {
+			return nil
+		}
+		hash, err = ir.HashValidated(&artifact)
+		if err != nil {
+			return err
+		}
+		// Binding dependency identities changes no exported declarations.
 		data, err = data.BindArtifact(artifact, hash)
-	} else {
-		data, err = data.WithArtifact(artifact)
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	symbols.CodeHash = hash
 	c.artifacts[modulePath] = artifact
@@ -183,21 +190,34 @@ func (c *workspaceCompiler) loadOrCompilePackage(pkg workspace.PackageHeader) (i
 			}
 		}()
 	}
-	parsed, diagnostics, err := workspace.ParsePackageWithLimits(pkg.Source, c.request.Limits.workspaceLimits())
-	c.stats.PackagesParsed++
-	if err != nil {
-		return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
+	var parsed workspace.OwnedPackage
+	var previous *check.CheckedProgram
+	if c.previousAnalysis != nil {
+		if analyzed, ok := c.previousAnalysis.Packages[pkg.Source.ModulePath]; ok && analyzed.Checked.Info != nil {
+			previous = &analyzed.Checked
+			parsed.Imports = pkg.Imports
+		}
 	}
-	if len(diagnostics) != 0 {
-		c.diagnostics = append(c.diagnostics, diagnostics...)
-		return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, nil
+	if previous == nil {
+		var diagnostics []source.Diagnostic
+		parsed, diagnostics, err = workspace.ParseOwnedPackageWithLimits(pkg.Source, c.request.Limits.workspaceLimits())
+		c.stats.PackagesParsed++
+		if err != nil {
+			return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
+		}
+		if len(diagnostics) != 0 {
+			c.diagnostics = append(c.diagnostics, diagnostics...)
+			return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, nil
+		}
 	}
 	if err := c.request.Context.Err(); err != nil {
 		return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
 	}
-	c.stats.PackagesAnalyzed++
-	compiled, err := compileParsedPackageWithLimits(c.request.Context, parsed.Program, lower.Options{
-		Dependencies: dependencyPackages(parsed.Program, c.artifacts),
+	if previous == nil {
+		c.stats.PackagesAnalyzed++
+	}
+	compiled, err := compileParsedPackageWithLimits(c.request.Context, parsed, previous, lower.Options{
+		Dependencies: dependencyPackages(parsed.Imports, c.artifacts),
 	}, c.exports, c.request.Limits, c.request.Optimization)
 	if err != nil {
 		return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
@@ -210,10 +230,7 @@ func (c *workspaceCompiler) loadOrCompilePackage(pkg workspace.PackageHeader) (i
 		c.diagnostics = append(c.diagnostics, compiled.Diagnostics...)
 		return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, nil
 	}
-	hash, err := ir.Hash(&compiled.Artifact)
-	if err != nil {
-		return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
-	}
+	hash := compiled.ExportData.ArtifactHash
 	c.packageActionHashes[pkg.Source.ModulePath] = hash
 	compiled.Symbols.CodeHash = hash
 	if c.buildCache != nil {
@@ -221,10 +238,10 @@ func (c *workspaceCompiler) loadOrCompilePackage(pkg workspace.PackageHeader) (i
 			return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
 		}
 		if cached.Hit {
-			if err := c.buildCache.Verify(pkg, c.exportHash, compiled.ExportData, hash, cached.ArtifactHash, cached.ExportHash); err != nil {
+			if err := c.buildCache.Verify(cached, compiled.ExportData, hash); err != nil {
 				return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
 			}
-		} else if err := c.buildCache.Store(pkg, c.exportHash, compiled.Artifact, compiled.Symbols, compiled.ExportData); err != nil {
+		} else if err := c.buildCache.Store(cached, compiled.CacheArtifact, compiled.Symbols, compiled.ExportData); err != nil {
 			return ir.Artifact{}, ir.PackageSymbols{}, cache.PackageData{}, cached, err
 		}
 	}

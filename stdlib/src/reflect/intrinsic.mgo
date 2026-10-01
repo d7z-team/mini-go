@@ -11,6 +11,14 @@ func runtimeTypeDescriptor(typ Type) (runtimeTypeData, string, bool) {
 	panic("reflect intrinsic")
 }
 
+func runtimeTypeKind(typ Type) (uint, string, bool) {
+	panic("reflect intrinsic")
+}
+
+func runtimeTypeMeasure(typ Type, property string) (uint64, string, bool) {
+	panic("reflect intrinsic")
+}
+
 func runtimeDeepEqual(left any, right any) bool {
 	panic("reflect intrinsic")
 }

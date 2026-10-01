@@ -345,13 +345,14 @@ func TestQualifiedTypeCacheInvalidatesWhenRegistryChanges(t *testing.T) {
 	}
 
 	interfaceType := runtimeTypeFromText("interface{}")
+	table := types.CloneTable(*interfaceType.Table)
 	itemIdentity := types.TypeKey{ModulePath: "example/dep", DeclID: "Item"}
 	itemType := types.TypeNode{ID: "decl.example.dep.Item", Kind: types.Named, Identity: itemIdentity, Underlying: interfaceType.Ref}
-	if err := interfaceType.Table.Add(itemType); err != nil {
+	if err := table.Add(itemType); err != nil {
 		t.Fatalf("add dependency type: %v", err)
 	}
 	dependency := &executable{
-		Artifact: ir.Artifact{Module: ir.Module{Path: "example/dep"}, TypeTable: *interfaceType.Table},
+		Artifact: ir.Artifact{Module: ir.Module{Path: "example/dep"}, TypeTable: table},
 		Types: map[string]types.TypeNode{
 			"Item": itemType,
 		},

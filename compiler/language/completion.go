@@ -113,7 +113,7 @@ func (e *Engine) selectorCompletion(document Document, pkg analysis.Package, off
 			break
 		}
 	}
-	if !receiver.Type.Valid() {
+	if receiver.Occurrence == nil || !receiver.Type.Valid() {
 		return nil, true
 	}
 	info := pkg.Checked.Info

@@ -78,7 +78,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 				return raw, typ, valid
 			}
 			if kind == "Float32" || kind == "Float64" {
-				rational, _ := constant.ParseRationalLiteral(value.Text)
+				rational, _ := value.Rational()
 				raw, valid := l.rationalRawForType(rational, typ, value.Untyped)
 				return raw, typ, valid
 			}
@@ -319,7 +319,7 @@ func (l *lowerer) constValue(expr ast.Expression, scope *funcScope) (json.RawMes
 		if !ok {
 			return nil, "", false
 		}
-		target := l.resolveSourceType(expr.Type)
+		target := l.resolveSourceTypePtr(expr.Type, nil)
 		if target == "" {
 			return nil, "", false
 		}

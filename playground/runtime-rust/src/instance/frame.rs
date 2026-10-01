@@ -39,6 +39,29 @@ impl Trace for Local {
     }
 }
 
+pub(super) enum Continuation {
+    Intrinsic(reflect_async::IntrinsicResume),
+    TailReturn(usize),
+}
+
+pub(super) enum FrameArguments {
+    Owned(Vec<Value>),
+    Caller {
+        frame: usize,
+        suspended: bool,
+        start: usize,
+        count: usize,
+    },
+}
+
+// A suspended operation owns delivered values until its owner resumes it.
+// They are independent of bytecode operands and remain GC roots on the frame.
+#[derive(Default)]
+pub(super) struct ResultBuffer {
+    pub values: Vec<Value>,
+    pub reading: bool,
+}
+
 pub(super) struct Frame {
     pub(super) prepared: Arc<crate::program::PreparedFunction>,
     pub(super) memory: memory::GuestFrameAccounting,
@@ -46,12 +69,22 @@ pub(super) struct Frame {
     pub(super) module: Arc<str>,
     pub(super) function: Arc<str>,
     pub(super) pc: usize,
+    pub(super) type_dispatch_index: usize,
+    pub(super) type_dispatch_value: Option<Value>,
     pub(super) locals: Vec<Local>,
     pub(super) globals: Vec<Handle>,
     pub(super) upvalues: Vec<Address>,
-    pub(super) stack: Vec<Value>,
+    pub(super) slot_values: Vec<Option<Value>>,
+    pub(super) slot_constants: Vec<(usize, Value)>,
+    pub(super) slot_pc: Option<usize>,
+    pub(super) slot_input: usize,
+    pub(super) slot_output: usize,
+    pub(super) delivery: ResultBuffer,
     pub(super) map_iterators: HashMap<String, MapIterator>,
     pub(super) popped_roots: memory::OperandRoots,
+    // Borrowing removes host copies, but the logical operand batch remains
+    // part of the guest census until its instruction commits or retries.
+    pub(super) operand_census: Option<std::ops::Range<usize>>,
     pub(super) expected_results: usize,
     pub(super) initializing: bool,
     pub(super) defers: Vec<FunctionValue>,
@@ -59,8 +92,7 @@ pub(super) struct Frame {
     pub(super) panic: Option<Arc<Value>>,
     pub(super) recovered: Option<Arc<Value>>,
     pub(super) deferred: bool,
-    pub(super) resume: Option<reflect_async::IntrinsicResume>,
-    pub(super) tail_return: Option<usize>,
+    pub(super) continuation: Option<Continuation>,
     pub(super) after_init: Option<usize>,
 }
 
@@ -81,11 +113,20 @@ impl Trace for Frame {
         for address in &self.upvalues {
             visit(address.root);
         }
-        for value in &self.stack {
+        for value in &self.delivery.values {
+            value.trace(visit);
+        }
+        for value in self.slot_values.iter().flatten() {
+            value.trace(visit);
+        }
+        for (_, value) in &self.slot_constants {
+            value.trace(visit);
+        }
+        if let Some(value) = &self.type_dispatch_value {
             value.trace(visit);
         }
         self.popped_roots.trace(visit);
-        if let Some(resume) = &self.resume {
+        if let Some(Continuation::Intrinsic(resume)) = &self.continuation {
             resume.trace(visit);
         }
         for value in self.returning.iter().flatten() {
@@ -121,7 +162,8 @@ struct FramePoolState {
 pub(super) struct FrameStorage {
     pub locals: Vec<Local>,
     pub globals: Vec<Handle>,
-    pub stack: Vec<Value>,
+    pub delivery: Vec<Value>,
+    pub slot_values: Vec<Option<Value>>,
     pub popped: memory::OperandRoots,
     pub defers: Vec<FunctionValue>,
 }
@@ -130,7 +172,8 @@ impl FrameStorage {
     fn bytes(&self) -> usize {
         self.locals.capacity() * size_of::<Local>()
             + self.globals.capacity() * size_of::<Handle>()
-            + self.stack.capacity() * size_of::<Value>()
+            + self.delivery.capacity() * size_of::<Value>()
+            + self.slot_values.capacity() * size_of::<Option<Value>>()
             + self.popped.storage_bytes()
             + self.defers.capacity() * size_of::<FunctionValue>()
     }
@@ -284,6 +327,9 @@ impl Instance {
         }
         for local in &mut frame.locals {
             if let Local::Private(slot) = local {
+                if matches!(slot.get().data, Data::Uninitialized) {
+                    continue;
+                }
                 let typ = slot.get().typ.clone();
                 let value = Value {
                     typ,
@@ -293,13 +339,17 @@ impl Instance {
                 slot.replace(value, bytes).map_err(|(error, _)| error)?;
             }
         }
-        frame.stack.clear();
+        frame.delivery.values.clear();
+        frame.slot_values.fill(None);
+        frame.slot_constants.clear();
+        frame.type_dispatch_value = None;
         frame.popped_roots.clear();
         frame.defers.clear();
         let storage = FrameStorage {
             locals: std::mem::take(&mut frame.locals),
             globals: std::mem::take(&mut frame.globals),
-            stack: std::mem::take(&mut frame.stack),
+            delivery: std::mem::take(&mut frame.delivery.values),
+            slot_values: std::mem::take(&mut frame.slot_values),
             popped: std::mem::take(&mut frame.popped_roots),
             defers: std::mem::take(&mut frame.defers),
         };
@@ -314,19 +364,55 @@ impl Instance {
 }
 
 impl Instance {
+    pub(super) fn call_with_continuation(
+        &mut self,
+        callee: FunctionValue,
+        arguments: Vec<Value>,
+        expected_results: usize,
+        continuation: Continuation,
+    ) -> Result<(), RuntimeError> {
+        let caller = self.running.frames.len() - 1;
+        self.push_frame(callee, arguments, expected_results, false)?;
+        // Frame preparation may fail or request a census. Publish the resume
+        // state only once a callee owns the call, so retry reads the operands.
+        self.running.frames[caller].continuation = Some(continuation);
+        Ok(())
+    }
+
     pub(super) fn push_frame(
         &mut self,
         callee: FunctionValue,
-        mut arguments: Vec<Value>,
+        arguments: Vec<Value>,
+        expected_results: usize,
+        initializing: bool,
+    ) -> Result<(), RuntimeError> {
+        self.push_frame_arguments(
+            callee,
+            FrameArguments::Owned(arguments),
+            expected_results,
+            initializing,
+        )
+    }
+
+    pub(super) fn push_frame_arguments(
+        &mut self,
+        callee: FunctionValue,
+        mut arguments: FrameArguments,
         expected_results: usize,
         initializing: bool,
     ) -> Result<(), RuntimeError> {
         self.running
             .transient_roots
             .extend(callee.captures.iter().map(|address| address.root));
-        for value in &arguments {
-            value.trace(&mut |handle| self.running.transient_roots.push(handle));
-        }
+        let argument_count = match &arguments {
+            FrameArguments::Owned(values) => {
+                for value in values {
+                    value.trace(&mut |handle| self.running.transient_roots.push(handle));
+                }
+                values.len()
+            }
+            FrameArguments::Caller { count, .. } => *count,
+        };
         if self.running.frames.len() >= self.limits.max_frames {
             return Err(RuntimeError::new(
                 "frame_limit",
@@ -348,7 +434,7 @@ impl Instance {
                 .function(&callee.module, &callee.function)?
                 .clone(),
         };
-        if arguments.len() != function.declaration.signature.params.len()
+        if argument_count != function.declaration.signature.params.len()
             || expected_results != function.declaration.signature.results.len()
             || callee.captures.len() != function.upvalues.len()
         {
@@ -358,7 +444,6 @@ impl Instance {
                 "argument, result or capture count mismatch",
             ));
         }
-        let stack_limit = function.stack_limit;
         let mut storage = self.frame_pool.take(revision.generation, function.index);
         for local in &storage.locals {
             if let Local::Private(value) = local {
@@ -373,21 +458,74 @@ impl Instance {
                 .len()
                 .saturating_sub(storage.locals.len()),
         );
-        let mut incoming = arguments.drain(..);
         for (index, typ) in function.local_types.iter().enumerate() {
-            let value = match incoming.next() {
-                Some(value) => value,
-                None => Value {
+            // Recycled private locals already hold this function's typed,
+            // uninitialized value and its live allocation charge. Only
+            // parameters and shared cells need preparation on every call.
+            if index >= argument_count
+                && !function.addressable_locals[index]
+                && matches!(storage.locals.get(index), Some(Local::Private(slot)) if matches!(slot.get().data, Data::Uninitialized))
+            {
+                continue;
+            }
+            let mut reserved_bytes = None;
+            let value = if index >= argument_count {
+                Value {
                     typ: typ.clone(),
                     data: Data::Uninitialized,
-                },
+                }
+            } else {
+                match &mut arguments {
+                    FrameArguments::Owned(values) => {
+                        std::mem::replace(&mut values[index], Value::int(0))
+                    }
+                    FrameArguments::Caller {
+                        frame,
+                        suspended,
+                        start,
+                        ..
+                    } => {
+                        let caller = if *suspended {
+                            &self.running.suspended_frames[*frame]
+                        } else {
+                            &self.running.frames[*frame]
+                        };
+                        if !function.addressable_locals[index]
+                            && caller.transferable_input(*start + index, typ).is_some()
+                        {
+                            let value = caller
+                                .input_at(caller.slot_pc.unwrap(), *start + index)
+                                .unwrap();
+                            if let Data::String(bytes) = &value.data {
+                                self.check_string_size(bytes.len())?;
+                            }
+                            reserved_bytes =
+                                Some(value.logical_bytes()?.checked_add(128).ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "allocation_limit",
+                                        "local",
+                                        "logical size overflow",
+                                    )
+                                })?);
+                            Value {
+                                typ: typ.clone(),
+                                data: Data::Uninitialized,
+                            }
+                        } else {
+                            caller.input_value(*start + index)?
+                        }
+                    }
+                }
             };
             let value = self.coerce(value, typ)?;
             let local = if function.addressable_locals[index] {
                 Local::Shared(self.allocate(value)?)
             } else if let Some(Local::Private(slot)) = storage.locals.get_mut(index) {
                 value.trace(&mut |handle| self.running.transient_roots.push(handle));
-                let bytes = value.logical_bytes()? + 128;
+                let bytes = match reserved_bytes {
+                    Some(bytes) => bytes,
+                    None => value.logical_bytes()? + 128,
+                };
                 if let Err((_, value)) = slot.replace(value, bytes) {
                     self.frame_pool.clear();
                     self.collect_rooted()?;
@@ -395,7 +533,10 @@ impl Instance {
                 }
                 continue;
             } else {
-                Local::Private(self.allocate_private(value)?)
+                Local::Private(match reserved_bytes {
+                    Some(bytes) => self.allocate_private_storage(value, bytes)?,
+                    None => self.allocate_private(value)?,
+                })
             };
             if index == storage.locals.len() {
                 storage.locals.push(local);
@@ -403,10 +544,9 @@ impl Instance {
                 storage.locals[index] = local;
             }
         }
-        drop(incoming);
-        self.frame_pool
-            .recycle_operands(arguments, self.limits.max_frame_cache_bytes);
-        storage.stack.reserve(stack_limit);
+        storage
+            .slot_values
+            .resize_with(function.slot_types.len(), || None);
         if storage.globals.is_empty() {
             storage.globals.extend(
                 function
@@ -420,7 +560,7 @@ impl Instance {
         } else {
             expected_results
         };
-        let base_slots = storage.locals.len() + callee.captures.len() + stack_limit;
+        let base_slots = storage.locals.len() + callee.captures.len() + storage.slot_values.len();
         let memory =
             match self
                 .memory
@@ -428,24 +568,45 @@ impl Instance {
             {
                 Some(memory) => memory,
                 None => {
-                    let storage = memory::GuestFrameAccounting {
+                    self.charge_guest(128 + (base_slots + result_slots) as u64 * 16)?;
+                    memory::GuestFrameAccounting {
                         base_slots,
                         ..Default::default()
-                    };
-                    if let Err(error) =
-                        self.charge_guest(128 + (base_slots + result_slots) as u64 * 16)
-                    {
-                        self.memory.recycle_frame_storage(
-                            revision.generation,
-                            function.module_index,
-                            function.index,
-                            storage,
-                        );
-                        return Err(error);
                     }
-                    storage
                 }
             };
+        // All fallible preparation is complete. A failed allocation or census
+        // above leaves caller operands intact; only this commit consumes them.
+        match arguments {
+            FrameArguments::Owned(values) => self
+                .frame_pool
+                .recycle_operands(values, self.limits.max_frame_cache_bytes),
+            FrameArguments::Caller {
+                frame,
+                suspended,
+                start,
+                count,
+            } => {
+                let caller = if suspended {
+                    &mut self.running.suspended_frames[frame]
+                } else {
+                    &mut self.running.frames[frame]
+                };
+                for index in 0..count {
+                    if !function.addressable_locals[index]
+                        && let Some(source) =
+                            caller.transferable_input(start + index, &function.local_types[index])
+                    {
+                        let value = caller.slot_values[source as usize].take().unwrap();
+                        let Local::Private(local) = &mut storage.locals[index] else {
+                            unreachable!()
+                        };
+                        local.commit_reserved(value);
+                    }
+                }
+                caller.slot_input = 0;
+            }
+        }
         self.running.frames.push(Frame {
             globals: storage.globals,
             prepared: function,
@@ -454,11 +615,22 @@ impl Instance {
             module: callee.module,
             function: callee.function,
             pc: 0,
+            type_dispatch_index: 0,
+            type_dispatch_value: None,
             locals: storage.locals,
             upvalues: callee.captures,
-            stack: storage.stack,
+            slot_values: storage.slot_values,
+            slot_constants: Vec::new(),
+            slot_pc: None,
+            slot_input: 0,
+            slot_output: 0,
+            delivery: ResultBuffer {
+                values: storage.delivery,
+                reading: false,
+            },
             map_iterators: HashMap::new(),
             popped_roots: storage.popped,
+            operand_census: None,
             expected_results,
             initializing,
             defers: storage.defers,
@@ -466,8 +638,7 @@ impl Instance {
             panic: None,
             recovered: None,
             deferred: false,
-            resume: None,
-            tail_return: None,
+            continuation: None,
             after_init: None,
         });
         Ok(())
@@ -482,13 +653,12 @@ impl Instance {
             return Ok(());
         }
         let function = &frame.prepared;
-        if frame.panic.is_none() && !function.declaration.result_locals.is_empty() {
+        if frame.panic.is_none() && !function.result_locals.is_empty() {
             let values = function
-                .declaration
                 .result_locals
                 .iter()
-                .map(|id| {
-                    let value = frame.locals[function.locals[id]].value(&self.heap)?;
+                .map(|&index| {
+                    let value = frame.locals[index].value(&self.heap)?;
                     if matches!(value.data, Data::Uninitialized) {
                         let mut remaining = self.limits.max_heap_bytes;
                         Value::zero_with_budget(
@@ -570,7 +740,7 @@ impl Instance {
                 self.blocked.notify_module(module.as_ref());
             }
             if let Some(caller) = self.running.frames.last_mut() {
-                caller.stack.append(&mut values);
+                caller.extend_results(values.drain(..));
                 self.frame_pool
                     .recycle_operands(values, self.limits.max_frame_cache_bytes);
             } else if self.foreground == Some(self.running.id) {
@@ -605,6 +775,13 @@ impl Instance {
             .chain(self.blocked.iter_mut())
             .find(|task| task.id == task_id)
             .expect("completion retains its task");
+        if outcome
+            .as_ref()
+            .is_err_and(|error| error.code == "census_required")
+        {
+            task.census_completed_frame = Some(completion_index);
+            return outcome;
+        }
         let mut frame = task.suspended_frames.remove(completion_index);
         self.cache_frame(&mut frame)?;
         self.memory.recycle_frame_storage(
@@ -637,35 +814,62 @@ impl Instance {
         frame.returning = Some(values);
         self.finish_frame()
     }
+
+    pub(super) fn return_slot_values(&mut self, count: usize) -> Result<(), RuntimeError> {
+        let frame = self.running.frames.last().unwrap();
+        let function = frame.prepared.clone();
+        if count != function.result_types.len() {
+            return Err(RuntimeError::new(
+                "invalid_return",
+                &frame.function,
+                "result count mismatch",
+            ));
+        }
+        let start = frame
+            .slot_input
+            .checked_sub(count)
+            .ok_or_else(|| RuntimeError::new("invalid_operand", "frame", "input underflow"))?;
+        let mut values = self.frame_pool.take_operands(count);
+        for (index, typ) in function.result_types.iter().enumerate() {
+            if frame.transferable_input(start + index, typ).is_some() {
+                let value = frame
+                    .input_at(frame.slot_pc.unwrap(), start + index)
+                    .unwrap();
+                if let Data::String(bytes) = &value.data {
+                    self.check_string_size(bytes.len())?;
+                }
+                values.push(Value::int(0));
+            } else {
+                values.push(self.coerce(frame.input_value(start + index)?, typ)?);
+            }
+        }
+        let popped = memory::grow_frame_buffer(frame.memory.popped, count, false)?;
+        let returned = memory::grow_frame_buffer(frame.memory.returned, count, false)?;
+        let frame = self.running.frames.last_mut().unwrap();
+        for (index, typ) in function.result_types.iter().enumerate() {
+            if let Some(source) = frame.transferable_input(start + index, typ) {
+                values[index] = frame.slot_values[source as usize].take().unwrap();
+            }
+        }
+        frame.memory.popped = popped;
+        frame.memory.returned = returned;
+        frame.slot_input = start;
+        // The return state owns transferred values before defer/recover or a
+        // suspended frame completion can run, including on a census retry.
+        frame.returning = Some(values);
+        self.finish_frame()
+    }
 }
 
 impl scheduler::Task {
     pub(super) fn begin_instruction(&mut self, pc: usize) {
         self.instruction_active = true;
         self.instruction_pc = pc;
-        self.instruction_stack_len = self.frames.last().unwrap().stack.len();
-        self.retry_operands.clear();
         self.census_request = None;
     }
 
-    pub(super) fn restore_instruction(&mut self) {
-        let popped = self.retry_operands.len();
-        let prefix = self.instruction_stack_len.saturating_sub(popped);
+    pub(super) fn rewind_instruction(&mut self) {
         let frame = self.frames.last_mut().unwrap();
-        frame.stack.truncate(prefix);
-        frame.stack.extend(self.retry_operands.drain(..).rev());
-        frame.pc = self.instruction_pc;
-        frame.popped_roots.clear();
-        self.instruction_active = false;
-        self.census_request = None;
-    }
-
-    pub(super) fn suspend_instruction(&mut self) {
-        let prefix = self
-            .instruction_stack_len
-            .saturating_sub(self.retry_operands.len());
-        let frame = self.frames.last_mut().unwrap();
-        frame.stack.truncate(prefix);
         frame.pc = self.instruction_pc;
         frame.popped_roots.clear();
         self.instruction_active = false;
@@ -674,30 +878,30 @@ impl scheduler::Task {
 
     pub(super) fn finish_instruction(&mut self) {
         self.instruction_active = false;
-        self.retry_operands.clear();
         self.census_request = None;
     }
 
     pub(super) fn pop(&mut self) -> Result<Value, RuntimeError> {
-        let count = if self.instruction_active {
-            self.retry_operands.len() + 1
-        } else {
-            1
-        };
-        let frame = self.frames.last_mut().ok_or_else(|| {
-            RuntimeError::new("invalid_stack", "frame", "operand stack underflow")
-        })?;
-        frame.memory.popped = memory::grow_frame_buffer(frame.memory.popped, count, false)?;
-        let value = self
+        if let Some(frame) = self.frames.last_mut()
+            && !frame.delivery.reading
+        {
+            frame.slot_input = frame
+                .slot_input
+                .checked_sub(1)
+                .ok_or_else(|| RuntimeError::new("invalid_operand", "frame", "input underflow"))?;
+            // Slot inputs and materialized constants remain frame roots until
+            // the instruction completes; its disjoint outputs cannot destroy
+            // retry operands. No second root buffer is needed here.
+            return frame.input_value(frame.slot_input);
+        }
+        let frame = self
             .frames
             .last_mut()
-            .and_then(|frame| frame.stack.pop())
-            .ok_or_else(|| {
-                RuntimeError::new("invalid_stack", "frame", "operand stack underflow")
-            })?;
-        if self.instruction_active {
-            self.retry_operands.push(value.clone());
-        }
+            .ok_or_else(|| RuntimeError::new("invalid_operand", "frame", "missing result frame"))?;
+        frame.memory.popped = memory::grow_frame_buffer(frame.memory.popped, 1, false)?;
+        let value = frame.delivery.values.pop().ok_or_else(|| {
+            RuntimeError::new("invalid_operand", "frame", "missing continuation result")
+        })?;
         value.trace(&mut |handle| self.transient_roots.push(handle));
         Ok(value)
     }
@@ -711,13 +915,23 @@ impl scheduler::Task {
         self.popped_frame = Some(self.frames.len() - 1);
         let frame = self.frames.last_mut().unwrap();
         frame.memory.popped = memory::grow_frame_buffer(frame.memory.popped, count, false)?;
-        let stack = &mut frame.stack;
-        let start = stack.len().checked_sub(count).ok_or_else(|| {
-            RuntimeError::new("invalid_stack", "frame", "operand stack underflow")
-        })?;
-        values.extend(stack.drain(start..));
-        if self.instruction_active {
-            self.retry_operands.extend(values.iter().rev().cloned());
+        if !frame.delivery.reading {
+            let start = frame
+                .slot_input
+                .checked_sub(count)
+                .ok_or_else(|| RuntimeError::new("invalid_operand", "frame", "input underflow"))?;
+            frame.operand_census = Some(start..frame.slot_input);
+            for index in start..frame.slot_input {
+                values.push(frame.input_value(index)?);
+            }
+            frame.slot_input = start;
+            return Ok(values);
+        } else {
+            let results = &mut frame.delivery.values;
+            let start = results.len().checked_sub(count).ok_or_else(|| {
+                RuntimeError::new("invalid_operand", "frame", "missing continuation results")
+            })?;
+            values.extend(results.drain(start..));
         }
         frame.popped_roots.capture(&values);
         for value in &values {
@@ -730,6 +944,180 @@ impl scheduler::Task {
 #[cfg(test)]
 mod pool_tests {
     use super::*;
+
+    #[test]
+    fn call_parameter_transfer_commits_after_preflight_and_preserves_duplicate_inputs() {
+        use serde_json::json;
+        let contract: serde_json::Value = serde_json::from_str(wire::CONTRACT_JSON).unwrap();
+        let operation = |name: &str, descriptor: usize, operands: usize| {
+            let opcode = contract["spec"]["opcodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|entry| entry["op"] == name)
+                .unwrap()
+                + 1;
+            json!([opcode, descriptor, operands])
+        };
+        for (count, suspended) in [(1, false), (2, false), (16, false), (1, true), (2, true)] {
+            let program = test_helpers::program_with_artifact(|artifact| {
+                let string = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveString});
+                artifact["functions"] = json!([
+                    {"id":"fn.Main","code":{
+                        "types":[string],
+                        "descriptors":{"type":[{"type":string}],"call":[{"module_path":artifact["module"]["path"],"function":"callee","arg_count":count}],"return":[{}]},
+                        "instructions":[operation("zero",0,0),operation("call_direct",0,1),operation("return",0,2)],
+                        "operands":[{"outputs":[0]},{"inputs":vec![json!([0,0]);count],"release":[0]},{}]
+                    }},
+                    {"id":"callee","signature":{"params":vec![json!({"type":string});count]},
+                        "locals":(0..count).map(|index|json!({"id":format!("p{index}"),"type":string})).collect::<Vec<_>>(),
+                        "code":{"descriptors":{}}}
+                ]);
+            });
+            let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+            vm.start("default", vec![]).unwrap();
+            assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Running);
+            let backing: Arc<[u8]> = Arc::from(&b"owned argument"[..]);
+            let caller = &mut vm.running.frames[0];
+            caller.slot_values[0] = Some(Value {
+                typ: TypeIdentity::Primitive(wire::PrimitiveString),
+                data: Data::String(backing.clone().into()),
+            });
+            caller.begin_slots(1);
+            caller.pc = 2;
+            let callee = FunctionValue {
+                module: caller.module.clone(),
+                function: "callee".into(),
+                index: None,
+                revision: None,
+                captures: vec![],
+            };
+            vm.running.begin_instruction(1);
+            if suspended {
+                vm.running
+                    .suspended_frames
+                    .push(vm.running.frames.pop().unwrap());
+            }
+            let limit = vm.limits.max_allocated_bytes;
+            vm.limits.max_allocated_bytes = vm.memory.stats().live_bytes;
+            let heap_before = vm.heap_stats().live_bytes;
+            let error = vm
+                .push_frame_arguments(
+                    callee.clone(),
+                    FrameArguments::Caller {
+                        frame: 0,
+                        suspended,
+                        start: 0,
+                        count,
+                    },
+                    0,
+                    false,
+                )
+                .unwrap_err();
+            assert_eq!(error.code, "census_required");
+            assert_eq!(vm.running.frames.len(), usize::from(!suspended));
+            assert_eq!(vm.heap_stats().live_bytes, heap_before);
+            assert_eq!(Arc::strong_count(&backing), 2);
+            let caller = if suspended {
+                &vm.running.suspended_frames[0]
+            } else {
+                &vm.running.frames[0]
+            };
+            assert!(matches!(&caller.slot_values[0].as_ref().unwrap().data,
+                Data::String(bytes) if **bytes == *b"owned argument"));
+            vm.running.finish_instruction();
+            vm.limits.max_allocated_bytes = limit;
+            vm.push_frame_arguments(
+                callee,
+                FrameArguments::Caller {
+                    frame: 0,
+                    suspended,
+                    start: 0,
+                    count,
+                },
+                0,
+                false,
+            )
+            .unwrap();
+            for local in &vm.running.frames.last().unwrap().locals {
+                assert!(matches!(&local.value(&vm.heap).unwrap().data,
+                    Data::String(bytes) if **bytes == *b"owned argument"));
+            }
+            let caller = if suspended {
+                &vm.running.suspended_frames[0]
+            } else {
+                &vm.running.frames[0]
+            };
+            assert_eq!(caller.slot_values[0].is_none(), count == 1);
+            assert_eq!(
+                Arc::strong_count(&backing),
+                if count == 1 { 2 } else { count + 2 }
+            );
+            if !suspended {
+                assert_eq!(vm.poll_steps(10).unwrap(), PollStatus::Ready);
+            }
+            vm.close().unwrap();
+            assert_eq!(Arc::strong_count(&backing), 1);
+        }
+    }
+
+    #[test]
+    fn continuation_is_published_only_after_callee_preparation() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([
+                {"id":"fn.Main", "code":{"descriptors":{}}},
+                {"id":"callee", "locals":[{"id":"value","type":{"kind":3,"primitive":3}}], "code":{"descriptors":{}}}
+            ]);
+        });
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", vec![]).unwrap();
+        let callee = FunctionValue {
+            module: vm.running.frames[0].module.clone(),
+            function: "callee".into(),
+            index: None,
+            revision: None,
+            captures: vec![],
+        };
+        let frame_limit = vm.limits.max_frames;
+        vm.limits.max_frames = 1;
+        assert_eq!(
+            vm.call_with_continuation(callee.clone(), vec![], 0, Continuation::TailReturn(0))
+                .unwrap_err()
+                .code,
+            "frame_limit"
+        );
+        assert_eq!(vm.running.frames.len(), 1);
+        assert!(vm.running.frames[0].continuation.is_none());
+        vm.limits.max_frames = frame_limit;
+
+        let allocation_limit = vm.limits.max_allocated_bytes;
+        vm.limits.max_allocated_bytes = vm.memory.stats().live_bytes;
+        vm.running.begin_instruction(0);
+        let before = vm.heap_stats().live_bytes;
+        assert_eq!(
+            vm.call_with_continuation(callee.clone(), vec![], 0, Continuation::TailReturn(0))
+                .unwrap_err()
+                .code,
+            "census_required"
+        );
+        assert_eq!(vm.running.frames.len(), 1);
+        assert!(vm.running.frames[0].continuation.is_none());
+        assert_eq!(vm.heap_stats().live_bytes, before);
+        vm.running.finish_instruction();
+        vm.limits.max_allocated_bytes = allocation_limit;
+
+        vm.call_with_continuation(callee, vec![], 0, Continuation::TailReturn(0))
+            .unwrap();
+        assert_eq!(vm.running.frames.len(), 2);
+        assert!(matches!(
+            vm.running.frames[0].continuation,
+            Some(Continuation::TailReturn(0))
+        ));
+        assert!(vm.running.frames[1].continuation.is_none());
+        assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
+        assert_eq!(vm.steps(), 0);
+        vm.close().unwrap();
+    }
 
     #[test]
     fn concurrent_frame_and_operand_reuse_preserves_ownership_and_capacity() {
@@ -795,11 +1183,11 @@ mod pool_tests {
         let root = heap.allocate(Value::int(42), 128).unwrap();
         let pointer = Value {
             typ: TypeIdentity::Any,
-            data: Data::Pointer(Address {
+            data: Data::Pointer(std::sync::Arc::new(Address {
                 identity: Arc::default(),
                 root,
                 path: Vec::new(),
-            }),
+            })),
         };
         let storage = FrameStorage {
             locals: vec![Local::Private(heap.own(pointer, 128).unwrap())],

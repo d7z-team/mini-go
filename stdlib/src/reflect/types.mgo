@@ -1,6 +1,9 @@
 package reflect
 
-import "iter"
+import (
+	"iter"
+	"reflect/inspect"
+)
 
 // ChanDir represents a channel type's direction.
 type ChanDir int
@@ -23,59 +26,59 @@ type Kind uint
 
 const (
 	// Invalid is the zero Kind and represents no type.
-	Invalid Kind = iota
+	Invalid Kind = Kind(inspect.Invalid)
 	// Bool represents the bool type.
-	Bool
+	Bool Kind = Kind(inspect.Bool)
 	// Int represents the int type.
-	Int
+	Int Kind = Kind(inspect.Int)
 	// Int8 represents the int8 type.
-	Int8
+	Int8 Kind = Kind(inspect.Int8)
 	// Int16 represents the int16 type.
-	Int16
+	Int16 Kind = Kind(inspect.Int16)
 	// Int32 represents the int32 type.
-	Int32
+	Int32 Kind = Kind(inspect.Int32)
 	// Int64 represents the int64 type.
-	Int64
+	Int64 Kind = Kind(inspect.Int64)
 	// Uint represents the uint type.
-	Uint
+	Uint Kind = Kind(inspect.Uint)
 	// Uint8 represents the uint8 type.
-	Uint8
+	Uint8 Kind = Kind(inspect.Uint8)
 	// Uint16 represents the uint16 type.
-	Uint16
+	Uint16 Kind = Kind(inspect.Uint16)
 	// Uint32 represents the uint32 type.
-	Uint32
+	Uint32 Kind = Kind(inspect.Uint32)
 	// Uint64 represents the uint64 type.
-	Uint64
+	Uint64 Kind = Kind(inspect.Uint64)
 	// Uintptr represents the uintptr type.
-	Uintptr
+	Uintptr Kind = Kind(inspect.Uintptr)
 	// Float32 represents the float32 type.
-	Float32
+	Float32 Kind = Kind(inspect.Float32)
 	// Float64 represents the float64 type.
-	Float64
+	Float64 Kind = Kind(inspect.Float64)
 	// Complex64 represents the complex64 type.
-	Complex64
+	Complex64 Kind = Kind(inspect.Complex64)
 	// Complex128 represents the complex128 type.
-	Complex128
+	Complex128 Kind = Kind(inspect.Complex128)
 	// Array represents an array type.
-	Array
+	Array Kind = Kind(inspect.Array)
 	// Chan represents a channel type.
-	Chan
+	Chan Kind = Kind(inspect.Chan)
 	// Func represents a function type.
-	Func
+	Func Kind = Kind(inspect.Func)
 	// Interface represents an interface type.
-	Interface
+	Interface Kind = Kind(inspect.Interface)
 	// Map represents a map type.
-	Map
+	Map Kind = Kind(inspect.Map)
 	// Pointer represents a pointer type.
-	Pointer
+	Pointer Kind = Kind(inspect.Pointer)
 	// Slice represents a slice type.
-	Slice
+	Slice Kind = Kind(inspect.Slice)
 	// String represents the string type.
-	String
+	String Kind = Kind(inspect.String)
 	// Struct represents a struct type.
-	Struct
+	Struct Kind = Kind(inspect.Struct)
 	// UnsafePointer represents the unsafe.Pointer type.
-	UnsafePointer
+	UnsafePointer Kind = Kind(inspect.UnsafePointer)
 
 	// Ptr is the old name for the [Pointer] kind.
 	Ptr = Pointer

@@ -1,0 +1,159 @@
+package inspect_test
+
+import (
+	"reflect/inspect"
+	"testing"
+)
+
+type number int
+
+type otherNumber int
+
+type record struct {
+	Value int
+}
+
+type message struct {
+	Value string
+}
+
+func (m *message) Error() string {
+	return m.Value
+}
+
+type reporter interface {
+	Error() string
+}
+
+func TestDescribeDynamicAndElementTypes(t *testing.T) {
+	kind, comparable, nilValue := inspect.Describe(nil, false)
+	if kind != inspect.Invalid || comparable || !nilValue {
+		t.Fatal("nil interface description")
+	}
+	var pointer *message
+	var wrapped any = pointer
+	kind, comparable, nilValue = inspect.Describe(wrapped, false)
+	if kind != inspect.Pointer || !comparable || !nilValue {
+		t.Fatal("typed nil pointer description")
+	}
+	kind, comparable, nilValue = inspect.Describe(wrapped, true)
+	if kind != inspect.Struct || !comparable || !nilValue {
+		t.Fatal("nil pointer element query must not dereference")
+	}
+	var dynamic reporter
+	kind, comparable, _ = inspect.Describe(&dynamic, true)
+	if kind != inspect.Interface || !comparable {
+		t.Fatal("interface element metadata")
+	}
+	kind, comparable, nilValue = inspect.Describe([]int{}, false)
+	if kind != inspect.Slice || comparable || nilValue {
+		t.Fatal("empty slice is not nil or comparable")
+	}
+	kind, _, _ = inspect.Describe(42, true)
+	if kind != inspect.Invalid {
+		t.Fatal("non-pointer element query")
+	}
+	kind, comparable, _ = inspect.Describe(struct {
+		Values []int
+	}{}, false)
+	if kind != inspect.Struct || comparable {
+		t.Fatal("struct containing slice is not comparable")
+	}
+}
+
+func TestElementImplementsWithoutValues(t *testing.T) {
+	if !inspect.ElementImplements((**message)(nil), (*error)(nil)) {
+		t.Fatal("pointer receiver method set")
+	}
+	if inspect.ElementImplements((*message)(nil), (*error)(nil)) {
+		t.Fatal("value method set must exclude pointer receivers")
+	}
+	if !inspect.ElementImplements((*reporter)(nil), (*error)(nil)) {
+		t.Fatal("interface implementation")
+	}
+	if inspect.ElementImplements((**message)(nil), (*int)(nil)) || inspect.ElementImplements(nil, (*any)(nil)) {
+		t.Fatal("invalid type witnesses")
+	}
+}
+
+func TestAssignPreservesTypesValuesAndAliases(t *testing.T) {
+	value := number(7)
+	if inspect.Assign(&value, otherNumber(9)) || value != 7 {
+		t.Fatal("distinct named types are not assignable")
+	}
+	if !inspect.Assign(&value, number(9)) || value != 9 {
+		t.Fatal("identical named type assignment")
+	}
+	if inspect.Assign(&value, nil) || inspect.Assign((*number)(nil), number(1)) || inspect.Assign(value, value) || value != 9 {
+		t.Fatal("invalid assignment must not mutate target")
+	}
+	source := record{Value: 11}
+	var copied record
+	if !inspect.Assign(&copied, source) {
+		t.Fatal("record assignment")
+	}
+	copied.Value = 12
+	if source.Value != 11 {
+		t.Fatal("records must copy by value")
+	}
+	array := [2]int{3, 4}
+	var arrayCopy [2]int
+	if !inspect.Assign(&arrayCopy, array) {
+		t.Fatal("array assignment")
+	}
+	arrayCopy[0] = 8
+	if array[0] != 3 {
+		t.Fatal("arrays must copy by value")
+	}
+	slice := []int{3, 4}
+	var alias []int
+	if !inspect.Assign(&alias, slice) {
+		t.Fatal("slice assignment")
+	}
+	alias[0] = 8
+	if slice[0] != 8 {
+		t.Fatal("slice backing storage must alias")
+	}
+	if !inspect.Assign(&alias, nil) || alias != nil {
+		t.Fatal("nil clears slice")
+	}
+	var target error
+	messageValue := &message{Value: "ok"}
+	if !inspect.Assign(&target, messageValue) || target.Error() != "ok" {
+		t.Fatal("interface assignment")
+	}
+	if inspect.Assign(&target, 42) || target.Error() != "ok" {
+		t.Fatal("failed interface assignment must preserve value")
+	}
+	var nilMessage *message
+	if !inspect.Assign(&target, nilMessage) || target == nil {
+		t.Fatal("typed nil must remain a non-nil interface")
+	}
+	if !inspect.Assign(&target, nil) || target != nil {
+		t.Fatal("nil clears interface")
+	}
+	var function func(int) int
+	if !inspect.Assign(&function, func(value int) int {
+		return value + 1
+	}) || function(41) != 42 {
+		t.Fatal("function signature assignment")
+	}
+}
+
+func TestAssignKeepsDefinedFunctionIdentity(t *testing.T) {
+	source := firstFunction(func(value int) int {
+		return value + 1
+	})
+	var target secondFunction
+	if inspect.Assign(&target, source) || target != nil {
+		t.Fatal("distinct defined function types require an explicit conversion")
+	}
+	var ordinary func(int) int
+	if !inspect.Assign(&ordinary, source) || ordinary(41) != 42 {
+		t.Fatal("defined function is assignable to an unnamed matching type")
+	}
+}
+
+type firstFunction func(int) int
+
+type secondFunction func(int) int

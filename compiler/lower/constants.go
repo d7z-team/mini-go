@@ -8,6 +8,7 @@ import (
 	"github.com/d7z-team/mini-go/compiler/constant"
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	"github.com/d7z-team/mini-go/compiler/source"
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 type pendingConstDecl struct {
@@ -164,15 +165,6 @@ func collectPackageConstDependencies(expr ast.Expression, packageConstants map[s
 			collectPackageConstDependencies(*expr.Max, packageConstants, sameSpecNames, deps)
 		}
 	case ast.ExprComposite:
-		for _, element := range expr.Elements {
-			collectPackageConstDependencies(element, packageConstants, sameSpecNames, deps)
-		}
-		for _, entry := range expr.Entries {
-			if entry.Key != nil {
-				collectPackageConstDependencies(*entry.Key, packageConstants, sameSpecNames, deps)
-			}
-			collectPackageConstDependencies(entry.Value, packageConstants, sameSpecNames, deps)
-		}
 		for _, item := range expr.Items {
 			if item.Key != nil {
 				collectPackageConstDependencies(*item.Key, packageConstants, sameSpecNames, deps)
@@ -416,6 +408,9 @@ func inferConstRawDefaultType(raw json.RawMessage) string {
 		return "String"
 	}
 	if strings.HasPrefix(text, "{") {
+		if _, err := bytecode.DecodeStringConstant(raw); err == nil {
+			return "String"
+		}
 		return "Complex128"
 	}
 	if strings.ContainsAny(text, ".eE") {
@@ -497,17 +492,6 @@ func constExprReferencesAnyName(expr ast.Expression, names map[string]struct{}) 
 			(expr.End != nil && constExprReferencesAnyName(*expr.End, names)) ||
 			(expr.Max != nil && constExprReferencesAnyName(*expr.Max, names))
 	case ast.ExprComposite:
-		for _, element := range expr.Elements {
-			if constExprReferencesAnyName(element, names) {
-				return true
-			}
-		}
-		for _, entry := range expr.Entries {
-			if (entry.Key != nil && constExprReferencesAnyName(*entry.Key, names)) ||
-				constExprReferencesAnyName(entry.Value, names) {
-				return true
-			}
-		}
 		for _, item := range expr.Items {
 			if (item.Key != nil && constExprReferencesAnyName(*item.Key, names)) ||
 				constExprReferencesAnyName(item.Value, names) {

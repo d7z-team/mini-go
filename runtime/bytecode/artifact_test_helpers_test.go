@@ -1,7 +1,6 @@
 package bytecode
 
 import (
-	"encoding/json"
 	"strings"
 	"sync"
 
@@ -67,14 +66,6 @@ func testSignature(text string) types.FunctionSignature {
 	}
 	testTypeNodeMu.Unlock()
 	return *node.Signature
-}
-
-func testPayload(value any) json.RawMessage {
-	data, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return data
 }
 
 func testValidateArtifact(artifact *Artifact) error {

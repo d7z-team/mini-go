@@ -70,6 +70,33 @@ func TestAllocationLimitRejectsRetainedGuestValues(t *testing.T) {
 	}
 }
 
+func TestFailedFrameChargeCannotBeReusedWithoutAccounting(t *testing.T) {
+	artifact := ir.NewArtifact("memory/frame-charge", "main")
+	artifact.Functions = []ir.Function{{
+		ID: "fn.entry", Signature: testSignature("function() Void"),
+		Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+	}}
+	instance, err := patchTestProgram(t, artifact, "frame-charge").Instantiate(t.Context(), InstanceOptions{
+		Limits: Limits{MaxAllocatedBytes: 127},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = instance.Close() })
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err := instance.Start("run"); err == nil {
+			t.Fatalf("start %d reused an uncharged frame", attempt)
+		}
+		stats, err := instance.RuntimeStats(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.TotalAllocatedBytes != 0 {
+			t.Fatalf("start %d charged %d bytes", attempt, stats.TotalAllocatedBytes)
+		}
+	}
+}
+
 func TestParallelAllocationPressureCensusesAndResumesInstructionOnce(t *testing.T) {
 	artifact := ir.NewArtifact("memory/census-resume", "main")
 	artifact.Constants = []ir.Constant{
@@ -78,12 +105,12 @@ func TestParallelAllocationPressureCensusesAndResumesInstructionOnce(t *testing.
 	}
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() String"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.left"})},
-			{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.right"})},
-			{Op: string(ir.OpBinary), Payload: testPayload(ir.OperatorPayload{Operator: "+"})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-		},
+		Code: testSlotCode([]string{"String", "String", "String"}, []ir.Instruction{
+			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.left"}},
+			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.right"}},
+			{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "+"}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+		}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {{2}, nil}}),
 	}}
 	const limit = int64(1 << 20)
 	instance, err := patchTestProgram(t, artifact, "census-resume").Instantiate(t.Context(), InstanceOptions{

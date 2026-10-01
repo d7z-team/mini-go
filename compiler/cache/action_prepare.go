@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -140,29 +139,8 @@ func validatePreparedOutput(input PrepareAction, output PreparedOutput, validate
 		if !validateArtifacts && !validateEntries {
 			continue
 		}
-		artifact, err := ir.DecodeJSON(archive.Artifact)
-		if err != nil || artifact.Module.Path != item.ModulePath {
-			return fmt.Errorf("execution image package %q invalid", item.ModulePath)
-		}
-		if validateArtifacts {
-			encoded, err := ir.CanonicalJSON(&artifact)
-			if err != nil || !bytes.Equal(encoded, archive.Artifact) {
-				return fmt.Errorf("execution image package %q identity mismatch", item.ModulePath)
-			}
-		}
-		if validateEntries {
-			functions := make(map[string]struct{}, len(artifact.Functions))
-			for _, function := range artifact.Functions {
-				functions[function.ID] = struct{}{}
-			}
-			for i, entry := range actualEntries {
-				if expectedEntries[i].ModulePath != item.ModulePath {
-					continue
-				}
-				if _, ok := functions[entry.FunctionID]; !ok {
-					return fmt.Errorf("execution image entry %q references unknown function", entry.Name)
-				}
-			}
+		if err := archive.Validate(item.ModulePath, actualEntries); err != nil {
+			return err
 		}
 	}
 	imageHash, err := ir.HashExecutionImage(output.Image)

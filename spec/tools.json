@@ -863,6 +863,17 @@
   "response": {
     "$ref": "#/$defs/github.com_d7z-team_mini-go_compiler_bootstrap_compilerentry.ToolsResponse"
   },
+  "response_transport": {
+    "header_bytes": 20,
+    "lengths": "three u32 little-endian: metadata, image, symbols",
+    "magic_hex": "4d4754330d0a1a0a",
+    "max_bytes": 67108864,
+    "segments": [
+      "metadata JSON with empty ImageJSON and SymbolsJSON",
+      "raw UTF-8 ImageJSON",
+      "raw UTF-8 SymbolsJSON"
+    ]
+  },
   "title": "Mini-Go compiler tools ABI",
-  "version": 2
+  "version": 3
 }

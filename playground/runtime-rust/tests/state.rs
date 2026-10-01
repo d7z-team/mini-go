@@ -106,7 +106,7 @@ fn owner_actions_and_memory_match_current_go_observations() {
                 Ok(state) => {
                     assert!(
                         action.error.is_empty(),
-                        "{context}: expected {}",
+                        "{context}: expected {}, got {state}",
                         action.error
                     );
                     assert_eq!(state, action.state, "{context}");

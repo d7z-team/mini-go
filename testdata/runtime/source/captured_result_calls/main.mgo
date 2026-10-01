@@ -1,0 +1,25 @@
+package main
+
+import "runtime/oracle/helper"
+
+func deferred() (total int) {
+	local := func(value int) int {
+		total += value
+		return -1
+	}
+	defer local(2)
+	defer helper.Accumulate(&total, 40)
+	return
+}
+
+func Main() int {
+	if deferred() != 42 {
+		panic("deferred results must be discarded after the call completes")
+	}
+	channel := make(chan int)
+	go func() (int, bool) {
+		channel <- 42
+		return -1, false
+	}()
+	return <-channel
+}

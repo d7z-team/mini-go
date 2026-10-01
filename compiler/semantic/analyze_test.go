@@ -8,6 +8,21 @@ import (
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
+func TestCheckReportsMissingFunctionExpression(t *testing.T) {
+	parsed := parser.ParseSource("example/main", "main.mgo", "package main\nvar callback = func() {}\n")
+	if len(parsed.Diagnostics) != 0 {
+		t.Fatal(parsed.Diagnostics)
+	}
+	parsed.Program.Files[0].Decls[0].Var.Values[0].Func = nil
+	checked := Check(parsed.Program)
+	for _, diagnostic := range checked.Info.Diagnostics {
+		if diagnostic.Code == "ast.expr.func.missing" {
+			return
+		}
+	}
+	t.Fatalf("missing function diagnostic: %+v", checked.Info.Diagnostics)
+}
+
 func TestAnalyzeResolvesPackageFunctionAndBlockScopes(t *testing.T) {
 	parsed := parser.ParseSource("example/main", "main.mgo", `package main
 
@@ -298,7 +313,7 @@ func Sink() {}
 	functions := map[string]ast.FuncDecl{}
 	for _, decl := range parsed.Program.Files[0].Decls {
 		if decl.Kind == ast.DeclFunc {
-			functions[decl.Func.Name] = decl.Func
+			functions[decl.Func.Name] = *decl.Func
 		}
 	}
 	directCall := functions["Direct"].Body.Stmts[0].Results[0]
@@ -314,14 +329,14 @@ func Sink() {}
 		t.Fatalf("local function value call facts = %#v", local)
 	}
 	localObject := info.Exprs[localCall.Callee.NodeID]
-	if !localObject.HasSignature || localObject.Object == "" {
+	if localObject.Signature == nil || localObject.Object == "" {
 		t.Fatalf("local function value facts = %#v", localObject)
 	}
 
 	returnedFunction := functions["Returned"]
 	makeCall := returnedFunction.Body.Stmts[0].Right[0]
 	returnedCall := returnedFunction.Body.Stmts[1].Results[0]
-	if got := info.Exprs[makeCall.NodeID]; got.Mode != ExprValue || !got.Type.Valid() || !got.HasSignature {
+	if got := info.Exprs[makeCall.NodeID]; got.Mode != ExprValue || !got.Type.Valid() || got.Signature == nil {
 		t.Fatalf("function result facts = %#v", got)
 	}
 	if got := info.Calls[returnedCall.NodeID]; len(got.Signature.Results) != 1 || got.Signature.Results[0] != types.Builtin(types.PrimitiveInt64) {

@@ -18,7 +18,7 @@ func TestLowerBuiltinLenCapCalls(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -29,18 +29,15 @@ func TestLowerBuiltinLenCapCalls(t *testing.T) {
 							Args: []ast.Expression{{
 								Kind:    ast.ExprLiteral,
 								Literal: `"abc"`,
-								Type:    stringType,
+								Type:    &stringType,
 							}},
 						}, {
 							Kind:   ast.ExprCall,
 							Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "cap"}),
 							Args: []ast.Expression{{
-								Kind: ast.ExprComposite,
-								Type: arrayType,
-								Elements: []ast.Expression{
-									{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
-									{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
-								},
+								Kind:  ast.ExprComposite,
+								Type:  &arrayType,
+								Items: []ast.KeyValue{{Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}}, {Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}}},
 							}},
 						}},
 					}}},
@@ -77,21 +74,19 @@ func TestLowerBuiltinAppendDeleteCalls(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"xs"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
-									Kind: ast.ExprComposite,
-									Type: arrayType,
-									Elements: []ast.Expression{
-										{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
-									},
+									Kind:  ast.ExprComposite,
+									Type:  &arrayType,
+									Items: []ast.KeyValue{{Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}}},
 								}},
 							},
 						}},
@@ -99,15 +94,15 @@ func TestLowerBuiltinAppendDeleteCalls(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"m"},
 								Type:  mapType,
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: mapType,
-									Entries: []ast.KeyValue{{
-										Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType}),
-										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
+									Type: &mapType,
+									Items: []ast.KeyValue{{
+										Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}),
+										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
 									}},
 								}},
 							},
@@ -115,10 +110,10 @@ func TestLowerBuiltinAppendDeleteCalls(t *testing.T) {
 					}, {
 						Kind:  ast.StmtAssign,
 						Left:  []ast.Expression{{Kind: ast.ExprIdent, Name: "xs"}},
-						Right: []ast.Expression{{Kind: ast.ExprCall, Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "append"}), Args: []ast.Expression{{Kind: ast.ExprIdent, Name: "xs"}, {Kind: ast.ExprLiteral, Literal: "2", Type: intType}}}},
+						Right: []ast.Expression{{Kind: ast.ExprCall, Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "append"}), Args: []ast.Expression{{Kind: ast.ExprIdent, Name: "xs"}, {Kind: ast.ExprLiteral, Literal: "2", Type: &intType}}}},
 					}, {
 						Kind: ast.StmtExpr,
-						Expr: ptrExpr(ast.Expression{Kind: ast.ExprCall, Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "delete"}), Args: []ast.Expression{{Kind: ast.ExprIdent, Name: "m"}, {Kind: ast.ExprLiteral, Literal: "1", Type: intType}}}),
+						Expr: ptrExpr(ast.Expression{Kind: ast.ExprCall, Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "delete"}), Args: []ast.Expression{{Kind: ast.ExprIdent, Name: "m"}, {Kind: ast.ExprLiteral, Literal: "1", Type: &intType}}}),
 					}}},
 				},
 			}},
@@ -149,17 +144,17 @@ func TestLowerBuiltinAppendEllipsisCall(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"xs"},
 							Type:  arrayType,
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"ys"},
 							Type:  arrayType,
 						}}},
@@ -202,21 +197,19 @@ func TestLowerBuiltinClearCopyCalls(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"xs"},
 								Type:  arrayType,
 								Values: []ast.Expression{{
-									Kind: ast.ExprComposite,
-									Type: arrayType,
-									Elements: []ast.Expression{
-										{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
-									},
+									Kind:  ast.ExprComposite,
+									Type:  &arrayType,
+									Items: []ast.KeyValue{{Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}}},
 								}},
 							},
 						}},
@@ -224,15 +217,15 @@ func TestLowerBuiltinClearCopyCalls(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"m"},
 								Type:  mapType,
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: mapType,
-									Entries: []ast.KeyValue{{
-										Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType}),
-										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
+									Type: &mapType,
+									Items: []ast.KeyValue{{
+										Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}),
+										Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
 									}},
 								}},
 							},
@@ -244,7 +237,7 @@ func TestLowerBuiltinClearCopyCalls(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"n"},
 								Type:  intType,
 								Values: []ast.Expression{{
@@ -284,36 +277,34 @@ func TestLowerBuiltinInitializerTypes(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"xs"},
 							Values: []ast.Expression{{
-								Kind: ast.ExprComposite,
-								Type: arrayType,
-								Elements: []ast.Expression{
-									{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
-								},
+								Kind:  ast.ExprComposite,
+								Type:  &arrayType,
+								Items: []ast.KeyValue{{Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType}}},
 							}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"ys"},
 							Values: []ast.Expression{{
 								Kind:   ast.ExprCall,
 								Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "append"}),
 								Args: []ast.Expression{
 									{Kind: ast.ExprIdent, Name: "xs"},
-									{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
+									{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
 								},
 							}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"n"},
 							Values: []ast.Expression{{
 								Kind:   ast.ExprCall,
@@ -323,7 +314,7 @@ func TestLowerBuiltinInitializerTypes(t *testing.T) {
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"l"},
 							Values: []ast.Expression{{
 								Kind:   ast.ExprCall,
@@ -333,7 +324,7 @@ func TestLowerBuiltinInitializerTypes(t *testing.T) {
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"c"},
 							Values: []ast.Expression{{
 								Kind:   ast.ExprCall,
@@ -377,28 +368,28 @@ func TestLowerVoidBuiltinInitializerReportsSemanticNoValue(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"m"},
 							Type:  mapType,
 							Values: []ast.Expression{{
 								Kind: ast.ExprComposite,
-								Type: mapType,
+								Type: &mapType,
 							}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"x"},
 							Values: []ast.Expression{{
 								Kind:   ast.ExprCall,
 								Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "delete"}),
 								Args: []ast.Expression{
 									{Kind: ast.ExprIdent, Name: "m"},
-									{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+									{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 								},
 							}},
 						}}},
@@ -427,11 +418,11 @@ func TestLowerBuiltinMakeSliceAndMapExpressions(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"xs"},
 							Values: []ast.Expression{{
 								Kind:   ast.ExprCall,
@@ -439,17 +430,17 @@ func TestLowerBuiltinMakeSliceAndMapExpressions(t *testing.T) {
 								Args: []ast.Expression{{
 									Kind: ast.ExprIdent,
 									Name: "type",
-									Type: arrayType,
+									Type: &arrayType,
 								}, {
 									Kind:    ast.ExprLiteral,
 									Literal: "2",
-									Type:    intType,
+									Type:    &intType,
 								}},
 							}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"m"},
 							Values: []ast.Expression{{
 								Kind:   ast.ExprCall,
@@ -457,7 +448,7 @@ func TestLowerBuiltinMakeSliceAndMapExpressions(t *testing.T) {
 								Args: []ast.Expression{{
 									Kind: ast.ExprIdent,
 									Name: "type",
-									Type: mapType,
+									Type: &mapType,
 								}},
 							}},
 						}}},

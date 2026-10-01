@@ -18,7 +18,7 @@ func (s *scanner) scanInterpretedString(start int) {
 		}
 		if r == '"' {
 			s.offset += size
-			s.emitToken(token.String, s.file.Text[start:s.offset], start, s.offset)
+			s.emitToken(token.String, start, s.offset)
 			return
 		}
 		if r == '\\' {
@@ -32,7 +32,7 @@ func (s *scanner) scanInterpretedString(start int) {
 	if valid {
 		s.addDiagnostic("scanner.string.unterminated", "unterminated string literal", start, s.offset)
 	}
-	s.emitToken(token.String, s.file.Text[start:s.offset], start, s.offset)
+	s.emitToken(token.String, start, s.offset)
 }
 
 func (s *scanner) scanRawString(start int) {
@@ -41,12 +41,12 @@ func (s *scanner) scanRawString(start int) {
 		r, size := s.peekRune()
 		s.offset += size
 		if r == '`' {
-			s.emitToken(token.String, s.file.Text[start:s.offset], start, s.offset)
+			s.emitToken(token.String, start, s.offset)
 			return
 		}
 	}
 	s.addDiagnostic("scanner.raw_string.unterminated", "unterminated raw string literal", start, s.offset)
-	s.emitToken(token.String, s.file.Text[start:s.offset], start, s.offset)
+	s.emitToken(token.String, start, s.offset)
 }
 
 func (s *scanner) scanRune(start int) {
@@ -65,7 +65,7 @@ func (s *scanner) scanRune(start int) {
 			if count != 1 {
 				s.addDiagnostic("scanner.rune.count", "rune literal must contain exactly one character", start, s.offset)
 			}
-			s.emitToken(token.Char, s.file.Text[start:s.offset], start, s.offset)
+			s.emitToken(token.Char, start, s.offset)
 			return
 		}
 		if r == '\\' {
@@ -81,7 +81,7 @@ func (s *scanner) scanRune(start int) {
 	if valid {
 		s.addDiagnostic("scanner.rune.unterminated", "unterminated rune literal", start, s.offset)
 	}
-	s.emitToken(token.Char, s.file.Text[start:s.offset], start, s.offset)
+	s.emitToken(token.Char, start, s.offset)
 }
 
 func (s *scanner) scanEscape(literalStart int) bool {

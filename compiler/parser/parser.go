@@ -38,29 +38,46 @@ func ParseFile(modulePath string, file source.File) Result {
 
 func ParseFileWithLimits(modulePath string, file source.File, limits Limits) Result {
 	limits = normalizeLimits(limits)
-	return parseScanned(modulePath, scanner.ScanFileWithLimits(file, limits.Scanner), limits)
+	return parseScanned(modulePath, scanner.ScanDocument(file, limits.Scanner), limits)
 }
 
 // ParseScanned builds the AST from one scanner result so compiler and tooling
 // can share the same lossless source pass.
 func ParseScanned(modulePath string, scanned scanner.Result) Result {
-	return parseScanned(modulePath, scanned, normalizeLimits(Limits{}))
+	return parseScanned(modulePath, scanner.DocumentFromResult(scanned), normalizeLimits(Limits{}))
 }
 
-func parseScanned(modulePath string, scanned scanner.Result, limits Limits) (result Result) {
+func parseScanned(modulePath string, scanned scanner.Document, limits Limits) (result Result) {
+	result = parseSyntax(modulePath, scanned, limits)
+	structureDiagnostics, structureStats := ast.ValidateStructureWithStats(&result.Program, ast.Limits{
+		MaxDepth: limits.MaxNesting, MaxNodes: limits.MaxASTNodes, MaxDiagnostics: limits.MaxDiagnostics,
+	})
+	collector := source.NewDiagnosticCollector(limits.MaxDiagnostics)
+	collector.AddAll(result.Diagnostics...)
+	collector.AddAll(structureDiagnostics...)
+	result.Diagnostics, result.NodeCount = collector.Diagnostics(), structureStats.Nodes
+	for i := range result.Diagnostics {
+		result.Diagnostics[i].ModulePath = modulePath
+	}
+	return result
+}
+
+// Package construction keeps this tree private until the merged package has
+// been finalized. Public single-file parsing validates before returning it.
+func parseSyntax(modulePath string, scanned scanner.Document, limits Limits) (result Result) {
 	defer func() {
 		for i := range result.Diagnostics {
 			result.Diagnostics[i].ModulePath = modulePath
 		}
 	}()
 	collector := source.NewDiagnosticCollector(limits.MaxDiagnostics)
-	collector.AddAll(scanned.Diagnostics...)
+	collector.AddAll(scanned.Diagnostics()...)
 	embedDirectives, embedSpans, embedDiagnostics := scanEmbedDirectives(scanned)
 	collector.AddAll(embedDiagnostics...)
 	p := &parser{
 		modulePath: strings.TrimSpace(modulePath),
-		file:       scanned.File,
-		tokens:     scanned.Tokens,
+		file:       scanned.File(),
+		lexical:    scanned,
 		embed:      embedDirectives,
 		embedSpans: embedSpans,
 		limits:     limits,
@@ -73,25 +90,16 @@ func parseScanned(modulePath string, scanned scanner.Result, limits Limits) (res
 		})
 	}
 	collector.AddAll(p.diagnostics...)
-	hasSyntaxErrors := source.HasErrors(collector.Diagnostics())
-	structureLimits := ast.Limits{
-		MaxDepth: limits.MaxNesting, MaxNodes: limits.MaxASTNodes, MaxDiagnostics: limits.MaxDiagnostics,
-	}
-	structureDiagnostics, structureStats := ast.ValidateStructureWithStats(&program, structureLimits)
-	collector.AddAll(structureDiagnostics...)
-	if source.HasErrors(structureDiagnostics) {
-		return Result{Program: program, Diagnostics: collector.Diagnostics(), NodeCount: structureStats.Nodes}
-	}
-	if hasSyntaxErrors {
-		return Result{Program: program, Diagnostics: collector.Diagnostics(), NodeCount: structureStats.Nodes}
-	}
-	return Result{Program: program, NodeCount: structureStats.Nodes}
+	return Result{Program: program, Diagnostics: collector.Diagnostics()}
 }
 
 type parser struct {
 	modulePath  string
 	file        source.File
-	tokens      []scanner.Token
+	lexical     scanner.Document
+	cursorToken scanner.Token
+	cursorIndex int
+	cursorValid bool
 	embed       map[int][]string
 	embedSpans  map[int]source.Span
 	pos         int
@@ -155,11 +163,15 @@ var exprEnd = map[token.Kind]bool{
 
 func (p *parser) parseProgram() ast.Program {
 	fileSpan, _ := p.file.Span(0, len(p.file.Text))
+	path := p.file.Path
+	if p.file.OriginPath != "" {
+		path = p.file.OriginPath
+	}
 	program := ast.Program{
 		ModulePath: p.modulePath,
 		Files: []ast.File{{
 			ID:   p.file.ID,
-			Path: p.file.Path,
+			Path: path,
 			Hash: p.file.Hash,
 			Span: fileSpan,
 		}},
@@ -247,7 +259,7 @@ func (p *parser) parseImportSpec(start scanner.Token) ast.Decl {
 	return ast.Decl{
 		Kind: ast.DeclImport,
 		Span: join(start, pathToken),
-		Import: ast.ImportDecl{
+		Import: &ast.ImportDecl{
 			Path: path, PathSpan: pathToken.Span,
 			Alias: alias, AliasID: aliasID,
 		},
@@ -327,9 +339,9 @@ func (p *parser) parseValueSpec(kind ast.DeclKind, start scanner.Token, constInd
 		out.Span = spanJoin(startSpan(start), typ.Span)
 	}
 	if kind == ast.DeclConst {
-		out.Const = decl
+		out.Const = &decl
 	} else {
-		out.Var = decl
+		out.Var = &decl
 	}
 	return out
 }
@@ -362,7 +374,7 @@ func (p *parser) parseTypeSpec(start scanner.Token) ast.Decl {
 	return ast.Decl{
 		Kind: ast.DeclType,
 		Span: spanJoin(startSpan(start), typ.Span),
-		Type: ast.TypeDecl{
+		Type: &ast.TypeDecl{
 			Name:       nameToken.Lexeme,
 			NameID:     identifier(nameToken),
 			TypeParams: typeParams,
@@ -399,7 +411,7 @@ func (p *parser) parseFuncDecl() ast.Decl {
 	return ast.Decl{
 		Kind: ast.DeclFunc,
 		Span: spanJoin(startSpan(start), body.Span),
-		Func: ast.FuncDecl{
+		Func: &ast.FuncDecl{
 			Name:       nameToken.Lexeme,
 			NameID:     identifier(nameToken),
 			Receiver:   receiver,

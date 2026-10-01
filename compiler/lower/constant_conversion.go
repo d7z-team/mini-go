@@ -7,11 +7,13 @@ import (
 
 	"github.com/d7z-team/mini-go/compiler/constant"
 	"github.com/d7z-team/mini-go/compiler/types"
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target string) (json.RawMessage, string, bool) {
 	if target == "Any" {
-		return append(json.RawMessage(nil), raw...), target, true
+		// Interface conversion must retain the operand's dynamic type at runtime.
+		return nil, "", false
 	}
 	targetKind := l.underlyingConstType(target)
 	if targetKind == "" {
@@ -26,7 +28,7 @@ func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target stri
 		return boolRaw(value), target, true
 	case "String":
 		if value, ok := l.constString(raw, sourceType); ok {
-			return canonicalStringRaw(value), target, true
+			return bytecode.EncodeStringConstant(value), target, true
 		}
 		value, ok := l.constExactInteger(raw, sourceType)
 		if !ok {
@@ -38,7 +40,7 @@ func (l *lowerer) convertConstValue(raw json.RawMessage, sourceType, target stri
 				r = rune(candidate)
 			}
 		}
-		return canonicalStringRaw(string(r)), target, true
+		return bytecode.EncodeStringConstant(string(r)), target, true
 	case "Float32", "Float64":
 		value, ok := l.constExactRational(raw, sourceType)
 		if !ok {

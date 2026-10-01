@@ -96,6 +96,18 @@ fn compressed_image_checks_expansion_checksum_and_trailing_data() {
             .code,
         "invalid_gzip"
     );
+    let truncated = compressed[..compressed.len() - 1].to_vec();
+    let mut multiple = compressed.clone();
+    multiple.extend_from_slice(&compressed);
+    for invalid in [truncated, multiple] {
+        assert_eq!(
+            DecodedImage::decode_gzip(&invalid, LoadLimits::default())
+                .err()
+                .unwrap()
+                .code,
+            "invalid_gzip"
+        );
+    }
     let mut trailing = compressed;
     trailing.push(0);
     assert_eq!(

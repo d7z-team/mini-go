@@ -44,7 +44,7 @@ func setTestInstructionLocations(t *testing.T, artifact *ir.Artifact, locations 
 			if function.ID != location.function {
 				continue
 			}
-			if location.pc < 0 || location.pc >= len(function.Instructions) {
+			if location.pc < 0 || location.pc >= len(function.Code.Instructions) {
 				t.Fatalf("instruction location %s pc %d is out of range", location.function, location.pc)
 			}
 			testInstructionSymbols.Lock()
@@ -85,11 +85,11 @@ func testSymbolIndex(artifact *ir.Artifact) *symbolIndex {
 		testInstructionSymbols.RLock()
 		locations := append([]ir.InstructionSymbol(nil), testInstructionSymbols.functions[function]...)
 		testInstructionSymbols.RUnlock()
-		pcs := make([]int, len(function.Instructions))
+		pcs := make([]int, len(function.Code.Instructions))
 		finalPC := 0
-		for instructionIndex, instruction := range function.Instructions {
+		for instructionIndex, instruction := range function.Code.Instructions {
 			pcs[instructionIndex] = finalPC
-			if instruction.Op != string(ir.OpLabel) {
+			if instruction.Op != ir.OpLabel {
 				finalPC++
 			}
 		}
@@ -172,22 +172,22 @@ func requireDebugString(t *testing.T, value Value, want string) {
 }
 
 // deferredPanicTestArtifact runs cleanup while unwinding the main frame's panic.
-func deferredPanicTestArtifact(cleanup []ir.Instruction) ir.Artifact {
+func deferredPanicTestArtifact(cleanup *ir.SlotCode) ir.Artifact {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Constants = []ir.Constant{{ID: "c.message", Type: testType("String"), Value: json.RawMessage(`"failed"`)}}
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpMakeClosure), Payload: json.RawMessage(`{"function":"fn.cleanup"}`)},
-			{Op: string(ir.OpDeferPush)},
-			{Op: string(ir.OpConst), Payload: json.RawMessage(`{"constant":"c.message"}`)},
-			{Op: string(ir.OpPanic)},
-		},
+		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{
+			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.cleanup"}},
+			{Op: ir.OpDeferPush, Payload: ir.DeferPayload{}},
+			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.message"}},
+			{Op: ir.OpPanic},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
-		ID:           "fn.cleanup",
-		Signature:    testSignature("function() Void"),
-		Instructions: cleanup,
+		ID:        "fn.cleanup",
+		Signature: testSignature("function() Void"),
+		Code:      cleanup,
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	return artifact

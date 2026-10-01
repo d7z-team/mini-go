@@ -1,0 +1,51 @@
+package sample
+
+type Count int
+type Speaker interface { Number() int }
+type Item struct { Value int }
+func (item *Item) Number() int { return 7 }
+
+func classify(value any) int {
+	switch selected := value.(type) {
+	case nil:
+		return 1
+	case Speaker:
+		return selected.Number()
+	case *Item:
+		return 99
+	case Count:
+		return int(selected) + 10
+	case int, string:
+		if selected == "text" { return 30 }
+		return 20
+	default:
+		return 40
+	}
+}
+
+func Main() int {
+	if unbound(1) != 42 { return -5 }
+	var item *Item
+	if classify(nil) != 1 || classify(item) != 7 || classify(Count(2)) != 12 || classify(2) != 20 || classify("text") != 30 || classify(true) != 40 { return -1 }
+	calls := 0
+	subject := func() any { calls++; return Count(1) }
+	for i := 0; i < 3; i++ {
+		switch value := subject().(type) {
+		case Count:
+			if value != 1 { return -2 }
+		default:
+			return -3
+		}
+	}
+	if calls != 3 { return -4 }
+	return 42
+}
+
+func unbound(value any) int {
+	switch value.(type) {
+	case []*Count:
+		return -1
+	default:
+		return 42
+	}
+}

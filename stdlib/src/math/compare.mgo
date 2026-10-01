@@ -3,6 +3,8 @@
 // This package does not guarantee bit-identical results across architectures.
 package math
 
+import "math/floatbits"
+
 // Max returns the larger of x or y.
 //
 // Special cases are:
@@ -52,15 +54,11 @@ func Min(x float64, y float64) float64 {
 
 // Signbit reports whether x is negative or negative zero.
 func Signbit(f float64) bool {
-	return f < 0
+	return floatbits.Signbit(f)
 }
 
 // Copysign returns a value with the magnitude of f
 // and the sign of sign.
 func Copysign(x float64, y float64) float64 {
-	magnitude := Abs(x)
-	if y < 0 {
-		return -magnitude
-	}
-	return magnitude
+	return floatbits.Copysign(x, y)
 }

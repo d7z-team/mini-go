@@ -13,7 +13,7 @@ func TestTransientCacheOwnsValuesAndEvictsAsOneEntry(t *testing.T) {
 	store := NewTransient(TransientConfig{MaxEntries: 1, MaxBytes: 1 << 20})
 	firstAction := testCacheAction("example/first", "first", nil, nil)
 	firstArtifact := ir.NewArtifact("example/first", "first")
-	if _, err := store.StoreCompile(firstAction, firstArtifact, mustPackageSymbols(t, firstArtifact), mustPackageData(t, firstArtifact)); err != nil {
+	if _, err := store.StoreCompile(firstAction, mustSealArtifact(t, firstArtifact), mustPackageSymbols(t, firstArtifact), mustPackageData(t, firstArtifact)); err != nil {
 		t.Fatal(err)
 	}
 	lookup, err := store.LookupCompile(firstAction)
@@ -28,7 +28,7 @@ func TestTransientCacheOwnsValuesAndEvictsAsOneEntry(t *testing.T) {
 
 	secondAction := testCacheAction("example/second", "second", nil, nil)
 	secondArtifact := ir.NewArtifact("example/second", "second")
-	if _, err := store.StoreCompile(secondAction, secondArtifact, mustPackageSymbols(t, secondArtifact), mustPackageData(t, secondArtifact)); err != nil {
+	if _, err := store.StoreCompile(secondAction, mustSealArtifact(t, secondArtifact), mustPackageSymbols(t, secondArtifact), mustPackageData(t, secondArtifact)); err != nil {
 		t.Fatal(err)
 	}
 	if evicted, err := store.LookupCompile(firstAction); err != nil || evicted.Hit {
@@ -49,12 +49,12 @@ func TestTransientEstimatesIncludeVariablePayloads(t *testing.T) {
 	cases := map[string]int64{
 		"partial declaration": ast.EstimatedDeclBytes(ast.Decl{
 			Kind: ast.DeclType,
-			Func: ast.FuncDecl{Body: ast.BlockStmt{Stmts: []ast.Statement{{
+			Func: &ast.FuncDecl{Body: ast.BlockStmt{Stmts: []ast.Statement{{
 				Kind: ast.StmtReturn, Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: text}},
 			}}}},
 		}),
 		"generic literal": estimatePackageDataBytes(PackageData{GenericTemplates: []GenericTemplate{{Decl: ast.Decl{
-			Kind: ast.DeclFunc, Func: ast.FuncDecl{Body: ast.BlockStmt{Stmts: []ast.Statement{{
+			Kind: ast.DeclFunc, Func: &ast.FuncDecl{Body: ast.BlockStmt{Stmts: []ast.Statement{{
 				Kind: ast.StmtReturn, Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: text}},
 			}}}},
 		}}}}),
@@ -66,6 +66,13 @@ func TestTransientEstimatesIncludeVariablePayloads(t *testing.T) {
 		"symbol location": estimatePackageSymbolsBytes(ir.PackageSymbols{Functions: []ir.FunctionSymbols{{
 			Locations: []ir.InstructionSymbol{{Points: []ir.Location{{File: text}}}},
 		}}}),
+	}
+	artifact := ir.NewArtifact("slots", "slots")
+	artifact.Functions = []ir.Function{{ID: "main", Code: &ir.SlotCode{Operands: []ir.SlotOperands{{}}}}}
+	before := estimateArtifactBytes(artifact)
+	artifact.Functions[0].Code.Operands[0].ReleaseBefore = make([]uint32, 1024)
+	if growth := estimateArtifactBytes(artifact) - before; growth < 4096 {
+		t.Fatalf("entry release metadata underestimated: %d bytes", growth)
 	}
 	for name, size := range cases {
 		if size < int64(len(text)) {
@@ -80,6 +87,19 @@ func TestTransientEstimatesIncludeVariablePayloads(t *testing.T) {
 
 func TestTransientPrepareCacheOwnsImage(t *testing.T) {
 	action, output := testPreparedOutput(t)
+	artifact, err := ir.DecodeJSON(output.Image.Packages[action.Root].Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveWithProof, err := ir.NewPackageArchive(&artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutProof := estimateExecutionImageBytes(output.Image)
+	output.Image.Packages[action.Root] = archiveWithProof
+	if estimateExecutionImageBytes(output.Image) <= withoutProof {
+		t.Fatal("archive proof omitted from bounded cache accounting")
+	}
 	store := NewTransient(TransientConfig{MaxEntries: 4, MaxBytes: 1 << 20})
 	if err := store.StorePrepare(action, output); err != nil {
 		t.Fatal(err)
@@ -91,6 +111,9 @@ func TestTransientPrepareCacheOwnsImage(t *testing.T) {
 	archive := lookup.Image.Packages[action.Root]
 	archive.Artifact[0] = 'x'
 	lookup.Image.Packages[action.Root] = archive
+	if err := store.StorePrepare(action, PreparedOutput{Image: lookup.Image, TestManifest: lookup.TestManifest}); err == nil {
+		t.Fatal("stored modified archive using stale proof")
+	}
 	again, err := store.LookupPrepare(action)
 	if err != nil || !again.Hit || again.Image.Packages[action.Root].Artifact[0] == 'x' {
 		t.Fatalf("prepare cache shared caller mutation: %#v, %v", again, err)
@@ -110,7 +133,7 @@ func TestTransientCompileCacheCountsPackageSymbols(t *testing.T) {
 	baseSize := estimateArtifactBytes(artifact) + estimatePackageDataBytes(data)
 	symbolSize := estimatePackageSymbolsBytes(symbols)
 	store := NewTransient(TransientConfig{MaxEntries: 4, MaxBytes: baseSize + symbolSize - 1})
-	if _, err := store.StoreCompile(action, artifact, symbols, data); err != nil {
+	if _, err := store.StoreCompile(action, mustSealArtifact(t, artifact), symbols, data); err != nil {
 		t.Fatal(err)
 	}
 	if lookup, err := store.LookupCompile(action); err != nil || lookup.Hit {
@@ -119,5 +142,59 @@ func TestTransientCompileCacheCountsPackageSymbols(t *testing.T) {
 	stats := store.Stats()
 	if stats.Entries != 0 || stats.Bytes != 0 || stats.Stores != 0 || stats.Evictions != 0 {
 		t.Fatalf("symbol eviction stats = %#v", stats)
+	}
+}
+
+func TestTransientPrepareAndSymbolsShareReplacementAndEvictionBudget(t *testing.T) {
+	action, output := testPreparedOutput(t)
+	symbolAction := NewSymbolAction(ir.CompilerIdentity, output.Image.Hash, strings.Repeat("2", 64), 0)
+	symbols := ir.ProgramSymbols{
+		Format: ir.SymbolsFormat, Version: ir.SymbolsVersion, CompilerID: ir.CompilerIdentity,
+		ContractID: ir.SymbolsContract, ProgramHash: output.Image.Hash, Packages: map[string]ir.PackageSymbols{},
+	}
+	var err error
+	symbols.Hash, err = ir.HashProgramSymbols(symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewTransient(TransientConfig{MaxEntries: 1})
+	t.Cleanup(store.Close)
+	for _, symbolsFirst := range []bool{false, true} {
+		store.Clear()
+		writes := []func() error{
+			func() error { return store.StorePrepare(action, output) },
+			func() error { return store.StoreSymbols(symbolAction, symbols) },
+		}
+		if symbolsFirst {
+			writes[0], writes[1] = writes[1], writes[0]
+		}
+		if err := writes[0](); err != nil {
+			t.Fatal(err)
+		}
+		before := store.Stats()
+		if err := writes[0](); err != nil {
+			t.Fatal(err)
+		}
+		after := store.Stats()
+		if after.Bytes != before.Bytes || after.Entries != 1 || after.Evictions != before.Evictions {
+			t.Fatalf("replacement changed budget: %+v -> %+v", before, after)
+		}
+		if err := writes[1](); err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := store.LookupPrepare(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sidecar, err := store.LookupSymbols(symbolAction)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prepared.Hit != symbolsFirst || sidecar.Hit == symbolsFirst {
+			t.Fatalf("eviction selected wrong entry: prepare=%t symbols=%t", prepared.Hit, sidecar.Hit)
+		}
+		if stats := store.Stats(); stats.Entries != 1 || stats.Evictions != after.Evictions+1 {
+			t.Fatalf("shared budget: %+v", stats)
+		}
 	}
 }

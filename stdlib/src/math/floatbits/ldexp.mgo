@@ -1,0 +1,39 @@
+// Copyright 2009 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+package floatbits
+
+// Ldexp returns frac multiplied by 2**exp, preserving signed zero and non-finite values.
+func Ldexp(frac float64, exp int) float64 {
+	if frac == 0 || IsInf(frac, 0) || IsNaN(frac) {
+		return frac
+	}
+	// Saturate before adding the fraction's exponent; exp may be any int.
+	if exp < -2100 {
+		return Copysign(0, frac)
+	}
+	if exp > 2100 {
+		return Copysign(Inf(1), frac)
+	}
+	if Abs(frac) < 0x1p-1022 {
+		frac *= 1 << 52
+		exp -= 52
+	}
+	x := Float64bits(frac)
+	exp += int(x >> 52) & 0x7ff - 1023
+	if exp < -1075 {
+		return Copysign(0, frac)
+	}
+	if exp > 1023 {
+		return Copysign(Inf(1), frac)
+	}
+	var scale float64 = 1
+	if exp < -1022 {
+		exp += 53
+		scale = 0x1p-53
+	}
+	x &^= 0x7ff << 52
+	x |= uint64(exp + 1023) << 52
+	return scale * Float64frombits(x)
+}

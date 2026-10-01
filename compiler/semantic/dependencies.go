@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/types"
 )
@@ -53,6 +54,7 @@ type DependencyPackage struct {
 }
 
 type AnalyzeOptions struct {
+	Limits       ast.Limits
 	Dependencies []DependencyPackage
 }
 

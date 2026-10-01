@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"encoding/json"
 	"testing"
 
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
@@ -33,15 +32,17 @@ func TestArtifactProjectionJSONRoundTrip(t *testing.T) {
 
 func TestExportHashExcludesRuntimeArtifactIdentity(t *testing.T) {
 	first := ir.NewArtifact("example/lib", "lib")
-	first.Functions = []ir.Function{{ID: "fn.Value"}}
+	first.Functions = []ir.Function{{ID: "fn.Value", Code: &ir.SlotCode{}}}
 	first.Exports = []ir.Export{{Name: "Value", Kind: "function", ID: "fn.Value"}}
 	second := first
 	second.Functions = append([]ir.Function(nil), first.Functions...)
-	returnPayload, err := json.Marshal(ir.ReturnPayload{})
+	code := &ir.SlotCode{Operands: []ir.SlotOperands{{}}}
+	descriptor, err := code.Descriptors.Append(ir.ReturnPayload{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second.Functions[0].Instructions = []ir.Instruction{{Op: string(ir.OpReturn), Payload: returnPayload}}
+	code.Instructions = []ir.SlotInstruction{{Op: ir.OpReturn, Descriptor: descriptor}}
+	second.Functions[0].Code = code
 	firstData, err := FromArtifact(first)
 	if err != nil {
 		t.Fatal(err)

@@ -210,7 +210,7 @@ impl Instance {
                 } else {
                     Ok(Value {
                         typ: input.typ.clone(),
-                        data: Data::Array(elements),
+                        data: Data::Array(elements.into()),
                     })
                 };
             }

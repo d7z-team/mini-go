@@ -75,16 +75,16 @@ func Main() int {
 		t.Fatalf("compile diagnostics: %#v", result.Diagnostics)
 	}
 	if function, _, ok := artifactFunctionByName(result.Artifact, result.Symbols, "Main"); ok {
-		for index, instruction := range function.Instructions {
-			if instruction.Op != "slice" {
+		for index, instruction := range functionOperations(t, function) {
+			if instruction.Op != ir.OpSlice {
 				continue
 			}
 			for previous := index - 1; previous >= 0; previous-- {
-				if function.Instructions[previous].Op == string(ir.OpAddressOf) {
+				if functionOperations(t, function)[previous].Op == ir.OpAddressOf {
 					return
 				}
 			}
-			t.Fatalf("array slice does not consume an address: %#v", function.Instructions)
+			t.Fatalf("array slice does not consume an address: %#v", functionOperations(t, function))
 		}
 	}
 	t.Fatal("Main slice instruction not found")

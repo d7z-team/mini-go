@@ -295,6 +295,29 @@ func Run() {
 	}
 }
 
+func TestInheritedConstantCallsKeepIndependentIotaAndTypes(t *testing.T) {
+	result := ParseSource("sample", "main.mgo", "package sample\nconst ( A = max(iota, 0); B; C )\n")
+	requireNoDiagnostics(t, result)
+	if diagnostics, _ := ast.FinalizeStructure(&result.Program, ast.Limits{}); len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
+	for index, decl := range result.Program.Files[0].Decls {
+		call := decl.Const.Values[0]
+		if call.Args[0].Literal != []string{"0", "1", "2"}[index] {
+			t.Fatalf("constant %d inherited rewritten arguments: %+v", index, call.Args)
+		}
+	}
+	a := &result.Program.Files[0].Decls[0].Const.Values[0].Args[1]
+	b := &result.Program.Files[0].Decls[1].Const.Values[0].Args[1]
+	if a.Type.NodeID == b.Type.NodeID {
+		t.Fatal("independent constant occurrences share type identity")
+	}
+	b.Type.Name = "String"
+	if a.Type.Name != "Int" {
+		t.Fatal("editing one constant changed another constant type")
+	}
+}
+
 func TestParseSourceConstIotaLiteralAndBuiltinTypeArgs(t *testing.T) {
 	source := `package main
 
@@ -434,6 +457,22 @@ func Run(value any, fn func(int) int) int {
 	}
 }
 
+func TestDelimitedCompositeExpressionsInsideControlConditions(t *testing.T) {
+	for _, statement := range []string{
+		`if pair == (Pair{1, 2}) { return 1 }`,
+		`for pair != ((Pair{1, 2})) { break }`,
+		`switch (Pair{1, 2}) { case pair: return 1 }`,
+		`if values[:Pair{1, 2}[0]] != nil { return 1 }`,
+		`if values[0:Pair{1, 2}[0]:Pair{1, 2}[1]] != nil { return 1 }`,
+		`if func() bool { if pair == (Pair{1, 2}) { return true }; return false }() { return 1 }`,
+	} {
+		t.Run(statement, func(t *testing.T) {
+			parsed := ParseSource("conditions", "conditions.mgo", "package conditions\ntype Pair [2]int\nfunc Match(pair Pair, values []int) int { "+statement+"; return 0 }\n")
+			requireNoDiagnostics(t, parsed)
+		})
+	}
+}
+
 func TestParseSourceControlAndCompositeShapesForLowering(t *testing.T) {
 	source := `package main
 
@@ -455,6 +494,7 @@ Outer:
 	}
 	return 0
 }
+
 `
 	result := ParseSource("example/control", "control.mgo", source)
 	requireNoDiagnostics(t, result)

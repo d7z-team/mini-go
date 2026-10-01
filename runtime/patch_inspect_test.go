@@ -21,6 +21,7 @@ func TestPatchInspectionReportsConstantsCapabilitiesAndIncompatibleContracts(t *
 	}
 	artifact := patchGlobalArtifact(2)
 	artifact.Globals[0].Type = testType("String")
+	artifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 	incompatible := patchTestProgram(t, artifact, "inspect-incompatible")
 	report, err = ComparePrograms(base, incompatible)
 	if err != nil || report.Compatible || report.Rejection == nil || report.Rejection.Code != "global_shape_changed" || len(report.Modules[0].Globals) != 1 {
@@ -37,8 +38,8 @@ func TestPatchInspectionReportsConstantsCapabilitiesAndIncompatibleContracts(t *
 func TestPatchInspectionNamesDeclarationAndEntryChanges(t *testing.T) {
 	base := patchTestProgram(t, patchGlobalArtifact(1), "declarations-base")
 	artifact := patchGlobalArtifact(1)
-	artifact.Functions[0].Instructions = append([]ir.Instruction{{Op: string(ir.OpZero), Payload: testTypePayload("Bool")}, {Op: string(ir.OpPop)}}, artifact.Functions[0].Instructions...)
-	artifact.Functions = append(artifact.Functions, ir.Function{ID: "fn.extra", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}}})
+	insertTestDelay(artifact.Functions[0].Code, 0, 1)
+	artifact.Functions = append(artifact.Functions, ir.Function{ID: "fn.extra", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})})
 	artifact.Exports = append(artifact.Exports, ir.Export{Name: "Extra", Kind: "function", ID: "fn.extra"})
 	next := patchTestProgram(t, artifact, "declarations-next")
 	next.code.image.Entries = append(next.code.image.Entries, ir.Entry{Name: "extra", ModulePath: artifact.Module.Path, FunctionID: "fn.extra"})

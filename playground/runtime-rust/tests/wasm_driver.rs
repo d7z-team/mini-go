@@ -1,3 +1,5 @@
+#[path = "support/execution_vectors.rs"]
+mod execution_vectors;
 mod support;
 use mini_go::{
     Instance, Limits, LoadOptions, Program, RuntimeError,
@@ -11,6 +13,7 @@ use std::{
     sync::{Arc, Mutex},
     task::{Poll, Waker},
 };
+use support::slot_code;
 
 #[derive(Clone, Default)]
 struct Host {
@@ -56,48 +59,88 @@ impl Session for Host {
 fn fixture(name: &str) -> Vec<u8> {
     let patch = name.ends_with("-patch");
     let name = name.trim_end_matches("-patch");
-    let ffi = json!([
-        {"op":"const","payload":{"constant":"route"}}, {"op":"zero","payload":{"type":{"kind":5,"node":"bytes"}}},
-        {"op":"call_ffi","payload":{"arg_count":2,"result_count":3}}, {"op":"pop"},{"op":"pop"},{"op":"pop"}, {"op":"return","payload":{}}
-    ]);
+    let integer = json!({"kind":3,"primitive":3});
+    let string = json!({"kind":3,"primitive":2});
+    let bytes = json!({"kind":5,"node":"bytes"});
+    let ffi_types = json!([string, bytes, bytes, string, integer]);
+    let ffi = [
+        ("const", json!({"constant":"route"}), json!({"outputs":[0]})),
+        ("zero", json!({"type":bytes}), json!({"outputs":[1]})),
+        (
+            "call_ffi",
+            json!({"arg_count":2,"result_count":3}),
+            json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]}),
+        ),
+        ("pop", json!({}), json!({"inputs":[[0,4]],"release":[4]})),
+        ("pop", json!({}), json!({"inputs":[[0,3]],"release":[3]})),
+        ("pop", json!({}), json!({"inputs":[[0,2]],"release":[2]})),
+        ("return", json!({}), json!({})),
+    ];
+    let answer = [
+        (
+            "const",
+            json!({"constant":"answer"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "return",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ),
+    ];
     let mut artifact = json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"wasm.test"},{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
-        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[{"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[integer]},"code":slot_code(json!([integer]),&answer)}]
     });
     if name == "init" {
         artifact["functions"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"id":"fn.init","instructions":ffi}));
+            .push(json!({"id":"fn.init","code":slot_code(ffi_types.clone(),&ffi)}));
     }
     if name == "host" {
-        artifact["functions"][0] = json!({"id":"fn.Main","instructions":ffi});
+        artifact["functions"][0] = json!({"id":"fn.Main","code":slot_code(ffi_types.clone(),&ffi)});
     }
     if name == "host-result" {
-        let mut instructions = ffi.as_array().unwrap()[..3].to_vec();
-        instructions.push(json!({"op":"return","payload":{"result_count":3}}));
-        artifact["functions"][0] = json!({"id":"fn.Main","signature":{"results":[{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]},"instructions":instructions});
+        let mut instructions = ffi[..3].to_vec();
+        instructions.push((
+            "return",
+            json!({"result_count":3}),
+            json!({"inputs":[[0,2],[0,3],[0,4]],"release":[2,3,4]}),
+        ));
+        artifact["functions"][0] = json!({"id":"fn.Main","signature":{"results":[bytes,string,integer]},"code":slot_code(ffi_types.clone(),&instructions)});
     }
     if name == "background" {
         artifact["functions"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"id":"worker","instructions":ffi}));
-        artifact["functions"][0]["instructions"]
+            .push(json!({"id":"worker","code":slot_code(ffi_types.clone(),&ffi)}));
+        artifact["type_table"]["nodes"]
             .as_array_mut()
             .unwrap()
-            .splice(
-                0..0,
-                [
-                    json!({"op":"make_closure","payload":{"function":"worker"}}),
-                    json!({"op":"spawn","payload":{"arg_count":0}}),
-                ],
-            );
+            .push(json!({"id":"function","kind":10,"signature":{}}));
+        let mut operations = vec![
+            (
+                "make_closure",
+                json!({"function":"worker"}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "spawn",
+                json!({"arg_count":0}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+        ];
+        operations.extend(answer.clone());
+        artifact["functions"][0]["code"] =
+            slot_code(json!([integer,{"kind":10,"node":"function"}]), &operations);
     }
     if name == "echo" || name == "string" {
         let typ = json!({"kind":3,"primitive":if name == "echo" {3} else {2}});
-        artifact["functions"][0] = json!({"id":"fn.Main","signature":{"params":[{"type":typ}],"results":[typ]},"locals":[{"id":"input","type":typ}],"instructions":[{"op":"load_local","payload":{"local":"input"}},{"op":"return","payload":{"result_count":1}}]});
+        artifact["functions"][0] = json!({"id":"fn.Main","signature":{"params":[{"type":typ}],"results":[typ]},"locals":[{"id":"input","type":typ}],"code":slot_code(json!([typ]), &[
+            ("load_local",json!({"local":"input"}),json!({"outputs":[0]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])});
     }
     if name == "timer" {
         artifact["type_table"]["nodes"]
@@ -110,16 +153,59 @@ fn fixture(name: &str) -> Vec<u8> {
         ]);
         artifact["functions"][0]["locals"] =
             json!([{"id":"channel","type":{"kind":9,"node":"channel"}}]);
-        artifact["functions"][0]["instructions"].as_array_mut().unwrap().splice(0..0, serde_json::from_value::<Vec<serde_json::Value>>(json!([
-            {"op":"const","payload":{"constant":"capacity"}}, {"op":"make_waitable","payload":{"type":{"kind":9,"node":"channel"}}},
-            {"op":"store_local","payload":{"local":"channel"}}, {"op":"load_local","payload":{"local":"channel"}},
-            {"op":"const","payload":{"constant":"delay"}}, {"op":"zero","payload":{"type":{"kind":3,"primitive":7}}},
-            {"op":"call_intrinsic","payload":{"id":"time.timer_start","arg_count":3}},
-            {"op":"load_local","payload":{"local":"channel"}}, {"op":"waitable_recv"}, {"op":"pop"}
-        ])).unwrap());
+        let mut operations = vec![
+            (
+                "const",
+                json!({"constant":"capacity"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "make_waitable",
+                json!({"type":{"kind":9,"node":"channel"}}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+            (
+                "store_local",
+                json!({"local":"channel"}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"channel"}),
+                json!({"outputs":[1]}),
+            ),
+            ("const", json!({"constant":"delay"}), json!({"outputs":[2]})),
+            (
+                "zero",
+                json!({"type":{"kind":3,"primitive":7}}),
+                json!({"outputs":[3]}),
+            ),
+            (
+                "call_intrinsic",
+                json!({"id":"time.timer_start","arg_count":3}),
+                json!({"inputs":[[0,1],[0,2],[0,3]],"release":[1,2,3]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"channel"}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "waitable_recv",
+                json!({}),
+                json!({"inputs":[[0,1]],"outputs":[4],"release":[1]}),
+            ),
+            ("pop", json!({}), json!({"inputs":[[0,4]],"release":[4]})),
+        ];
+        operations.extend(answer.clone());
+        artifact["functions"][0]["code"] = slot_code(
+            json!([integer,{"kind":9,"node":"channel"},{"kind":3,"primitive":7},{"kind":3,"primitive":7},{"kind":3,"primitive":1}]),
+            &operations,
+        );
     }
     if name == "loop" {
-        artifact["functions"][0] = json!({"id":"fn.Main","instructions":[{"op":"label","payload":{"label":"loop"}},{"op":"jump","payload":{"label":"loop"}}]});
+        artifact["functions"][0] = json!({"id":"fn.Main","code":slot_code(json!([]), &[
+            ("label",json!({"label":"loop"}),json!({})),("jump",json!({"label":"loop"}),json!({}))])});
     }
     if patch {
         artifact["constants"][1]["value"] = json!(43);
@@ -218,5 +304,44 @@ fn external_driver_cancels_running_work_and_wasm_fixtures_validate() {
         instance.begin_shutdown();
         instance.drive(8).unwrap();
         assert!(instance.shutdown_result().unwrap().is_ok());
+    }
+    if let Some(directory) = std::env::var_os("MINIGO_WASM_FIXTURES") {
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct Vector {
+            name: String,
+            optimization: u8,
+            result_integer: String,
+            #[serde(skip_serializing)]
+            image: Box<serde_json::value::RawValue>,
+        }
+        let mut vectors = execution_vectors::load::<Vector>();
+        vectors.retain(|vector| {
+            matches!(
+                vector.name.as_str(),
+                "arithmetic"
+                    | "closure"
+                    | "channel_buffer"
+                    | "channel_rendezvous"
+                    | "select_wait"
+                    | "recover_panic"
+                    | "semantic_boundaries"
+            )
+        });
+        let directory = std::path::Path::new(&directory);
+        for vector in &vectors {
+            std::fs::write(
+                directory.join(format!(
+                    "vector-{}-{}.json",
+                    vector.name, vector.optimization
+                )),
+                vector.image.get(),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            directory.join("vectors.json"),
+            serde_json::to_vec(&vectors).unwrap(),
+        )
+        .unwrap();
     }
 }

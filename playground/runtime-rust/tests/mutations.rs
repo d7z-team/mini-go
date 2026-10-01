@@ -6,6 +6,7 @@ use mini_go::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use support::slot_code;
 
 #[test]
 fn bounded_image_mutations_and_patch_failures_preserve_the_active_revision() {
@@ -16,30 +17,33 @@ fn bounded_image_mutations_and_patch_failures_preserve_the_active_revision() {
         max_type_nodes: 64,
     };
     let image = |number: i64, mutation: u64| {
+        let mut operations = vec![
+            (
+                "const",
+                json!({"constant":"answer"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ];
+        match mutation % 8 {
+            1 => operations[0].1["constant"] = json!("missing"),
+            2 => operations[0] = ("jump", json!({"label":"missing"}), json!({})),
+            3 => operations[0] = ("pop", json!({}), json!({"inputs":[[0,0]]})),
+            4 => operations[1].1["result_count"] = json!(2),
+            _ => {}
+        }
         let mut artifact = json!({
             "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":number}],
             "globals":[{"id":"state","type":{"kind":3,"primitive":3}}],
-            "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"const","payload":{"constant":"answer"}},
-                {"op":"return","payload":{"result_count":1}}
-            ]}]
+            "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},
+                "code":slot_code(json!([{"kind":3,"primitive":3}]),&operations)}]
         });
-        match mutation % 8 {
-            1 => {
-                artifact["functions"][0]["instructions"][0]["payload"]["constant"] =
-                    json!("missing")
-            }
-            2 => {
-                artifact["functions"][0]["instructions"][0] =
-                    json!({"op":"jump","payload":{"label":"missing"}})
-            }
-            3 => artifact["functions"][0]["instructions"][0] = json!({"op":"pop"}),
-            4 => {
-                artifact["functions"][0]["instructions"][0] =
-                    json!({"op":"const","payload":{"constant":"answer","unexpected":true}})
-            }
-            5 => artifact["globals"][0]["type"]["primitive"] = json!(2),
-            _ => {}
+        if mutation % 8 == 5 {
+            artifact["globals"][0]["type"]["primitive"] = json!(2);
         }
         support::image(artifact)
     };

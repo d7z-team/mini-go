@@ -4,6 +4,7 @@ package source
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 )
 
 type File struct {
@@ -148,10 +149,13 @@ func (f File) Position(offset int) (Position, bool) {
 
 func lineStarts(text string) []int {
 	starts := []int{0}
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			starts = append(starts, i+1)
+	for start := 0; start < len(text); {
+		offset := strings.IndexByte(text[start:], '\n')
+		if offset < 0 {
+			break
 		}
+		start += offset + 1
+		starts = append(starts, start)
 	}
 	return starts
 }

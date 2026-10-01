@@ -29,6 +29,9 @@ func MarshalPayload(value any) (json.RawMessage, error) {
 }
 
 func encodeCanonicalValue(value any) ([]byte, error) {
+	if data, err, ok := encodeFixedJSON(value); ok {
+		return data, err
+	}
 	var buf bytes.Buffer
 	if err := encodeCanonicalValueTo(&buf, value); err != nil {
 		return nil, err
@@ -37,6 +40,13 @@ func encodeCanonicalValue(value any) ([]byte, error) {
 }
 
 func encodeCanonicalValueTo(dst io.Writer, value any) error {
+	if data, err, ok := encodeFixedJSON(value); ok {
+		if err != nil {
+			return err
+		}
+		_, err = dst.Write(data)
+		return err
+	}
 	writer := trailingNewlineWriter{dst: dst}
 	enc := json.NewEncoder(&writer)
 	enc.SetEscapeHTML(false)

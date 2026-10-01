@@ -14,26 +14,26 @@ func TestVMRunsDirectCallWithLocals(t *testing.T) {
 		ID:        "fn.echo",
 		Signature: testSignature("function(String) String"),
 		Locals:    []ir.Local{{ID: "local.value", Type: testType("String")}},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.value"}`),
+		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.value"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.input"}`),
+		Code: testSlotCode([]string{"String", "String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.input"},
 		}, {
-			Op:      string(ir.OpCallDirect),
-			Payload: json.RawMessage(`{"function":"fn.echo","arg_count":1,"result_count":1}`),
+			Op:      ir.OpCallDirect,
+			Payload: ir.CallPayload{Function: "fn.echo", ArgCount: 1, ResultCount: 1},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -59,27 +59,27 @@ func TestVMTailCallDoesNotConsumeCallDepth(t *testing.T) {
 		{
 			ID: "fn.count", Signature: testSignature("function(Int64) Int64"),
 			Locals: []ir.Local{{ID: "local.n", Type: testType("Int64")}},
-			Instructions: []ir.Instruction{
-				{Op: string(ir.OpLoadLocal), Payload: testPayload(ir.LocalPayload{Local: "local.n"})},
-				{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "c.zero"})},
-				{Op: string(ir.OpBinary), Payload: testPayload(ir.OperatorPayload{Operator: "=="})},
-				{Op: string(ir.OpJumpIf), Payload: testPayload(ir.JumpPayload{Label: "done"})},
-				{Op: string(ir.OpLoadLocal), Payload: testPayload(ir.LocalPayload{Local: "local.n"})},
-				{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "c.one"})},
-				{Op: string(ir.OpBinary), Payload: testPayload(ir.OperatorPayload{Operator: "-"})},
-				{Op: string(ir.OpTailCallDirect), Payload: testPayload(ir.CallPayload{Function: "fn.count", ArgCount: 1, ResultCount: 1})},
-				{Op: string(ir.OpLabel), Payload: testPayload(ir.LabelPayload{Label: "done"})},
-				{Op: string(ir.OpLoadLocal), Payload: testPayload(ir.LocalPayload{Local: "local.n"})},
-				{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-			},
+			Code: testSlotCode([]string{"Int64", "Int64", "Bool", "Int64"}, []ir.Instruction{
+				{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "local.n"}},
+				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.zero"}},
+				{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "=="}},
+				{Op: ir.OpJumpIf, Payload: ir.JumpPayload{Label: "done"}},
+				{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "local.n"}},
+				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.one"}},
+				{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "-"}},
+				{Op: ir.OpTailCallDirect, Payload: ir.CallPayload{Function: "fn.count", ArgCount: 1, ResultCount: 1}},
+				{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "done"}},
+				{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "local.n"}},
+				{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+			}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {{2}, nil}, {nil, {0}}, {nil, {1}}, {{0, 1}, {3}}, {{3}, nil}, {nil, nil}, {nil, {0}}, {{0}, nil}}),
 		},
 		{
 			ID: "fn.main", Signature: testSignature("function() Int64"),
-			Instructions: []ir.Instruction{
-				{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "c.depth"})},
-				{Op: string(ir.OpCallDirect), Payload: testPayload(ir.CallPayload{Function: "fn.count", ArgCount: 1, ResultCount: 1})},
-				{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-			},
+			Code: testSlotCode([]string{"Int64", "Int64"}, []ir.Instruction{
+				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.depth"}},
+				{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.count", ArgCount: 1, ResultCount: 1}},
+				{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+			}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 		},
 	}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
@@ -104,28 +104,28 @@ func TestVMRunsConditionalJump(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.true"}`),
+		Code: testSlotCode([]string{"Bool", "Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.true"},
 		}, {
-			Op:      string(ir.OpJumpIf),
-			Payload: json.RawMessage(`{"label":"truthy"}`),
+			Op:      ir.OpJumpIf,
+			Payload: ir.JumpPayload{Label: "truthy"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.zero"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.zero"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
 		}, {
-			Op:      string(ir.OpLabel),
-			Payload: json.RawMessage(`{"label":"truthy"}`),
+			Op:      ir.OpLabel,
+			Payload: ir.LabelPayload{Label: "truthy"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}, {nil, nil}, {nil, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -149,31 +149,31 @@ func TestVMRunsBinaryAndUnaryOperators(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Bool"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.two"}`),
+		Code: testSlotCode([]string{"Int64", "Int64", "Int64", "Bool", "Bool"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.two"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.three"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.three"},
 		}, {
-			Op:      string(ir.OpBinary),
-			Payload: json.RawMessage(`{"operator":"+"}`),
+			Op:      ir.OpBinary,
+			Payload: ir.OperatorPayload{Operator: "+"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.three"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.three"},
 		}, {
-			Op:      string(ir.OpBinary),
-			Payload: json.RawMessage(`{"operator":">"}`),
+			Op:      ir.OpBinary,
+			Payload: ir.OperatorPayload{Operator: ">"},
 		}, {
-			Op:      string(ir.OpUnary),
-			Payload: json.RawMessage(`{"operator":"!"}`),
+			Op:      ir.OpUnary,
+			Payload: ir.OperatorPayload{Operator: "!"},
 		}, {
-			Op:      string(ir.OpUnary),
-			Payload: json.RawMessage(`{"operator":"!"}`),
+			Op:      ir.OpUnary,
+			Payload: ir.OperatorPayload{Operator: "!"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {nil, {0}}, {{2, 0}, {3}}, {{3}, {4}}, {{4}, {3}}, {{3}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -195,19 +195,19 @@ func TestVMStoresAndLoadsGlobal(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.value"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.value"},
 		}, {
-			Op:      string(ir.OpStoreGlobal),
-			Payload: json.RawMessage(`{"global":"global.value"}`),
+			Op:      ir.OpStoreGlobal,
+			Payload: ir.GlobalPayload{Global: "global.value"},
 		}, {
-			Op:      string(ir.OpLoadGlobal),
-			Payload: json.RawMessage(`{"global":"global.value"}`),
+			Op:      ir.OpLoadGlobal,
+			Payload: ir.GlobalPayload{Global: "global.value"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -232,29 +232,29 @@ func TestVMRunModuleExportRunsRootInitOnce(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.init",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpLoadGlobal),
-			Payload: json.RawMessage(`{"global":"global.count"}`),
+		Code: testSlotCode([]string{"Int64", "Int64", "Int64"}, []ir.Instruction{{
+			Op:      ir.OpLoadGlobal,
+			Payload: ir.GlobalPayload{Global: "global.count"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpBinary),
-			Payload: json.RawMessage(`{"operator":"+"}`),
+			Op:      ir.OpBinary,
+			Payload: ir.OperatorPayload{Operator: "+"},
 		}, {
-			Op:      string(ir.OpStoreGlobal),
-			Payload: json.RawMessage(`{"global":"global.count"}`),
-		}},
+			Op:      ir.OpStoreGlobal,
+			Payload: ir.GlobalPayload{Global: "global.count"},
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {{2}, nil}}),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpLoadGlobal),
-			Payload: json.RawMessage(`{"global":"global.count"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpLoadGlobal,
+			Payload: ir.GlobalPayload{Global: "global.count"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 

@@ -12,6 +12,8 @@ import (
 )
 
 type linkRequest struct {
+	// validatedBodies is set only by Prepare immediately after owned compilation.
+	validatedBodies  bool
 	Context          context.Context
 	CompilerID       string
 	ContractID       string
@@ -83,14 +85,14 @@ func linkProgram(request linkRequest) (ir.ExecutionImage, *ir.ProgramSymbols, er
 	if err != nil {
 		return ir.ExecutionImage{}, nil, err
 	}
-	if err := validateLinkedReferences(request.Context, modules); err != nil {
+	if err := validateLinkedReferences(request.Context, modules, !request.validatedBodies); err != nil {
 		return ir.ExecutionImage{}, nil, err
 	}
 	artifacts, err := retainReachableCode(request.Context, modules, entries)
 	if err != nil {
 		return ir.ExecutionImage{}, nil, err
 	}
-	if err := validateLinkedReferences(request.Context, artifacts); err != nil {
+	if err := validateLinkedReferences(request.Context, artifacts, false); err != nil {
 		return ir.ExecutionImage{}, nil, err
 	}
 	order := dependencyOrder(request.Order, artifacts)
@@ -126,12 +128,12 @@ func linkProgram(request linkRequest) (ir.ExecutionImage, *ir.ProgramSymbols, er
 			}
 			requirement.Hash = hash
 		}
-		data, hash, err := ir.EncodeValidatedJSONAndHash(&artifact)
+		archive, err := ir.NewPackageArchive(&artifact)
 		if err != nil {
 			return ir.ExecutionImage{}, nil, err
 		}
-		packages[modulePath] = ir.PackageArchive{Artifact: data, ArtifactHash: hash}
-		hashes[modulePath] = hash
+		packages[modulePath] = archive
+		hashes[modulePath] = archive.ArtifactHash
 	}
 	image := ir.ExecutionImage{
 		Format: ir.ExecutionFormat, Version: ir.ExecutionVersion,

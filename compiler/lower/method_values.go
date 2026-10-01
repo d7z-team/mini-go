@@ -49,7 +49,7 @@ func (l *lowerer) lowerMethodExpression(expr ast.Expression) (ir.Expression, boo
 		receiver = ir.Expression{Kind: ir.ExprAddressOf, Local: locals[0].ID, Path: segments}
 	}
 	args[0] = l.autoDerefMethodReceiver(receiver, selectedType, method)
-	call := ir.Expression{Kind: ir.ExprCallDirect, ModulePath: method.ModulePath, Function: method.FunctionID, Args: args, ResultCount: len(method.Signature.Results)}
+	call := ir.Expression{Kind: ir.ExprCallDirect, ModulePath: method.ModulePath, Function: method.FunctionID, Args: args, ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results}
 	body := []ir.Statement{{Kind: ir.StmtReturn, Results: []ir.Expression{call}}}
 	if len(method.Signature.Results) == 0 {
 		body = []ir.Statement{{Kind: ir.StmtExpr, Expr: call}, {Kind: ir.StmtReturn}}
@@ -93,7 +93,7 @@ func (l *lowerer) lowerInterfaceMethodExpression(expr ast.Expression) (ir.Expres
 		Field:       method.Method,
 		Operand:     &receiverRef,
 		Args:        args,
-		ResultCount: len(method.Signature.Results),
+		ResultCount: len(method.Signature.Results), ResultTypes: method.Signature.Results,
 	}
 	body := []ir.Statement{}
 	if len(method.Signature.Results) == 0 {
@@ -236,6 +236,7 @@ func (l *lowerer) lowerMethodValue(expr ast.Expression, scope *funcScope) (ir.Ex
 		args = append(args, ir.Expression{Kind: ir.ExprLocal, Local: local.ID})
 	}
 	call.Args, call.ResultCount = args, len(signature.Results)
+	call.ResultTypes = signature.Results
 	body := []ir.Statement{{Kind: ir.StmtReturn, Results: []ir.Expression{call}}}
 	if len(signature.Results) == 0 {
 		body = []ir.Statement{{Kind: ir.StmtExpr, Expr: call}, {Kind: ir.StmtReturn}}

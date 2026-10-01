@@ -1,9 +1,41 @@
 package bytecode
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestAddressAndCapturePathsReportInvalidSegments(t *testing.T) {
+	for _, capture := range []bool{false, true} {
+		for _, test := range []struct {
+			segment      AddressPathSegment
+			code, suffix string
+		}{
+			{AddressPathSegment{Kind: "field"}, ValidationFieldMissing, ".field"},
+			{AddressPathSegment{Kind: "index"}, ValidationFieldMissing, ".local"},
+			{AddressPathSegment{Kind: "index", Local: "missing"}, ValidationReferenceUnknown, ".local"},
+			{AddressPathSegment{Kind: "invalid"}, ValidationValueUnsupported, ".kind"},
+		} {
+			artifact := NewArtifact("app", "main")
+			artifact.Globals = []Global{{ID: "g", Type: testType("Int64")}}
+			payload := AddressPayload{Kind: "global", Global: "g", Path: []AddressPathSegment{test.segment}}
+			instruction := Instruction{Op: OpAddressOf, Payload: payload}
+			resultType := "Ptr<Int64>"
+			if capture {
+				artifact.Functions = []Function{{ID: "child", Signature: testSignature("function() Void"), Code: &SlotCode{}, Upvalues: []Upvalue{{ID: "g", Type: testType("Int64")}}}}
+				instruction = Instruction{Op: OpMakeClosure, Payload: ClosurePayload{Function: "child", Captures: []AddressPayload{payload}}}
+				resultType = "function() Void"
+			}
+			artifact.Functions = append(artifact.Functions, Function{ID: "main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{resultType}, []Instruction{instruction, {Op: OpPop}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})})
+			err := testValidateArtifact(&artifact)
+			var diagnostic ValidationError
+			if !errors.As(err, &diagnostic) || diagnostic.Code != test.code || !strings.HasSuffix(diagnostic.Path, ".path[0]"+test.suffix) {
+				t.Fatalf("capture=%t segment=%+v: %v", capture, test.segment, err)
+			}
+		}
+	}
+}
 
 func TestExportAddressValidation(t *testing.T) {
 	for _, test := range []struct {
@@ -23,10 +55,10 @@ func TestExportAddressValidation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			artifact := NewArtifact("app", "main")
 			artifact.Requirements = []Requirement{{Kind: "source", ModulePath: "lib", Exports: []string{"Value"}}}
-			artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Ptr<Int64>"), Instructions: []Instruction{
-				{Op: string(OpAddressOf), Payload: testPayload(test.payload)},
-				{Op: string(OpReturn), Payload: testPayload(ReturnPayload{ResultCount: 1})},
-			}}}
+			artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Ptr<Int64>"), Code: testSlotCode([]string{"Ptr<Int64>"}, []Instruction{
+				{Op: OpAddressOf, Payload: test.payload},
+				{Op: OpReturn, Payload: ReturnPayload{ResultCount: 1}},
+			}, [][2][]uint32{{nil, {0}}, {{0}, nil}})}}
 			err := testValidateArtifact(&artifact)
 			if test.want == "" {
 				if err != nil {
@@ -44,11 +76,11 @@ func TestExportAddressValidation(t *testing.T) {
 func TestClosureCaptureAddressValidation(t *testing.T) {
 	artifact := NewArtifact("app", "main")
 	artifact.Functions = []Function{
-		{ID: "fn.child", Signature: testSignature("function() Void"), Upvalues: []Upvalue{{ID: "x", Type: testType("Int64")}}},
-		{ID: "fn.main", Signature: testSignature("function() Void"), Instructions: []Instruction{
-			{Op: string(OpMakeClosure), Payload: testPayload(ClosurePayload{Function: "fn.child", Captures: []AddressPayload{{Kind: "global", Global: "value", ModulePath: "lib", Export: "Value"}}})},
-			{Op: string(OpPop)},
-		}},
+		{Code: &SlotCode{}, ID: "fn.child", Signature: testSignature("function() Void"), Upvalues: []Upvalue{{ID: "x", Type: testType("Int64")}}},
+		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, []Instruction{
+			{Op: OpMakeClosure, Payload: ClosurePayload{Function: "fn.child", Captures: []AddressPayload{{Kind: "global", Global: "value", ModulePath: "lib", Export: "Value"}}}},
+			{Op: OpPop},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})},
 	}
 	if err := testValidateArtifact(&artifact); err == nil || !strings.Contains(err.Error(), "capture cannot contain export identity") {
 		t.Fatalf("capture validation: %v", err)

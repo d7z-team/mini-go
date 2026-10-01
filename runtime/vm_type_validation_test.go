@@ -8,119 +8,105 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func TestVMStoreLocalRejectsWrongDeclaredType(t *testing.T) {
+func TestLoaderStoreLocalRejectsWrongDeclaredType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Constants = []ir.Constant{{ID: "c.bad", Type: testType("String"), Value: json.RawMessage(`"bad"`)}}
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 		Locals:    []ir.Local{{ID: "local.value", Type: testType("Int64")}},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.value"}`),
-		}},
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.value"},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), "store local local.value") || !strings.Contains(err.Error(), "String is not Int64") {
-		t.Fatalf("expected local slot type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "String is not assignable to Int64") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
-func TestVMStoreGlobalRejectsWrongDeclaredType(t *testing.T) {
+func TestLoaderStoreGlobalRejectsWrongDeclaredType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Constants = []ir.Constant{{ID: "c.bad", Type: testType("String"), Value: json.RawMessage(`"bad"`)}}
 	artifact.Globals = []ir.Global{{ID: "global.value", Type: testType("Int64")}}
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpStoreGlobal),
-			Payload: json.RawMessage(`{"global":"global.value"}`),
-		}},
+			Op:      ir.OpStoreGlobal,
+			Payload: ir.GlobalPayload{Global: "global.value"},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), "store global global.value") || !strings.Contains(err.Error(), "String is not Int64") {
-		t.Fatalf("expected global slot type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "String is not assignable to Int64") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
-func TestVMFunctionArgumentRejectsWrongDeclaredType(t *testing.T) {
+func TestLoaderFunctionArgumentRejectsWrongDeclaredType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Constants = []ir.Constant{{ID: "c.bad", Type: testType("String"), Value: json.RawMessage(`"bad"`)}}
 	artifact.Functions = []ir.Function{{
+		Code:      &ir.SlotCode{},
 		ID:        "fn.accept",
 		Signature: testSignature("function(Int64) Void"),
 		Locals:    []ir.Local{{ID: "local.value", Type: testType("Int64")}},
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpCallDirect),
-			Payload: json.RawMessage(`{"function":"fn.accept","arg_count":1,"result_count":0}`),
-		}},
+			Op:      ir.OpCallDirect,
+			Payload: ir.CallPayload{Function: "fn.accept", ArgCount: 1, ResultCount: 0},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), "argument local.value") || !strings.Contains(err.Error(), "String is not Int64") {
-		t.Fatalf("expected argument type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "String is not assignable to Int64") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
-func TestVMReturnRejectsWrongDeclaredType(t *testing.T) {
+func TestLoaderReturnRejectsWrongDeclaredType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Constants = []ir.Constant{{ID: "c.bad", Type: testType("String"), Value: json.RawMessage(`"bad"`)}}
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), "return value 0") || !strings.Contains(err.Error(), "String is not Int64") {
-		t.Fatalf("expected return type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "String is not assignable to Int64") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
 func TestVMFunctionFallthroughRejectsMissingReturnValue(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Functions = []ir.Function{{
+		Code:      &ir.SlotCode{},
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 	}}
@@ -151,26 +137,26 @@ func TestVMReturnNamedStructCopiesValue(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.init",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.name"}`),
+		Code: testSlotCode([]string{"String", "User"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.name"},
 		}, {
-			Op:      string(ir.OpMakeStruct),
+			Op:      ir.OpMakeStruct,
 			Payload: testStructPayload("User", "Name"),
 		}, {
-			Op:      string(ir.OpStoreGlobal),
-			Payload: json.RawMessage(`{"global":"global.user"}`),
-		}},
+			Op:      ir.OpStoreGlobal,
+			Payload: ir.GlobalPayload{Global: "global.user"},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() User"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpLoadGlobal),
-			Payload: json.RawMessage(`{"global":"global.user"}`),
+		Code: testSlotCode([]string{"User"}, []ir.Instruction{{
+			Op:      ir.OpLoadGlobal,
+			Payload: ir.GlobalPayload{Global: "global.user"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 

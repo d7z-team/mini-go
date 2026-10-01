@@ -15,14 +15,14 @@ func (p *parser) literalExpression(scanned scanner.Token) ast.Expression {
 	switch scanned.Kind {
 	case token.Int, token.Float, token.Imag:
 		// Numeric source spelling remains exact until compiler constant evaluation.
-		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: text, Type: typ}
+		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: text, Type: &typ}
 	case token.String:
 		value, err := strconv.Unquote(scanned.Lexeme)
 		if err != nil {
 			p.add("parser.literal.string", "invalid string literal", scanned.Span)
 			return ast.Expression{Kind: ast.ExprInvalid, Span: scanned.Span}
 		}
-		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: strconv.Quote(value), Type: typ}
+		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: strconv.Quote(value), Type: &typ}
 	case token.Char:
 		literal := scanned.Lexeme
 		if len(literal) < 2 {
@@ -34,9 +34,9 @@ func (p *parser) literalExpression(scanned scanner.Token) ast.Expression {
 			p.add("parser.literal.char", "invalid char literal", scanned.Span)
 			return ast.Expression{Kind: ast.ExprInvalid, Span: scanned.Span}
 		}
-		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: strconv.FormatInt(int64(value), 10), Type: typ}
+		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: strconv.FormatInt(int64(value), 10), Type: &typ}
 	default:
-		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: scanned.Lexeme, Type: typ}
+		return ast.Expression{Kind: ast.ExprLiteral, Span: scanned.Span, Literal: scanned.Lexeme, Type: &typ}
 	}
 }
 
@@ -58,140 +58,86 @@ func literalType(scanned scanner.Token) ast.TypeExpr {
 }
 
 func replaceIotaExpressions(expressions []ast.Expression, value int) []ast.Expression {
-	out := make([]ast.Expression, 0, len(expressions))
-	for _, expr := range expressions {
-		out = append(out, replaceIotaExpression(expr, value))
+	out := make([]ast.Expression, len(expressions))
+	for i := range expressions {
+		out[i] = ast.CloneExpression(expressions[i])
+		replaceIotaExpression(&out[i], value)
 	}
 	return out
 }
 
-func replaceIotaExpression(expr ast.Expression, value int) ast.Expression {
+func replaceIotaExpression(expr *ast.Expression, value int) {
+	if expr == nil {
+		return
+	}
 	if expr.Kind == ast.ExprIdent && expr.Name == "iota" {
-		return ast.Expression{
+		*expr = ast.Expression{
 			Kind:    ast.ExprLiteral,
 			Span:    expr.Span,
 			Literal: strconv.Itoa(value),
-			Type:    ast.TypeExpr{Kind: ast.TypeName, Name: "Int", Span: expr.Span},
+			Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Int", Span: expr.Span},
 		}
+		return
 	}
-	if expr.Left != nil {
-		left := replaceIotaExpression(*expr.Left, value)
-		expr.Left = &left
-	}
-	if expr.Right != nil {
-		right := replaceIotaExpression(*expr.Right, value)
-		expr.Right = &right
-	}
-	if expr.Operand != nil {
-		operand := replaceIotaExpression(*expr.Operand, value)
-		expr.Operand = &operand
-	}
-	if expr.Callee != nil {
-		callee := replaceIotaExpression(*expr.Callee, value)
-		expr.Callee = &callee
-	}
+	replaceIotaExpression(expr.Left, value)
+	replaceIotaExpression(expr.Right, value)
+	replaceIotaExpression(expr.Operand, value)
+	replaceIotaExpression(expr.Callee, value)
 	for i := range expr.Args {
-		expr.Args[i] = replaceIotaExpression(expr.Args[i], value)
+		replaceIotaExpression(&expr.Args[i], value)
 	}
-	if expr.Index != nil {
-		index := replaceIotaExpression(*expr.Index, value)
-		expr.Index = &index
-	}
-	if expr.Start != nil {
-		start := replaceIotaExpression(*expr.Start, value)
-		expr.Start = &start
-	}
-	if expr.End != nil {
-		end := replaceIotaExpression(*expr.End, value)
-		expr.End = &end
-	}
-	if expr.Max != nil {
-		maxExpr := replaceIotaExpression(*expr.Max, value)
-		expr.Max = &maxExpr
-	}
-	for i := range expr.Elements {
-		expr.Elements[i] = replaceIotaExpression(expr.Elements[i], value)
-	}
-	for i := range expr.Entries {
-		if expr.Entries[i].Key != nil {
-			key := replaceIotaExpression(*expr.Entries[i].Key, value)
-			expr.Entries[i].Key = &key
-		}
-		expr.Entries[i].Value = replaceIotaExpression(expr.Entries[i].Value, value)
-	}
+	replaceIotaExpression(expr.Index, value)
+	replaceIotaExpression(expr.Start, value)
+	replaceIotaExpression(expr.End, value)
+	replaceIotaExpression(expr.Max, value)
 	for i := range expr.Items {
-		if expr.Items[i].Key != nil {
-			key := replaceIotaExpression(*expr.Items[i].Key, value)
-			expr.Items[i].Key = &key
+		replaceIotaExpression(expr.Items[i].Key, value)
+		replaceIotaExpression(&expr.Items[i].Value, value)
+	}
+	if expr.Func != nil {
+		for i := range expr.Func.Body.Stmts {
+			replaceIotaStatement(&expr.Func.Body.Stmts[i], value)
 		}
-		expr.Items[i].Value = replaceIotaExpression(expr.Items[i].Value, value)
 	}
-	for i := range expr.Func.Body.Stmts {
-		expr.Func.Body.Stmts[i] = replaceIotaStatement(expr.Func.Body.Stmts[i], value)
-	}
-	return expr
 }
 
-func replaceIotaStatement(stmt ast.Statement, value int) ast.Statement {
-	if stmt.Expr != nil {
-		expr := replaceIotaExpression(*stmt.Expr, value)
-		stmt.Expr = &expr
+func replaceIotaStatement(stmt *ast.Statement, value int) {
+	if stmt == nil {
+		return
 	}
+	replaceIotaExpression(stmt.Expr, value)
 	for i := range stmt.Left {
-		stmt.Left[i] = replaceIotaExpression(stmt.Left[i], value)
+		replaceIotaExpression(&stmt.Left[i], value)
 	}
 	for i := range stmt.Right {
-		stmt.Right[i] = replaceIotaExpression(stmt.Right[i], value)
+		replaceIotaExpression(&stmt.Right[i], value)
 	}
-	if stmt.Init != nil {
-		init := replaceIotaStatement(*stmt.Init, value)
-		stmt.Init = &init
-	}
-	if stmt.Cond != nil {
-		cond := replaceIotaExpression(*stmt.Cond, value)
-		stmt.Cond = &cond
-	}
-	if stmt.Post != nil {
-		post := replaceIotaStatement(*stmt.Post, value)
-		stmt.Post = &post
-	}
-	if stmt.Else != nil {
-		elseStmt := replaceIotaStatement(*stmt.Else, value)
-		stmt.Else = &elseStmt
-	}
-	if stmt.Range != nil {
-		rangeExpr := replaceIotaExpression(*stmt.Range, value)
-		stmt.Range = &rangeExpr
-	}
+	replaceIotaStatement(stmt.Init, value)
+	replaceIotaExpression(stmt.Cond, value)
+	replaceIotaStatement(stmt.Post, value)
+	replaceIotaStatement(stmt.Else, value)
+	replaceIotaExpression(stmt.Range, value)
 	for i := range stmt.Body.Stmts {
-		stmt.Body.Stmts[i] = replaceIotaStatement(stmt.Body.Stmts[i], value)
+		replaceIotaStatement(&stmt.Body.Stmts[i], value)
 	}
 	for i := range stmt.Cases {
-		stmt.Cases[i] = replaceIotaCase(stmt.Cases[i], value)
+		clause := &stmt.Cases[i]
+		for j := range clause.Values {
+			replaceIotaExpression(&clause.Values[j], value)
+		}
+		replaceIotaStatement(clause.Comm, value)
+		for j := range clause.Body.Stmts {
+			replaceIotaStatement(&clause.Body.Stmts[j], value)
+		}
 	}
 	for i := range stmt.Results {
-		stmt.Results[i] = replaceIotaExpression(stmt.Results[i], value)
+		replaceIotaExpression(&stmt.Results[i], value)
 	}
-	return stmt
-}
-
-func replaceIotaCase(clause ast.CaseClause, value int) ast.CaseClause {
-	for i := range clause.Values {
-		clause.Values[i] = replaceIotaExpression(clause.Values[i], value)
-	}
-	if clause.Comm != nil {
-		comm := replaceIotaStatement(*clause.Comm, value)
-		clause.Comm = &comm
-	}
-	for i := range clause.Body.Stmts {
-		clause.Body.Stmts[i] = replaceIotaStatement(clause.Body.Stmts[i], value)
-	}
-	return clause
 }
 
 func calleeType(callee ast.Expression) (ast.TypeExpr, bool) {
-	if callee.Kind == ast.ExprIdent && callee.Name == "type" && callee.Type.Kind != ast.TypeInvalid {
-		return callee.Type, true
+	if callee.Kind == ast.ExprIdent && callee.Name == "type" && callee.Type != nil && callee.Type.Kind != ast.TypeInvalid {
+		return *callee.Type, true
 	}
 	return ast.TypeExpr{}, false
 }
@@ -214,8 +160,8 @@ func isPredeclaredTypeName(name string) bool {
 func exprAsType(expr ast.Expression) (ast.TypeExpr, bool) {
 	switch expr.Kind {
 	case ast.ExprIdent:
-		if expr.Name == "type" && expr.Type.Kind != ast.TypeInvalid {
-			return expr.Type, true
+		if expr.Name == "type" && expr.Type != nil && expr.Type.Kind != ast.TypeInvalid {
+			return *expr.Type, true
 		}
 		return ast.TypeExpr{Kind: ast.TypeName, Name: expr.Name, Span: expr.Span}, true
 	case ast.ExprSelector:

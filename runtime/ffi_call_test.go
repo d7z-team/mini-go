@@ -295,17 +295,17 @@ func TestStartFFICallRejectsOversizedRequest(t *testing.T) {
 }
 
 func TestBackgroundFFICallOutlivesInvocationAndReleasesWithScope(t *testing.T) {
-	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.route"})},
-		{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.payload"})},
-		{Op: string(ir.OpCallFFI), Payload: testPayload(ir.CallFFIPayload{ArgCount: 2, ResultCount: 3})},
-		{Op: string(ir.OpZero), Payload: testTypePayload("Int")},
-		{Op: string(ir.OpBinary), Payload: testPayload(ir.OperatorPayload{Operator: "=="})},
-		{Op: string(ir.OpStoreGlobal), Payload: testPayload(ir.GlobalPayload{Global: "global.completed"})},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	})
+	artifact := lifecycleArtifact(testSlotCode([]string{"String", "Slice<Uint8>", "Slice<Uint8>", "String", "Int", "Int", "Bool"}, []ir.Instruction{
+		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.route"}},
+		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.payload"}},
+		{Op: ir.OpCallFFI, Payload: ir.CallFFIPayload{ArgCount: 2, ResultCount: 3}},
+		{Op: ir.OpZero, Payload: testTypePayload("Int")},
+		{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "=="}},
+		{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.completed"}},
+		{Op: ir.OpPop},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2, 3, 4}}, {nil, {5}}, {{4, 5}, {6}}, {{6}, nil}, {{3}, nil}, {{2}, nil}, {nil, nil}}))
 	artifact.Constants = []ir.Constant{
 		{ID: "const.route", Type: testType("String"), Value: json.RawMessage(`"background"`)},
 		{ID: "const.payload", Type: testType("Slice<Uint8>"), Value: json.RawMessage(`null`)},

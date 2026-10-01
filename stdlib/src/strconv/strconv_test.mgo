@@ -27,6 +27,26 @@ func TestStrconvParseAndFormat(t *testing.T) {
 	}
 }
 
+func TestIntegerFormattingAcrossDigitBoundaries(t *testing.T) {
+	for base := 2; base <= 36; base++ {
+		for _, value := range []uint64{0, 1, 9, 10, 35, 36, 42, 99, 100, 255, 18446744073709551615} {
+			text := strconv.FormatUint(value, base)
+			parsed, err := strconv.ParseUint(text, base, 64)
+			if err != nil || parsed != value {
+				t.Fatalf("unsigned formatting failed at digit boundary")
+			}
+		}
+		text := strconv.FormatInt(-9223372036854775808, base)
+		parsed, err := strconv.ParseInt(text, base, 64)
+		if err != nil || parsed != -9223372036854775808 {
+			t.Fatalf("minimum signed integer did not round trip")
+		}
+	}
+	if strconv.FormatUint(7, 2) != "111" || strconv.FormatUint(99, 10) != "99" || strconv.FormatUint(35, 36) != "z" {
+		t.Fatalf("small integer formatting returned incorrect digits")
+	}
+}
+
 func TestStrconvAppendAndQuote(t *testing.T) {
 	buf := []byte("v=")
 	buf = strconv.AppendBool(buf, true)

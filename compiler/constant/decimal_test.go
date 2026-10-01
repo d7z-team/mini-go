@@ -31,6 +31,66 @@ func BenchmarkDivideLargeDecimals(b *testing.B) {
 	}
 }
 
+func TestDecimalGCDMatchesBigIntAcrossMachineIntegerBoundary(t *testing.T) {
+	values := []string{
+		"0", "1", "7540113804746346429", "12200160415121876738",
+		"18446744073709551615", "18446744073709551616", "18446744073709551617",
+		"340282366920938463463374607431768211455",
+	}
+	for _, left := range values {
+		for _, right := range values {
+			a, _ := new(big.Int).SetString(left, 10)
+			c, _ := new(big.Int).SetString(right, 10)
+			want := new(big.Int).GCD(nil, nil, a, c).String()
+			if got := GCDUnsignedDecimal(left, right); got != want {
+				t.Fatalf("gcd(%s, %s) = %s, want %s", left, right, got, want)
+			}
+		}
+	}
+}
+
+func BenchmarkGCDUnsignedDecimal(b *testing.B) {
+	for _, operands := range []struct{ name, left, right string }{
+		{"integer", "42", "1"},
+		{"wide_integer", "18446744073709551615", "1"},
+		{"arbitrary_integer", "340282366920938463463374607431768211455", "1"},
+		{"fibonacci", "12200160415121876738", "7540113804746346429"},
+		{"large", "340282366920938463463374607431768211455", "18446744073709551615"},
+		{"wide_fibonacci", "453973694165307953197296969697410619233826", "280571172992510140037611932413038677189525"},
+	} {
+		b.Run(operands.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = GCDUnsignedDecimal(operands.left, operands.right)
+			}
+		})
+	}
+}
+
+func TestGCDMatchesLargeEuclideanChains(t *testing.T) {
+	random := rand.New(rand.NewSource(9))
+	for range 256 {
+		left := new(big.Int).Rand(random, new(big.Int).Lsh(big.NewInt(1), uint(1+random.Intn(2048))))
+		right := new(big.Int).Rand(random, new(big.Int).Lsh(big.NewInt(1), uint(1+random.Intn(2048))))
+		factor := new(big.Int).Rand(random, new(big.Int).Lsh(big.NewInt(1), 128))
+		left.Mul(left, factor)
+		right.Mul(right, factor)
+		want := new(big.Int).GCD(nil, nil, left, right).String()
+		if got := GCDUnsignedDecimal(left.String(), right.String()); got != want {
+			t.Fatalf("gcd(%s, %s) = %s, want %s", left, right, got, want)
+		}
+	}
+	left, right := big.NewInt(0), big.NewInt(1)
+	for index := 0; index < 600; index++ {
+		left, right = right, new(big.Int).Add(left, right)
+		if index%37 == 0 {
+			if got := GCDUnsignedDecimal(left.String(), right.String()); got != "1" {
+				t.Fatalf("consecutive Fibonacci gcd at %d = %s", index, got)
+			}
+		}
+	}
+}
+
 func TestPow2UnsignedDecimalMatchesBigInteger(t *testing.T) {
 	for bits := -1; bits <= 1100; bits++ {
 		exponent := bits

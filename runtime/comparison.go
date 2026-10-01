@@ -68,9 +68,6 @@ func asInt64(value vmValue) (int64, error) {
 	if !isIntegerValue(value) {
 		return 0, fmt.Errorf("expected integer value, got %s data=%#v", value.Type, value.Data)
 	}
-	if isUnsignedIntegerValue(value) {
-		return numericAsInt64(value)
-	}
 	return numericAsInt64(value)
 }
 

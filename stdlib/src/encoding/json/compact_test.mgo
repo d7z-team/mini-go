@@ -1,0 +1,31 @@
+package json_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
+
+func TestCompactPreservesTokensAndCommitsOnlyCompleteInput(t *testing.T) {
+	for _, item := range []struct {
+		input, want string
+	}{
+		{`{"number":9007199254740993,"text":"a b\t\""}`, `{"number":9007199254740993,"text":"a b\t\""}`},
+		{" \n { \"a\" : [ 1e+02 , null , true ] } \r\n", `{"a":[1e+02,null,true]}`},
+		{" 42 \t", "42"},
+		{` "<>&\u2028中文" `, `"<>&\u2028中文"`},
+	} {
+		var out bytes.Buffer
+		out.WriteString("prefix:")
+		if err := json.Compact(&out, []byte(item.input)); err != nil || out.String() != "prefix:" + item.want {
+			t.Fatalf("compact %q: %q %v", item.input, out.String(), err)
+		}
+	}
+	for _, input := range []string{"", "  ", "1 2", "[1,", "{\"a\":1} trailing", "[1,]"} {
+		var out bytes.Buffer
+		out.WriteString("keep")
+		if err := json.Compact(&out, []byte(input)); err == nil || out.String() != "keep" {
+			t.Fatalf("invalid %q: %q %v", input, out.String(), err)
+		}
+	}
+}

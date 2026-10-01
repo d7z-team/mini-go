@@ -1,4 +1,9 @@
 {
+	"captured_result_calls": "42",
+	"array_value_copies": "42",
+	"slot_locals": "42",
+	"field_paths": "42",
+	"compare_branches": "42",
 	"semantic_boundaries": "42",
   "any_reassign": "42",
   "arithmetic": "45",

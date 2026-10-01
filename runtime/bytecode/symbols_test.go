@@ -72,8 +72,16 @@ func TestValidateProgramSymbolsRejectsBrokenBindings(t *testing.T) {
 			symbols := CloneProgramSymbols(valid)
 			test.mutate(&symbols)
 			symbols.Hash, _ = HashProgramSymbols(symbols)
-			if err := ValidateProgramSymbols(&image, &symbols); err == nil {
-				t.Fatal("broken program symbols passed validation")
+			for _, sealed := range []bool{true, false} {
+				candidate := CloneExecutionImage(image)
+				if !sealed {
+					archive := candidate.Packages[image.Root]
+					archive.validated = nil
+					candidate.Packages[image.Root] = archive
+				}
+				if err := ValidateProgramSymbols(&candidate, &symbols); err == nil {
+					t.Fatalf("broken program symbols passed validation (sealed=%v)", sealed)
+				}
 			}
 		})
 	}
@@ -128,6 +136,58 @@ func TestCloneProgramSymbolsOwnsNestedData(t *testing.T) {
 	}
 }
 
+func TestProgramSymbolProofOwnsShapeAndTracksChangedCode(t *testing.T) {
+	image, symbols := testProgramSymbols(t)
+	archive := image.Packages[image.Root]
+	artifact, err := DecodeJSON(archive.Artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err = NewPackageArchive(&artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image.Packages[image.Root] = archive
+	artifact.Functions[0].Locals[0].ID = "local.changed"
+	artifact.Functions[0].Upvalues[0].ID = "upvalue.changed"
+	artifact.Functions[0].Code.Instructions = nil
+	if err := ValidateProgramSymbols(&image, &symbols); err != nil {
+		t.Fatalf("source mutation changed sealed shape: %v", err)
+	}
+	archive.Artifact, archive.ArtifactHash, err = EncodeJSONAndHash(&artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image.Packages[image.Root] = archive
+	image.Hash, err = HashExecutionImage(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	symbols.ProgramHash = image.Hash
+	pkg := symbols.Packages[image.Root]
+	pkg.CodeHash = archive.ArtifactHash
+	symbols.Packages[image.Root] = pkg
+	symbols.Hash, err = HashProgramSymbols(symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateProgramSymbols(&image, &symbols); err == nil {
+		t.Fatal("stale proof accepted sidecar for changed local/upvalue/PC shape")
+	}
+	pkg.Functions[0].Locals[0].ID = "local.changed"
+	pkg.Functions[0].Upvalues[0].ID = "upvalue.changed"
+	pkg.Functions[0].Scopes[0].Ranges = nil
+	pkg.Functions[0].Locations = nil
+	symbols.Packages[image.Root] = pkg
+	symbols.Hash, err = HashProgramSymbols(symbols)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateProgramSymbols(&image, &symbols); err != nil {
+		t.Fatalf("updated sidecar did not validate through full decode: %v", err)
+	}
+}
+
 func FuzzValidateProgramSymbols(f *testing.F) {
 	image, symbols := testProgramSymbols(f)
 	seed, err := json.Marshal(symbols)
@@ -153,12 +213,12 @@ func testProgramSymbols(t testing.TB) (ExecutionImage, ProgramSymbols) {
 	artifact := NewArtifact("example/main", "main")
 	artifact.Functions = []Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Locals:       []Local{{ID: "local.value", Type: testType("Int64")}},
-		Upvalues:     []Upvalue{{ID: "upvalue.name", Type: testType("String")}},
-		Instructions: []Instruction{{Op: string(OpReturn), Payload: json.RawMessage(`{"result_count":0}`)}},
+		Locals:   []Local{{ID: "local.value", Type: testType("Int64")}},
+		Upvalues: []Upvalue{{ID: "upvalue.name", Type: testType("String")}},
+		Code:     testSlotCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	attachTestTypeNodes(&artifact)
-	artifactJSON, artifactHash, err := EncodeJSONAndHash(&artifact)
+	archive, err := NewPackageArchive(&artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +226,7 @@ func testProgramSymbols(t testing.TB) (ExecutionImage, ProgramSymbols) {
 		Format: ExecutionFormat, Version: ExecutionVersion, CompilerID: CompilerIdentity, ContractID: ExecutionContract,
 		Root:     artifact.Module.Path,
 		Entries:  []Entry{{Name: DefaultEntryName, ModulePath: artifact.Module.Path, FunctionID: "fn.main"}},
-		Packages: map[string]PackageArchive{artifact.Module.Path: {Artifact: artifactJSON, ArtifactHash: artifactHash}},
+		Packages: map[string]PackageArchive{artifact.Module.Path: archive},
 	}
 	image.Hash, err = HashExecutionImage(image)
 	if err != nil {
@@ -177,7 +237,7 @@ func testProgramSymbols(t testing.TB) (ExecutionImage, ProgramSymbols) {
 		Format: SymbolsFormat, Version: SymbolsVersion, CompilerID: CompilerIdentity, ContractID: SymbolsContract,
 		ProgramHash: image.Hash,
 		Packages: map[string]PackageSymbols{artifact.Module.Path: {
-			ModulePath: artifact.Module.Path, CodeHash: artifactHash, SourceHash: sourceHash,
+			ModulePath: artifact.Module.Path, CodeHash: archive.ArtifactHash, SourceHash: sourceHash,
 			Files: []SourceFile{{ID: "file.main", Path: "main.mgo", Hash: sourceHash}},
 			Functions: []FunctionSymbols{{
 				ID: "fn.main", Name: "main", Declaration: &Location{File: "main.mgo", Line: 1, Column: 1},

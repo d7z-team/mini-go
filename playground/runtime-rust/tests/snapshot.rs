@@ -12,14 +12,35 @@ use std::sync::Arc;
 #[test]
 fn detached_snapshot_preserves_cycles_and_survives_instance_close() {
     let map = json!({"kind":7,"node":"map"});
+    let code = support::slot_code(
+        json!([map,{"kind":3,"primitive":2},map]),
+        &[
+            ("make_map", json!({"type":map}), json!({"outputs":[0]})),
+            (
+                "store_local",
+                json!({"local":"map"}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            ("load_local", json!({"local":"map"}), json!({"outputs":[0]})),
+            ("const", json!({"constant":"key"}), json!({"outputs":[1]})),
+            ("load_local", json!({"local":"map"}), json!({"outputs":[2]})),
+            (
+                "store_index",
+                json!({}),
+                json!({"inputs":[[0,0],[0,1],[0,2]],"release":[0,1,2]}),
+            ),
+            ("load_local", json!({"local":"map"}), json!({"outputs":[0]})),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"map","kind":7,"key":{"kind":3,"primitive":2},"elem":{"kind":2}}]},
         "constants":[{"id":"key","type":{"kind":3,"primitive":2},"value":"self"}],
-        "functions":[{"id":"fn.Main","signature":{"results":[map]},"locals":[{"id":"map","type":map}],"instructions":[
-            {"op":"make_map","payload":{"type":map}}, {"op":"store_local","payload":{"local":"map"}},
-            {"op":"load_local","payload":{"local":"map"}}, {"op":"const","payload":{"constant":"key"}}, {"op":"load_local","payload":{"local":"map"}}, {"op":"store_index"},
-            {"op":"load_local","payload":{"local":"map"}}, {"op":"return","payload":{"result_count":1}}
-        ]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[map]},"locals":[{"id":"map","type":map}],"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -57,10 +78,21 @@ fn detached_snapshot_preserves_cycles_and_survives_instance_close() {
 #[test]
 fn byte_snapshot_owns_binary_data_after_guest_storage_is_released() {
     let bytes = json!({"kind":5,"node":"bytes"});
+    let code = support::slot_code(
+        json!([bytes]),
+        &[
+            ("const", json!({"constant":"data"}), json!({"outputs":[0]})),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"data","type":bytes,"value":"AP+A"}],
-        "functions":[{"id":"fn.Main","signature":{"results":[bytes]},"instructions":[{"op":"const","payload":{"constant":"data"}},{"op":"return","payload":{"result_count":1}}]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[bytes]},"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();

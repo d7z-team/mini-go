@@ -26,7 +26,7 @@ impl Instance {
                 {
                     Some(Value {
                         typ: expected.clone(),
-                        data: Data::Pointer(address.clone()),
+                        data: Data::Pointer(std::sync::Arc::new(address.clone())),
                     })
                 } else {
                     None
@@ -42,7 +42,7 @@ impl Instance {
                     continue;
                 }
                 if let Data::Pointer(pointer) = &value.data {
-                    address = Some(pointer.clone());
+                    address = Some((**pointer).clone());
                     value = self.read_address(pointer)?;
                     if self.types.identical(&value.typ, expected)? {
                         if found.replace(value).is_some() {
@@ -117,7 +117,7 @@ impl Instance {
                     RuntimeError::new("reflect", id, "reflect: invalid method name")
                 })?;
                 if let Data::Interface(value) = receiver.data {
-                    receiver = *value;
+                    receiver = Arc::unwrap_or_clone(value);
                 }
                 let (module, method) = self
                     .types
@@ -147,8 +147,8 @@ impl Instance {
                 let value = Value {
                     typ,
                     data: Data::Method {
-                        function,
-                        receiver: Some(Box::new(receiver)),
+                        function: std::sync::Arc::new(function),
+                        receiver: Some(Arc::new(receiver)),
                     },
                 };
                 return self.reflect_snapshot(ReflectedValue::owned(value), 0);
@@ -195,7 +195,7 @@ impl Instance {
                     ReflectedValue::owned(Value {
                         typ: callable_type.clone(),
                         data: Data::Method {
-                            function: FunctionValue {
+                            function: std::sync::Arc::new(FunctionValue {
                                 index: None,
                                 revision: Some(self.running.frames.last().map_or_else(
                                     || self.revision.clone(),
@@ -204,7 +204,7 @@ impl Instance {
                                 module: function_module.clone().into(),
                                 function: method.function_id.clone().into(),
                                 captures: Vec::new(),
-                            },
+                            }),
                             receiver: None,
                         },
                     }),

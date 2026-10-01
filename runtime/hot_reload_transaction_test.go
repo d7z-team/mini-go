@@ -4,6 +4,8 @@ import (
 	"context"
 	goruntime "runtime"
 	"testing"
+
+	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func TestPatchRejectsIncompatibleAndReusedPlansWithoutMutation(t *testing.T) {
@@ -11,6 +13,7 @@ func TestPatchRejectsIncompatibleAndReusedPlansWithoutMutation(t *testing.T) {
 	compatible := patchTestProgram(t, patchGlobalArtifact(2), "compatible")
 	incompatibleArtifact := patchGlobalArtifact(2)
 	incompatibleArtifact.Globals[0].Type = testType("String")
+	incompatibleArtifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 	incompatible := patchTestProgram(t, incompatibleArtifact, "incompatible")
 	instance, err := base.Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {

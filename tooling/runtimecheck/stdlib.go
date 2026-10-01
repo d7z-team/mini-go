@@ -47,17 +47,17 @@ func GenerateStdlibVectors() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	compilerSession, err := compiler.New(compiler.Options{Sources: sources, Cache: cache.New(cache.NewDiskBackend(cacheRoot))})
-	if err != nil {
-		return nil, err
-	}
-	defer compilerSession.Close()
-	prepared, err := compilerSession.PrepareTests(roots)
-	if err != nil {
-		return nil, err
-	}
-	var vectors []StdlibVector
-	for _, root := range roots {
+	var output bytes.Buffer
+	output.WriteByte('[')
+	for index, root := range roots {
+		compilerSession, err := compiler.New(compiler.Options{Sources: sources, Cache: cache.New(cache.NewDiskBackend(cacheRoot))})
+		if err != nil {
+			return nil, err
+		}
+		prepared, err := compilerSession.PrepareTests([]string{root})
+		if err = errors.Join(err, compilerSession.Close()); err != nil {
+			return nil, err
+		}
 		item := prepared[root]
 		if !item.Checked.OK() || item.Image == nil {
 			return nil, fmt.Errorf("stdlib %s: %v", root, item.Checked.Diagnostics)
@@ -131,7 +131,15 @@ func GenerateStdlibVectors() ([]byte, error) {
 		for _, test := range item.TestManifest {
 			vector.Tests = append(vector.Tests, test.Name)
 		}
-		vectors = append(vectors, vector)
+		encoded, err := encodeJSON(vector)
+		if err != nil {
+			return nil, err
+		}
+		if index != 0 {
+			output.WriteByte(',')
+		}
+		output.Write(bytes.TrimSuffix(encoded, []byte{'\n'}))
 	}
-	return encodeJSON(vectors)
+	output.WriteString("]\n")
+	return output.Bytes(), nil
 }

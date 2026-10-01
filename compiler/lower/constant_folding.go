@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/constant"
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func foldInt64Unary(operator string, value int64) (int64, bool) {
@@ -229,7 +230,7 @@ func foldStringBinary(operator string, leftRaw json.RawMessage, leftType string,
 	}
 	switch operator {
 	case "+":
-		return canonicalStringRaw(left + right), "String", true
+		return bytecode.EncodeStringConstant(left + right), "String", true
 	case "==":
 		return boolRaw(left == right), "Bool", true
 	case "!=":
@@ -251,11 +252,8 @@ func constString(raw json.RawMessage, typ string) (string, bool) {
 	if typ != "String" {
 		return "", false
 	}
-	var out string
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", false
-	}
-	return out, true
+	out, err := bytecode.DecodeStringConstant(raw)
+	return out, err == nil
 }
 
 func (l *lowerer) constString(raw json.RawMessage, typ string) (string, bool) {

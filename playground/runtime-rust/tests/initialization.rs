@@ -12,49 +12,116 @@ use std::sync::Arc;
 
 #[test]
 fn tasks_share_initialization_and_resume_without_recharging_the_call() {
+    let integer = json!({"kind":3,"primitive":3});
     let mut initialization = Vec::new();
     for _ in 0..128 {
         initialization.extend([
-            json!({"op":"const","payload":{"constant":"answer"}}),
-            json!({"op":"pop"}),
+            (
+                "const",
+                json!({"constant":"answer"}),
+                json!({"outputs":[0]}),
+            ),
+            ("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
         ]);
     }
     initialization.extend([
-        json!({"op":"const","payload":{"constant":"answer"}}),
-        json!({"op":"store_global","payload":{"global":"value"}}),
-        json!({"op":"return","payload":{}}),
+        (
+            "const",
+            json!({"constant":"answer"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "store_global",
+            json!({"global":"value"}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ),
+        ("return", json!({}), json!({})),
     ]);
+    let initialization = support::slot_code(json!([integer]), &initialization);
+    let dependency_main = support::slot_code(
+        json!([integer]),
+        &[
+            (
+                "load_global",
+                json!({"global":"value"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let dependency = support::image(json!({
         "module":{"path":"dependency","package":"dependency"},
         "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
         "globals":[{"id":"value","type":{"kind":3,"primitive":3}}],
         "functions":[
-            {"id":"fn.init","instructions":initialization},
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"load_global","payload":{"global":"value"}},
-                {"op":"return","payload":{"result_count":1}}
-            ]}
+            {"id":"fn.init","code":initialization},
+            {"id":"fn.Main","signature":{"results":[integer]},"code":dependency_main}
         ]
     }));
+    let main = support::slot_code(
+        json!([{"kind":wire::Function,"node":"worker.signature"},integer]),
+        &[
+            (
+                "make_closure",
+                json!({"function":"worker"}),
+                json!({"outputs":[0]}),
+            ),
+            ("spawn", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+            (
+                "call_direct",
+                json!({"module_path":"dependency","function":"fn.Main","result_count":1}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+        ],
+    );
+    let worker = support::slot_code(
+        json!([integer]),
+        &[
+            (
+                "call_direct",
+                json!({"module_path":"dependency","function":"fn.Main","result_count":1}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "store_global",
+                json!({"global":"child"}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            ("return", json!({}), json!({})),
+        ],
+    );
+    let read = support::slot_code(
+        json!([integer]),
+        &[
+            (
+                "load_global",
+                json!({"global":"child"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let root = support::image(json!({
+        "type_table":{"nodes":[{"id":"worker.signature","kind":wire::Function,"signature":{}}]},
         "requirements":[{"kind":"source","module_path":"dependency"}],
         "globals":[{"id":"child","type":{"kind":3,"primitive":3}}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"make_closure","payload":{"function":"worker"}},
-                {"op":"spawn","payload":{}},
-                {"op":"call_direct","payload":{"module_path":"dependency","function":"fn.Main","result_count":1}},
-                {"op":"return","payload":{"result_count":1}}
-            ]},
-            {"id":"worker","instructions":[
-                {"op":"call_direct","payload":{"module_path":"dependency","function":"fn.Main","result_count":1}},
-                {"op":"store_global","payload":{"global":"child"}},
-                {"op":"return","payload":{}}
-            ]},
-            {"id":"read","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"load_global","payload":{"global":"child"}},
-                {"op":"return","payload":{"result_count":1}}
-            ]}
+            {"id":"fn.Main","signature":{"results":[integer]},"code":main},
+            {"id":"worker","code":worker},
+            {"id":"read","signature":{"results":[integer]},"code":read}
         ]
     }));
     let mut image: wire::ExecutionImage = serde_json::from_slice(&root).unwrap();

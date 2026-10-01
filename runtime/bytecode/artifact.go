@@ -8,8 +8,8 @@ import (
 
 const (
 	Format         = "mini-go-ir"
-	CurrentVersion = 22
-	OpcodeSet      = "minigo.ir.v10"
+	CurrentVersion = 30
+	OpcodeSet      = "minigo.ir.v15"
 )
 
 type Artifact struct {
@@ -49,8 +49,7 @@ type Function struct {
 	Locals        []Local                 `json:"locals,omitempty"`
 	ResultLocals  []string                `json:"result_locals,omitempty"`
 	Upvalues      []Upvalue               `json:"upvalues,omitempty"`
-	MaxStack      int                     `json:"max_stack,omitempty"`
-	Instructions  []Instruction           `json:"instructions,omitempty"`
+	Code          *SlotCode               `json:"code"`
 }
 
 type Local struct {
@@ -64,8 +63,8 @@ type Upvalue struct {
 }
 
 type Instruction struct {
-	Op      string          `json:"op"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	Op      Opcode  `json:"op"`
+	Payload Payload `json:"payload,omitempty"`
 }
 
 type Export struct {

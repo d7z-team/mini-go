@@ -39,11 +39,58 @@ struct TypeCache {
     resolved: HashMap<String, HashMap<wire::TypeRef, TypeIdentity>>,
     resolved_count: usize,
     underlying: HashMap<TypeIdentity, TypeIdentity>,
+    identical: HashMap<(TypeIdentity, TypeIdentity, bool), bool>,
+    zeros: HashMap<(TypeIdentity, usize, usize), ZeroTemplate>,
+    zero_bytes: u64,
+}
+
+#[derive(Debug)]
+struct ZeroTemplate {
+    value: crate::value::Value,
+    construction_bytes: u64,
 }
 
 const TYPE_CACHE_LIMIT: usize = 16_384;
 
 impl TypeRegistry {
+    pub(crate) fn cached_zero(
+        &self,
+        typ: &TypeIdentity,
+        depth: usize,
+        elements: usize,
+    ) -> Option<(crate::value::Value, u64)> {
+        self.cache
+            .read()
+            .unwrap()
+            .zeros
+            .get(&(typ.clone(), depth, elements))
+            .map(|template| (template.value.clone(), template.construction_bytes))
+    }
+
+    pub(crate) fn cache_zero(
+        &self,
+        value: &crate::value::Value,
+        depth: usize,
+        elements: usize,
+        construction_bytes: u64,
+    ) {
+        let mut cache = self.cache.write().unwrap();
+        // Zero layouts contain no guest handles. Their budget and the entry
+        // count bound metadata retention independently of an instance heap.
+        let bytes = construction_bytes.saturating_add(16);
+        if cache.zeros.len() >= 256 || bytes > (1 << 20) - cache.zero_bytes {
+            return;
+        }
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            cache.zeros.entry((value.typ.clone(), depth, elements))
+        {
+            entry.insert(ZeroTemplate {
+                value: value.clone(),
+                construction_bytes,
+            });
+            cache.zero_bytes += bytes;
+        }
+    }
     pub(crate) fn use_context(&mut self, source: &Self) {
         if !Arc::ptr_eq(&self.node_aliases, &source.node_aliases) {
             self.node_aliases = source.node_aliases.clone();
@@ -473,6 +520,50 @@ impl TypeRegistry {
         if left == right {
             return Ok(true);
         }
+        if matches!(
+            left,
+            TypeIdentity::Void | TypeIdentity::Any | TypeIdentity::Primitive(_)
+        ) && matches!(
+            right,
+            TypeIdentity::Void | TypeIdentity::Any | TypeIdentity::Primitive(_)
+        ) {
+            return Ok(false);
+        }
+        // A registry cache belongs to immutable program metadata. Dynamic
+        // constructions remain instance-owned and must not enter that cache.
+        let static_identity = |mut typ: &TypeIdentity| loop {
+            match typ {
+                TypeIdentity::Pointer(element) | TypeIdentity::Slice(element) => typ = element,
+                TypeIdentity::Structural { module, node } => {
+                    break self.nodes.contains_key(&(module.clone(), node.clone()));
+                }
+                TypeIdentity::Named(key) => break self.named.contains_key(key.as_ref()),
+                _ => break true,
+            }
+        };
+        let key = (static_identity(left) && static_identity(right))
+            .then(|| (left.clone(), right.clone(), ignore_tags));
+        if let Some(key) = &key
+            && let Some(result) = self.cache.read().unwrap().identical.get(key)
+        {
+            return Ok(*result);
+        }
+        let result = self.compare_type_graphs(left, right, ignore_tags)?;
+        if let Some(key) = key {
+            let mut cache = self.cache.write().unwrap();
+            if cache.identical.len() < 4096 {
+                cache.identical.insert(key, result);
+            }
+        }
+        Ok(result)
+    }
+
+    fn compare_type_graphs(
+        &self,
+        left: &TypeIdentity,
+        right: &TypeIdentity,
+        ignore_tags: bool,
+    ) -> Result<bool, RuntimeError> {
         let mut pending = vec![(left.clone(), right.clone())];
         let mut seen = HashSet::new();
         while let Some((left, right)) = pending.pop() {

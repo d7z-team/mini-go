@@ -26,8 +26,18 @@ func strictUnmarshal(raw json.RawMessage, out any) error {
 // DecodeInstructionPayload decodes one instruction payload and rejects
 // unknown fields and trailing JSON values.
 func DecodeInstructionPayload(raw json.RawMessage, out any) error {
+	return decodeInstructionPayload(raw, out, false)
+}
+
+func decodeInstructionPayload(raw json.RawMessage, out any, validJSON bool) error {
 	if len(raw) == 0 {
 		raw = json.RawMessage(`{}`)
+		validJSON = true
+	}
+	if validJSON || json.Valid(raw) {
+		if handled, err := decodeFixedPayload(raw, out); handled && err == nil {
+			return nil
+		}
 	}
 	return strictUnmarshal(raw, out)
 }

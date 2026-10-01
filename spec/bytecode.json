@@ -1,7 +1,7 @@
 {
   "format": "mini-go-ir",
-  "version": 22,
-  "opcode_set": "minigo.ir.v10",
+  "version": 30,
+  "opcode_set": "minigo.ir.v15",
   "symbols_format": "mini-go-program-symbols",
   "symbols_version": 1,
   "symbols_contract": "minigo.symbols.v1",
@@ -22,7 +22,7 @@
       "name": "opcode_set",
       "type": "string",
       "required": true,
-      "rule": "must be \"minigo.ir.v10\""
+      "rule": "must be \"minigo.ir.v15\""
     },
     {
       "name": "module",
@@ -259,12 +259,9 @@
       "type": "[]Upvalue"
     },
     {
-      "name": "max_stack",
-      "type": "int"
-    },
-    {
-      "name": "instructions",
-      "type": "[]Instruction"
+      "name": "code",
+      "type": "SlotCode",
+      "required": true
     }
   ],
   "local_fields": [
@@ -300,6 +297,83 @@
     {
       "name": "payload",
       "type": "opcode-payload"
+    }
+  ],
+  "slot_code_fields": [
+    {
+      "name": "types",
+      "type": "[]TypeRef",
+      "rule": "temporary slot types"
+    },
+    {
+      "name": "instructions",
+      "type": "[]SlotInstruction"
+    },
+    {
+      "name": "operands",
+      "type": "[]SlotOperands"
+    },
+    {
+      "name": "descriptors",
+      "type": "DescriptorTables",
+      "required": true,
+      "rule": "typed payload tables indexed by instruction descriptor"
+    }
+  ],
+  "slot_instruction_fields": [
+    {
+      "name": "0",
+      "type": "uint16",
+      "required": true,
+      "rule": "numeric opcode; tuple has exactly three elements"
+    },
+    {
+      "name": "1",
+      "type": "uint32",
+      "required": true,
+      "rule": "index in the opcode's descriptor table"
+    },
+    {
+      "name": "2",
+      "type": "uint32",
+      "required": true,
+      "rule": "operand record index"
+    }
+  ],
+  "slot_operand_fields": [
+    {
+      "name": "0",
+      "type": "uint8",
+      "required": true,
+      "rule": "0: temporary slot; 1: package constant; 2: private scalar or pointer local; tuple has exactly two elements"
+    },
+    {
+      "name": "1",
+      "type": "uint32",
+      "required": true,
+      "rule": "index in the selected storage domain"
+    }
+  ],
+  "slot_operands_fields": [
+    {
+      "name": "inputs",
+      "type": "[]Operand",
+      "rule": "values evaluated in source order; direct locals must not be addressable"
+    },
+    {
+      "name": "outputs",
+      "type": "[]uint32",
+      "rule": "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len or cap"
+    },
+    {
+      "name": "release",
+      "type": "[]uint32",
+      "rule": "clear after instruction completion, before entering the next instruction"
+    },
+    {
+      "name": "release_before",
+      "type": "[]uint32",
+      "rule": "clear on instruction entry, once across suspension and retries"
     }
   ],
   "export_fields": [
@@ -625,7 +699,7 @@
     {
       "name": "MaxPayloadBytes",
       "type": "int",
-      "rule": "maximum single payload bytes and total instruction payload bytes; non-positive disables this limit"
+      "rule": "maximum single and aggregate logical descriptor bytes, including strings and tables; non-positive disables this limit"
     },
     {
       "name": "MaxConstantBytes",
@@ -634,6 +708,70 @@
     }
   ],
   "payloads": [
+    {
+      "name": "field_path",
+      "fields": [
+        {
+          "name": "type",
+          "type": "TypeRef",
+          "required": true
+        },
+        {
+          "name": "fields",
+          "type": "[]uint32",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "compare_branch",
+      "fields": [
+        {
+          "name": "operator",
+          "type": "comparison",
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "TypeRef",
+          "required": true
+        },
+        {
+          "name": "label",
+          "type": "label",
+          "required": true
+        },
+        {
+          "name": "when",
+          "type": "bool",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "type_dispatch",
+      "fields": [
+        {
+          "name": "subject",
+          "type": "local-id",
+          "required": true
+        },
+        {
+          "name": "default",
+          "type": "label",
+          "required": true
+        },
+        {
+          "name": "default_local",
+          "type": "local-id"
+        },
+        {
+          "name": "cases",
+          "type": "[]type-case",
+          "required": true
+        }
+      ]
+    },
     {
       "name": "select",
       "fields": [
@@ -792,7 +930,7 @@
         {
           "name": "has_capacity",
           "type": "bool",
-          "rule": "when true, pop a capacity hint before key/value pairs"
+          "rule": "when true, the final input is a capacity hint after the key/value pairs"
         }
       ]
     },
@@ -901,6 +1039,11 @@
           "name": "label",
           "type": "label",
           "required": true
+        },
+        {
+          "name": "negate",
+          "type": "bool",
+          "rule": "jump_if branches when condition differs from negate; defaults to false; ignored by unconditional jump"
         }
       ]
     },
@@ -1037,393 +1180,759 @@
   ],
   "opcodes": [
     {
+      "op": "type_dispatch",
+      "category": "control",
+      "payload": "type_dispatch",
+      "operands": "no temporary operands",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 0
+      },
+      "notes": "select the first matching type case and bind its local"
+    },
+    {
       "op": "select",
       "category": "waitable",
       "payload": "select",
-      "stack": "no change",
+      "operands": "no temporary operands",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 0
+      },
       "notes": "commit exactly one communication, storing index and receive results in locals; may suspend"
     },
     {
       "op": "const",
-      "category": "stack_value",
+      "category": "value",
       "payload": "const",
-      "stack": "push constant"
+      "operands": "write constant",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "zero",
-      "category": "stack_value",
+      "category": "value",
       "payload": "type",
-      "stack": "push zero value"
+      "operands": "write zero value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "pop",
-      "category": "stack_value",
-      "stack": "pop 1"
+      "category": "value",
+      "operands": "read 1",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      }
     },
     {
       "op": "unary",
-      "category": "stack_value",
+      "category": "value",
       "payload": "operator",
-      "stack": "pop 1, push 1"
+      "operands": "read 1, write 1",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "binary",
-      "category": "stack_value",
+      "category": "value",
       "payload": "operator",
-      "stack": "pop 2, push 1"
+      "operands": "read 2, write 1",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 1
+      }
     },
     {
       "op": "load_local",
-      "category": "stack_value",
+      "category": "value",
       "payload": "local",
-      "stack": "push local"
+      "operands": "write local",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "store_local",
-      "category": "stack_value",
+      "category": "value",
       "payload": "local",
-      "stack": "pop value"
+      "operands": "read value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      }
     },
     {
       "op": "load_upvalue",
-      "category": "stack_value",
+      "category": "value",
       "payload": "upvalue",
-      "stack": "push upvalue"
+      "operands": "write upvalue",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "store_upvalue",
-      "category": "stack_value",
+      "category": "value",
       "payload": "upvalue",
-      "stack": "pop value"
+      "operands": "read value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      }
     },
     {
       "op": "load_global",
-      "category": "stack_value",
+      "category": "value",
       "payload": "global",
-      "stack": "push global"
+      "operands": "write global",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "store_global",
-      "category": "stack_value",
+      "category": "value",
       "payload": "global",
-      "stack": "pop value"
+      "operands": "read value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      }
     },
     {
       "op": "label",
       "category": "control",
       "payload": "label",
-      "stack": "no change"
+      "operands": "no temporary operands",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "jump",
       "category": "control",
       "payload": "jump",
-      "stack": "no change",
+      "operands": "no temporary operands",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 0
+      },
       "terminal": true
     },
     {
       "op": "jump_if",
       "category": "control",
       "payload": "jump",
-      "stack": "pop condition"
+      "operands": "read condition",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      }
     },
     {
       "op": "return",
       "category": "control",
       "payload": "return",
-      "stack": "pop count",
+      "operands": "read count",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      },
       "terminal": true
     },
     {
       "op": "panic",
       "category": "control",
-      "stack": "pop panic value",
+      "operands": "read panic value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      },
       "terminal": true
     },
     {
       "op": "recover",
       "category": "control",
-      "stack": "push recovered panic value"
+      "operands": "write recovered panic value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "defer_push",
       "category": "control",
       "payload": "defer",
-      "stack": "pop function",
+      "operands": "read function",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      },
       "notes": "owner_depth lets compiler-lowered helper frames register a deferred call on an enclosing source frame"
     },
     {
       "op": "call_value",
       "category": "call",
       "payload": "call",
-      "stack": "pop callee and args, push results"
+      "operands": "read callee and args, write results",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "call_direct",
       "category": "call",
       "payload": "call",
-      "stack": "pop args, push results"
+      "operands": "read args, write results",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "tail_call_direct",
       "category": "call",
       "payload": "call",
-      "stack": "pop args and complete through target",
+      "operands": "read args and complete through target",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      },
       "terminal": true
     },
     {
       "op": "call_interface",
       "category": "call",
       "payload": "call_interface",
-      "stack": "pop interface receiver and args, push results",
+      "operands": "read interface receiver and args, write results",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      },
       "notes": "dynamic dispatch by canonical interface method metadata; not Go source selector syntax"
     },
     {
       "op": "make_closure",
       "category": "call",
       "payload": "closure",
-      "stack": "push closure"
+      "operands": "write closure",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "make_sequence",
       "category": "composite",
       "payload": "make_sequence",
-      "stack": "pop elements, push sequence"
+      "operands": "read elements, write sequence",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "make_map",
       "category": "composite",
       "payload": "make_map",
-      "stack": "pop key/value pairs, push map"
+      "operands": "read key/value pairs, write map",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "make_struct",
       "category": "composite",
       "payload": "make_struct",
-      "stack": "pop fields, push struct"
+      "operands": "read fields, write struct",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "make_slice",
       "category": "composite",
       "payload": "make_slice",
-      "stack": "pop len[/cap], push slice"
+      "operands": "read len[/cap], write slice",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "make_waitable",
       "category": "resource",
       "payload": "make_waitable",
-      "stack": "pop capacity, push waitable resource",
+      "operands": "read capacity, write waitable resource",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      },
       "notes": "compiler-defined communication resource; backend provides the waitable protocol"
     },
     {
       "op": "load_index",
       "category": "composite",
-      "stack": "pop object and index, push value"
+      "operands": "read object and index, write value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 1
+      }
     },
     {
       "op": "load_index_ok",
       "category": "composite",
-      "stack": "pop map and key, push value and ok"
+      "operands": "read map and key, write value and ok",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 2
+      }
     },
     {
       "op": "string_rune_at",
       "category": "composite",
-      "stack": "pop string and index, push rune"
+      "operands": "read string and index, write rune",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 1
+      }
     },
     {
       "op": "string_next_rune_index",
       "category": "composite",
-      "stack": "pop string and index, push next index"
+      "operands": "read string and index, write next index",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 1
+      }
     },
     {
       "op": "slice",
       "category": "composite",
-      "stack": "pop object/low/high/max, push slice"
+      "operands": "read object/low/high/max, write slice",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 4,
+        "outputs": 1
+      }
     },
     {
       "op": "len",
       "category": "composite",
-      "stack": "pop object, push len"
+      "operands": "read object, write len",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "cap",
       "category": "composite",
-      "stack": "pop object, push cap"
+      "operands": "read object, write cap",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "append",
       "category": "composite",
       "payload": "count",
-      "stack": "pop slice and values, push slice"
+      "operands": "read slice and values, write slice",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "delete",
       "category": "composite",
-      "stack": "pop map and key"
+      "operands": "read map and key",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 0
+      }
     },
     {
       "op": "clear",
       "category": "composite",
-      "stack": "pop container"
+      "operands": "read container",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      }
     },
     {
       "op": "copy",
       "category": "composite",
-      "stack": "pop dst/src, push copied count"
+      "operands": "read dst/src, write copied count",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 1
+      }
     },
     {
       "op": "map_keys",
       "category": "composite",
-      "stack": "pop map, push array of keys"
+      "operands": "read map, write array of keys",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "map_iter_init",
       "category": "composite",
       "payload": "local",
-      "stack": "pop map; replace frame-owned iterator identified by local"
+      "operands": "read map; replace frame-owned iterator identified by local",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      }
     },
     {
       "op": "map_iter_next",
       "category": "composite",
       "payload": "local",
-      "stack": "push key, value, ok; skip deleted entries and observe current values"
+      "operands": "write key, value, ok; skip deleted entries and observe current values",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 3
+      }
     },
     {
       "op": "map_iter_close",
       "category": "composite",
       "payload": "local",
-      "stack": "no change; release frame-owned iterator"
+      "operands": "no temporary operands; release frame-owned iterator",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "load_field",
       "category": "composite",
       "payload": "field",
-      "stack": "pop object, push field"
+      "operands": "read object, write field",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "store_index",
       "category": "composite",
-      "stack": "pop object/index/value"
+      "operands": "read object/index/value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 3,
+        "outputs": 0
+      }
     },
     {
       "op": "store_field",
       "category": "composite",
       "payload": "field",
-      "stack": "pop object/value"
+      "operands": "read object/value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 0
+      }
     },
     {
       "op": "type_assert",
       "category": "type_pointer",
       "payload": "type",
-      "stack": "pop value, push asserted value"
+      "operands": "read value, write asserted value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "type_assert_ok",
       "category": "type_pointer",
       "payload": "type",
-      "stack": "pop value, push value and ok"
+      "operands": "read value, write value and ok",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 2
+      }
     },
     {
       "op": "convert",
       "category": "type_pointer",
       "payload": "type",
-      "stack": "pop value, push converted value"
+      "operands": "read value, write converted value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "address_of",
       "category": "type_pointer",
       "payload": "address",
-      "stack": "push pointer",
+      "operands": "write pointer",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      },
       "notes": "export addresses initialize the target module through the scheduler and refer to its global slot"
     },
     {
       "op": "load_indirect",
       "category": "type_pointer",
-      "stack": "pop pointer, push value"
+      "operands": "read pointer, write value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      }
     },
     {
       "op": "store_indirect",
       "category": "type_pointer",
-      "stack": "pop pointer/value"
+      "operands": "read pointer/value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 0
+      }
     },
     {
       "op": "waitable_send",
       "category": "waitable",
-      "stack": "pop waitable/value",
+      "operands": "read waitable/value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 0
+      },
       "notes": "compiler-defined send capability; may block through the generic scheduler"
     },
     {
       "op": "waitable_recv",
       "category": "waitable",
-      "stack": "pop waitable, push value",
+      "operands": "read waitable, write value",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      },
       "notes": "compiler-defined receive capability"
     },
     {
       "op": "waitable_recv_ok",
       "category": "waitable",
-      "stack": "pop waitable, push value/ok",
+      "operands": "read waitable, write value/ok",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 2
+      },
       "notes": "compiler-defined receive capability with completion state"
     },
     {
       "op": "waitable_can_recv",
       "category": "waitable",
-      "stack": "pop waitable, push ready",
+      "operands": "read waitable, write ready",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      },
       "notes": "receive readiness probe"
     },
     {
       "op": "waitable_try_recv",
       "category": "waitable",
-      "stack": "pop waitable, push value/ready",
+      "operands": "read waitable, write value/ready",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 2
+      },
       "notes": "non-blocking receive attempt"
     },
     {
       "op": "waitable_try_send",
       "category": "waitable",
-      "stack": "pop waitable/value, push ready",
+      "operands": "read waitable/value, write ready",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 1
+      },
       "notes": "non-blocking send attempt"
     },
     {
       "op": "waitable_can_send",
       "category": "waitable",
-      "stack": "pop waitable, push ready",
+      "operands": "read waitable, write ready",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      },
       "notes": "send readiness probe"
     },
     {
       "op": "waitable_close",
       "category": "waitable",
-      "stack": "pop waitable",
+      "operands": "read waitable",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 0
+      },
       "notes": "compiler-defined resource close operation"
     },
     {
       "op": "init_module",
       "category": "module",
       "payload": "init_module",
-      "stack": "no change"
+      "operands": "no temporary operands",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "load_export",
       "category": "module",
       "payload": "export",
-      "stack": "push module export"
+      "operands": "write module export",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 0,
+        "outputs": 1
+      }
     },
     {
       "op": "spawn",
       "category": "scheduler",
       "payload": "call",
-      "stack": "pop callee and args"
+      "operands": "read callee and args",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     },
     {
       "op": "call_ffi",
       "category": "host",
       "payload": "call_ffi",
-      "stack": "pop route/payload, push payload/message/status",
+      "operands": "read route/payload, write payload/message/status",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      },
       "notes": "opaque asynchronous host boundary; status: 0 success, 1 route unavailable, 2 failure"
     },
     {
       "op": "call_intrinsic",
       "category": "runtime",
       "payload": "call_intrinsic",
-      "stack": "pop args, push results"
+      "operands": "read args, write results",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
+    },
+    {
+      "op": "compare_branch",
+      "category": "control",
+      "payload": "compare_branch",
+      "operands": "consume two operands",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 0
+      },
+      "notes": "compare typed operands and branch with explicit polarity"
+    },
+    {
+      "op": "get_path",
+      "category": "value",
+      "payload": "field_path",
+      "operands": "consume one operand, produce one result",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 1,
+        "outputs": 1
+      },
+      "notes": "read a bounded sequence of declared fields"
     }
   ],
   "type_rules": [

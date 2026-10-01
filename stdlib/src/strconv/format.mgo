@@ -54,12 +54,9 @@ package strconv
 // IntSize is the size in bits of an int value in Mini-Go.
 const IntSize = 64
 
-func digitString(digit int64) string {
-	if digit < 10 {
-		return string(int32(48) + int32(digit))
-	}
-	return string(int32(87) + int32(digit))
-}
+const integerDigits = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+const smallDecimalPairs = "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
 
 func formatBase10(buffer []byte, value uint64) int {
 	index := len(buffer)
@@ -110,13 +107,20 @@ func FormatUint(i uint64, base int) string {
 	if base < 2 || base > 36 {
 		panic("strconv: illegal AppendInt/FormatInt base")
 	}
-	if i == uint64(0) {
-		return "0"
+	if i < 10 {
+		index := int(i)
+		if index < base {
+			return integerDigits[index:index + 1]
+		}
+	}
+	if base == 10 && i < 100 {
+		index := int(i) * 2
+		return smallDecimalPairs[index:index + 2]
 	}
 	out := ""
 	for i > uint64(0) {
 		digit := i % uint64(base)
-		out = digitString(int64(digit)) + out
+		out = integerDigits[digit:digit + 1] + out
 		i = i / uint64(base)
 	}
 	return out

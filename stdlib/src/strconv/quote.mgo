@@ -1,7 +1,9 @@
 package strconv
 
 import (
+	"strconv/literal"
 	"unicode"
+	"unicode/utf8"
 )
 
 // AppendBool appends "true" or "false", according to the value of b,
@@ -127,168 +129,60 @@ func CanBackquote(s string) bool {
 	return true
 }
 
-// Unquote interprets s as a single-quoted, double-quoted,
-// or backquoted Go string literal, returning the string value
-// that s quotes.  (If s is single-quoted, it would be a Go
-// character literal; Unquote returns the corresponding
-// one-character string. For an empty character literal
-// Unquote returns the empty string.)
+// Unquote decodes a quoted string or character literal.
 func Unquote(s string) (string, error) {
-	if len(s) < 2 {
-		return "", newError("invalid syntax")
+	value, err := literal.Unquote(s)
+	if err != nil {
+		return "", ErrSyntax
 	}
-	quote := s[0]
-	if quote != '"' && quote != '\'' && quote != '`' {
-		return "", newError("invalid syntax")
-	}
-	if s[len(s) - 1] != quote {
-		return "", newError("invalid syntax")
-	}
-	body := s[1:len(s) - 1]
-	var ok error
-	if quote == '`' {
-		if !CanBackquote(body) {
-			return "", newError("invalid syntax")
-		}
-		return body, ok
-	}
-	if quote == '\'' {
-		r, _, tail, err := UnquoteChar(body, quote)
-		if err != nil || tail != "" {
-			return "", newError("invalid syntax")
-		}
-		return string(r), ok
-	}
-	out := ""
-	for body != "" {
-		nextRune, _, nextTail, nextErr := UnquoteChar(body, quote)
-		if nextErr != nil {
-			return "", nextErr
-		}
-		out += string(nextRune)
-		body = nextTail
-	}
-	return out, ok
+	return value, nil
 }
 
-// QuotedPrefix returns the valid quoted string at the beginning of s.
+// QuotedPrefix returns the valid quoted literal at the beginning of s.
 func QuotedPrefix(s string) (string, error) {
-	if len(s) < 2 || s[0] != '"' && s[0] != '\'' && s[0] != '`' {
-		return "", newError("invalid syntax")
+	value, err := literal.QuotedPrefix(s)
+	if err != nil {
+		return "", ErrSyntax
 	}
-	quote := s[0]
-	escaped := false
-	for i := 1; i < len(s); i++ {
-		value := s[i]
-		if quote != '`' && value == '\\' && !escaped {
-			escaped = true
-			continue
-		}
-		if value == quote && !escaped {
-			prefix := s[:i + 1]
-			if _, err := Unquote(prefix); err != nil {
-				return "", err
-			}
-			var ok error
-			return prefix, ok
-		}
-		escaped = false
-		if value == '\n' && quote != '`' {
-			break
-		}
-	}
-	return "", newError("invalid syntax")
+	return value, nil
 }
 
-// UnquoteChar decodes the first character or byte in the escaped string
-// or character literal represented by the string s.
-// It returns four values:
-//
-//  1. value, the decoded Unicode code point or byte value;
-//  2. multibyte, a boolean indicating whether the decoded character requires a multibyte UTF-8 representation;
-//  3. tail, the remainder of the string after the character; and
-//  4. an error that will be nil if the character is syntactically valid.
-//
-// The second argument, quote, specifies the type of literal being parsed
-// and therefore which escaped quote character is permitted.
-// If set to a single quote, it permits the sequence \' and disallows unescaped '.
-// If set to a double quote, it permits \" and disallows unescaped ".
-// If set to zero, it does not permit either escape and allows both quote characters to appear unescaped.
+// UnquoteChar decodes the first escaped character or byte, returning its value,
+// whether it is Unicode, and the unconsumed tail. Quote selects the allowed
+// escaped quote character; zero permits neither escaped quote.
 func UnquoteChar(s string, quote byte) (rune, bool, string, error) {
-	if s == "" {
-		return 0, false, "", newError("invalid syntax")
+	value, multibyte, tail, err := literal.UnquoteChar(s, quote)
+	if err != nil {
+		return 0, false, "", ErrSyntax
 	}
-	var ok error
-	if s[0:1] != "\\" {
-		r, tail := firstRuneAndTail(s)
-		if quote != byte(0) && byte(r) == quote {
-			return 0, false, "", newError("invalid syntax")
-		}
-		if r < 32 {
-			return 0, false, "", newError("invalid syntax")
-		}
-		return r, r >= 128, tail, ok
-	}
-	if len(s) < 2 {
-		return 0, false, "", newError("invalid syntax")
-	}
-	esc := s[1:2]
-	switch esc {
-		case "a":
-			return '\a', false, s[2:], ok
-		case "b":
-			return '\b', false, s[2:], ok
-		case "f":
-			return '\f', false, s[2:], ok
-		case "n":
-			return '\n', false, s[2:], ok
-		case "r":
-			return '\r', false, s[2:], ok
-		case "t":
-			return '\t', false, s[2:], ok
-		case "v":
-			return '\v', false, s[2:], ok
-		case "\\":
-			return '\\', false, s[2:], ok
-		case "\"":
-			if quote != byte(0) && quote != '"' {
-				return 0, false, "", newError("invalid syntax")
-			}
-			return '"', false, s[2:], ok
-		case "'":
-			if quote != byte(0) && quote != '\'' {
-				return 0, false, "", newError("invalid syntax")
-			}
-			return '\'', false, s[2:], ok
-		case "x":
-			xValue, xTail, xOK := parseFixedHexRune(s[2:], 2)
-			if !xOK {
-				return 0, false, "", newError("invalid syntax")
-			}
-			return rune(xValue), false, xTail, ok
-		case "u":
-			uValue, uTail, uOK := parseFixedHexRune(s[2:], 4)
-			if !uOK || !validRuneValue(uValue) {
-				return 0, false, "", newError("invalid syntax")
-			}
-			return rune(uValue), uValue >= 128, uTail, ok
-		case "U":
-			bigValue, bigTail, bigOK := parseFixedHexRune(s[2:], 8)
-			if !bigOK || !validRuneValue(bigValue) {
-				return 0, false, "", newError("invalid syntax")
-			}
-			return rune(bigValue), bigValue >= 128, bigTail, ok
-		default:
-			return 0, false, "", newError("invalid syntax")
-	}
+	return value, multibyte, tail, nil
 }
 
 func quoteString(s string, ascii bool, graphic bool) string {
-	out := "\""
-	for _, r := range s {
-		out += quoteRuneBody(r, ascii, graphic, '"')
+	const hex = "0123456789abcdef"
+	out := make([]byte, 0, len(s) + 2)
+	out = append(out, '"')
+	for offset := 0; offset < len(s); {
+		c := s[offset]
+		if c >= ' ' && c < 127 && c != '\\' && c != '"' {
+			out = append(out, c)
+			offset++
+			continue
+		}
+		end := offset + utf8.UTFMax
+		if end > len(s) {
+			end = len(s)
+		}
+		r, size := utf8.DecodeRuneInString(s[offset:end])
+		if r == utf8.RuneError && size == 1 {
+			out = append(out, '\\', 'x', hex[c >> 4], hex[c & 15])
+		} else {
+			out = append(out, []byte(quoteRuneBody(r, ascii, graphic, '"'))...)
+		}
+		offset += size
 	}
-	return out + "\""
+	out = append(out, '"')
+	return string(out)
 }
 
 func quoteRuneBody(r rune, ascii bool, graphic bool, quote byte) string {
@@ -336,7 +230,7 @@ func quoteRuneBody(r rune, ascii bool, graphic bool, quote byte) string {
 		printable = unicode.IsGraphic(r)
 	}
 	if !printable {
-		if value <= 255 {
+		if value < 128 {
 			return "\\x" + fixedHex(value, 2)
 		}
 		if value <= 65535 {
@@ -345,28 +239,6 @@ func quoteRuneBody(r rune, ascii bool, graphic bool, quote byte) string {
 		return "\\U" + fixedHex(value, 8)
 	}
 	return string(r)
-}
-
-func firstRuneAndTail(s string) (rune, string) {
-	for _, r := range s {
-		return r, s[len(string(r)):]
-	}
-	return 0, ""
-}
-
-func parseFixedHexRune(s string, digits int) (int, string, bool) {
-	if len(s) < digits {
-		return 0, s, false
-	}
-	value := 0
-	for i := 0; i < digits; i++ {
-		digit, ok := hexValue(s[i:i + 1])
-		if !ok {
-			return 0, s, false
-		}
-		value = value * 16 + digit
-	}
-	return value, s[digits:], true
 }
 
 func fixedHex(value int, width int) string {
@@ -382,19 +254,6 @@ func fixedHex(value int, width int) string {
 		divisor = divisor / 16
 	}
 	return out
-}
-
-func hexValue(ch string) (int, bool) {
-	if ch >= "0" && ch <= "9" {
-		return int(ch[0]) - 48, true
-	}
-	if ch >= "a" && ch <= "f" {
-		return int(ch[0]) - 87, true
-	}
-	if ch >= "A" && ch <= "F" {
-		return int(ch[0]) - 55, true
-	}
-	return 0, false
 }
 
 func validRuneValue(value int) bool {

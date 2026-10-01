@@ -322,4 +322,15 @@ impl DecodedImage {
     pub fn types(&self) -> &TypeRegistry {
         &self.types
     }
+
+    // Program consumes DecodedImage exclusively. Once its execution plans are
+    // validated, retain declarations for patch/type lookup and the original
+    // sealed image for export, without another decoded copy of every body.
+    pub(crate) fn release_function_bodies(&mut self) {
+        for artifact in self.artifacts.values_mut() {
+            for function in artifact.functions.iter_mut() {
+                function.code = None;
+            }
+        }
+    }
 }

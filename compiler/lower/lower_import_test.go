@@ -35,13 +35,13 @@ func TestLowerImportSelectorBecomesExportRequirement(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "example/lib",
 					Alias: "lib",
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -59,11 +59,11 @@ func TestLowerImportSelectorBecomesExportRequirement(t *testing.T) {
 							Args: []ast.Expression{{
 								Kind:    ast.ExprLiteral,
 								Literal: "20",
-								Type:    intType,
+								Type:    &intType,
 							}, {
 								Kind:    ast.ExprLiteral,
 								Literal: "22",
-								Type:    intType,
+								Type:    &intType,
 							}},
 						}},
 					}}},
@@ -98,7 +98,7 @@ func TestLowerImportOnlyPackageInitializesDependencies(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind:   ast.DeclImport,
-				Import: ast.ImportDecl{Path: "example/lib", Alias: "_"},
+				Import: &ast.ImportDecl{Path: "example/lib", Alias: "_"},
 			}},
 		}},
 	}, Options{Dependencies: []check.DependencyPackage{{ModulePath: "example/lib"}}})
@@ -120,7 +120,7 @@ func TestLowerAllowsDuplicateImportAliasForSamePathAcrossFiles(t *testing.T) {
 			Path: "a.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "fmt",
 					Alias: "fmt",
 				},
@@ -129,7 +129,7 @@ func TestLowerAllowsDuplicateImportAliasForSamePathAcrossFiles(t *testing.T) {
 			Path: "b.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "fmt",
 					Alias: "fmt",
 				},
@@ -155,7 +155,7 @@ func TestLowerAllowsDuplicateImportAliasForDifferentPathsAcrossFiles(t *testing.
 			Path: "a.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "fmt",
 					Alias: "lib",
 				},
@@ -164,7 +164,7 @@ func TestLowerAllowsDuplicateImportAliasForDifferentPathsAcrossFiles(t *testing.
 			Path: "b.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "strings",
 					Alias: "lib",
 				},
@@ -190,7 +190,7 @@ func selectorReturnFuncDecl(name, alias, selector string, resultType ast.TypeExp
 	aliasSpan := source.Span{Start: source.Position{File: file}, End: source.Position{File: file}}
 	return ast.Decl{
 		Kind: ast.DeclFunc,
-		Func: ast.FuncDecl{
+		Func: &ast.FuncDecl{
 			Name:    name,
 			Results: []ast.Field{{Type: resultType}},
 			Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -220,13 +220,13 @@ func TestLowerRejectsDuplicateImportAliasInSameFile(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "fmt",
 					Alias: "lib",
 				},
 			}, {
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "strings",
 					Alias: "lib",
 				},
@@ -250,13 +250,13 @@ func TestLowerImportedSelectorTypeConversion(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclImport,
-				Import: ast.ImportDecl{
+				Import: &ast.ImportDecl{
 					Path:  "example/lib",
 					Alias: "lib",
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: ast.TypeExpr{Kind: ast.TypeName, Name: "lib.Score"}}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -274,7 +274,7 @@ func TestLowerImportedSelectorTypeConversion(t *testing.T) {
 							Args: []ast.Expression{{
 								Kind:    ast.ExprLiteral,
 								Literal: "41",
-								Type:    intType,
+								Type:    &intType,
 							}},
 						}},
 					}}},

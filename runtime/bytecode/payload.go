@@ -39,8 +39,29 @@ type TypePayload struct {
 	Type types.TypeRef `json:"type"`
 }
 
+type TypeDispatchPayload struct {
+	Subject      string     `json:"subject"`
+	Default      string     `json:"default"`
+	DefaultLocal string     `json:"default_local,omitempty"`
+	Cases        []TypeCase `json:"cases"`
+}
+
+type TypeCase struct {
+	Type     types.TypeRef `json:"type"`
+	Label    string        `json:"label"`
+	Binding  string        `json:"binding,omitempty"`
+	Original bool          `json:"original,omitempty"`
+}
+
 type OperatorPayload struct {
 	Operator string `json:"operator"`
+}
+
+type CompareBranchPayload struct {
+	Operator string        `json:"operator"`
+	Type     types.TypeRef `json:"type"`
+	Label    string        `json:"label"`
+	When     bool          `json:"when"`
 }
 
 type MakeSequencePayload struct {
@@ -92,6 +113,13 @@ type FieldPayload struct {
 	Field string `json:"field"`
 }
 
+// FieldPathPayload identifies fields by their declaration indexes. A path has
+// at most 16 segments so one dispatch always performs bounded work.
+type FieldPathPayload struct {
+	Type   types.TypeRef `json:"type"`
+	Fields []uint32      `json:"fields"`
+}
+
 type ExportPayload struct {
 	ModulePath string `json:"module_path"`
 	Export     string `json:"export"`
@@ -106,7 +134,8 @@ type LabelPayload struct {
 }
 
 type JumpPayload struct {
-	Label string `json:"label"`
+	Label  string `json:"label"`
+	Negate bool   `json:"negate,omitempty"`
 }
 
 type CallPayload struct {

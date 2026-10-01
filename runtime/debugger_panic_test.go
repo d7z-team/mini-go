@@ -15,18 +15,18 @@ func TestDebuggerSchemaPanic(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 		Locals:    []ir.Local{{ID: "local.msg", Type: testType("String")}},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.message"}`),
+		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.message"},
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.msg"}`),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.msg"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.msg"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.msg"},
 		}, {
-			Op: string(ir.OpPanic),
-		}},
+			Op: ir.OpPanic,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.main", pc: 3, line: 9, column: 2})
@@ -63,25 +63,25 @@ func TestDebuggerSchemaDeferredReturn(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.cleanup"}`),
+		Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
+			Op:      ir.OpMakeClosure,
+			Payload: ir.ClosurePayload{Function: "fn.cleanup"},
 		}, {
-			Op: string(ir.OpDeferPush),
+			Op: ir.OpDeferPush, Payload: ir.DeferPayload{},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
 		ID:        "fn.cleanup",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":0}`),
-		}},
+		Code: testSlotCode([]string{}, []ir.Instruction{{
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 0},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.cleanup", pc: 0, line: 8, column: 2})
@@ -115,11 +115,11 @@ func TestDebuggerSchemaDeferredReturn(t *testing.T) {
 }
 
 func TestDebuggerSchemaDeferredRecover(t *testing.T) {
-	artifact := deferredPanicTestArtifact([]ir.Instruction{
-		{Op: string(ir.OpRecover)},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":0}`)},
-	})
+	artifact := deferredPanicTestArtifact(testSlotCode([]string{"Any"}, []ir.Instruction{
+		{Op: ir.OpRecover},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}))
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.cleanup", pc: 0, line: 8, column: 2})
 
 	debugger := NewDebugger()

@@ -15,7 +15,7 @@ func TestBlockedContextProjectionIsBoundedAndStable(t *testing.T) {
 			scope: &executionScope{id: int64(i % 2)},
 			blocked: &blockedOperation{error: Error{
 				ExecutionContextID: int64(i / 2), Generation: 2, ProgramHash: "revision", ModulePath: "example/blocked",
-				FunctionID: "fn.wait", PC: 3, Op: string(ir.OpWaitableRecv), Err: WaitBlockedError{Message: "waiting"},
+				FunctionID: "fn.wait", PC: 3, Op: ir.OpWaitableRecv.String(), Err: WaitBlockedError{Message: "waiting"},
 			}},
 		})
 	}
@@ -28,7 +28,7 @@ func TestBlockedContextProjectionIsBoundedAndStable(t *testing.T) {
 		if context.ExecutionContextID != int64(i/2) || context.ScopeID != int64(i%2) || context.Reason != "waiting" {
 			t.Fatalf("context %d = %+v", i, context)
 		}
-		if context.Revision.Generation != 2 || context.Revision.Hash != "revision" || context.ModulePath != "example/blocked" || context.FunctionID != "fn.wait" || context.PC != 3 || context.Op != string(ir.OpWaitableRecv) {
+		if context.Revision.Generation != 2 || context.Revision.Hash != "revision" || context.ModulePath != "example/blocked" || context.FunctionID != "fn.wait" || context.PC != 3 || context.Op != ir.OpWaitableRecv.String() {
 			t.Fatalf("context %d lost source identity: %+v", i, context)
 		}
 	}

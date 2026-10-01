@@ -2,6 +2,27 @@ package constant
 
 import "testing"
 
+func TestRationalIntegerNormalizationPreservesSignsAndPrecision(t *testing.T) {
+	for _, test := range []struct{ numerator, denominator, want string }{
+		{"+00042", "+0001", "42"},
+		{"-00042", "-0001", "42"},
+		{"42", "-1", "-42"},
+		{"-000", "-1", "0"},
+		{"18446744073709551616", "1", "18446744073709551616"},
+		{"-340282366920938463463374607431768211455", "-1", "340282366920938463463374607431768211455"},
+	} {
+		got, ok := NewRational(test.numerator, test.denominator)
+		if !ok || got.Numerator != test.want || got.Denominator != "1" {
+			t.Fatalf("%s / %s = %+v, %v; want %s", test.numerator, test.denominator, got, ok, test.want)
+		}
+	}
+	for _, numerator := range []string{"", "+", "12x", "1.5"} {
+		if got, ok := NewRational(numerator, "1"); ok {
+			t.Fatalf("invalid numerator %q accepted: %+v", numerator, got)
+		}
+	}
+}
+
 func TestRationalLiteralCanonicalization(t *testing.T) {
 	tests := map[string]string{
 		"1.25":      "5/4",

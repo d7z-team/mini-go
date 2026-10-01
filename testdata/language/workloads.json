@@ -16,6 +16,10 @@
     "Source": "package sample\nimport \"ffi\"\nfunc Request(payload []byte) ([]byte, error) { return ffi.Call(\"sample.request\", payload) }\n"
   },
   {
+    "Name": "rpc",
+    "Source": "package sample\nimport \"rpc\"\nfunc Main() int {\n method := rpc.Method{ID:\"probe.v1::Echo.Add\", Service:\"probe.v1::Echo\", Name:\"Add\", ContractHash:\"1111111111111111111111111111111111111111111111111111111111111111\"}\n client := rpc.NewClient(rpc.Contract{Protocol:rpc.ContractProtocol, Methods:[]rpc.Method{method}}, rpc.ClientOptions{})\n defer client.Close()\n result, err := client.Call(method, nil, []rpc.Value{{Type:\"int64\", Kind:\"int\", Signed:41}})\n if err != nil { panic(err) }\n return int(result[0].Signed)\n}\n"
+  },
+  {
     "Name": "ffi-view",
     "Source": "package sample\nimport \"ffi\"\ntype View interface { Label() string }\ntype Item struct { Text string; Values []int }\nfunc (i Item) Label() string { return i.Text }\nfunc Render(items []Item) (map[string]int, error) { result := make(map[string]int); for _, item := range items { var view View = item; result[view.Label()] = len(item.Values) }; _, err := ffi.Call(\"sample.render\", []byte(\"render\")); return result, err }\n"
   }

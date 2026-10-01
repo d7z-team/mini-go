@@ -47,7 +47,7 @@ func TestPatchReportsPinnedRevisionWhenOldFramePauses(t *testing.T) {
 
 func TestStepIntoCodeOnlyRevisionPausesAtProgramCounter(t *testing.T) {
 	oldArtifact := patchCallArtifact(10, 1)
-	callPC := len(oldArtifact.Functions[0].Instructions) - 3
+	callPC := len(oldArtifact.Functions[0].Code.Instructions) - 3
 	setTestInstructionLocations(t, &oldArtifact, testInstructionLocation{function: "fn.entry", pc: callPC, line: 8, column: 1})
 	oldProgram := patchTestProgram(t, oldArtifact, "mixed-step-old")
 	newProgram := patchTestProgram(t, patchCallArtifact(100, 2), "mixed-step-new").WithoutSymbols()

@@ -112,6 +112,13 @@ func TestDiskOutputEnvelopeRejectsLengthAndTrailingData(t *testing.T) {
 			return data
 		}()},
 		{name: "trailing payload", data: append(append([]byte(nil), compressed...), 1)},
+		{name: "truncated trailer", data: compressed[:len(compressed)-1]},
+		{name: "checksum", data: func() []byte {
+			data := append([]byte(nil), compressed...)
+			data[len(data)-8] ^= 1
+			return data
+		}()},
+		{name: "second member", data: append(append([]byte(nil), compressed...), compressed[len(objectMagic)+1+objectSizeBytes:]...)},
 		{name: "invalid magic", data: append([]byte("invalid-cache-object\x00"), objectRaw)},
 	}
 	for _, test := range tests {

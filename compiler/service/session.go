@@ -222,7 +222,7 @@ func (s *Session) Build(ctx context.Context, options BuildOptions) (BuildResult,
 	if err != nil {
 		return BuildResult{}, err
 	}
-	result, err := compiler.Prepare(compiler.Request{
+	result, err := engine.Prepare(compiler.Request{
 		Context: ctx, Root: config.Root, Target: config.Target, Sources: sources,
 		Cache: buildCache, EntryPoints: options.EntryPoints,
 		Optimization: options.Optimization, Symbols: options.Symbols,

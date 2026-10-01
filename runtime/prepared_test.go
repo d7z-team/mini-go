@@ -1,15 +1,14 @@
 package runtime
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func TestPreparedInstructionDecodesOperator(t *testing.T) {
-	instruction, err := prepareInstruction(ir.Instruction{Op: string(ir.OpBinary), Payload: []byte(`{"operator":"+"}`)})
+func TestPreparedInstructionBindsOperator(t *testing.T) {
+	instruction, err := prepareInstruction(ir.Instruction{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "+"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,11 +26,8 @@ func TestPreparedInstructionBindsRuntimeTypeAndStructSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(ir.MakeStructPayload{Type: ref, Fields: []string{"Value"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	instruction, err := prepareInstruction(ir.Instruction{Op: string(ir.OpMakeStruct), Payload: payload})
+	payload := ir.MakeStructPayload{Type: ref, Fields: []string{"Value"}}
+	instruction, err := prepareInstruction(ir.Instruction{Op: ir.OpMakeStruct, Payload: payload})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,11 +41,8 @@ func TestPreparedInstructionBindsRuntimeTypeAndStructSchema(t *testing.T) {
 }
 
 func TestPreparedDirectCallUsesCurrentModuleByDefault(t *testing.T) {
-	payload, err := json.Marshal(ir.CallPayload{Function: "fn.target"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	instruction, err := prepareInstruction(ir.Instruction{Op: string(ir.OpCallDirect), Payload: payload})
+	payload := ir.CallPayload{Function: "fn.target"}
+	instruction, err := prepareInstruction(ir.Instruction{Op: ir.OpCallDirect, Payload: payload})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,11 +56,8 @@ func TestPreparedDirectCallUsesCurrentModuleByDefault(t *testing.T) {
 }
 
 func TestPreparedTailCallIsSchedulerControl(t *testing.T) {
-	payload, err := json.Marshal(ir.CallPayload{Function: "fn.target", ResultCount: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	instruction, err := prepareInstruction(ir.Instruction{Op: string(ir.OpTailCallDirect), Payload: payload})
+	payload := ir.CallPayload{Function: "fn.target", ResultCount: 1}
+	instruction, err := prepareInstruction(ir.Instruction{Op: ir.OpTailCallDirect, Payload: payload})
 	if err != nil {
 		t.Fatal(err)
 	}

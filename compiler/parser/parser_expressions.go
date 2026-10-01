@@ -63,12 +63,12 @@ func (p *parser) parsePostfix() ast.Expression {
 				typ := p.parseType()
 				p.expect(token.Rparen, "parser.assert", "expected ) after assertion type")
 				operand := expr
-				expr = ast.Expression{Kind: ast.ExprAssert, Span: spanJoin(expr.Span, p.previous().Span), Operand: &operand, Type: typ}
+				expr = ast.Expression{Kind: ast.ExprAssert, Span: spanJoin(expr.Span, p.previous().Span), Operand: &operand, Type: &typ}
 				continue
 			}
 			field := p.expect(token.Ident, "parser.selector", "expected selector")
 			operand := expr
-			expr = ast.Expression{Kind: ast.ExprSelector, Span: spanJoin(expr.Span, field.Span), Operand: &operand, Field: field.Lexeme, FieldID: identifier(field)}
+			expr = ast.Expression{Kind: ast.ExprSelector, Span: spanJoin(expr.Span, field.Span), Operand: &operand, Field: field.Lexeme, NameID: identifier(field)}
 		case token.Lparen:
 			expr = p.finishCall(expr)
 		case token.Lbrack:
@@ -95,10 +95,10 @@ func (p *parser) parsePrimary() ast.Expression {
 	case token.Ident:
 		p.advance()
 		if start.Lexeme == "true" || start.Lexeme == "false" {
-			return ast.Expression{Kind: ast.ExprLiteral, Span: start.Span, Literal: start.Lexeme, Type: ast.TypeExpr{Kind: ast.TypeName, Name: "Bool"}}
+			return ast.Expression{Kind: ast.ExprLiteral, Span: start.Span, Literal: start.Lexeme, Type: &ast.TypeExpr{Kind: ast.TypeName, Name: "Bool"}}
 		}
 		if start.Lexeme == "nil" {
-			return ast.Expression{Kind: ast.ExprLiteral, Span: start.Span, Literal: "nil", Type: ast.TypeExpr{Kind: ast.TypeName, Name: "Any"}}
+			return ast.Expression{Kind: ast.ExprLiteral, Span: start.Span, Literal: "nil", Type: &ast.TypeExpr{Kind: ast.TypeName, Name: "Any"}}
 		}
 		return ast.Expression{Kind: ast.ExprIdent, Span: start.Span, Name: start.Lexeme, NameID: identifier(start)}
 	case token.Int, token.Float, token.Imag, token.Char, token.String:
@@ -110,10 +110,10 @@ func (p *parser) parsePrimary() ast.Expression {
 			if p.at(token.Lbrace) {
 				return p.finishComposite(typ, typ.Span)
 			}
-			return ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: typ}
+			return ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: &typ}
 		}
 		p.advance()
-		expr := p.parseExpression(1)
+		expr := p.parseNestedExpression()
 		end := p.expect(token.Rparen, "parser.group", "expected )")
 		expr.Span = spanJoin(start.Span, end.Span)
 		return expr
@@ -124,13 +124,13 @@ func (p *parser) parsePrimary() ast.Expression {
 			return p.parseFuncLiteral()
 		}
 		typ := p.parseType()
-		return ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: typ}
+		return ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: &typ}
 	case token.Lbrack, token.Map, token.Struct, token.Interface, token.Chan:
 		typ := p.parseType()
 		if p.at(token.Lbrace) {
 			return p.finishComposite(typ, typ.Span)
 		}
-		return ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: typ}
+		return ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: &typ}
 	case token.Lbrace:
 		return p.finishComposite(ast.TypeExpr{Kind: ast.TypeInvalid, Span: startSpan(start)}, startSpan(start))
 	default:
@@ -145,7 +145,7 @@ func (p *parser) parseFuncLiteral() ast.Expression {
 	params, results := p.parseSignature()
 	body := p.parseBlock()
 	decl := ast.FuncDecl{Params: params, Results: results, Body: body}
-	return ast.Expression{Kind: ast.ExprFunc, Span: spanJoin(startSpan(start), body.Span), Func: decl}
+	return ast.Expression{Kind: ast.ExprFunc, Span: spanJoin(startSpan(start), body.Span), Func: &decl}
 }
 
 func (p *parser) finishCall(callee ast.Expression) ast.Expression {
@@ -160,7 +160,7 @@ func (p *parser) finishCall(callee ast.Expression) ast.Expression {
 		}
 		if len(args) == 0 && p.shouldParseTypeArgBuiltin(callee) {
 			typ := p.parseType()
-			args = append(args, ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: typ})
+			args = append(args, ast.Expression{Kind: ast.ExprIdent, Span: typ.Span, Name: "type", Type: &typ})
 		} else {
 			args = append(args, p.parseNestedExpression())
 		}
@@ -182,44 +182,34 @@ func (p *parser) finishCall(callee ast.Expression) ast.Expression {
 			return ast.Expression{Kind: ast.ExprCall, Span: spanJoin(callee.Span, end.Span), Callee: &callee, Args: args, Ellipsis: ellipsis}
 		}
 		operand := args[0]
-		return ast.Expression{Kind: ast.ExprConvert, Span: spanJoin(callee.Span, end.Span), Type: typ, Operand: &operand}
+		return ast.Expression{Kind: ast.ExprConvert, Span: spanJoin(callee.Span, end.Span), Type: &typ, Operand: &operand}
 	}
 	return ast.Expression{Kind: ast.ExprCall, Span: spanJoin(callee.Span, end.Span), Callee: &callee, Args: args, Ellipsis: ellipsis}
 }
 
 func (p *parser) finishIndexOrSlice(receiver ast.Expression) ast.Expression {
-	start := p.expect(token.Lbrack, "parser.index", "expected [")
-	if p.match(token.Colon) {
-		var endExpr *ast.Expression
-		var maxExpr *ast.Expression
-		if !p.at(token.Colon) && !p.at(token.Rbrack) {
-			expr := p.parseExpression(1)
-			endExpr = &expr
-		}
-		if p.match(token.Colon) && !p.at(token.Rbrack) {
-			expr := p.parseExpression(1)
-			maxExpr = &expr
-		}
-		end := p.expect(token.Rbrack, "parser.slice", "expected ]")
-		return ast.Expression{Kind: ast.ExprSlice, Span: spanJoin(receiver.Span, end.Span), Operand: &receiver, End: endExpr, Max: maxExpr}
+	p.expect(token.Lbrack, "parser.index", "expected [")
+	var first *ast.Expression
+	if !p.at(token.Colon) {
+		expr := p.parseNestedExpression()
+		first = &expr
 	}
-	first := p.parseNestedExpression()
 	if p.match(token.Colon) {
 		var endExpr *ast.Expression
 		var maxExpr *ast.Expression
 		if !p.at(token.Colon) && !p.at(token.Rbrack) {
-			expr := p.parseExpression(1)
+			expr := p.parseNestedExpression()
 			endExpr = &expr
 		}
 		if p.match(token.Colon) && !p.at(token.Rbrack) {
-			expr := p.parseExpression(1)
+			expr := p.parseNestedExpression()
 			maxExpr = &expr
 		}
 		end := p.expect(token.Rbrack, "parser.slice", "expected ]")
-		return ast.Expression{Kind: ast.ExprSlice, Span: spanJoin(receiver.Span, end.Span), Operand: &receiver, Start: &first, End: endExpr, Max: maxExpr}
+		return ast.Expression{Kind: ast.ExprSlice, Span: spanJoin(receiver.Span, end.Span), Operand: &receiver, Start: first, End: endExpr, Max: maxExpr}
 	}
 	if p.match(token.Comma) {
-		args := []ast.Expression{first}
+		args := []ast.Expression{*first}
 		for !p.at(token.Rbrack) && !p.at(token.EOF) {
 			args = append(args, p.parseNestedExpression())
 			if !p.match(token.Comma) {
@@ -230,14 +220,11 @@ func (p *parser) finishIndexOrSlice(receiver ast.Expression) ast.Expression {
 		return ast.Expression{Kind: ast.ExprIndexList, Span: spanJoin(receiver.Span, end.Span), Operand: &receiver, Args: args}
 	}
 	end := p.expect(token.Rbrack, "parser.index", "expected ]")
-	_ = start
-	return ast.Expression{Kind: ast.ExprIndex, Span: spanJoin(receiver.Span, end.Span), Operand: &receiver, Index: &first}
+	return ast.Expression{Kind: ast.ExprIndex, Span: spanJoin(receiver.Span, end.Span), Operand: &receiver, Index: first}
 }
 
 func (p *parser) finishComposite(typ ast.TypeExpr, startSpan source.Span) ast.Expression {
 	p.expect(token.Lbrace, "parser.composite", "expected {")
-	var elements []ast.Expression
-	var entries []ast.KeyValue
 	var items []ast.KeyValue
 	for !p.at(token.Rbrace) && !p.at(token.EOF) {
 		before := p.pos
@@ -249,10 +236,8 @@ func (p *parser) finishComposite(typ ast.TypeExpr, startSpan source.Span) ast.Ex
 		if p.match(token.Colon) {
 			value := p.parseNestedExpression()
 			entry := ast.KeyValue{Key: &first, Value: value}
-			entries = append(entries, entry)
 			items = append(items, entry)
 		} else {
-			elements = append(elements, first)
 			items = append(items, ast.KeyValue{Value: first})
 		}
 		if !p.match(token.Comma) {
@@ -261,7 +246,11 @@ func (p *parser) finishComposite(typ ast.TypeExpr, startSpan source.Span) ast.Ex
 		p.ensureProgress(before, "parser.progress.composite", exprEnd)
 	}
 	end := p.expect(token.Rbrace, "parser.composite", "expected }")
-	return ast.Expression{Kind: ast.ExprComposite, Span: spanJoin(startSpan, end.Span), Type: typ, Elements: elements, Entries: entries, Items: items}
+	var explicitType *ast.TypeExpr
+	if typ.Kind != ast.TypeInvalid {
+		explicitType = &typ
+	}
+	return ast.Expression{Kind: ast.ExprComposite, Span: spanJoin(startSpan, end.Span), Type: explicitType, Items: items}
 }
 
 func (p *parser) parseIdentList() ([]string, []ast.Identifier) {
@@ -292,10 +281,10 @@ func (p *parser) looksLikeParenthesizedTypePrimary() bool {
 		return false
 	}
 	pos := p.pos + 1
-	for pos < len(p.tokens) && p.tokens[pos].Kind == token.Lparen {
+	for pos < p.lexical.TokenCount() && p.lexical.TokenKind(pos) == token.Lparen {
 		pos++
 	}
-	if pos >= len(p.tokens) || !isTypeOnlyPrimaryStart(p.tokens[pos].Kind) {
+	if pos >= p.lexical.TokenCount() || !isTypeOnlyPrimaryStart(p.lexical.TokenKind(pos)) {
 		return false
 	}
 	probe := *p
@@ -321,13 +310,13 @@ func (p *parser) shouldParseTypeArgBuiltin(callee ast.Expression) bool {
 
 func (p *parser) parenthesizedNewArgumentStartsWithTypeSyntax() bool {
 	pos := p.pos
-	for pos < len(p.tokens) && p.tokens[pos].Kind == token.Lparen {
+	for pos < p.lexical.TokenCount() && p.lexical.TokenKind(pos) == token.Lparen {
 		pos++
 	}
-	if pos >= len(p.tokens) {
+	if pos >= p.lexical.TokenCount() {
 		return false
 	}
-	tok := p.tokens[pos]
+	tok := p.lexical.TokenRecord(pos)
 	if isTypeOnlyPrimaryStart(tok.Kind) {
 		return true
 	}
@@ -345,14 +334,14 @@ func isTypeOnlyPrimaryStart(kind token.Kind) bool {
 
 func (p *parser) looksLikeReceiver() bool {
 	depth := 0
-	for i := p.pos; i < len(p.tokens); i++ {
-		switch p.tokens[i].Kind {
+	for i := p.pos; i < p.lexical.TokenCount(); i++ {
+		switch p.lexical.TokenKind(i) {
 		case token.Lparen:
 			depth++
 		case token.Rparen:
 			depth--
 			if depth == 0 {
-				return i+1 < len(p.tokens) && p.tokens[i+1].Kind == token.Ident
+				return i+1 < p.lexical.TokenCount() && p.lexical.TokenKind(i+1) == token.Ident
 			}
 		}
 	}

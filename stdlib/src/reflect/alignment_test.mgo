@@ -83,6 +83,13 @@ func TestReflectFieldMetadataAndAccess(t *testing.T) {
 	if !noteOK || note != "line\nquote\"" || !emptyOK || empty != "" {
 		t.Fatalf("StructTag.Lookup did not decode Go escapes")
 	}
+	raw, rawOK := reflect.StructTag(`raw:"\377\x80\u0080"`).Lookup("raw")
+	if !rawOK || raw != "\xff\x80\u0080" {
+		t.Fatal("StructTag.Lookup changed byte escapes")
+	}
+	if _, ok := reflect.StructTag(`raw:"\uD800"`).Lookup("raw"); ok {
+		t.Fatal("StructTag.Lookup accepted an invalid Unicode escape")
+	}
 }
 
 func TestReflectMethodMetadataAndFunction(t *testing.T) {

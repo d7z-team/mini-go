@@ -24,3 +24,14 @@ func TestStringConstantOperations(t *testing.T) {
 		t.Fatalf("numeric-looking string: %+v", str)
 	}
 }
+
+func TestStringConstantJSONPreservesNonUTF8Facts(t *testing.T) {
+	value := String("\xff\x00\x80", "String", true)
+	if got := string(value.JSON()); got != `{"bytes":"/wCA"}` {
+		t.Fatalf("byte-preserving constant = %s", got)
+	}
+	decoded, ok := FromJSON(value.JSON(), "String", true)
+	if !ok || decoded.Text != value.Text || decoded.Type != value.Type || decoded.Untyped != value.Untyped {
+		t.Fatalf("constant boundary changed source fact: %+v (%v)", decoded, ok)
+	}
+}

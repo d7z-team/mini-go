@@ -1,6 +1,10 @@
 use super::*;
 use crate::contract::{canonical_hash, canonical_json};
 
+#[path = "../../tests/support/slots.rs"]
+mod slots;
+pub(crate) use slots::slot_code;
+
 /// Rebuild a real, validated execution image after changing its single artifact.
 pub(super) fn program_with_artifact(update: impl FnOnce(&mut serde_json::Value)) -> Arc<Program> {
     let mut image: wire::ExecutionImage =

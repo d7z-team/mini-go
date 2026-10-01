@@ -22,9 +22,12 @@ type methodRef struct {
 }
 
 type reachabilityIndex struct {
-	constants map[string]types.TypeRef
-	globals   map[string]types.TypeRef
-	exports   map[string]ir.Export
+	table          *types.TypeTable
+	constants      map[string]types.TypeRef
+	globals        map[string]types.TypeRef
+	exports        map[string]ir.Export
+	reachableTypes map[types.TypeRef]struct{}
+	interfaceTypes map[types.TypeRef]struct{}
 }
 
 func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, entries []ir.Entry) (map[string]ir.Artifact, error) {
@@ -54,9 +57,12 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 		artifact.TypeTable.Nodes = append([]types.TypeNode(nil), artifact.TypeTable.Nodes...)
 		artifacts[modulePath] = artifact
 		index := reachabilityIndex{
-			constants: make(map[string]types.TypeRef, len(artifact.Constants)),
-			globals:   make(map[string]types.TypeRef, len(artifact.Globals)),
-			exports:   make(map[string]ir.Export, len(artifact.Exports)),
+			table:          &artifact.TypeTable,
+			reachableTypes: make(map[types.TypeRef]struct{}),
+			interfaceTypes: make(map[types.TypeRef]struct{}),
+			constants:      make(map[string]types.TypeRef, len(artifact.Constants)),
+			globals:        make(map[string]types.TypeRef, len(artifact.Globals)),
+			exports:        make(map[string]ir.Export, len(artifact.Exports)),
 		}
 		for _, constant := range artifact.Constants {
 			index.constants[constant.ID] = constant.Type
@@ -74,7 +80,7 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 		if hasFunction(artifact, "fn.init") {
 			enqueue(functionRef{modulePath, "fn.init"})
 		}
-		for _, typ := range artifact.TypeTable.DefinedNamed(artifact.Module.Path) {
+		for _, typ := range index.table.DefinedNamed(artifact.Module.Path) {
 			for _, method := range typ.Methods {
 				owner := strings.TrimSpace(method.ModulePath)
 				if owner == "" {
@@ -82,10 +88,10 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 				}
 				if method.FunctionID != "" {
 					ref := functionRef{owner, method.FunctionID}
-					receiver, _ := namedReceiverType(&artifact.TypeTable, method.Receiver, map[types.TypeRef]struct{}{})
+					receiver, _ := namedReceiverType(index.table, method.Receiver, map[types.TypeRef]struct{}{})
 					methods[method.Name] = append(methods[method.Name], methodRef{
 						functionRef: ref,
-						signature:   types.FormatSignature(&artifact.TypeTable, method.Signature),
+						signature:   types.FormatSignature(index.table, method.Signature),
 						receiver:    receiver,
 					})
 					if receiver.ModulePath != "" && receiver.DeclID != "" {
@@ -102,8 +108,10 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 	interfaceRequirements := make(map[string]map[string]struct{})
 	reflectMethodsEnabled := false
 	var requireInterfaceMethod func(string, string)
-	enqueueReachableType := func(table *types.TypeTable, ref types.TypeRef) {
-		seen := map[types.TypeRef]struct{}{}
+	// Type tables stay immutable throughout the worklist. A module owns its
+	// visited sets: anonymous node IDs are only unique within that table.
+	// New method requirements still scan all previously reachable receivers.
+	enqueueReachableType := func(table *types.TypeTable, seen map[types.TypeRef]struct{}, ref types.TypeRef) {
 		var visit func(types.TypeRef)
 		visit = func(current types.TypeRef) {
 			if !current.Valid() {
@@ -207,8 +215,7 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 			}
 		}
 	}
-	enqueueInterfaceMethods := func(table *types.TypeTable, root types.TypeRef) {
-		seen := map[types.TypeRef]struct{}{}
+	enqueueInterfaceMethods := func(table *types.TypeTable, seen map[types.TypeRef]struct{}, root types.TypeRef) {
 		var visit func(types.TypeRef)
 		visit = func(ref types.TypeRef) {
 			if !ref.Valid() {
@@ -287,58 +294,87 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 		artifact := source[ref.modulePath]
 		index := indexes[ref.modulePath]
 		for _, param := range function.Signature.Params {
-			enqueueReachableType(&artifact.TypeTable, param.Type)
+			enqueueReachableType(index.table, index.reachableTypes, param.Type)
 		}
 		for _, result := range function.Signature.Results {
-			enqueueReachableType(&artifact.TypeTable, result)
+			enqueueReachableType(index.table, index.reachableTypes, result)
 		}
 		for _, local := range function.Locals {
-			enqueueReachableType(&artifact.TypeTable, local.Type)
+			enqueueReachableType(index.table, index.reachableTypes, local.Type)
 		}
 		for _, upvalue := range function.Upvalues {
-			enqueueReachableType(&artifact.TypeTable, upvalue.Type)
+			enqueueReachableType(index.table, index.reachableTypes, upvalue.Type)
 		}
-		for _, instruction := range function.Instructions {
+		if function.Code != nil {
+			for _, typ := range function.Code.Types {
+				enqueueReachableType(index.table, index.reachableTypes, typ)
+			}
+			for _, operands := range function.Code.Operands {
+				for _, input := range operands.Inputs {
+					if input.Kind == ir.OperandConstant {
+						if uint64(input.Index) >= uint64(len(artifact.Constants)) {
+							return nil, fmt.Errorf("%s.%s constant operand out of range", ref.modulePath, ref.function)
+						}
+						enqueueReachableType(index.table, index.reachableTypes, artifact.Constants[input.Index].Type)
+					}
+				}
+			}
+		}
+		operations, err := function.Operations()
+		if err != nil {
+			return nil, err
+		}
+		for _, instruction := range operations {
 			switch instruction.Op {
-			case string(ir.OpZero), string(ir.OpTypeAssert), string(ir.OpTypeAssertOK), string(ir.OpConvert):
+			case ir.OpCompareBranch:
+				enqueueReachableType(index.table, index.reachableTypes, instruction.Payload.(ir.CompareBranchPayload).Type)
+			case ir.OpTypeDispatch:
+				for _, match := range instruction.Payload.(ir.TypeDispatchPayload).Cases {
+					if match.Type.Valid() {
+						enqueueReachableType(index.table, index.reachableTypes, match.Type)
+					}
+				}
+			case ir.OpGetPath:
+				enqueueReachableType(index.table, index.reachableTypes, instruction.Payload.(ir.FieldPathPayload).Type)
+			case ir.OpZero, ir.OpTypeAssert, ir.OpTypeAssertOK, ir.OpConvert:
 				var payload ir.TypePayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode type payload in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				enqueueReachableType(&artifact.TypeTable, payload.Type)
-			case string(ir.OpMakeSequence):
+				enqueueReachableType(index.table, index.reachableTypes, payload.Type)
+			case ir.OpMakeSequence:
 				var payload ir.MakeSequencePayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode make_sequence in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				enqueueReachableType(&artifact.TypeTable, payload.Type)
-			case string(ir.OpMakeMap):
+				enqueueReachableType(index.table, index.reachableTypes, payload.Type)
+			case ir.OpMakeMap:
 				var payload ir.MakeMapPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode make_map in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				enqueueReachableType(&artifact.TypeTable, payload.Type)
-			case string(ir.OpMakeStruct):
+				enqueueReachableType(index.table, index.reachableTypes, payload.Type)
+			case ir.OpMakeStruct:
 				var payload ir.MakeStructPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode make_struct in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				enqueueReachableType(&artifact.TypeTable, payload.Type)
-			case string(ir.OpMakeSlice):
+				enqueueReachableType(index.table, index.reachableTypes, payload.Type)
+			case ir.OpMakeSlice:
 				var payload ir.MakeSlicePayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode make_slice in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				enqueueReachableType(&artifact.TypeTable, payload.Type)
-			case string(ir.OpMakeWaitable):
+				enqueueReachableType(index.table, index.reachableTypes, payload.Type)
+			case ir.OpMakeWaitable:
 				var payload ir.MakeWaitablePayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode make_waitable in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				enqueueReachableType(&artifact.TypeTable, payload.Type)
-			case string(ir.OpCallDirect), string(ir.OpTailCallDirect):
+				enqueueReachableType(index.table, index.reachableTypes, payload.Type)
+			case ir.OpCallDirect, ir.OpTailCallDirect:
 				var payload ir.CallPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode %s in %s.%s: %w", instruction.Op, ref.modulePath, ref.function, err)
 				}
 				modulePath := strings.TrimSpace(payload.ModulePath)
@@ -352,27 +388,27 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 						enableReflectMethods()
 					}
 				}
-			case string(ir.OpCallIntrinsic):
+			case ir.OpCallIntrinsic:
 				var payload ir.CallIntrinsicPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode call_intrinsic in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
 				descriptor, ok := ir.Intrinsic(payload.ID)
 				if !ok || descriptor.DynamicResult.ModulePath == "" || descriptor.DynamicResult.DeclID == "" {
 					continue
 				}
-				dependency, ok := source[descriptor.DynamicResult.ModulePath]
+				dependency, ok := indexes[descriptor.DynamicResult.ModulePath]
 				if !ok {
 					return nil, fmt.Errorf("intrinsic %s requires unavailable dynamic result type %s.%s", payload.ID, descriptor.DynamicResult.ModulePath, descriptor.DynamicResult.DeclID)
 				}
-				node, ok := dependency.TypeTable.Named(descriptor.DynamicResult)
+				node, ok := dependency.table.Named(descriptor.DynamicResult)
 				if !ok {
 					return nil, fmt.Errorf("intrinsic %s dynamic result type %s.%s is missing", payload.ID, descriptor.DynamicResult.ModulePath, descriptor.DynamicResult.DeclID)
 				}
-				enqueueReachableType(&dependency.TypeTable, types.TypeRef{Kind: types.Named, Named: node.Identity, Node: node.ID})
-			case string(ir.OpMakeClosure):
+				enqueueReachableType(dependency.table, dependency.reachableTypes, types.TypeRef{Kind: types.Named, Named: node.Identity, Node: node.ID})
+			case ir.OpMakeClosure:
 				var payload ir.ClosurePayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode make_closure in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
 				modulePath := strings.TrimSpace(payload.ModulePath)
@@ -380,69 +416,69 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 					modulePath = ref.modulePath
 				}
 				enqueue(functionRef{modulePath, payload.Function})
-			case string(ir.OpLoadExport):
+			case ir.OpLoadExport:
 				var payload ir.ExportPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode module_member in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				if dependency, ok := source[payload.ModulePath]; ok {
+				if dependency, ok := indexes[payload.ModulePath]; ok {
 					export, found := indexes[payload.ModulePath].exports[payload.Export]
 					if !found {
 						return nil, fmt.Errorf("%s.%s references missing export %s.%s", ref.modulePath, ref.function, payload.ModulePath, payload.Export)
 					}
-					enqueueReachableType(&dependency.TypeTable, export.Type)
+					enqueueReachableType(dependency.table, dependency.reachableTypes, export.Type)
 					if export.Kind == "function" {
 						enqueue(functionRef{payload.ModulePath, export.ID})
 					}
 				} else {
 					return nil, fmt.Errorf("%s.%s references missing module %s", ref.modulePath, ref.function, payload.ModulePath)
 				}
-			case string(ir.OpCallInterface):
+			case ir.OpCallInterface:
 				var payload ir.CallInterfacePayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode call_interface in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
-				enqueueReachableType(&artifact.TypeTable, payload.InterfaceType)
-				enqueueInterfaceMethods(&artifact.TypeTable, payload.InterfaceType)
-				if key, ok := namedReceiverType(&artifact.TypeTable, payload.InterfaceType, map[types.TypeRef]struct{}{}); ok && ref.modulePath != "reflect" && key.ModulePath == "reflect" && key.DeclID == "Type" {
+				enqueueReachableType(index.table, index.reachableTypes, payload.InterfaceType)
+				enqueueInterfaceMethods(index.table, index.interfaceTypes, payload.InterfaceType)
+				if key, ok := namedReceiverType(index.table, payload.InterfaceType, map[types.TypeRef]struct{}{}); ok && ref.modulePath != "reflect" && key.ModulePath == "reflect" && key.DeclID == "Type" {
 					switch payload.Method {
 					case "NumMethod", "Method", "MethodByName", "Methods":
 						enableReflectMethods()
 					}
 				}
-			case string(ir.OpConst):
+			case ir.OpConst:
 				var payload ir.ConstPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode const in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
 				if typ, ok := index.constants[payload.Constant]; ok {
-					enqueueReachableType(&artifact.TypeTable, typ)
+					enqueueReachableType(index.table, index.reachableTypes, typ)
 				}
-			case string(ir.OpLoadGlobal):
+			case ir.OpLoadGlobal:
 				var payload ir.GlobalPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode load_global in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
 				if typ, ok := index.globals[payload.Global]; ok {
-					enqueueReachableType(&artifact.TypeTable, typ)
+					enqueueReachableType(index.table, index.reachableTypes, typ)
 				}
-			case string(ir.OpAddressOf):
+			case ir.OpAddressOf:
 				var payload ir.AddressPayload
-				if err := ir.DecodeInstructionPayload(instruction.Payload, &payload); err != nil {
+				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode address_of in %s.%s: %w", ref.modulePath, ref.function, err)
 				}
 				switch payload.Kind {
 				case "global":
 					if typ, ok := index.globals[payload.Global]; ok {
-						enqueueReachableType(&artifact.TypeTable, typ)
+						enqueueReachableType(index.table, index.reachableTypes, typ)
 					}
 				case "export":
-					if dependency, ok := source[payload.ModulePath]; ok {
+					if dependency, ok := indexes[payload.ModulePath]; ok {
 						export, found := indexes[payload.ModulePath].exports[payload.Export]
 						if !found || export.Kind != "global" {
 							return nil, fmt.Errorf("address target %s.%s is not an exported variable", payload.ModulePath, payload.Export)
 						}
-						enqueueReachableType(&dependency.TypeTable, export.Type)
+						enqueueReachableType(dependency.table, dependency.reachableTypes, export.Type)
 					}
 				}
 			}

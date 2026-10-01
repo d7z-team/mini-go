@@ -65,6 +65,10 @@ func ValidateProgramContentsWithLimits(program Program, limits Limits) []source.
 }
 
 func validateDecl(decl Decl, seen map[string]struct{}, add func(string, string, source.Span)) {
+	if !decl.hasPayload() {
+		add("ast.decl.payload.missing", "missing declaration payload", decl.Span)
+		return
+	}
 	switch decl.Kind {
 	case DeclInvalid:
 	case DeclImport:
@@ -72,9 +76,9 @@ func validateDecl(decl Decl, seen map[string]struct{}, add func(string, string, 
 			add("ast.import.path.missing", "missing import path", decl.Span)
 		}
 	case DeclConst:
-		validateValueDecl("const", decl.Const, add)
+		validateValueDecl("const", *decl.Const, add)
 	case DeclVar:
-		validateValueDecl("var", decl.Var, add)
+		validateValueDecl("var", *decl.Var, add)
 	case DeclType:
 		name := strings.TrimSpace(decl.Type.Name)
 		validateNamedDecl("type", name, decl.Span, seen, add)
@@ -86,11 +90,11 @@ func validateDecl(decl Decl, seen map[string]struct{}, add func(string, string, 
 			name = typeText(decl.Func.Receiver.Type) + "." + name
 		}
 		if decl.Func.Receiver == nil && name == "init" {
-			validateFuncDecl(decl.Func, decl.Span, add)
+			validateFuncDecl(*decl.Func, decl.Span, add)
 			return
 		}
 		validateNamedDecl("func", name, decl.Span, seen, add)
-		validateFuncDecl(decl.Func, decl.Span, add)
+		validateFuncDecl(*decl.Func, decl.Span, add)
 	default:
 		add("ast.decl.kind.unknown", "unknown declaration kind", decl.Span)
 	}

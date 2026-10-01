@@ -37,7 +37,7 @@ func lowerTestProgramWithOptions(program ast.Program, options Options) (hir.Prog
 	return Lower(checked, options)
 }
 
-func findInstruction(instructions []ir.Instruction, op string) (ir.Instruction, bool) {
+func findInstruction(instructions []ir.Instruction, op ir.Opcode) (ir.Instruction, bool) {
 	for _, instruction := range instructions {
 		if instruction.Op == op {
 			return instruction, true

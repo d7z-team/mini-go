@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
@@ -16,17 +17,17 @@ func TestLowerLabelAndGotoStatements(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names:  []string{"x"},
 								Type:   intType,
-								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 							},
 						}},
 					}, {
@@ -39,7 +40,7 @@ func TestLowerLabelAndGotoStatements(t *testing.T) {
 						Right: []ast.Expression{{
 							Kind:    ast.ExprLiteral,
 							Literal: "99",
-							Type:    intType,
+							Type:    &intType,
 						}},
 					}, {
 						Kind:  ast.StmtLabel,
@@ -77,7 +78,7 @@ func TestLowerLabeledBreakAndContinueStatements(t *testing.T) {
 		return ast.Expression{Kind: ast.ExprIdent, Name: "x"}
 	}
 	intLiteral := func(value string) ast.Expression {
-		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType}
+		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType}
 	}
 	loop := func(body ast.BlockStmt) ast.Statement {
 		return ast.Statement{
@@ -85,7 +86,7 @@ func TestLowerLabeledBreakAndContinueStatements(t *testing.T) {
 			Cond: ptrExpr(ast.Expression{
 				Kind:     ast.ExprBinary,
 				Operator: "<",
-				Type:     boolType,
+				Type:     &boolType,
 				Left:     ptrExpr(identX()),
 				Right:    ptrExpr(intLiteral("5")),
 			}),
@@ -109,13 +110,13 @@ func TestLowerLabeledBreakAndContinueStatements(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names:  []string{"x"},
 								Type:   intType,
 								Values: []ast.Expression{intLiteral("0")},
@@ -148,9 +149,19 @@ func TestLowerLabeledBreakAndContinueStatements(t *testing.T) {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
 	}
 	var sawOuterContinue, sawOuterBreak bool
+	var outerPost, outerEnd string
+	// The outer loop's post/end labels occur after the inner loop's labels.
 	for _, stmt := range mainFn.Body {
-		sawOuterContinue = sawOuterContinue || stmt.Kind == ir.StmtJump && stmt.Label == ".for.post.2"
-		sawOuterBreak = sawOuterBreak || stmt.Kind == ir.StmtJump && stmt.Label == ".for.end.3"
+		if stmt.Kind == ir.StmtLabel && strings.HasPrefix(stmt.Label, ".for.post.") {
+			outerPost = stmt.Label
+		}
+		if stmt.Kind == ir.StmtLabel && strings.HasPrefix(stmt.Label, ".for.end.") {
+			outerEnd = stmt.Label
+		}
+	}
+	for _, stmt := range mainFn.Body {
+		sawOuterContinue = sawOuterContinue || stmt.Kind == ir.StmtJump && stmt.Label == outerPost
+		sawOuterBreak = sawOuterBreak || stmt.Kind == ir.StmtJump && stmt.Label == outerEnd
 	}
 	if !sawOuterContinue || !sawOuterBreak {
 		t.Fatalf("expected labeled branch to target outer loop post/end labels, got %#v", mainFn.Body)

@@ -4,36 +4,36 @@
 
 package strconv
 
-import "math"
+import "math/floatbits"
 
 // Go 1.26.6 internal/strconv uses unsafe for these bit operations. Mini-Go's
 // mathematical bit conversions preserve the same IEEE values without pointers.
 func float64frombits(b uint64) float64 {
-	return math.Float64frombits(b)
+	return floatbits.Float64frombits(b)
 }
 
 func float32frombits(b uint32) float32 {
-	return math.Float32frombits(b)
+	return floatbits.Float32frombits(b)
 }
 
 func float64bits(f float64) uint64 {
-	return math.Float64bits(f)
+	return floatbits.Float64bits(f)
 }
 
 func float32bits(f float32) uint32 {
-	return math.Float32bits(f)
+	return floatbits.Float32bits(f)
 }
 
 func inf(sign int) float64 {
-	return math.Inf(sign)
+	return floatbits.Inf(sign)
 }
 
 func isNaN(f float64) bool {
-	return math.IsNaN(f)
+	return floatbits.IsNaN(f)
 }
 
 func nan() float64 {
-	return math.NaN()
+	return floatbits.NaN()
 }
 
 // ParseComplex converts a real or imaginary floating-point representation to

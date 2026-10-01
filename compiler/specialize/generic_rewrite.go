@@ -11,13 +11,13 @@ import (
 func (s *genericSpecializer) rewriteDecl(decl *ast.Decl, substitutions map[string]ast.TypeExpr) {
 	switch decl.Kind {
 	case ast.DeclConst:
-		s.rewriteValueDecl(&decl.Const, decl.NodeID, substitutions)
+		s.rewriteValueDecl(decl.Const, decl.NodeID, substitutions)
 	case ast.DeclVar:
-		s.rewriteValueDecl(&decl.Var, decl.NodeID, substitutions)
+		s.rewriteValueDecl(decl.Var, decl.NodeID, substitutions)
 	case ast.DeclType:
 		s.rewriteType(&decl.Type.Type, substitutions)
 	case ast.DeclFunc:
-		s.rewriteFunc(&decl.Func, substitutions)
+		s.rewriteFunc(decl.Func, substitutions)
 	}
 }
 
@@ -200,7 +200,8 @@ func (s *genericSpecializer) rewriteExpr(expr *ast.Expression, substitutions map
 		if replacement, ok := substitutions[expr.Callee.Name]; ok {
 			s.rewriteExpr(&expr.Args[0], substitutions)
 			operand := expr.Args[0]
-			*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprConvert, Type: cloneGenericType(replacement), Operand: &operand, Span: expr.Span}
+			target := cloneGenericType(replacement)
+			*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprConvert, Type: &target, Operand: &operand, Span: expr.Span}
 			return
 		}
 	}
@@ -208,7 +209,8 @@ func (s *genericSpecializer) rewriteExpr(expr *ast.Expression, substitutions map
 		object := s.info.Objects[s.info.Uses[expr.NodeID]]
 		if replacement, ok := substitutions[expr.Name]; ok && (s.activeAlias != "" || object.Kind == check.ObjectTypeParam) {
 			expr.Name = "type"
-			expr.Type = cloneGenericType(replacement)
+			target := cloneGenericType(replacement)
+			expr.Type = &target
 			expr.Type.Span = expr.Span
 			return
 		}
@@ -225,13 +227,13 @@ func (s *genericSpecializer) rewriteExpr(expr *ast.Expression, substitutions map
 			return
 		}
 	}
-	s.rewriteType(&expr.Type, substitutions)
+	s.rewriteType(expr.Type, substitutions)
 	if call, ok := s.info.Calls[expr.NodeID]; ok && call.Kind == check.CallConversion && call.Target.Kind == types.TypeParameter && len(expr.Args) == 1 {
 		s.rewriteExpr(&expr.Args[0], substitutions)
 		target := s.sourceTypeExpr(call.Target, expr.Span)
 		s.rewriteType(&target, substitutions)
 		operand := expr.Args[0]
-		*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprConvert, Span: expr.Span, Type: target, Operand: &operand}
+		*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprConvert, Span: expr.Span, Type: &target, Operand: &operand}
 		return
 	}
 	if expr.Kind == ast.ExprCall {
@@ -271,19 +273,12 @@ func (s *genericSpecializer) rewriteExpr(expr *ast.Expression, substitutions map
 	s.rewriteExpr(expr.Start, substitutions)
 	s.rewriteExpr(expr.End, substitutions)
 	s.rewriteExpr(expr.Max, substitutions)
-	for i := range expr.Elements {
-		s.rewriteExpr(&expr.Elements[i], substitutions)
-	}
-	for i := range expr.Entries {
-		s.rewriteExpr(expr.Entries[i].Key, substitutions)
-		s.rewriteExpr(&expr.Entries[i].Value, substitutions)
-	}
 	for i := range expr.Items {
 		s.rewriteExpr(expr.Items[i].Key, substitutions)
 		s.rewriteExpr(&expr.Items[i].Value, substitutions)
 	}
 	if expr.Kind == ast.ExprFunc {
-		s.rewriteFunc(&expr.Func, substitutions)
+		s.rewriteFunc(expr.Func, substitutions)
 	}
 	if (expr.Kind == ast.ExprIndex || expr.Kind == ast.ExprIndexList) && expr.Operand != nil {
 		name := genericCalleeName(*expr.Operand)
@@ -308,7 +303,7 @@ func (s *genericSpecializer) rewriteExpr(expr *ast.Expression, substitutions map
 				return
 			}
 			if generated := s.instantiateType(name, typeArgs, expr.Span); generated != "" {
-				*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprIdent, Name: generated, Type: ast.TypeExpr{Kind: ast.TypeName, Name: generated, Span: expr.Span}, Span: expr.Span}
+				*expr = ast.Expression{NodeID: expr.NodeID, Kind: ast.ExprIdent, Name: generated, Type: &ast.TypeExpr{Kind: ast.TypeName, Name: generated, Span: expr.Span}, Span: expr.Span}
 				return
 			}
 		}

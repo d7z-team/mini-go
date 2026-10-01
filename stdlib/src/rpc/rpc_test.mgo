@@ -39,16 +39,16 @@ func TestCodeOf(t *testing.T) {
 
 func TestValueCodecCanonicalizesFieldOrder(t *testing.T) {
 	left, err := encodeValues([]Value{{Type: "example.Message", Kind: "struct", Fields: []Field{
-			{ID: 2, Value: Value{Type: "int64", Kind: "int", Signed: 2}},
-			{ID: 1, Value: Value{Type: "string", Kind: "string", Text: "one"}},
-		}}})
+				{ID: 2, Value: Value{Type: "int64", Kind: "int", Signed: 2}},
+				{ID: 1, Value: Value{Type: "string", Kind: "string", Text: "one"}},
+			}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	right, err := encodeValues([]Value{{Type: "example.Message", Kind: "struct", Fields: []Field{
-			{ID: 1, Value: Value{Type: "string", Kind: "string", Text: "one"}},
-			{ID: 2, Value: Value{Type: "int64", Kind: "int", Signed: 2}},
-		}}})
+				{ID: 1, Value: Value{Type: "string", Kind: "string", Text: "one"}},
+				{ID: 2, Value: Value{Type: "int64", Kind: "int", Signed: 2}},
+			}}})
 	if err != nil {
 		t.Fatal(err)
 	}

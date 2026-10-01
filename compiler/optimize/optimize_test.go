@@ -46,6 +46,40 @@ func TestApplyFoldsConstantBranchAndPreservesSelectedSourcePoints(t *testing.T) 
 	}
 }
 
+func TestBranchFallthroughPreservesComparisonAndOtherLabelEntries(t *testing.T) {
+	for _, negated := range []bool{false, true} {
+		comparison := hir.Expression{Kind: hir.ExprBinary, Operator: "<", Left: &hir.Expression{Kind: hir.ExprLocal, Local: "a"}, Right: &hir.Expression{Kind: hir.ExprLocal, Local: "b"}}
+		body := []hir.Statement{
+			{Kind: hir.StmtJumpIf, Expr: comparison, Label: "body", BranchNegated: negated},
+			{Kind: hir.StmtJump, Label: "exit"},
+			{Kind: hir.StmtLabel, Label: "alias"},
+			{Kind: hir.StmtLabel, Label: "body"},
+			{Kind: hir.StmtReturn},
+			{Kind: hir.StmtLabel, Label: "exit"},
+			{Kind: hir.StmtJump, Label: "alias"},
+		}
+		result, changed := simplifyBranchFallthrough(body)
+		if !changed || result[0].Label != "exit" || result[0].BranchNegated == negated || !reflect.DeepEqual(result[0].Expr, comparison) {
+			t.Fatalf("incorrect branch polarity: %#v", result[0])
+		}
+		if result[1].Label != "alias" || result[2].Label != "body" || result[len(result)-1].Label != "alias" {
+			t.Fatal("branch simplification lost an alternate entry")
+		}
+	}
+}
+
+func TestConstantBranchRespectsNegatedPolarity(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		body, _ := foldConstantBranches([]hir.Statement{
+			{Kind: hir.StmtJumpIf, Label: "target", BranchNegated: true, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(value)}},
+			{Kind: hir.StmtReturn},
+		}, nil)
+		if value == "false" && (body[0].Kind != hir.StmtJump || body[0].BranchNegated) || value == "true" && body[0].Kind != hir.StmtReturn {
+			t.Fatalf("negated %s: %#v", value, body)
+		}
+	}
+}
+
 func TestApplyMarksOnlyLogicalDirectTailCalls(t *testing.T) {
 	signature := types.FunctionSignature{Results: []types.TypeRef{types.Builtin(types.PrimitiveInt)}}
 	program := hir.Program{Functions: []hir.Function{
@@ -221,6 +255,21 @@ func TestFullOptimizationRetainsStoresLiveOnBranchesAndLoops(t *testing.T) {
 	}
 	if stores != 2 {
 		t.Fatalf("O2 removed a path-live store: %#v", optimized.Functions[0].Body)
+	}
+}
+
+func TestFullOptimizationRetainsNamedResultsAcrossPanic(t *testing.T) {
+	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", ResultLocals: []string{"result"}, Body: []hir.Statement{
+		{Kind: hir.StmtStoreLocal, Local: "result", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`7`)}},
+		{Kind: hir.StmtPanic, Expr: hir.Expression{Kind: hir.ExprLiteral, Value: json.RawMessage(`1`)}},
+	}}}}
+	optimized, err := Apply(program, LevelFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := optimized.Functions[0].Body
+	if len(body) != 2 || body[0].Kind != hir.StmtStoreLocal || body[0].Local != "result" {
+		t.Fatalf("panic path lost its observable named result: %#v", body)
 	}
 }
 

@@ -23,16 +23,16 @@ func (l *lowerer) lowerMinMaxCall(expr ast.Expression, scope *funcScope) (ir.Exp
 	values := ast.Expression{
 		Kind: ast.ExprIdent,
 		Name: "values",
-		Type: valuesTypeExpr,
+		Type: &valuesTypeExpr,
 	}
 	zero := ast.Expression{
 		Kind:    ast.ExprLiteral,
 		Literal: "0",
-		Type:    ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
+		Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
 	}
-	best := ast.Expression{Kind: ast.ExprIdent, Name: "best", Type: valueTypeExpr}
-	value := ast.Expression{Kind: ast.ExprIdent, Name: "value", Type: valueTypeExpr}
-	first := ast.Expression{Kind: ast.ExprIndex, Operand: &values, Index: &zero, Type: valueTypeExpr}
+	best := ast.Expression{Kind: ast.ExprIdent, Name: "best", Type: &valueTypeExpr}
+	value := ast.Expression{Kind: ast.ExprIdent, Name: "value", Type: &valueTypeExpr}
+	first := ast.Expression{Kind: ast.ExprIndex, Operand: &values, Index: &zero, Type: &valueTypeExpr}
 	comparisonOperator := "<"
 	if expr.Callee != nil && strings.TrimSpace(expr.Callee.Name) == "max" {
 		comparisonOperator = ">"
@@ -48,7 +48,7 @@ func (l *lowerer) lowerMinMaxCall(expr ast.Expression, scope *funcScope) (ir.Exp
 		Kind:  ast.StmtRange,
 		Op:    ":=",
 		Key:   &ast.Expression{Kind: ast.ExprIdent, Name: "_"},
-		Value: &ast.Expression{Kind: ast.ExprIdent, Name: "value", Type: valueTypeExpr},
+		Value: &ast.Expression{Kind: ast.ExprIdent, Name: "value", Type: &valueTypeExpr},
 		Range: &values,
 		Body: ast.BlockStmt{Stmts: []ast.Statement{{
 			Kind: ast.StmtIf,
@@ -58,11 +58,11 @@ func (l *lowerer) lowerMinMaxCall(expr ast.Expression, scope *funcScope) (ir.Exp
 	}
 	generated := ast.Expression{
 		Kind: ast.ExprFunc,
-		Func: ast.FuncDecl{
+		Func: &ast.FuncDecl{
 			Params:  []ast.Field{{Name: "values", Type: valueTypeExpr, Variadic: true}},
 			Results: []ast.Field{{Type: valueTypeExpr}},
 			Body: ast.BlockStmt{Stmts: []ast.Statement{
-				{Kind: ast.StmtDecl, Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+				{Kind: ast.StmtDecl, Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 					Names: []string{"best"}, Type: valueTypeExpr, Values: []ast.Expression{first},
 				}}}},
 				rangeStmt,
@@ -124,7 +124,7 @@ func astBinary(operator string, left, right ast.Expression) ast.Expression {
 		Operator: operator,
 		Left:     &left,
 		Right:    &right,
-		Type:     ast.TypeExpr{Kind: ast.TypeName, Name: "Bool"},
+		Type:     &ast.TypeExpr{Kind: ast.TypeName, Name: "Bool"},
 	}
 }
 
@@ -134,7 +134,7 @@ func astArithmetic(operator string, left, right ast.Expression, typ string) ast.
 		Operator: operator,
 		Left:     &left,
 		Right:    &right,
-		Type:     ast.TypeExpr{Kind: ast.TypeName, Name: typ},
+		Type:     &ast.TypeExpr{Kind: ast.TypeName, Name: typ},
 	}
 }
 
@@ -142,11 +142,11 @@ func typedNumericLiteral(targetType, literal string) ast.Expression {
 	value := ast.Expression{
 		Kind:    ast.ExprLiteral,
 		Literal: literal,
-		Type:    ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
+		Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
 	}
 	return ast.Expression{
 		Kind:    ast.ExprConvert,
-		Type:    ast.TypeExpr{Kind: ast.TypeName, Name: targetType},
+		Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: targetType},
 		Operand: &value,
 	}
 }

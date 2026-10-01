@@ -9,11 +9,23 @@ import (
 
 type Document struct {
 	File        source.File
-	Elements    []scanner.Element
-	Tokens      []scanner.Token
 	Program     ast.Program
 	Diagnostics []source.Diagnostic
 	NodeCount   int
+	lexical     scanner.Document
+}
+
+// Syntax is an expanded lexical view owned by one source tooling operation.
+type Syntax struct {
+	Document
+	Elements []scanner.Element
+	Tokens   []scanner.Token
+}
+
+// Syntax reconstructs lossless lexical records without rescanning source text.
+func (d Document) Syntax() Syntax {
+	view := d.lexical.Syntax()
+	return Syntax{Document: d, Elements: view.Elements, Tokens: view.Tokens}
 }
 
 func ParseDocument(modulePath, path, text string) Document {
@@ -26,14 +38,14 @@ func ParseDocumentFile(modulePath string, file source.File) Document {
 
 func ParseDocumentFileWithLimits(modulePath string, file source.File, limits Limits) Document {
 	limits = normalizeLimits(limits)
-	scanned := scanner.ScanFileWithLimits(file, limits.Scanner)
+	scanned := scanner.ScanDocument(file, limits.Scanner)
 	parsed := parseScanned(modulePath, scanned, limits)
-	return Document{
-		File:        scanned.File,
-		Elements:    append([]scanner.Element(nil), scanned.Elements...),
-		Tokens:      append([]scanner.Token(nil), scanned.Tokens...),
+	document := Document{
+		File:        scanned.File(),
 		Program:     parsed.Program,
 		Diagnostics: append([]source.Diagnostic(nil), parsed.Diagnostics...),
 		NodeCount:   parsed.NodeCount,
+		lexical:     scanned,
 	}
+	return document
 }

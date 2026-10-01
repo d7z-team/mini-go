@@ -33,21 +33,19 @@ func FuzzPatchTransaction(f *testing.F) {
 		case 1:
 			targetArtifact.Functions = append(targetArtifact.Functions, ir.Function{
 				ID: "fn.added", Signature: testSignature("function() Void"),
-				Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
+				Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 			})
 		case 2:
 			targetArtifact.Globals[0].Type = testType("String")
+			targetArtifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 		case 3:
 			targetArtifact.Exports = nil
 		case 5:
 			targetArtifact.Module.Package = "changed"
 		case 6:
 			targetArtifact.Globals[0].ID = "global.changed"
-			for index := range targetArtifact.Functions[0].Instructions {
-				instruction := &targetArtifact.Functions[0].Instructions[index]
-				if instruction.Op == string(ir.OpLoadGlobal) || instruction.Op == string(ir.OpStoreGlobal) {
-					instruction.Payload = testPayload(ir.GlobalPayload{Global: "global.changed"})
-				}
+			for index := range targetArtifact.Functions[0].Code.Descriptors.Global {
+				targetArtifact.Functions[0].Code.Descriptors.Global[index].Global = "global.changed"
 			}
 		case 7:
 			targetArtifact.Globals = append(targetArtifact.Globals, ir.Global{ID: "global.added", Type: testType("Int64")})

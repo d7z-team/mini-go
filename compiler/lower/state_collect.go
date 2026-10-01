@@ -34,7 +34,7 @@ func (l *lowerer) collectImports(program ast.Program) {
 				seenPath[path] = struct{}{}
 				l.importPaths = append(l.importPaths, path)
 			}
-			alias := importAlias(decl.Import)
+			alias := importAlias(*decl.Import)
 			if alias == "_" || alias == "." || alias == "" {
 				continue
 			}
@@ -64,7 +64,7 @@ func (l *lowerer) collectDotImports(program ast.Program) {
 			l.dotImportsByFile[fileKey] = fileDotImports
 		}
 		for _, decl := range file.Decls {
-			if decl.Kind != ast.DeclImport || importAlias(decl.Import) != "." {
+			if decl.Kind != ast.DeclImport || importAlias(*decl.Import) != "." {
 				continue
 			}
 			modulePath := strings.TrimSpace(decl.Import.Path)
@@ -144,13 +144,13 @@ func (l *lowerer) registerDependencyTypeCatalog(name string, info moduleExportIn
 	}
 	l.initTypeRefs()
 	key := types.TypeKey{ModulePath: modulePath, DeclID: types.DeclID(name)}
-	if _, exists := l.typeTable.Named(key); exists {
-		return
-	}
-	node := types.TypeNode{
-		ID:       types.TypeID("decl." + modulePath + "." + name),
-		Kind:     types.Named,
-		Identity: key,
+	node, exists := l.typeTable.Named(key)
+	if !exists {
+		node = types.TypeNode{
+			ID:       types.TypeID("decl." + modulePath + "." + name),
+			Kind:     types.Named,
+			Identity: key,
+		}
 	}
 	self := modulePath + "." + name
 	if target := strings.TrimSpace(info.Underlying); target != "" {
@@ -169,6 +169,11 @@ func (l *lowerer) registerDependencyTypeCatalog(name string, info moduleExportIn
 	} else {
 		return
 	}
+	// Runtime bindings are supplied by compiled dependencies. Source analysis
+	// deliberately has no executable method IDs; update our owned table without
+	// changing the published semantic facts.
+	node.Fields = nil
+	node.Methods = nil
 	for _, field := range info.Fields {
 		ref, ok := l.parseDependencyTypeRef(modulePath, field.Type)
 		if !ok {
@@ -195,7 +200,11 @@ func (l *lowerer) registerDependencyTypeCatalog(name string, info moduleExportIn
 			ModulePath: strings.TrimSpace(firstNonEmpty(method.ModulePath, info.ModulePath)),
 		})
 	}
-	_ = l.typeTable.Add(node)
+	if exists {
+		_ = l.typeTable.Replace(node)
+	} else {
+		_ = l.typeTable.Add(node)
+	}
 }
 
 func (l *lowerer) parseDependencyTypeRef(modulePath, text string) (types.TypeRef, bool) {

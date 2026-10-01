@@ -13,11 +13,11 @@ func TestExecutionPollStepsUsesExactSliceBudget(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/poll-steps", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			{Op: string(ir.OpPop)},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		},
+		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+			{Op: ir.OpPop},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}}
 	instance, err := patchTestProgram(t, artifact, "poll-steps").Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
@@ -62,11 +62,11 @@ func TestExecutionPollStepsPreservesCumulativeScopeLimit(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/poll-limit", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			{Op: string(ir.OpPop)},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		},
+		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+			{Op: ir.OpPop},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}}
 	instance, err := patchTestProgram(t, artifact, "poll-limit").Instantiate(context.Background(), InstanceOptions{Limits: Limits{MaxSteps: 2}})
 	if err != nil {

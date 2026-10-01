@@ -1,4 +1,4 @@
-import { Worker } from "node:worker_threads";
+import { createNodeConnection } from "./node-connection.js";
 import { Runtime } from "./runtime.js";
 import type { WorkerFactory } from "./protocol.js";
 import type { Options } from "./types.js";
@@ -14,22 +14,5 @@ export const MiniGo = {
   },
 };
 
-export const createWorker: WorkerFactory = () => {
-  const worker = new Worker(new URL("./node-worker.js", import.meta.url), { execArgv: [] });
-  let terminated = false;
-  return {
-    send: (message, transfer = []) => worker.postMessage(message, transfer),
-    listen(message, failure) {
-      worker.on("message", message);
-      worker.on("messageerror", failure);
-      worker.on("error", failure);
-      worker.on("exit", (code) => {
-        if (!terminated) failure(new Error(`runtime worker exited (${code})`));
-      });
-    },
-    terminate() {
-      terminated = true;
-      void worker.terminate();
-    },
-  };
-};
+export const createWorker: WorkerFactory = () =>
+  createNodeConnection(new URL("./node-worker.js", import.meta.url), "runtime worker");

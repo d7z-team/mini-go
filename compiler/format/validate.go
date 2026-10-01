@@ -20,8 +20,8 @@ type triviaAnchor struct {
 	beforeCode bool
 }
 
-func validateCandidate(original parser.Document, text string) []source.Diagnostic {
-	reparsed := parser.ParseDocument(original.Program.ModulePath, original.File.Path, text)
+func validateCandidate(original parser.Syntax, text string) []source.Diagnostic {
+	reparsed := parser.ParseDocument(original.Program.ModulePath, original.File.Path, text).Syntax()
 	if source.HasErrors(reparsed.Diagnostics) {
 		message := "formatter produced source that cannot be parsed"
 		if len(reparsed.Diagnostics) != 0 {
@@ -154,7 +154,7 @@ func embedBindings(program ast.Program) []string {
 		var value ast.ValueDecl
 		switch decl.Kind {
 		case ast.DeclVar:
-			value = decl.Var
+			value = *decl.Var
 		case ast.DeclFunc:
 			collectBlock(decl.Func.Body)
 		default:

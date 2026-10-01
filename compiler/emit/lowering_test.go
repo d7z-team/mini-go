@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/d7z-team/mini-go/compiler/hir"
-	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
@@ -41,10 +40,10 @@ func TestLowerProducesExecutableInstructions(t *testing.T) {
 	if !artifact.Functions[0].RevisionLocal {
 		t.Fatal("revision-local function metadata was not emitted")
 	}
-	if got := artifact.Functions[0].Instructions[2].Op; got != string(ir.OpBinary) {
+	if got := functionOperations(t, artifact.Functions[0])[0].Op; got != ir.OpBinary {
 		t.Fatalf("expected binary instruction, got %q", got)
 	}
-	if got := artifact.Functions[0].Instructions[3].Op; got != string(ir.OpReturn) {
+	if got := functionOperations(t, artifact.Functions[0])[1].Op; got != ir.OpReturn {
 		t.Fatalf("expected return instruction, got %q", got)
 	}
 }
@@ -83,24 +82,19 @@ func TestLowerLogicalBinaryUsesShortCircuitControlFlow(t *testing.T) {
 		t.Fatalf("Lower failed: %v", err)
 	}
 	fn := artifact.Functions[1]
-	var sawJumpIf, sawSyntheticLocal, sawLogicalBinary bool
-	for _, local := range fn.Locals {
-		if local.ID == "__lower.logical.0" && types.FormatWithTable(&artifact.TypeTable, local.Type) == "Bool" {
-			sawSyntheticLocal = true
-		}
-	}
-	for _, inst := range fn.Instructions {
-		sawJumpIf = sawJumpIf || inst.Op == string(ir.OpJumpIf)
-		if inst.Op == string(ir.OpBinary) {
+	var sawJumpIf, sawLogicalBinary bool
+	for _, inst := range functionOperations(t, fn) {
+		sawJumpIf = sawJumpIf || inst.Op == ir.OpJumpIf
+		if inst.Op == ir.OpBinary {
 			var payload ir.OperatorPayload
-			if err := json.Unmarshal(inst.Payload, &payload); err != nil {
+			if err := ir.ReadInstructionPayload(inst.Payload, &payload); err != nil {
 				t.Fatalf("decode operator payload: %v", err)
 			}
 			sawLogicalBinary = sawLogicalBinary || payload.Operator == "&&"
 		}
 	}
-	if !sawJumpIf || !sawSyntheticLocal || sawLogicalBinary {
-		t.Fatalf("expected short-circuit control flow without logical binary, locals=%#v instructions=%#v", fn.Locals, fn.Instructions)
+	if !sawJumpIf || sawLogicalBinary {
+		t.Fatalf("expected short-circuit control flow without logical binary, locals=%#v instructions=%#v", fn.Locals, functionOperations(t, fn))
 	}
 }
 
@@ -119,7 +113,7 @@ func TestLowerBuiltinLenCapExpressions(t *testing.T) {
 		Functions: []hir.Function{{
 			ID:        "fn.main",
 			Name:      "main",
-			Signature: testHIRSignature("function() tuple(Int64, Int64)"),
+			Signature: testHIRSignature("function() tuple(Int, Int)"),
 			Body: []hir.Statement{{
 				Kind: hir.StmtReturn,
 				Results: []hir.Expression{{
@@ -136,12 +130,12 @@ func TestLowerBuiltinLenCapExpressions(t *testing.T) {
 		t.Fatalf("Lower failed: %v", err)
 	}
 	var sawLen, sawCap bool
-	for _, inst := range artifact.Functions[0].Instructions {
-		sawLen = sawLen || inst.Op == string(ir.OpLen)
-		sawCap = sawCap || inst.Op == string(ir.OpCap)
+	for _, inst := range functionOperations(t, artifact.Functions[0]) {
+		sawLen = sawLen || inst.Op == ir.OpLen
+		sawCap = sawCap || inst.Op == ir.OpCap
 	}
 	if !sawLen || !sawCap {
-		t.Fatalf("expected len/cap instructions, got %#v", artifact.Functions[0].Instructions)
+		t.Fatalf("expected len/cap instructions, got %#v", functionOperations(t, artifact.Functions[0]))
 	}
 }
 
@@ -191,16 +185,16 @@ func TestLowerBuiltinAppendDeleteExpressions(t *testing.T) {
 		t.Fatalf("Lower failed: %v", err)
 	}
 	var sawAppend, sawDelete, sawPop bool
-	for _, inst := range artifact.Functions[0].Instructions {
-		sawAppend = sawAppend || inst.Op == string(ir.OpAppend)
-		sawDelete = sawDelete || inst.Op == string(ir.OpDelete)
-		sawPop = sawPop || inst.Op == string(ir.OpPop)
+	for _, inst := range functionOperations(t, artifact.Functions[0]) {
+		sawAppend = sawAppend || inst.Op == ir.OpAppend
+		sawDelete = sawDelete || inst.Op == ir.OpDelete
+		sawPop = sawPop || inst.Op == ir.OpPop
 	}
 	if !sawAppend || !sawDelete {
-		t.Fatalf("expected append/delete instructions, got %#v", artifact.Functions[0].Instructions)
+		t.Fatalf("expected append/delete instructions, got %#v", functionOperations(t, artifact.Functions[0]))
 	}
 	if sawPop {
-		t.Fatalf("delete expression should produce no pop, got %#v", artifact.Functions[0].Instructions)
+		t.Fatalf("delete expression should produce no pop, got %#v", functionOperations(t, artifact.Functions[0]))
 	}
 }
 
@@ -233,11 +227,11 @@ func TestLowerMapIndexOKExpression(t *testing.T) {
 		t.Fatalf("Lower failed: %v", err)
 	}
 	var sawMapIndexOK bool
-	for _, inst := range artifact.Functions[0].Instructions {
-		sawMapIndexOK = sawMapIndexOK || inst.Op == string(ir.OpLoadIndexOK)
+	for _, inst := range functionOperations(t, artifact.Functions[0]) {
+		sawMapIndexOK = sawMapIndexOK || inst.Op == ir.OpLoadIndexOK
 	}
 	if !sawMapIndexOK {
-		t.Fatalf("expected load_index_ok instruction, got %#v", artifact.Functions[0].Instructions)
+		t.Fatalf("expected load_index_ok instruction, got %#v", functionOperations(t, artifact.Functions[0]))
 	}
 }
 
@@ -270,12 +264,12 @@ func TestLowerBuiltinAppendEllipsisPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lower failed: %v", err)
 	}
-	for _, inst := range artifact.Functions[0].Instructions {
-		if inst.Op != string(ir.OpAppend) {
+	for _, inst := range functionOperations(t, artifact.Functions[0]) {
+		if inst.Op != ir.OpAppend {
 			continue
 		}
 		var payload ir.CountPayload
-		if err := json.Unmarshal(inst.Payload, &payload); err != nil {
+		if err := ir.ReadInstructionPayload(inst.Payload, &payload); err != nil {
 			t.Fatalf("decode append payload failed: %v", err)
 		}
 		if payload.Count != 1 || !payload.Expand {
@@ -283,7 +277,7 @@ func TestLowerBuiltinAppendEllipsisPayload(t *testing.T) {
 		}
 		return
 	}
-	t.Fatalf("expected append instruction, got %#v", artifact.Functions[0].Instructions)
+	t.Fatalf("expected append instruction, got %#v", functionOperations(t, artifact.Functions[0]))
 }
 
 func TestLowerBuiltinClearCopyExpressions(t *testing.T) {
@@ -307,7 +301,7 @@ func TestLowerBuiltinClearCopyExpressions(t *testing.T) {
 		Functions: []hir.Function{{
 			ID:        "fn.main",
 			Name:      "main",
-			Signature: testHIRSignature("function() Int64"),
+			Signature: testHIRSignature("function() Int"),
 			Body: []hir.Statement{{
 				Kind: hir.StmtExpr,
 				Expr: hir.Expression{
@@ -328,15 +322,15 @@ func TestLowerBuiltinClearCopyExpressions(t *testing.T) {
 		t.Fatalf("Lower failed: %v", err)
 	}
 	var sawClear, sawCopy, sawPop bool
-	for _, inst := range artifact.Functions[0].Instructions {
-		sawClear = sawClear || inst.Op == string(ir.OpClear)
-		sawCopy = sawCopy || inst.Op == string(ir.OpCopy)
-		sawPop = sawPop || inst.Op == string(ir.OpPop)
+	for _, inst := range functionOperations(t, artifact.Functions[0]) {
+		sawClear = sawClear || inst.Op == ir.OpClear
+		sawCopy = sawCopy || inst.Op == ir.OpCopy
+		sawPop = sawPop || inst.Op == ir.OpPop
 	}
 	if !sawClear || !sawCopy {
-		t.Fatalf("expected clear/copy instructions, got %#v", artifact.Functions[0].Instructions)
+		t.Fatalf("expected clear/copy instructions, got %#v", functionOperations(t, artifact.Functions[0]))
 	}
 	if sawPop {
-		t.Fatalf("clear expression should produce no pop, got %#v", artifact.Functions[0].Instructions)
+		t.Fatalf("clear expression should produce no pop, got %#v", functionOperations(t, artifact.Functions[0]))
 	}
 }

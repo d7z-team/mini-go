@@ -4,7 +4,9 @@ use mini_go::{
     program::Program,
     value::Value,
 };
+use serde_json::json;
 use std::sync::Arc;
+use support::slot_code;
 mod support;
 
 #[test]
@@ -48,10 +50,9 @@ fn repeated_scalar_calls_reuse_slots_and_explicit_collection_releases_idle_stora
                     "id": "fn.Main",
                     "signature": {"params": [{"type": {"kind": 3, "primitive": 3}}], "results": [{"kind": 3, "primitive": 3}]},
                     "locals": [{"id": "n", "type": {"kind": 3, "primitive": 3}}],
-                    "instructions": [
-                        {"op": "load_local", "payload": {"local": "n"}},
-                        {"op": "return", "payload": {"result_count": 1}}
-                    ]
+                    "code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+                        ("load_local",json!({"local":"n"}),json!({"outputs":[0]})),
+                        ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])
                 }]
             })),
             LoadLimits::default(),

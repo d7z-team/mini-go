@@ -47,24 +47,22 @@ func TestScopeCancellationReclaimsHandoffTaskAndItsReservedBudget(t *testing.T) 
 
 func TestEntryAdmissionCountsBackgroundTasksBeforeAllocation(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/task-admission", "main")
-	var worker []ir.Instruction
-	for range taskInstructionQuantum {
-		worker = append(worker, ir.Instruction{Op: string(ir.OpZero), Payload: testTypePayload("Bool")}, ir.Instruction{Op: string(ir.OpPop)})
-	}
-	wait := []ir.Instruction{{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})}, {Op: string(ir.OpWaitableRecv)}, {Op: string(ir.OpPop)}}
-	worker = append(worker,
-		ir.Instruction{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.child"})},
-		ir.Instruction{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-	)
-	worker = append(worker, wait...)
+
+	wait := []ir.Instruction{{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}}, {Op: ir.OpWaitableRecv}, {Op: ir.OpPop}}
+	worker := testSlotCode([]string{"function() Void", "Waitable<Int>", "Int"}, []ir.Instruction{
+		{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
+		{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
+	appendTestSlotCode(worker, wait, [][2][]uint32{{nil, {1}}, {{1}, {2}}, {{2}, nil}})
+	insertTestDelay(worker, 0, taskInstructionQuantum)
 	artifact.Functions = []ir.Function{
-		{ID: "fn.entry", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpMakeClosure), Payload: testPayload(ir.ClosurePayload{Function: "fn.worker"})},
-			{Op: string(ir.OpSpawn), Payload: testPayload(ir.CallPayload{})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		}},
-		{ID: "fn.worker", Signature: testSignature("function() Void"), Instructions: worker},
-		{ID: "fn.child", Signature: testSignature("function() Void"), Instructions: wait},
+		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, []ir.Instruction{
+			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.worker"}},
+			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
+		{ID: "fn.worker", Signature: testSignature("function() Void"), Code: worker},
+		{ID: "fn.child", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Waitable<Int>", "Int"}, wait, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}})},
 	}
 	instance, err := patchTestProgram(t, artifact, "task-admission").Instantiate(t.Context(), InstanceOptions{Limits: Limits{MaxTasks: 2}})
 	if err != nil {
@@ -118,7 +116,7 @@ func TestTaskHandoffKeepsCensusAndRevisionRoots(t *testing.T) {
 		machine.pushRunnable(task)
 	}()
 	const bytes = 65536
-	task.frames[0].frame.push(newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes))
+	task.frames[0].frame.slotValues[0] = newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes)
 	if retained := instance.vm.refreshLiveGuestBytes(); retained < bytes {
 		t.Fatalf("task outside queues lost its guest roots: %d", retained)
 	}
@@ -137,10 +135,10 @@ func TestTaskHandoffKeepsCensusAndRevisionRoots(t *testing.T) {
 
 func TestReturningFrameKeepsValuesRootedUntilContinuationAcceptsThem(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/return-roots", "main")
-	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Slice<Uint8>"), Instructions: []ir.Instruction{
-		{Op: string(ir.OpZero), Payload: testTypePayload("Slice<Uint8>")},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-	}}}
+	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Slice<Uint8>"), Code: testSlotCode([]string{"Slice<Uint8>"}, []ir.Instruction{
+		{Op: ir.OpZero, Payload: testTypePayload("Slice<Uint8>")},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})}}
 	instance, err := patchTestProgram(t, artifact, "return-roots").Instantiate(t.Context(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)

@@ -2,41 +2,13 @@ package compiler
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
-	"github.com/d7z-team/mini-go/compiler/ast"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
-
-func sourceImportPaths(program ast.Program) []string {
-	seen := map[string]struct{}{}
-	var out []string
-	for _, file := range program.Files {
-		for _, decl := range file.Decls {
-			if decl.Kind != ast.DeclImport {
-				continue
-			}
-			if decl.Import.IsEmbedMarker() {
-				continue
-			}
-			path := strings.TrimSpace(decl.Import.Path)
-			if path == "" {
-				continue
-			}
-			if _, ok := seen[path]; ok {
-				continue
-			}
-			seen[path] = struct{}{}
-			out = append(out, path)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
 
 func finalizeDirectArtifactRequirements(modulePath string, artifact *ir.Artifact, dependencyHashes map[string]string, diagnostics *[]source.Diagnostic) bool {
 	artifact.Requirements = append([]ir.Requirement(nil), artifact.Requirements...)
@@ -57,8 +29,8 @@ func finalizeDirectArtifactRequirements(modulePath string, artifact *ir.Artifact
 	return ok
 }
 
-func dependencyPackages(program ast.Program, artifacts map[string]ir.Artifact) []check.DependencyPackage {
-	return semanticDependencies(sourceImportPaths(program), func(modulePath string) ([]check.DependencyExport, []string, bool) {
+func dependencyPackages(imports []string, artifacts map[string]ir.Artifact) []check.DependencyPackage {
+	return semanticDependencies(imports, func(modulePath string) ([]check.DependencyExport, []string, bool) {
 		artifact, ok := artifacts[modulePath]
 		if !ok {
 			return nil, nil, false

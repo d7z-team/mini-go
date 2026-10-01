@@ -1,5 +1,8 @@
 package minigo
 
+//go:generate go run ./cmd/mini-go-dev compiler-binary
+//go:generate go run ./cmd/mini-go-dev bytecode-json
+
 //go:generate go run ./cmd/mini-go rpc generate -rust-out playground/runtime-rust/src/stdlib_host/console_generated.rs -rust-module crate::stdlib_host::console_binding -rust-runtime crate -rust-prefix Fmt stdlib/host/console/console.mrpc
 //go:generate go run ./cmd/mini-go rpc generate -rust-out playground/runtime-rust/src/stdlib_host/os_generated.rs -rust-module crate::stdlib_host::os_binding -rust-runtime crate -rust-prefix Os stdlib/host/os/types.mrpc stdlib/host/os/filesystem.mrpc stdlib/host/os/environment.mrpc
 

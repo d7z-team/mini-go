@@ -87,12 +87,6 @@ impl StepGrant {
     pub fn consume(&mut self) {
         assert!(self.remaining != 0);
         self.remaining -= 1;
-        let _ = self
-            .budget
-            .executed
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |steps| {
-                Some(steps.saturating_add(1))
-            });
     }
 }
 
@@ -103,6 +97,9 @@ impl Drop for StepGrant {
         state.committed = state
             .committed
             .saturating_add(self.capacity - self.remaining);
+        self.budget
+            .executed
+            .store(state.committed, Ordering::Relaxed);
         let wake = std::mem::take(&mut state.waiting);
         drop(state);
         if wake && let Some(wake) = self.budget.wake.upgrade() {
@@ -121,8 +118,8 @@ mod tests {
         let mut grant = budget.reserve(4, 64).unwrap().unwrap();
         grant.consume();
         assert!(budget.reserve(4, 64).unwrap().is_none());
-        assert_eq!(budget.executed(), 1);
         drop(grant);
+        assert_eq!(budget.executed(), 1);
         let mut grant = budget.reserve(4, 64).unwrap().unwrap();
         assert_eq!(grant.remaining, 3);
         for _ in 0..3 {

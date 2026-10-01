@@ -65,8 +65,7 @@ impl Instance {
                     .frames
                     .last_mut()
                     .unwrap()
-                    .stack
-                    .push(Value::boolean(available));
+                    .push_result(Value::boolean(available));
             }
             "sync.mutex_unlock" => {
                 if !*locked {
@@ -111,7 +110,7 @@ mod tests {
     fn cancellation_transfers_undelivered_grant_and_preserves_delivered_lock() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();

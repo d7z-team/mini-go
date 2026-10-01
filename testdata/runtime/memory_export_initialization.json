@@ -1,34 +1,355 @@
 [
   {
-    "module":{"path":"test","package":"main"},
-    "requirements":[{"kind":"source","module_path":"first","exports":["Value"]},{"kind":"source","module_path":"second","exports":["Value"]}],
-    "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-      {"op":"load_export","payload":{"module_path":"first","export":"Value"}},
-      {"op":"pop"},
-      {"op":"address_of","payload":{"kind":"export","module_path":"second","export":"Value"}},
-      {"op":"load_indirect"},
-      {"op":"return","payload":{"result_count":1}}
-    ]}]
+    "module": {
+      "path": "test",
+      "package": "main"
+    },
+    "requirements": [
+      {
+        "kind": "source",
+        "module_path": "first",
+        "exports": [
+          "Value"
+        ]
+      },
+      {
+        "kind": "source",
+        "module_path": "second",
+        "exports": [
+          "Value"
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "id": "fn.Main",
+        "signature": {
+          "results": [
+            {
+              "kind": 3,
+              "primitive": 3
+            }
+          ]
+        },
+        "code": {
+          "types": [
+            {
+              "kind": 3,
+              "primitive": 3
+            },
+            {
+              "kind": 8,
+              "node": "slot.type.0"
+            }
+          ],
+          "descriptors": {
+            "export": [
+              {
+                "module_path": "first",
+                "export": "Value"
+              }
+            ],
+            "address": [
+              {
+                "kind": "export",
+                "module_path": "second",
+                "export": "Value"
+              }
+            ],
+            "return": [
+              {
+                "result_count": 1
+              }
+            ]
+          },
+          "instructions": [
+            [
+              64,
+              0,
+              0
+            ],
+            [
+              5,
+              0,
+              1
+            ],
+            [
+              52,
+              0,
+              2
+            ],
+            [
+              53,
+              0,
+              3
+            ],
+            [
+              17,
+              0,
+              4
+            ]
+          ],
+          "operands": [
+            {
+              "outputs": [
+                0
+              ]
+            },
+            {
+              "inputs": [
+                [
+                  0,
+                  0
+                ]
+              ],
+              "release": [
+                0
+              ]
+            },
+            {
+              "outputs": [
+                1
+              ]
+            },
+            {
+              "inputs": [
+                [
+                  0,
+                  1
+                ]
+              ],
+              "release": [
+                1
+              ],
+              "outputs": [
+                0
+              ]
+            },
+            {
+              "inputs": [
+                [
+                  0,
+                  0
+                ]
+              ],
+              "release": [
+                0
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "type_table": {
+      "nodes": [
+        {
+          "id": "slot.type.0",
+          "kind": 8,
+          "elem": {
+            "kind": 3,
+            "primitive": 3
+          }
+        }
+      ]
+    }
   },
   {
-    "module":{"path":"first","package":"first"},
-    "globals":[{"id":"value","type":{"kind":3,"primitive":3}}],
-    "exports":[{"name":"Value","kind":"global","id":"value","type":{"kind":3,"primitive":3}}],
-    "functions":[{"id":"fn.init","instructions":[
-      {"op":"zero","payload":{"type":{"kind":3,"primitive":3}}},
-      {"op":"store_global","payload":{"global":"value"}},
-      {"op":"return","payload":{}}
-    ]}]
+    "module": {
+      "path": "first",
+      "package": "first"
+    },
+    "globals": [
+      {
+        "id": "value",
+        "type": {
+          "kind": 3,
+          "primitive": 3
+        }
+      }
+    ],
+    "exports": [
+      {
+        "name": "Value",
+        "kind": "global",
+        "id": "value",
+        "type": {
+          "kind": 3,
+          "primitive": 3
+        }
+      }
+    ],
+    "functions": [
+      {
+        "id": "fn.init",
+        "code": {
+          "types": [
+            {
+              "kind": 3,
+              "primitive": 3
+            }
+          ],
+          "descriptors": {
+            "type": [
+              {
+                "type": {
+                  "kind": 3,
+                  "primitive": 3
+                }
+              }
+            ],
+            "global": [
+              {
+                "global": "value"
+              }
+            ],
+            "return": [
+              {}
+            ]
+          },
+          "instructions": [
+            [
+              4,
+              0,
+              0
+            ],
+            [
+              13,
+              0,
+              1
+            ],
+            [
+              17,
+              0,
+              2
+            ]
+          ],
+          "operands": [
+            {
+              "outputs": [
+                0
+              ]
+            },
+            {
+              "inputs": [
+                [
+                  0,
+                  0
+                ]
+              ],
+              "release": [
+                0
+              ]
+            },
+            {}
+          ]
+        }
+      }
+    ],
+    "type_table": {
+      "nodes": []
+    }
   },
   {
-    "module":{"path":"second","package":"second"},
-    "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
-    "globals":[{"id":"value","type":{"kind":3,"primitive":3}}],
-    "exports":[{"name":"Value","kind":"global","id":"value","type":{"kind":3,"primitive":3}}],
-    "functions":[{"id":"fn.init","instructions":[
-      {"op":"const","payload":{"constant":"answer"}},
-      {"op":"store_global","payload":{"global":"value"}},
-      {"op":"return","payload":{}}
-    ]}]
+    "module": {
+      "path": "second",
+      "package": "second"
+    },
+    "constants": [
+      {
+        "id": "answer",
+        "type": {
+          "kind": 3,
+          "primitive": 3
+        },
+        "value": 42
+      }
+    ],
+    "globals": [
+      {
+        "id": "value",
+        "type": {
+          "kind": 3,
+          "primitive": 3
+        }
+      }
+    ],
+    "exports": [
+      {
+        "name": "Value",
+        "kind": "global",
+        "id": "value",
+        "type": {
+          "kind": 3,
+          "primitive": 3
+        }
+      }
+    ],
+    "functions": [
+      {
+        "id": "fn.init",
+        "code": {
+          "types": [
+            {
+              "kind": 3,
+              "primitive": 3
+            }
+          ],
+          "descriptors": {
+            "const": [
+              {
+                "constant": "answer"
+              }
+            ],
+            "global": [
+              {
+                "global": "value"
+              }
+            ],
+            "return": [
+              {}
+            ]
+          },
+          "instructions": [
+            [
+              3,
+              0,
+              0
+            ],
+            [
+              13,
+              0,
+              1
+            ],
+            [
+              17,
+              0,
+              2
+            ]
+          ],
+          "operands": [
+            {
+              "outputs": [
+                0
+              ]
+            },
+            {
+              "inputs": [
+                [
+                  0,
+                  0
+                ]
+              ],
+              "release": [
+                0
+              ]
+            },
+            {}
+          ]
+        }
+      }
+    ],
+    "type_table": {
+      "nodes": []
+    }
   }
 ]

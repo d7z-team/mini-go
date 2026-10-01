@@ -1,11 +1,45 @@
 package language
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/workspace"
 )
+
+func TestForkedOccurrenceQueriesRetainTheirSourceRevision(t *testing.T) {
+	text := "package example\nfunc Answer() int { return 42 }\nfunc Main() int { return Answer() }\n"
+	engine, uri := testEngine(t, text)
+	document := engine.Snapshot().documents[uri]
+	position, err := document.Index.Position(strings.LastIndex(text, "Answer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := engine.Fork()
+	if err := candidate.ApplyDocuments([]DocumentUpdate{{Operation: "open", Identity: document.Identity, Version: 1, Text: strings.ReplaceAll(text, "Answer", "Result")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := candidate.Analyze(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []struct {
+		engine *Engine
+		name   string
+	}{{engine, "Answer"}, {candidate, "Result"}} {
+		hover := query.engine.Hover(uri, position)
+		if hover == nil || !strings.Contains(hover.Contents.Value, query.name) {
+			t.Fatalf("%s hover lost its revision: %#v", query.name, hover)
+		}
+		if definitions := query.engine.Definition(uri, position); len(definitions) != 1 || definitions[0].URI != uri {
+			t.Fatalf("%s definition = %#v", query.name, definitions)
+		}
+		if references := query.engine.References(uri, position, true); len(references) != 2 {
+			t.Fatalf("%s references = %#v", query.name, references)
+		}
+	}
+}
 
 func TestSnapshotViewsOwnMutableResults(t *testing.T) {
 	engine, uri := testEngine(t, "package example\nfunc Answer() int {return 42}\n")

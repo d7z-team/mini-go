@@ -1,6 +1,9 @@
 package bytecode
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func FuzzCallIntrinsicPayload(f *testing.F) {
 	f.Add("reflect.type_of", int8(1), int8(1), false)
@@ -20,22 +23,32 @@ func FuzzCallIntrinsicPayload(f *testing.F) {
 		if extra {
 			payload["unknown"] = true
 		}
-		instruction := Instruction{Op: string(OpCallIntrinsic), Payload: testPayload(payload)}
-		err := validateInstruction("functions[0].instructions[0]", instruction)
+		raw, err := json.Marshal(struct {
+			Op      string         `json:"op"`
+			Payload map[string]any `json:"payload"`
+		}{OpCallIntrinsic.String(), payload})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var instruction Instruction
+		err = json.Unmarshal(raw, &instruction)
+		if err == nil {
+			err = validateInstruction("functions[0].instructions[0]", &instruction)
+		}
 		descriptor, known := Intrinsic(IntrinsicID(id))
 		valid := known && !extra && argCount == descriptor.ArgCount && resultCount == descriptor.ResultCount
 		if !valid {
 			if err == nil {
-				t.Fatalf("invalid intrinsic payload was accepted: %s", instruction.Payload)
+				t.Fatalf("invalid intrinsic payload was accepted: %#v", instruction.Payload)
 			}
 			return
 		}
 		if err != nil {
 			t.Fatalf("valid intrinsic payload was rejected: %v", err)
 		}
-		need, delta, terminal, err := instructionStackEffect(instruction)
-		if err != nil || need != descriptor.ArgCount || delta != descriptor.ResultCount-descriptor.ArgCount || terminal {
-			t.Fatalf("intrinsic stack effect = need %d delta %d terminal %t err %v", need, delta, terminal, err)
+		inputs, outputs, err := instructionArity(&instruction)
+		if err != nil || inputs != descriptor.ArgCount || outputs != descriptor.ResultCount {
+			t.Fatalf("intrinsic arity = inputs %d outputs %d err %v", inputs, outputs, err)
 		}
 	})
 }

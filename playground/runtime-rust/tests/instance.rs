@@ -10,30 +10,69 @@ use std::sync::Arc;
 
 #[test]
 fn entry_admission_counts_background_tasks_after_root_completion() {
+    let boolean = json!({"kind":3,"primitive":1});
+    let integer = json!({"kind":3,"primitive":3});
+    let callable = json!({"kind":10,"node":"action"});
+    let channel = json!({"kind":9,"node":"channel"});
     let mut worker = Vec::new();
     for _ in 0..64 {
-        worker.push(json!({"op":"zero","payload":{"type":{"kind":3,"primitive":1}}}));
-        worker.push(json!({"op":"pop"}));
+        worker.push(("zero", json!({"type":boolean}), json!({"outputs":[0]})));
+        worker.push(("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})));
     }
     worker.extend([
-        json!({"op":"make_closure","payload":{"function":"child"}}),
-        json!({"op":"spawn","payload":{"arg_count":0}}),
-        json!({"op":"zero","payload":{"type":{"kind":9,"node":"channel"}}}),
-        json!({"op":"waitable_recv"}),
-        json!({"op":"pop"}),
+        (
+            "make_closure",
+            json!({"function":"child"}),
+            json!({"outputs":[1]}),
+        ),
+        (
+            "spawn",
+            json!({"arg_count":0}),
+            json!({"inputs":[[0,1]],"release":[1]}),
+        ),
+        ("zero", json!({"type":channel}), json!({"outputs":[2]})),
+        (
+            "waitable_recv",
+            json!({}),
+            json!({"inputs":[[0,2]],"outputs":[3],"release":[2]}),
+        ),
+        ("pop", json!({}), json!({"inputs":[[0,3]],"release":[3]})),
     ]);
+    let worker = support::slot_code(json!([boolean, callable, channel, integer]), &worker);
+    let main = support::slot_code(
+        json!([callable]),
+        &[
+            (
+                "make_closure",
+                json!({"function":"worker"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "spawn",
+                json!({"arg_count":0}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            ("return", json!({"result_count":0}), json!({})),
+        ],
+    );
+    let child = support::slot_code(
+        json!([channel, integer]),
+        &[
+            ("zero", json!({"type":channel}), json!({"outputs":[0]})),
+            (
+                "waitable_recv",
+                json!({}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+            ("pop", json!({}), json!({"inputs":[[0,1]],"release":[1]})),
+        ],
+    );
     let image = support::image(json!({
-        "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":{"kind":3,"primitive":3}}]},
+        "type_table":{"nodes":[{"id":"action","kind":10,"signature":{}},{"id":"channel","kind":9,"direction":1,"elem":integer}]},
         "functions":[
-            {"id":"fn.Main","instructions":[
-                {"op":"make_closure","payload":{"function":"worker"}},
-                {"op":"spawn","payload":{"arg_count":0}},
-                {"op":"return","payload":{"result_count":0}}
-            ]},
-            {"id":"worker","instructions":worker},
-            {"id":"child","instructions":[
-                {"op":"zero","payload":{"type":{"kind":9,"node":"channel"}}},{"op":"waitable_recv"},{"op":"pop"}
-            ]}
+            {"id":"fn.Main","code":main},
+            {"id":"worker","code":worker},
+            {"id":"child","code":child}
         ]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
@@ -66,14 +105,26 @@ fn entry_admission_counts_background_tasks_after_root_completion() {
 #[test]
 fn backing_capacity_overflow_returns_a_resource_error() {
     for primitive in [3, 9] {
+        let code = support::slot_code(
+            json!([{"kind":3,"primitive":3},{"kind":5,"node":"slice"}]),
+            &[
+                (
+                    "const",
+                    json!({"constant":"length"}),
+                    json!({"outputs":[0]}),
+                ),
+                (
+                    "make_slice",
+                    json!({"type":{"kind":5,"node":"slice"}}),
+                    json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+                ),
+                ("pop", json!({}), json!({"inputs":[[0,1]],"release":[1]})),
+            ],
+        );
         let image = support::image(json!({
             "type_table":{"nodes":[{"id":"slice","kind":5,"elem":{"kind":3,"primitive":primitive}}]},
             "constants":[{"id":"length","type":{"kind":3,"primitive":3},"value":i64::MAX}],
-            "functions":[{"id":"fn.Main","instructions":[
-                {"op":"const","payload":{"constant":"length"}},
-                {"op":"make_slice","payload":{"type":{"kind":5,"node":"slice"}}},
-                {"op":"pop"}
-            ]}]
+            "functions":[{"id":"fn.Main","code":code}]
         }));
         let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
         let mut instance = Instance::new(
@@ -94,15 +145,28 @@ fn backing_capacity_overflow_returns_a_resource_error() {
 
 #[test]
 fn concatenation_checks_the_complete_string_before_allocating() {
+    let string = json!({"kind":3,"primitive":2});
+    let code = support::slot_code(
+        json!([string, string, string]),
+        &[
+            ("const", json!({"constant":"left"}), json!({"outputs":[0]})),
+            ("const", json!({"constant":"right"}), json!({"outputs":[1]})),
+            (
+                "binary",
+                json!({"operator":"+"}),
+                json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,2]],"release":[2]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "constants":[{"id":"left","type":{"kind":3,"primitive":2},"value":"ab"},
             {"id":"right","type":{"kind":3,"primitive":2},"value":"cd"}],
-        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":2}]},"instructions":[
-            {"op":"const","payload":{"constant":"left"}},
-            {"op":"const","payload":{"constant":"right"}},
-            {"op":"binary","payload":{"operator":"+"}},
-            {"op":"return","payload":{"result_count":1}}
-        ]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[string]},"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     for limit in [3, 4] {
@@ -130,19 +194,65 @@ fn concatenation_checks_the_complete_string_before_allocating() {
 
 #[test]
 fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
+    let integer = json!({"kind":3,"primitive":3});
+    let main = support::slot_code(
+        json!([{"kind":10,"node":"action"},integer]),
+        &[
+            (
+                "make_closure",
+                json!({"function":"worker"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "spawn",
+                json!({"arg_count":0}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+            (
+                "const",
+                json!({"constant":"answer"}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
+        ],
+    );
+    let worker = support::slot_code(
+        json!([]),
+        &[
+            ("label", json!({"label":"loop"}), json!({})),
+            ("jump", json!({"label":"loop"}), json!({})),
+        ],
+    );
+    let quick = support::slot_code(
+        json!([integer]),
+        &[
+            (
+                "const",
+                json!({"constant":"answer"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let failing_locals = (0..8)
         .map(|index| json!({"id":format!("slot{index}"),"type":{"kind":3,"primitive":3}}))
         .collect::<Vec<_>>();
     let image = support::image(json!({
+        "type_table":{"nodes":[{"id":"action","kind":10,"signature":{}}]},
         "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"make_closure","payload":{"function":"worker"}},{"op":"spawn","payload":{"arg_count":0}},
-                {"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}
-            ]},
-            {"id":"worker","instructions":[{"op":"label","payload":{"label":"loop"}},{"op":"jump","payload":{"label":"loop"}}]},
-            {"id":"quick","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[{"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}]},
-            {"id":"large","locals":failing_locals}
+            {"id":"fn.Main","signature":{"results":[integer]},"code":main},
+            {"id":"worker","code":worker},
+            {"id":"quick","signature":{"results":[integer]},"code":quick},
+            {"id":"large","locals":failing_locals,"code":{"descriptors":{}}}
         ]
     }));
     let mut image: mini_go::contract_generated::ExecutionImage =
@@ -211,18 +321,39 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
 #[test]
 fn named_string_conversion_preserves_binary_bytes_and_detached_results() {
     let named = json!({"kind":4,"named":{"module_path":"test","decl_id":"Tag"}});
+    let string = json!({"kind":3,"primitive":2});
+    let code = support::slot_code(
+        json!([named, string, string, string]),
+        &[
+            ("load_local", json!({"local":"tag"}), json!({"outputs":[0]})),
+            (
+                "convert",
+                json!({"type":string}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+            (
+                "const",
+                json!({"constant":"suffix"}),
+                json!({"outputs":[2]}),
+            ),
+            (
+                "binary",
+                json!({"operator":"+"}),
+                json!({"inputs":[[0,1],[0,2]],"outputs":[3],"release":[1,2]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,3]],"release":[3]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[
             {"id":"tag","kind":4,"identity":{"module_path":"test","decl_id":"Tag"},"underlying":{"kind":3,"primitive":2}}
         ]},
         "constants":[{"id":"suffix","type":{"kind":3,"primitive":2},"value":"!"}],
-        "functions":[{"id":"fn.Main","signature":{"params":[{"type":named}],"results":[{"kind":3,"primitive":2}]},"locals":[{"id":"tag","type":named}],"instructions":[
-            {"op":"load_local","payload":{"local":"tag"}},
-            {"op":"convert","payload":{"type":{"kind":3,"primitive":2}}},
-            {"op":"const","payload":{"constant":"suffix"}},
-            {"op":"binary","payload":{"operator":"+"}},
-            {"op":"return","payload":{"result_count":1}}
-        ]}]
+        "functions":[{"id":"fn.Main","signature":{"params":[{"type":named}],"results":[string]},"locals":[{"id":"tag","type":named}],"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -244,7 +375,7 @@ fn named_string_conversion_preserves_binary_bytes_and_detached_results() {
 
 #[test]
 fn invalid_binary_entry_reclaims_its_argument_and_closed_start_allocates_nothing() {
-    let image = support::image(json!({"functions":[{"id":"fn.Main"}]}));
+    let image = support::image(json!({"functions":[{"id":"fn.Main","code":{"descriptors":{}}}]}));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
     assert!(instance.start_bytes("missing", &[0, 255]).is_err());
@@ -261,13 +392,24 @@ fn invalid_binary_entry_reclaims_its_argument_and_closed_start_allocates_nothing
 
 #[test]
 fn nested_array_layout_fails_within_budget_before_materialization() {
+    let code = support::slot_code(
+        json!([{"kind":6,"node":"outer"}]),
+        &[
+            (
+                "load_local",
+                json!({"local":"large"}),
+                json!({"outputs":[0]}),
+            ),
+            ("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[
             {"id":"inner","kind":6,"length":1000000,"elem":{"kind":3,"primitive":3}},
             {"id":"outer","kind":6,"length":1000000,"elem":{"kind":6,"node":"inner"}}
         ]},
         "functions":[{"id":"fn.Main","locals":[{"id":"large","type":{"kind":6,"node":"outer"}}],
-            "instructions":[{"op":"load_local","payload":{"local":"large"}},{"op":"pop"}]}]
+            "code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(
@@ -287,13 +429,26 @@ fn nested_array_layout_fails_within_budget_before_materialization() {
 
 #[test]
 fn unused_array_slots_do_not_materialize_their_layout() {
+    let code = support::slot_code(
+        json!([{"kind":3,"primitive":3}]),
+        &[
+            (
+                "const",
+                json!({"constant":"answer"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"large","kind":6,"length":1024,"elem":{"kind":3,"primitive":3}}]},
         "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
         "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},
-            "locals":[{"id":"unused","type":{"kind":6,"node":"large"}}],"instructions":[
-                {"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}
-            ]}]
+            "locals":[{"id":"unused","type":{"kind":6,"node":"large"}}],"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(
@@ -313,11 +468,20 @@ fn unused_array_slots_do_not_materialize_their_layout() {
 
 #[test]
 fn unrecovered_guest_panic_faults_the_instance_and_releases_frames() {
+    let code = support::slot_code(
+        json!([{"kind":3,"primitive":2}]),
+        &[
+            (
+                "const",
+                json!({"constant":"message"}),
+                json!({"outputs":[0]}),
+            ),
+            ("panic", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+        ],
+    );
     let image = support::image(json!({
         "constants": [{"id": "message", "type": {"kind": 3, "primitive": 2}, "value": "failure"}],
-        "functions": [{"id": "fn.Main", "instructions": [
-            {"op": "const", "payload": {"constant": "message"}}, {"op": "panic"}
-        ]}]
+        "functions": [{"id": "fn.Main", "code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let entry = program.image().entries[0].name.clone();

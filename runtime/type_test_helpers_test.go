@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -69,6 +68,11 @@ func attachRuntimeTestTypeNodes(artifact *ir.Artifact) {
 	}
 	for i := range artifact.Functions {
 		rebindTestSignature(&artifact.Functions[i].Signature, artifact.Module.Path)
+		if code := artifact.Functions[i].Code; code != nil {
+			for j := range code.Types {
+				rebindTestTypeRef(&code.Types[j], artifact.Module.Path)
+			}
+		}
 		for j := range artifact.Functions[i].Locals {
 			rebindTestTypeRef(&artifact.Functions[i].Locals[j].Type, artifact.Module.Path)
 		}
@@ -218,14 +222,6 @@ func loadTestEngineJSON(data []byte) (*vm, error) {
 	return newVMWithOptions(executable, InstanceOptions{})
 }
 
-func testPayload(value any) json.RawMessage {
-	data, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return data
-}
-
 func testValueMatches(got, want vmValue) bool {
 	return got.Type.Equal(want.Type) && reflect.DeepEqual(got.Data, want.Data)
 }
@@ -242,24 +238,24 @@ func requireValues(t *testing.T, got []vmValue, want ...vmValue) {
 	}
 }
 
-func testTypePayload(text string) json.RawMessage {
-	return testPayload(ir.TypePayload{Type: exampleModuleType(text)})
+func testTypePayload(text string) ir.Payload {
+	return ir.TypePayload{Type: exampleModuleType(text)}
 }
 
-func testArrayPayload(text string, count int) json.RawMessage {
-	return testPayload(ir.MakeSequencePayload{Type: exampleModuleType(text), ElementCount: count})
+func testArrayPayload(text string, count int) ir.Payload {
+	return ir.MakeSequencePayload{Type: exampleModuleType(text), ElementCount: count}
 }
 
-func testMakeSlicePayload(text string) json.RawMessage {
-	return testPayload(ir.MakeSlicePayload{Type: exampleModuleType(text)})
+func testMakeSlicePayload(text string) ir.Payload {
+	return ir.MakeSlicePayload{Type: exampleModuleType(text)}
 }
 
-func testMapPayload(text string, count int) json.RawMessage {
-	return testPayload(ir.MakeMapPayload{Type: exampleModuleType(text), EntryCount: count})
+func testMapPayload(text string, count int) ir.Payload {
+	return ir.MakeMapPayload{Type: exampleModuleType(text), EntryCount: count}
 }
 
-func testStructPayload(text string, fields ...string) json.RawMessage {
-	return testPayload(ir.MakeStructPayload{Type: exampleModuleType(text), Fields: fields})
+func testStructPayload(text string, fields ...string) ir.Payload {
+	return ir.MakeStructPayload{Type: exampleModuleType(text), Fields: fields}
 }
 
 func exampleModuleType(text string) types.TypeRef {

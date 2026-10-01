@@ -37,12 +37,12 @@ func Main() int64 { return retained.Unix() }
 			changes = append(changes, workspace.SourceChange{ModulePath: "time", Path: file.Path, Text: strings.ReplaceAll(file.Text, "absSec", "sec")})
 		}
 	}
-	legacy, err := workspace.Overlay(sources, changes)
+	renamedFields, err := workspace.Overlay(sources, changes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var programs []*minigoruntime.Program
-	for _, input := range []workspace.SourceSet{legacy, sources} {
+	for _, input := range []workspace.SourceSet{renamedFields, sources} {
 		prepared, err := compiler.Prepare(compiler.Request{Root: root, Sources: input, EntryPoints: []compiler.EntryPoint{{Name: "main", ModulePath: root, Function: "Main"}}})
 		if err != nil || prepared.Image == nil || !prepared.Checked.OK() {
 			t.Fatalf("prepare layout: %v %+v", err, prepared.Checked.Diagnostics)

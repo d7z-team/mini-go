@@ -1,7 +1,6 @@
 package compiler
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -51,19 +50,19 @@ Check:
 		if function.ID != "fn.Main" {
 			continue
 		}
-		for _, instruction := range function.Instructions {
-			if instruction.Op != string(ir.OpCallDirect) && instruction.Op != string(ir.OpTailCallDirect) {
+		for _, instruction := range functionOperations(t, function) {
+			if instruction.Op != ir.OpCallDirect && instruction.Op != ir.OpTailCallDirect {
 				continue
 			}
 			var call ir.CallPayload
-			if err := json.Unmarshal(instruction.Payload, &call); err != nil {
+			if err := ir.ReadInstructionPayload(instruction.Payload, &call); err != nil {
 				t.Fatal(err)
 			}
 			if call.ModulePath == "example/lib" && call.Function == "method.Ptr<Inst>.Equal" {
 				return
 			}
 		}
-		t.Fatalf("Main did not call imported pointer method: %#v", function.Instructions)
+		t.Fatalf("Main did not call imported pointer method: %#v", functionOperations(t, function))
 	}
 	t.Fatal("missing Main function")
 }

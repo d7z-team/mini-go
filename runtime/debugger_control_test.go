@@ -14,19 +14,19 @@ func TestDebuggerSchemaBreakpoint(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []ir.Local{{ID: "local.answer", Type: testType("Int64")}},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.answer"}`),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.answer"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.answer"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.main", pc: 2, line: 5, column: 1})
@@ -70,19 +70,19 @@ func TestDebuggerSchemaStep(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []ir.Local{{ID: "local.answer", Type: testType("Int64")}},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.answer"}`),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.answer"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.answer"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact,
@@ -125,23 +125,23 @@ func TestDebuggerSchemaStepOut(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpCallDirect),
-			Payload: json.RawMessage(`{"function":"fn.inner","arg_count":0,"result_count":1}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpCallDirect,
+			Payload: ir.CallPayload{Function: "fn.inner", ArgCount: 0, ResultCount: 1},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}, {
 		ID:        "fn.inner",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact,
@@ -198,13 +198,13 @@ func TestDebuggerSchemaRequestedPause(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.main", pc: 0, line: 4, column: 1})

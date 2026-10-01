@@ -3,6 +3,7 @@ package bytecode
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/types"
@@ -25,7 +26,7 @@ func validateTypeRef(path string, ref types.TypeRef, table *types.TypeTable) err
 
 func validateFunctionSignature(path string, signature types.FunctionSignature, table *types.TypeTable) error {
 	for i, param := range signature.Params {
-		if err := validateTypeRef(fmt.Sprintf("%s.params[%d]", path, i), param.Type, table); err != nil {
+		if err := validateTypeRef(path+".params["+strconv.Itoa(i)+"]", param.Type, table); err != nil {
 			return err
 		}
 		if signature.Variadic && i == len(signature.Params)-1 {
@@ -37,105 +38,147 @@ func validateFunctionSignature(path string, signature types.FunctionSignature, t
 		}
 	}
 	for i, result := range signature.Results {
-		if err := validateTypeRef(fmt.Sprintf("%s.results[%d]", path, i), result, table); err != nil {
+		if err := validateTypeRef(path+".results["+strconv.Itoa(i)+"]", result, table); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateFunctionBody(path string, fn Function, refs artifactRefs, table *types.TypeTable) (FunctionAnalysis, error) {
+func validateFunctionBody(path string, fn Function, refs artifactRefs, table *types.TypeTable) error {
 	if err := validateFunctionSignature(path+".signature", fn.Signature, table); err != nil {
-		return FunctionAnalysis{}, err
+		return err
 	}
 	for i, local := range fn.Locals {
-		if err := validateTypeRef(fmt.Sprintf("%s.locals[%d].type", path, i), local.Type, table); err != nil {
-			return FunctionAnalysis{}, err
+		if err := validateTypeRef(path+".locals["+strconv.Itoa(i)+"].type", local.Type, table); err != nil {
+			return err
 		}
 	}
 	for i, upvalue := range fn.Upvalues {
-		if err := validateTypeRef(fmt.Sprintf("%s.upvalues[%d].type", path, i), upvalue.Type, table); err != nil {
-			return FunctionAnalysis{}, err
+		if err := validateTypeRef(path+".upvalues["+strconv.Itoa(i)+"].type", upvalue.Type, table); err != nil {
+			return err
 		}
 	}
+	operations, err := fn.Operations()
+	if err != nil {
+		if issue, ok := err.(ValidationError); ok {
+			return newCodedValidationError(issue.Code, path+".code."+issue.Path, issue.Err)
+		}
+		return newValidationError(path+".code", err)
+	}
+	instructions := operations
 	labels := make(map[string]int)
-	locals := collectIDs(len(fn.Locals), func(i int) string { return fn.Locals[i].ID })
+	locals := make(map[string]types.TypeRef, len(fn.Locals))
+	for _, local := range fn.Locals {
+		locals[local.ID] = local.Type
+	}
 	if err := validateResultLocals(path+".result_locals", fn, locals); err != nil {
-		return FunctionAnalysis{}, err
+		return err
 	}
 	if err := validateUniqueIDs(path+".upvalues", len(fn.Upvalues), func(i int) string { return fn.Upvalues[i].ID }); err != nil {
-		return FunctionAnalysis{}, err
+		return err
 	}
 	upvalues := collectIDs(len(fn.Upvalues), func(i int) string { return fn.Upvalues[i].ID })
-	for j, inst := range fn.Instructions {
-		instPath := fmt.Sprintf("%s.instructions[%d]", path, j)
-		if err := validateInstruction(instPath, inst); err != nil {
-			return FunctionAnalysis{}, err
+	for j := range instructions {
+		inst := &instructions[j]
+		if err := validateInstruction("", inst); err != nil {
+			return prependValidationPath(path+".instructions["+strconv.Itoa(j)+"]", err)
 		}
-		if err := validateInstructionRefs(instPath, inst, refs, locals, upvalues, table); err != nil {
-			return FunctionAnalysis{}, err
+		if err := validateInstructionRefs("", inst, refs, locals, upvalues, table); err != nil {
+			return prependValidationPath(path+".instructions["+strconv.Itoa(j)+"]", err)
 		}
-		if inst.Op == string(OpReturn) {
-			var payload ReturnPayload
-			if err := decodePayload(instPath, inst.Payload, &payload); err != nil {
-				return FunctionAnalysis{}, err
+		if inst.Op == OpReturn {
+			instPath := path + ".instructions[" + strconv.Itoa(j) + "]"
+			payload, err := validationPayload[ReturnPayload](instPath, inst)
+			if err != nil {
+				return err
 			}
 			if payload.ResultCount != len(fn.Signature.Results) {
-				return FunctionAnalysis{}, schemaMismatchValidationError(instPath+".payload.result_count", fmt.Errorf("return result count mismatch: got %d, want %d", payload.ResultCount, len(fn.Signature.Results)))
+				return schemaMismatchValidationError(instPath+".payload.result_count", fmt.Errorf("return result count mismatch: got %d, want %d", payload.ResultCount, len(fn.Signature.Results)))
 			}
 		}
-		if inst.Op == string(OpTailCallDirect) {
-			var payload CallPayload
-			if err := decodePayload(instPath, inst.Payload, &payload); err != nil {
-				return FunctionAnalysis{}, err
+		if inst.Op == OpTailCallDirect {
+			instPath := path + ".instructions[" + strconv.Itoa(j) + "]"
+			payload, err := validationPayload[CallPayload](instPath, inst)
+			if err != nil {
+				return err
 			}
 			if payload.ResultCount != len(fn.Signature.Results) {
-				return FunctionAnalysis{}, schemaMismatchValidationError(instPath+".payload.result_count", fmt.Errorf("tail call result count mismatch: got %d, want %d", payload.ResultCount, len(fn.Signature.Results)))
+				return schemaMismatchValidationError(instPath+".payload.result_count", fmt.Errorf("tail call result count mismatch: got %d, want %d", payload.ResultCount, len(fn.Signature.Results)))
 			}
 		}
-		if inst.Op == string(OpLabel) {
-			var payload LabelPayload
-			if err := decodePayload(instPath, inst.Payload, &payload); err != nil {
-				return FunctionAnalysis{}, err
+		if inst.Op == OpLabel {
+			instPath := path + ".instructions[" + strconv.Itoa(j) + "]"
+			payload, err := validationPayload[LabelPayload](instPath, inst)
+			if err != nil {
+				return err
 			}
 			label := strings.TrimSpace(payload.Label)
 			if label == "" {
-				return FunctionAnalysis{}, missingValidationError(instPath+".payload.label", errors.New("missing label"))
+				return missingValidationError(instPath+".payload.label", errors.New("missing label"))
 			}
 			if prev, ok := labels[label]; ok {
-				return FunctionAnalysis{}, newCodedValidationError(ValidationLabelDuplicate, instPath+".payload.label", fmt.Errorf("duplicate label %q first seen at instruction %d", label, prev))
+				return newCodedValidationError(ValidationLabelDuplicate, instPath+".payload.label", fmt.Errorf("duplicate label %q first seen at instruction %d", label, prev))
 			}
 			labels[label] = j
 		}
 	}
-	for j, inst := range fn.Instructions {
-		instPath := fmt.Sprintf("%s.instructions[%d]", path, j)
+	for j := range instructions {
+		inst := &instructions[j]
 		switch inst.Op {
-		case string(OpJump), string(OpJumpIf):
-			var payload JumpPayload
-			if err := decodePayload(instPath, inst.Payload, &payload); err != nil {
-				return FunctionAnalysis{}, err
+		case OpCompareBranch, OpTypeDispatch, OpJump, OpJumpIf:
+		default:
+			continue
+		}
+		instPath := path + ".instructions[" + strconv.Itoa(j) + "]"
+		switch inst.Op {
+		case OpCompareBranch:
+			payload := inst.Payload.(CompareBranchPayload)
+			if _, ok := labels[payload.Label]; !ok {
+				return newCodedValidationError(ValidationLabelUnknown, instPath, fmt.Errorf("unknown label %q", payload.Label))
+			}
+		case OpTypeDispatch:
+			payload, err := validationPayload[TypeDispatchPayload](instPath, inst)
+			if err != nil {
+				return err
+			}
+			if _, ok := labels[payload.Default]; !ok {
+				return newCodedValidationError(ValidationLabelUnknown, instPath, fmt.Errorf("unknown label %q", payload.Default))
+			}
+			for _, match := range payload.Cases {
+				if _, ok := labels[match.Label]; !ok {
+					return newCodedValidationError(ValidationLabelUnknown, instPath, fmt.Errorf("unknown label %q", match.Label))
+				}
+			}
+		case OpJump, OpJumpIf:
+			payload, err := validationPayload[JumpPayload](instPath, inst)
+			if err != nil {
+				return err
 			}
 			label := strings.TrimSpace(payload.Label)
 			if label == "" {
-				return FunctionAnalysis{}, missingValidationError(instPath+".payload.label", errors.New("missing jump label"))
+				return missingValidationError(instPath+".payload.label", errors.New("missing jump label"))
 			}
 			if _, ok := labels[label]; !ok {
-				return FunctionAnalysis{}, newCodedValidationError(ValidationLabelUnknown, instPath+".payload.label", fmt.Errorf("unknown label %q", label))
+				return newCodedValidationError(ValidationLabelUnknown, instPath+".payload.label", fmt.Errorf("unknown label %q", label))
 			}
 		}
 	}
-	analysis, err := AnalyzeFunction(fn)
-	if err != nil {
-		if validationErr, ok := err.(ValidationError); ok {
-			return FunctionAnalysis{}, newCodedValidationError(validationErr.Code, path+"."+validationErr.Path, validationErr.Err)
+	for i, typ := range fn.Code.Types {
+		if err := validateTypeRef(path+".code.types["+strconv.Itoa(i)+"]", typ, table); err != nil {
+			return err
 		}
-		return FunctionAnalysis{}, newValidationError(path+".instructions", err)
 	}
-	return analysis, nil
+	if err := validateSlotCode(fn.Code, refs.constantOrder, fn.Locals, operations); err != nil {
+		return newValidationError(path+".code", err)
+	}
+	if err := validateSlotTypes(fn, operations, refs, table); err != nil {
+		return newValidationError(path+".code", err)
+	}
+	return nil
 }
 
-func validateResultLocals(path string, fn Function, locals map[string]struct{}) error {
+func validateResultLocals(path string, fn Function, locals map[string]types.TypeRef) error {
 	if len(fn.ResultLocals) == 0 {
 		return nil
 	}
@@ -146,24 +189,78 @@ func validateResultLocals(path string, fn Function, locals map[string]struct{}) 
 	for i, local := range fn.ResultLocals {
 		local = strings.TrimSpace(local)
 		if local == "" {
-			return missingValidationError(fmt.Sprintf("%s[%d]", path, i), errors.New("missing result local"))
+			return missingValidationError(path+"["+strconv.Itoa(i)+"]", errors.New("missing result local"))
 		}
 		if _, ok := locals[local]; !ok {
-			return unknownValidationError(fmt.Sprintf("%s[%d]", path, i), fmt.Errorf("unknown local slot %q", local))
+			return unknownValidationError(path+"["+strconv.Itoa(i)+"]", fmt.Errorf("unknown local slot %q", local))
 		}
 		if _, ok := seen[local]; ok {
-			return newValidationError(fmt.Sprintf("%s[%d]", path, i), fmt.Errorf("duplicate result local %q", local))
+			return newValidationError(path+"["+strconv.Itoa(i)+"]", fmt.Errorf("duplicate result local %q", local))
 		}
 		seen[local] = struct{}{}
 	}
 	return nil
 }
 
-func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, locals, upvalues map[string]struct{}, table *types.TypeTable) error {
+func validateInstructionRefs(path string, inst *Instruction, refs artifactRefs, locals map[string]types.TypeRef, upvalues map[string]struct{}, table *types.TypeTable) error {
 	switch inst.Op {
-	case string(OpConst):
-		var payload ConstPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpGetPath:
+		payload := inst.Payload.(FieldPathPayload)
+		if err := validateTypeRef(path+".type", payload.Type, table); err != nil {
+			return err
+		}
+		_, err := fieldPathResult(table, payload)
+		return err
+	case OpCompareBranch:
+		return validateTypeRef(path+".type", inst.Payload.(CompareBranchPayload).Type, table)
+	case OpTypeDispatch:
+		payload, err := validationPayload[TypeDispatchPayload](path, inst)
+		if err != nil {
+			return err
+		}
+		used := []string{payload.Subject}
+		if payload.DefaultLocal != "" {
+			used = append(used, payload.DefaultLocal)
+		}
+		for _, match := range payload.Cases {
+			if match.Type.Valid() {
+				if err := validateTypeRef(path+".payload.cases.type", match.Type, table); err != nil {
+					return err
+				}
+			}
+			if match.Binding != "" {
+				used = append(used, match.Binding)
+			}
+		}
+		for _, local := range used {
+			if _, ok := locals[local]; !ok {
+				return unknownValidationError(path, fmt.Errorf("unknown type dispatch local %q", local))
+			}
+		}
+		subject := locals[payload.Subject]
+		underlying := table.Underlying(subject)
+		if underlying.Kind != types.Any && underlying.Kind != types.Interface && underlying != types.Builtin(types.PrimitiveError) {
+			return newValidationError(path, errors.New("type dispatch subject must be an interface"))
+		}
+		relations := types.NewRelations(table)
+		if payload.DefaultLocal != "" && !relations.Identical(locals[payload.DefaultLocal], subject).OK {
+			return newValidationError(path, errors.New("type dispatch default binding must match subject type"))
+		}
+		for _, match := range payload.Cases {
+			if match.Binding == "" {
+				continue
+			}
+			wanted := match.Type
+			if match.Original {
+				wanted = subject
+			}
+			if !relations.Identical(locals[match.Binding], wanted).OK {
+				return newValidationError(path, errors.New("type dispatch case binding has incompatible type"))
+			}
+		}
+	case OpConst:
+		payload, err := validationPayload[ConstPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		if _, ok := refs.constants[payload.Constant]; !ok {
@@ -172,9 +269,9 @@ func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, l
 		if refs.untypedConstants[payload.Constant] {
 			return newValidationError(path+".payload.constant", fmt.Errorf("untyped constant %q cannot be used by runtime instructions", payload.Constant))
 		}
-	case string(OpSelect):
-		var payload SelectPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpSelect:
+		payload, err := validationPayload[SelectPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		used := []string{payload.Index}
@@ -191,44 +288,44 @@ func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, l
 				return unknownValidationError(path+".payload", fmt.Errorf("unknown select local %q", local))
 			}
 		}
-	case string(OpLoadLocal), string(OpStoreLocal), string(OpMapIterInit), string(OpMapIterNext), string(OpMapIterClose):
-		var payload LocalPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpLoadLocal, OpStoreLocal, OpMapIterInit, OpMapIterNext, OpMapIterClose:
+		payload, err := validationPayload[LocalPayload](path, inst)
+		if err != nil {
 			return err
 		}
-		if payload.Rebind && inst.Op != string(OpStoreLocal) {
+		if payload.Rebind && inst.Op != OpStoreLocal {
 			return newValidationError(path+".payload.rebind", errors.New("rebind is only valid for store_local"))
 		}
 		if _, ok := locals[payload.Local]; !ok {
 			return unknownValidationError(path+".payload.local", fmt.Errorf("unknown local %q", payload.Local))
 		}
-	case string(OpLoadUpvalue), string(OpStoreUpvalue):
-		var payload UpvaluePayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpLoadUpvalue, OpStoreUpvalue:
+		payload, err := validationPayload[UpvaluePayload](path, inst)
+		if err != nil {
 			return err
 		}
 		if _, ok := upvalues[payload.Upvalue]; !ok {
 			return unknownValidationError(path+".payload.upvalue", fmt.Errorf("unknown upvalue %q", payload.Upvalue))
 		}
-	case string(OpLoadGlobal), string(OpStoreGlobal):
-		var payload GlobalPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpLoadGlobal, OpStoreGlobal:
+		payload, err := validationPayload[GlobalPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		if _, ok := refs.globals[payload.Global]; !ok {
 			return unknownValidationError(path+".payload.global", fmt.Errorf("unknown global id %q", payload.Global))
 		}
-	case string(OpAddressOf):
-		var payload AddressPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpAddressOf:
+		payload, err := validationPayload[AddressPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		if err := validateAddressRef(path+".payload", payload, refs, locals, upvalues); err != nil {
 			return err
 		}
-	case string(OpCallDirect), string(OpTailCallDirect):
-		var payload CallPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpCallDirect, OpTailCallDirect:
+		payload, err := validationPayload[CallPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		modulePath := strings.TrimSpace(payload.ModulePath)
@@ -245,9 +342,9 @@ func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, l
 				return fmt.Errorf("call %s: %w", payload.Function, err)
 			}
 		}
-	case string(OpCallInterface):
-		var payload CallInterfacePayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpCallInterface:
+		payload, err := validationPayload[CallInterfacePayload](path, inst)
+		if err != nil {
 			return err
 		}
 		underlying := table.Underlying(payload.InterfaceType)
@@ -264,9 +361,9 @@ func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, l
 		// type table. Validate the shape when the method is present; runtime
 		// dispatch validates the resolved method before entering a frame.
 		return nil
-	case string(OpMakeClosure):
-		var payload ClosurePayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpMakeClosure:
+		payload, err := validationPayload[ClosurePayload](path, inst)
+		if err != nil {
 			return err
 		}
 		modulePath := strings.TrimSpace(payload.ModulePath)
@@ -283,30 +380,30 @@ func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, l
 			}
 		}
 		for i, capture := range payload.Captures {
-			if err := validateAddressRef(fmt.Sprintf("%s.payload.captures[%d]", path, i), capture, refs, locals, upvalues); err != nil {
+			if err := validateAddressRef(path+".payload.captures["+strconv.Itoa(i)+"]", capture, refs, locals, upvalues); err != nil {
 				return err
 			}
 		}
-	case string(OpCallFFI):
-		var payload CallFFIPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpCallFFI:
+		payload, err := validationPayload[CallFFIPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		if payload.ArgCount != 2 || payload.ResultCount != 3 {
 			return schemaMismatchValidationError(path+".payload", errors.New("invalid FFI stack contract"))
 		}
-	case string(OpCallIntrinsic):
-		var payload CallIntrinsicPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpCallIntrinsic:
+		payload, err := validationPayload[CallIntrinsicPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		descriptor, ok := Intrinsic(payload.ID)
 		if !ok || descriptor.ArgCount != payload.ArgCount || descriptor.ResultCount != payload.ResultCount {
 			return newValidationError(path+".payload.id", fmt.Errorf("invalid intrinsic contract %q", payload.ID))
 		}
-	case string(OpLoadExport):
-		var payload ExportPayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpLoadExport:
+		payload, err := validationPayload[ExportPayload](path, inst)
+		if err != nil {
 			return err
 		}
 		exports, ok := refs.moduleExports[payload.ModulePath]
@@ -316,9 +413,9 @@ func validateInstructionRefs(path string, inst Instruction, refs artifactRefs, l
 		if _, ok := exports[payload.Export]; !ok {
 			return unknownValidationError(path+".payload.export", fmt.Errorf("unknown module export %q", payload.Export))
 		}
-	case string(OpInitModule):
-		var payload InitModulePayload
-		if err := decodePayload(path, inst.Payload, &payload); err != nil {
+	case OpInitModule:
+		payload, err := validationPayload[InitModulePayload](path, inst)
+		if err != nil {
 			return err
 		}
 		if _, ok := refs.moduleExports[payload.ModulePath]; !ok {
@@ -338,7 +435,7 @@ func validateCallCounts(path string, arguments, results int, signature types.Fun
 	return nil
 }
 
-func validateAddressRef(path string, payload AddressPayload, refs artifactRefs, locals, upvalues map[string]struct{}) error {
+func validateAddressRef(path string, payload AddressPayload, refs artifactRefs, locals map[string]types.TypeRef, upvalues map[string]struct{}) error {
 	switch payload.Kind {
 	case "export":
 		exports, ok := refs.moduleExports[payload.ModulePath]
@@ -363,30 +460,7 @@ func validateAddressRef(path string, payload AddressPayload, refs artifactRefs, 
 	default:
 		return unsupportedValueValidationError(path+".kind", fmt.Errorf("unsupported address kind %q", payload.Kind))
 	}
-	return validateAddressPathRefs(path+".path", payload.Path, locals)
-}
-
-func validateAddressPathRefs(path string, segments []AddressPathSegment, locals map[string]struct{}) error {
-	for i, segment := range segments {
-		segmentPath := fmt.Sprintf("%s[%d]", path, i)
-		switch strings.TrimSpace(segment.Kind) {
-		case "indirect":
-		case "field":
-			if strings.TrimSpace(segment.Field) == "" {
-				return missingValidationError(segmentPath+".field", errors.New("missing field"))
-			}
-		case "index":
-			if strings.TrimSpace(segment.Local) == "" {
-				return missingValidationError(segmentPath+".local", errors.New("missing local id"))
-			}
-			if _, ok := locals[segment.Local]; !ok {
-				return unknownValidationError(segmentPath+".local", fmt.Errorf("unknown local %q", segment.Local))
-			}
-		default:
-			return unsupportedValueValidationError(segmentPath+".kind", fmt.Errorf("unsupported address path segment kind %q", segment.Kind))
-		}
-	}
-	return nil
+	return validateAddressPath(path+".path", payload.Path, locals)
 }
 
 func validateUniqueIDs(section string, n int, idAt func(int) string) error {
@@ -394,10 +468,10 @@ func validateUniqueIDs(section string, n int, idAt func(int) string) error {
 	for i := 0; i < n; i++ {
 		id := strings.TrimSpace(idAt(i))
 		if id == "" {
-			return missingValidationError(fmt.Sprintf("%s[%d].id", section, i), errors.New("missing id"))
+			return missingValidationError(section+"["+strconv.Itoa(i)+"].id", errors.New("missing id"))
 		}
 		if prev, ok := seen[id]; ok {
-			return newCodedValidationError(ValidationIDDuplicate, fmt.Sprintf("%s[%d].id", section, i), fmt.Errorf("duplicate id %q first seen at %s[%d]", id, section, prev))
+			return newCodedValidationError(ValidationIDDuplicate, section+"["+strconv.Itoa(i)+"].id", fmt.Errorf("duplicate id %q first seen at %s[%d]", id, section, prev))
 		}
 		seen[id] = i
 	}
@@ -426,7 +500,9 @@ func collectFunctionUpvalueCounts(functions []Function) map[string]int {
 func collectFunctionInstructionCounts(functions []Function) map[string]int {
 	out := make(map[string]int, len(functions))
 	for _, fn := range functions {
-		out[fn.ID] = len(fn.Instructions)
+		if fn.Code != nil {
+			out[fn.ID] = len(fn.Code.Instructions)
+		}
 	}
 	return out
 }

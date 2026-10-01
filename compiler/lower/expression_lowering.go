@@ -10,6 +10,19 @@ import (
 )
 
 func (l *lowerer) lowerExpression(expr ast.Expression, scope *funcScope) (ir.Expression, bool) {
+	lowered, ok := l.lowerExpressionBody(expr, scope)
+	if ok && l.semantic != nil {
+		if info, found := l.semantic.Exprs[expr.NodeID]; found {
+			lowered.ResultTypes = append(lowered.ResultTypes[:0:0], info.Results...)
+			if len(lowered.ResultTypes) == 0 && info.Type.Valid() && hirResultCount(lowered) == 1 {
+				lowered.ResultTypes = append(lowered.ResultTypes, info.Type)
+			}
+		}
+	}
+	return lowered, ok
+}
+
+func (l *lowerer) lowerExpressionBody(expr ast.Expression, scope *funcScope) (ir.Expression, bool) {
 	switch expr.Kind {
 	case ast.ExprEmbed:
 		return l.lowerEmbedInitializer(expr)
@@ -178,7 +191,7 @@ func (l *lowerer) lowerExpression(expr ast.Expression, scope *funcScope) (ir.Exp
 					Kind:        ir.ExprCallValue,
 					Operand:     &callee,
 					Args:        args,
-					ResultCount: len(signature.Results),
+					ResultCount: len(signature.Results), ResultTypes: signature.Results,
 				}, true
 			}
 		}
@@ -197,7 +210,7 @@ func (l *lowerer) lowerExpression(expr ast.Expression, scope *funcScope) (ir.Exp
 					Kind:        ir.ExprCallDirect,
 					Function:    fn,
 					Args:        args,
-					ResultCount: len(signature.Results),
+					ResultCount: len(signature.Results), ResultTypes: signature.Results,
 				}, true
 			}
 		}
@@ -357,7 +370,7 @@ func (l *lowerer) lowerExpression(expr ast.Expression, scope *funcScope) (ir.Exp
 		}
 		return ir.Expression{Kind: ir.ExprSlice, Operand: &operand, Start: &start, End: &end, Max: &maxIndex}, true
 	case ast.ExprComposite:
-		if expr.Type.Kind == ast.TypeInvalid {
+		if expr.Type == nil || expr.Type.Kind == ast.TypeInvalid {
 			l.add("hirgen.composite.elided_context", "elided composite literal type is only valid inside another composite literal", expr.Span)
 			return ir.Expression{}, false
 		}
@@ -392,7 +405,7 @@ func (l *lowerer) lowerExpression(expr ast.Expression, scope *funcScope) (ir.Exp
 	case ast.ExprReceive:
 		return l.lowerReceiveExpression(expr, scope, false)
 	case ast.ExprConvert:
-		target := l.resolveSourceTypeInScope(expr.Type, scope)
+		target := l.resolveSourceTypePtr(expr.Type, scope)
 		if expr.Operand != nil && isNilLiteral(*expr.Operand) && l.isNilAssignableType(target) {
 			return ir.Expression{Kind: ir.ExprLiteral, Type: l.hirType(target), Value: json.RawMessage("null")}, true
 		}

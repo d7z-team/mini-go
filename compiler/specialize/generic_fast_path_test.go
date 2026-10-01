@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/d7z-team/mini-go/compiler/cache"
 	"github.com/d7z-team/mini-go/compiler/emit"
 	"github.com/d7z-team/mini-go/compiler/lower"
 	"github.com/d7z-team/mini-go/compiler/parser"
@@ -32,7 +33,8 @@ func TestOrdinaryProgramMatchesFullSpecialization(t *testing.T) {
 				return checked
 			}
 			checked := parse()
-			if specialize.Required(checked, nil) {
+			unused := map[string]cache.PackageData{"unrelated/generic": {GenericTemplates: []cache.GenericTemplate{{Kind: "function", Name: "Identity"}}}}
+			if specialize.Required(checked, nil) || specialize.Required(checked, unused) {
 				t.Fatal("ordinary package requires specialization")
 			}
 			fastHIR, diagnostics := lower.Lower(checked, lower.Options{})

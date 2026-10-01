@@ -3,7 +3,6 @@ package cache
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/compiler/identity"
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/types"
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
@@ -19,7 +19,7 @@ import (
 
 const (
 	ExportFormat  = "mini-go-package-export"
-	ExportVersion = 5
+	ExportVersion = 11
 )
 
 type PackageData struct {
@@ -56,7 +56,7 @@ func FromArtifact(artifact ir.Artifact) (PackageData, error) {
 	if err := ir.ValidateArtifact(&artifact); err != nil {
 		return PackageData{}, err
 	}
-	artifactHash, err := ir.Hash(&artifact)
+	artifactHash, err := ir.HashValidated(&artifact)
 	if err != nil {
 		return PackageData{}, err
 	}
@@ -86,7 +86,7 @@ func (p PackageData) WithArtifact(artifact ir.Artifact) (PackageData, error) {
 	if p.ModulePath != modulePath || p.Package != packageName {
 		return PackageData{}, fmt.Errorf("artifact module %s/%s does not match export data %s/%s", modulePath, packageName, p.ModulePath, p.Package)
 	}
-	artifactHash, err := ir.Hash(&artifact)
+	artifactHash, err := ir.HashValidated(&artifact)
 	if err != nil {
 		return PackageData{}, err
 	}
@@ -207,11 +207,12 @@ func (p PackageData) Hash() (string, error) {
 		}
 	}
 	data.Constants = constants
-	encoded, err := encode(data)
+	w := identity.New("mini-go/export/binary/v5")
+	EncodeIdentityPackageData(w, data)
+	sum, err := w.Sum()
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:]), nil
 }
 

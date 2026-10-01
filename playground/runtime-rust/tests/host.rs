@@ -9,6 +9,7 @@ use mini_go::{
 };
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
+use support::slot_code;
 
 #[test]
 fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_methods() {
@@ -17,13 +18,26 @@ fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_meth
     let signature = json!({"results":[integer]});
     let mut nodes = vec![json!({"id":"reader","kind":wire::Interface,
         "methods":[{"name":"Value","signature":signature}]})];
+    let mut main = vec![
+        (
+            "load_local",
+            json!({"local":"input"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "call_interface",
+            json!({"interface_type":reader,"method":"Value","arg_count":0,"result_count":1}),
+            json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+        ),
+        (
+            "return",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,1]],"release":[1]}),
+        ),
+    ];
     let mut functions = vec![json!({"id":"fn.Main",
     "signature":{"params":[{"type":reader}],"results":[integer]},
-    "locals":[{"id":"input","type":reader}],"instructions":[
-        {"op":"load_local","payload":{"local":"input"}},
-        {"op":"call_interface","payload":{"interface_type":reader,"method":"Value","arg_count":0,"result_count":1}},
-        {"op":"return","payload":{"result_count":1}}
-    ]})];
+    "locals":[{"id":"input","type":reader}],"code":slot_code(json!([reader,integer]),&main)})];
     let mut identities = Vec::new();
     for index in 0..320 {
         let name = format!("Number{index}");
@@ -37,26 +51,23 @@ fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_meth
         );
         functions.push(json!({"id":function,
         "signature":{"params":[{"type":named}],"results":[integer]},
-        "locals":[{"id":"self","type":named}],"instructions":[
-            {"op":"load_local","payload":{"local":"self"}},
-            {"op":"convert","payload":{"type":integer}},
-            {"op":"return","payload":{"result_count":1}}
-        ]}));
+        "locals":[{"id":"self","type":named}],"code":slot_code(json!([named,integer]), &[
+            ("load_local",json!({"local":"self"}),json!({"outputs":[0]})),
+            ("convert",json!({"type":integer}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))])}));
         identities.push(named);
     }
     let mut artifact = json!({"type_table":{"nodes":nodes},"functions":functions});
     let image = support::image(artifact.clone());
     let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
-    artifact["functions"][0]["instructions"]
-        .as_array_mut()
-        .unwrap()
-        .splice(
-            0..0,
-            [
-                json!({"op":"zero","payload":{"type":integer}}),
-                json!({"op":"pop"}),
-            ],
-        );
+    main.splice(
+        0..0,
+        [
+            ("zero", json!({"type":integer}), json!({"outputs":[1]})),
+            ("pop", json!({}), json!({"inputs":[[0,1]],"release":[1]})),
+        ],
+    );
+    artifact["functions"][0]["code"] = slot_code(json!([reader, integer]), &main);
     let updated =
         Arc::new(Program::load(&support::image(artifact), LoadOptions::default()).unwrap());
     let values: Vec<_> = identities
@@ -106,11 +117,11 @@ fn slices_of_named_bytes_preserve_the_element_identity() {
             {"id":"bytes","kind":5,"elem":named}
         ]},
         "functions":[{"id":"fn.Main","signature":{"params":[{"type":slice}],"results":[named]},
-            "locals":[{"id":"input","type":slice}],"instructions":[
-                {"op":"load_local","payload":{"local":"input"}},
-                {"op":"zero","payload":{"type":{"kind":3,"primitive":3}}},
-                {"op":"load_index"},{"op":"return","payload":{"result_count":1}}
-            ]}]
+            "locals":[{"id":"input","type":slice}],"code":slot_code(json!([slice,{"kind":3,"primitive":3},named]), &[
+                ("load_local",json!({"local":"input"}),json!({"outputs":[0]})),
+                ("zero",json!({"type":{"kind":3,"primitive":3}}),json!({"outputs":[1]})),
+                ("load_index",json!({}),json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]})),
+                ("return",json!({"result_count":1}),json!({"inputs":[[0,2]],"release":[2]}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
     let element = program
@@ -147,6 +158,7 @@ fn typed_host_collections_are_copied_and_failure_preserves_prior_results() {
     let map = json!({"kind":7,"node":"map"});
     let slice = json!({"kind":5,"node":"slice"});
     let structure = json!({"kind":12,"node":"payload"});
+    let integer = json!({"kind":3,"primitive":3});
     let image = support::image(json!({
         "type_table":{"nodes":[
             {"id":"map","kind":7,"key":{"kind":3,"primitive":2},"elem":{"kind":3,"primitive":3}},
@@ -156,16 +168,23 @@ fn typed_host_collections_are_copied_and_failure_preserves_prior_results() {
         "constants":[{"id":"key","type":{"kind":3,"primitive":2},"value":"answer"}],
         "functions":[{"id":"fn.Main","signature":{"params":[{"type":map},{"type":slice},{"type":{"kind":3,"primitive":1}},{"type":structure}],"results":[{"kind":3,"primitive":3}]},
         "locals":[{"id":"map","type":map},{"id":"slice","type":slice},{"id":"flag","type":{"kind":3,"primitive":1}},{"id":"payload","type":structure}],
-        "instructions":[
-            {"op":"load_local","payload":{"local":"flag"}}, {"op":"jump_if","payload":{"label":"sum"}},
-            {"op":"zero","payload":{"type":{"kind":3,"primitive":3}}}, {"op":"return","payload":{"result_count":1}},
-            {"op":"label","payload":{"label":"sum"}},
-            {"op":"load_local","payload":{"local":"map"}}, {"op":"const","payload":{"constant":"key"}}, {"op":"load_index"},
-            {"op":"load_local","payload":{"local":"slice"}}, {"op":"zero","payload":{"type":{"kind":3,"primitive":3}}}, {"op":"load_index"},
-            {"op":"binary","payload":{"operator":"+"}},
-            {"op":"load_local","payload":{"local":"payload"}}, {"op":"load_field","payload":{"field":"Extra"}},
-            {"op":"binary","payload":{"operator":"+"}}, {"op":"return","payload":{"result_count":1}}
-        ]}]
+        "code":slot_code(json!([{"kind":3,"primitive":1},map,{"kind":3,"primitive":2},integer,slice,integer,integer,structure]), &[
+            ("load_local",json!({"local":"flag"}),json!({"outputs":[0]})),
+            ("jump_if",json!({"label":"sum"}),json!({"inputs":[[0,0]],"release":[0]})),
+            ("zero",json!({"type":integer}),json!({"outputs":[3]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,3]],"release":[3]})),
+            ("label",json!({"label":"sum"}),json!({})),
+            ("load_local",json!({"local":"map"}),json!({"outputs":[1]})),
+            ("const",json!({"constant":"key"}),json!({"outputs":[2]})),
+            ("load_index",json!({}),json!({"inputs":[[0,1],[0,2]],"outputs":[3],"release":[1,2]})),
+            ("load_local",json!({"local":"slice"}),json!({"outputs":[4]})),
+            ("zero",json!({"type":integer}),json!({"outputs":[5]})),
+            ("load_index",json!({}),json!({"inputs":[[0,4],[0,5]],"outputs":[6],"release":[4,5]})),
+            ("binary",json!({"operator":"+"}),json!({"inputs":[[0,3],[0,6]],"outputs":[5],"release":[3,6]})),
+            ("load_local",json!({"local":"payload"}),json!({"outputs":[7]})),
+            ("load_field",json!({"field":"Extra"}),json!({"inputs":[[0,7]],"outputs":[3],"release":[7]})),
+            ("binary",json!({"operator":"+"}),json!({"inputs":[[0,5],[0,3]],"outputs":[6],"release":[5,3]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,6]],"release":[6]}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
     let resolve = |reference| {
@@ -214,7 +233,9 @@ fn shared_host_byte_input_preserves_binary_data_and_validates_nil() {
     let bytes = json!({"kind":5,"node":"bytes"});
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
-        "functions":[{"id":"fn.Main","signature":{"params":[{"type":bytes}],"results":[bytes]},"locals":[{"id":"bytes","type":bytes}],"instructions":[{"op":"load_local","payload":{"local":"bytes"}},{"op":"return","payload":{"result_count":1}}]}]
+        "functions":[{"id":"fn.Main","signature":{"params":[{"type":bytes}],"results":[bytes]},"locals":[{"id":"bytes","type":bytes}],"code":slot_code(json!([bytes]), &[
+            ("load_local",json!({"local":"bytes"}),json!({"outputs":[0]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
     let instance = program

@@ -2,8 +2,6 @@ package cache
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -75,7 +73,7 @@ func (s Store) LookupCompile(input Action) (Lookup, error) {
 	if err != nil {
 		return Lookup{Reason: "artifact json invalid"}, nil
 	}
-	artifactHash, err := ir.Hash(&artifact)
+	artifactHash, err := ir.HashValidated(&artifact)
 	if err != nil || artifact.Module.Path != input.ModulePath || artifact.Module.Package != input.Package || !artifactRequirementsUnbound(artifact) {
 		return Lookup{Reason: "artifact identity mismatch"}, nil
 	}
@@ -93,30 +91,22 @@ func (s Store) LookupCompile(input Action) (Lookup, error) {
 	}, nil
 }
 
-func (s Store) StoreCompile(input Action, artifact ir.Artifact, symbols ir.PackageSymbols, packageData PackageData) (Manifest, error) {
-	if artifact.Module.Path != input.ModulePath || artifact.Module.Package != input.Package || !artifactRequirementsUnbound(artifact) {
-		return Manifest{}, errors.New("artifact does not match cache action")
+func (s Store) StoreCompile(input Action, sealed CompiledArtifact, symbols ir.PackageSymbols, packageData PackageData) (Manifest, error) {
+	if err := validateCompileEntry(input, sealed, symbols, packageData); err != nil {
+		return Manifest{}, err
 	}
-	if err := packageData.Validate(); err != nil {
-		return Manifest{}, fmt.Errorf("validate export data: %w", err)
-	}
+	artifact, artifactHash := sealed.artifact, sealed.hash
 	actionID, err := input.ID()
 	if err != nil {
 		return Manifest{}, err
 	}
-	artifactJSON, artifactHash, err := ir.EncodeJSONAndHash(&artifact)
+	artifactJSON, err := ir.CanonicalJSON(&artifact)
 	if err != nil {
 		return Manifest{}, err
-	}
-	if err := ir.ValidatePackageSymbols(&artifact, artifactHash, &symbols); err != nil {
-		return Manifest{}, fmt.Errorf("validate package symbols: %w", err)
 	}
 	symbolJSON, err := canonicalJSON(symbols)
 	if err != nil {
 		return Manifest{}, err
-	}
-	if packageData.ModulePath != artifact.Module.Path || packageData.Package != artifact.Module.Package || packageData.ArtifactHash != artifactHash {
-		return Manifest{}, errors.New("export data does not match artifact")
 	}
 	exportJSON, err := EncodeJSON(packageData)
 	if err != nil {

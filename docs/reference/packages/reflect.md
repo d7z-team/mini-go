@@ -171,7 +171,7 @@ Package reflect provides runtime type inspection and writable value access for M
 ### const Array
 
 ```go
-
+const Array Kind = Kind(inspect.Array)
 ```
 
 Array represents an array type.
@@ -179,7 +179,7 @@ Array represents an array type.
 ### const Bool
 
 ```go
-
+const Bool Kind = Kind(inspect.Bool)
 ```
 
 Bool represents the bool type.
@@ -195,7 +195,7 @@ BothDir allows both send and receive operations on a channel.
 ### const Chan
 
 ```go
-
+const Chan Kind = Kind(inspect.Chan)
 ```
 
 Chan represents a channel type.
@@ -203,7 +203,7 @@ Chan represents a channel type.
 ### const Complex128
 
 ```go
-
+const Complex128 Kind = Kind(inspect.Complex128)
 ```
 
 Complex128 represents the complex128 type.
@@ -211,7 +211,7 @@ Complex128 represents the complex128 type.
 ### const Complex64
 
 ```go
-
+const Complex64 Kind = Kind(inspect.Complex64)
 ```
 
 Complex64 represents the complex64 type.
@@ -219,7 +219,7 @@ Complex64 represents the complex64 type.
 ### const Float32
 
 ```go
-
+const Float32 Kind = Kind(inspect.Float32)
 ```
 
 Float32 represents the float32 type.
@@ -227,7 +227,7 @@ Float32 represents the float32 type.
 ### const Float64
 
 ```go
-
+const Float64 Kind = Kind(inspect.Float64)
 ```
 
 Float64 represents the float64 type.
@@ -235,7 +235,7 @@ Float64 represents the float64 type.
 ### const Func
 
 ```go
-
+const Func Kind = Kind(inspect.Func)
 ```
 
 Func represents a function type.
@@ -243,7 +243,7 @@ Func represents a function type.
 ### const Int
 
 ```go
-
+const Int Kind = Kind(inspect.Int)
 ```
 
 Int represents the int type.
@@ -251,7 +251,7 @@ Int represents the int type.
 ### const Int16
 
 ```go
-
+const Int16 Kind = Kind(inspect.Int16)
 ```
 
 Int16 represents the int16 type.
@@ -259,7 +259,7 @@ Int16 represents the int16 type.
 ### const Int32
 
 ```go
-
+const Int32 Kind = Kind(inspect.Int32)
 ```
 
 Int32 represents the int32 type.
@@ -267,7 +267,7 @@ Int32 represents the int32 type.
 ### const Int64
 
 ```go
-
+const Int64 Kind = Kind(inspect.Int64)
 ```
 
 Int64 represents the int64 type.
@@ -275,7 +275,7 @@ Int64 represents the int64 type.
 ### const Int8
 
 ```go
-
+const Int8 Kind = Kind(inspect.Int8)
 ```
 
 Int8 represents the int8 type.
@@ -283,7 +283,7 @@ Int8 represents the int8 type.
 ### const Interface
 
 ```go
-
+const Interface Kind = Kind(inspect.Interface)
 ```
 
 Interface represents an interface type.
@@ -291,7 +291,7 @@ Interface represents an interface type.
 ### const Invalid
 
 ```go
-const Invalid Kind = iota
+const Invalid Kind = Kind(inspect.Invalid)
 ```
 
 Invalid is the zero Kind and represents no type.
@@ -299,7 +299,7 @@ Invalid is the zero Kind and represents no type.
 ### const Map
 
 ```go
-
+const Map Kind = Kind(inspect.Map)
 ```
 
 Map represents a map type.
@@ -307,7 +307,7 @@ Map represents a map type.
 ### const Pointer
 
 ```go
-
+const Pointer Kind = Kind(inspect.Pointer)
 ```
 
 Pointer represents a pointer type.
@@ -363,7 +363,7 @@ SendDir identifies a send-only channel.
 ### const Slice
 
 ```go
-
+const Slice Kind = Kind(inspect.Slice)
 ```
 
 Slice represents a slice type.
@@ -371,7 +371,7 @@ Slice represents a slice type.
 ### const String
 
 ```go
-
+const String Kind = Kind(inspect.String)
 ```
 
 String represents the string type.
@@ -379,7 +379,7 @@ String represents the string type.
 ### const Struct
 
 ```go
-
+const Struct Kind = Kind(inspect.Struct)
 ```
 
 Struct represents a struct type.
@@ -387,7 +387,7 @@ Struct represents a struct type.
 ### const Uint
 
 ```go
-
+const Uint Kind = Kind(inspect.Uint)
 ```
 
 Uint represents the uint type.
@@ -395,7 +395,7 @@ Uint represents the uint type.
 ### const Uint16
 
 ```go
-
+const Uint16 Kind = Kind(inspect.Uint16)
 ```
 
 Uint16 represents the uint16 type.
@@ -403,7 +403,7 @@ Uint16 represents the uint16 type.
 ### const Uint32
 
 ```go
-
+const Uint32 Kind = Kind(inspect.Uint32)
 ```
 
 Uint32 represents the uint32 type.
@@ -411,7 +411,7 @@ Uint32 represents the uint32 type.
 ### const Uint64
 
 ```go
-
+const Uint64 Kind = Kind(inspect.Uint64)
 ```
 
 Uint64 represents the uint64 type.
@@ -419,7 +419,7 @@ Uint64 represents the uint64 type.
 ### const Uint8
 
 ```go
-
+const Uint8 Kind = Kind(inspect.Uint8)
 ```
 
 Uint8 represents the uint8 type.
@@ -427,7 +427,7 @@ Uint8 represents the uint8 type.
 ### const Uintptr
 
 ```go
-
+const Uintptr Kind = Kind(inspect.Uintptr)
 ```
 
 Uintptr represents the uintptr type.
@@ -435,7 +435,7 @@ Uintptr represents the uintptr type.
 ### const UnsafePointer
 
 ```go
-
+const UnsafePointer Kind = Kind(inspect.UnsafePointer)
 ```
 
 UnsafePointer represents the unsafe.Pointer type.

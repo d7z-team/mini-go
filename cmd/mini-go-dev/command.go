@@ -12,7 +12,7 @@ import (
 
 func runDevCLI(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: mini-go-dev compiler-core|compiler-identity|contract-spec|runtime-contract|runtime-vectors|runtime-state-vectors|runtime-stdlib-vectors|runtime-manifest|runtime-blocks|runtime-host-broker|rpc-fixtures|bootstrap|core-api|vscode-grammar")
+		return errors.New("usage: mini-go-dev compiler-binary|bytecode-json|compiler-core|compiler-identity|contract-spec|runtime-contract|runtime-vectors|runtime-state-vectors|runtime-stdlib-vectors|runtime-manifest|runtime-blocks|runtime-host-broker|rpc-fixtures|bootstrap|core-api|vscode-grammar")
 	}
 	switch args[0] {
 	case "tools-schema":
@@ -26,6 +26,16 @@ func runDevCLI(args []string, stdout, stderr io.Writer) error {
 			return errors.New("runtime-host-broker takes no arguments")
 		}
 		return runtimecheck.RunHostBroker(context.Background(), os.Stdin, stdout)
+	case "compiler-binary":
+		if len(args) != 1 {
+			return errors.New("compiler-binary accepts no arguments")
+		}
+		return generateCompilerBinary()
+	case "bytecode-json":
+		if len(args) != 1 {
+			return errors.New("bytecode-json accepts no arguments")
+		}
+		return generateBytecodeJSON()
 	case "runtime-contract":
 		return runRuntimeContract(args[1:], stderr)
 	case "runtime-vectors", "runtime-stdlib-vectors":

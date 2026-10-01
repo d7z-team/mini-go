@@ -10,6 +10,7 @@ use mini_go::{
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use support::slot_code;
 
 #[derive(Deserialize)]
 struct Vector {
@@ -23,52 +24,131 @@ fn shared_program() -> Arc<Program> {
     let boolean = json!({"kind":3,"primitive":1});
     let channel = json!({"kind":9,"node":"channel"});
     let lock = json!({"kind":9,"node":"lock"});
+    let pointer = json!({"kind":8,"node":"lockptr"});
+    let function = json!({"kind":10,"node":"function"});
+    let slice = json!({"kind":5,"node":"slice"});
     let mut worker = vec![
-        json!({"op":"address_of","payload":{"kind":"upvalue","upvalue":"guard"}}),
-        json!({"op":"call_intrinsic","payload":{"id":"sync.mutex_lock","arg_count":1}}),
-        json!({"op":"load_upvalue","payload":{"upvalue":"counter"}}),
-        json!({"op":"const","payload":{"constant":"one"}}),
-        json!({"op":"binary","payload":{"operator":"+"}}),
-        json!({"op":"store_upvalue","payload":{"upvalue":"counter"}}),
-        json!({"op":"address_of","payload":{"kind":"upvalue","upvalue":"guard"}}),
-        json!({"op":"call_intrinsic","payload":{"id":"sync.mutex_unlock","arg_count":1}}),
+        (
+            "address_of",
+            json!({"kind":"upvalue","upvalue":"guard"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "call_intrinsic",
+            json!({"id":"sync.mutex_lock","arg_count":1}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ),
+        (
+            "load_upvalue",
+            json!({"upvalue":"counter"}),
+            json!({"outputs":[1]}),
+        ),
+        ("const", json!({"constant":"one"}), json!({"outputs":[2]})),
+        (
+            "binary",
+            json!({"operator":"+"}),
+            json!({"inputs":[[0,1],[0,2]],"outputs":[3],"release":[1,2]}),
+        ),
+        (
+            "store_upvalue",
+            json!({"upvalue":"counter"}),
+            json!({"inputs":[[0,3]],"release":[3]}),
+        ),
+        (
+            "address_of",
+            json!({"kind":"upvalue","upvalue":"guard"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "call_intrinsic",
+            json!({"id":"sync.mutex_unlock","arg_count":1}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ),
     ];
     for _ in 0..96 {
         worker.extend([
-            json!({"op":"make_sequence","payload":{"type":{"kind":5,"node":"slice"},"element_count":0}}),
-            json!({"op":"pop"}),
+            (
+                "make_sequence",
+                json!({"type":slice,"element_count":0}),
+                json!({"outputs":[4]}),
+            ),
+            ("pop", json!({}), json!({"inputs":[[0,4]],"release":[4]})),
         ]);
     }
     worker.extend([
-        json!({"op":"load_global","payload":{"global":"done"}}),
-        json!({"op":"zero","payload":{"type":boolean}}),
-        json!({"op":"waitable_send"}),
-        json!({"op":"return","payload":{}}),
+        (
+            "load_global",
+            json!({"global":"done"}),
+            json!({"outputs":[5]}),
+        ),
+        ("zero", json!({"type":boolean}), json!({"outputs":[6]})),
+        (
+            "waitable_send",
+            json!({}),
+            json!({"inputs":[[0,5],[0,6]],"release":[5,6]}),
+        ),
+        ("return", json!({}), json!({})),
     ]);
 
     let mut main = vec![
-        json!({"op":"const","payload":{"constant":"workers"}}),
-        json!({"op":"make_waitable","payload":{"type":channel}}),
-        json!({"op":"store_global","payload":{"global":"done"}}),
+        (
+            "const",
+            json!({"constant":"workers"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "make_waitable",
+            json!({"type":channel}),
+            json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+        ),
+        (
+            "store_global",
+            json!({"global":"done"}),
+            json!({"inputs":[[0,1]],"release":[1]}),
+        ),
     ];
     for _ in 0..4 {
         main.extend([
-            json!({"op":"make_closure","payload":{"function":"worker","captures":[
-                {"kind":"local","local":"guard"},{"kind":"local","local":"counter"}
-            ]}}),
-            json!({"op":"spawn","payload":{"arg_count":0}}),
+            (
+                "make_closure",
+                json!({"function":"worker","captures":[
+                    {"kind":"local","local":"guard"},{"kind":"local","local":"counter"}
+                ]}),
+                json!({"outputs":[2]}),
+            ),
+            (
+                "spawn",
+                json!({"arg_count":0}),
+                json!({"inputs":[[0,2]],"release":[2]}),
+            ),
         ]);
     }
     for _ in 0..4 {
         main.extend([
-            json!({"op":"load_global","payload":{"global":"done"}}),
-            json!({"op":"waitable_recv"}),
-            json!({"op":"pop"}),
+            (
+                "load_global",
+                json!({"global":"done"}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "waitable_recv",
+                json!({}),
+                json!({"inputs":[[0,1]],"outputs":[3],"release":[1]}),
+            ),
+            ("pop", json!({}), json!({"inputs":[[0,3]],"release":[3]})),
         ]);
     }
     main.extend([
-        json!({"op":"load_local","payload":{"local":"counter"}}),
-        json!({"op":"return","payload":{"result_count":1}}),
+        (
+            "load_local",
+            json!({"local":"counter"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "return",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ),
     ]);
 
     Arc::new(
@@ -77,7 +157,9 @@ fn shared_program() -> Arc<Program> {
                 "type_table":{"nodes":[
                     {"id":"channel","kind":9,"direction":1,"elem":boolean},
                     {"id":"lock","kind":9,"direction":1,"elem":boolean},
-                    {"id":"slice","kind":5,"elem":integer}
+                    {"id":"slice","kind":5,"elem":integer},
+                    {"id":"lockptr","kind":8,"elem":lock},
+                    {"id":"function","kind":10,"signature":{}}
                 ]},
                 "globals":[{"id":"done","type":channel}],
                 "constants":[
@@ -87,10 +169,10 @@ fn shared_program() -> Arc<Program> {
                 "functions":[
                     {"id":"fn.Main","signature":{"results":[integer]},
                      "locals":[{"id":"guard","type":lock},{"id":"counter","type":integer}],
-                     "instructions":main},
+                     "code":slot_code(json!([integer,channel,function,boolean]),&main)},
                     {"id":"worker","revision_local":true,
                      "upvalues":[{"id":"guard","type":lock},{"id":"counter","type":integer}],
-                     "instructions":worker}
+                     "code":slot_code(json!([pointer,integer,integer,integer,slice,channel,boolean]),&worker)}
                 ]
             })),
             LoadLimits::default(),
@@ -102,58 +184,136 @@ fn shared_program() -> Arc<Program> {
 fn call_defer_program() -> Arc<Program> {
     let integer = json!({"kind":3,"primitive":3});
     let channel = json!({"kind":9,"node":"channel"});
-    let mut helper = vec![json!({"op":"label","payload":{"label":"loop"}})];
-    helper.extend([
-        json!({"op":"load_local","payload":{"local":"i"}}),
-        json!({"op":"const","payload":{"constant":"one"}}),
-        json!({"op":"binary","payload":{"operator":"+"}}),
-        json!({"op":"store_local","payload":{"local":"i"}}),
-        json!({"op":"load_local","payload":{"local":"i"}}),
-        json!({"op":"const","payload":{"constant":"limit"}}),
-        json!({"op":"binary","payload":{"operator":"<"}}),
-        json!({"op":"jump_if","payload":{"label":"loop"}}),
-        json!({"op":"const","payload":{"constant":"answer"}}),
-        json!({"op":"return","payload":{"result_count":1}}),
-    ]);
-    let mut main = vec![
-        json!({"op":"const","payload":{"constant":"workers"}}),
-        json!({"op":"make_waitable","payload":{"type":channel}}),
-        json!({"op":"store_global","payload":{"global":"start"}}),
-        json!({"op":"const","payload":{"constant":"workers"}}),
-        json!({"op":"make_waitable","payload":{"type":channel}}),
-        json!({"op":"store_global","payload":{"global":"done"}}),
+    let boolean = json!({"kind":3,"primitive":1});
+    let function = json!({"kind":10,"node":"function"});
+    let helper = [
+        ("label", json!({"label":"loop"}), json!({})),
+        ("load_local", json!({"local":"i"}), json!({"outputs":[0]})),
+        ("const", json!({"constant":"one"}), json!({"outputs":[1]})),
+        (
+            "binary",
+            json!({"operator":"+"}),
+            json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]}),
+        ),
+        (
+            "store_local",
+            json!({"local":"i"}),
+            json!({"inputs":[[0,2]],"release":[2]}),
+        ),
+        ("load_local", json!({"local":"i"}), json!({"outputs":[0]})),
+        ("const", json!({"constant":"limit"}), json!({"outputs":[1]})),
+        (
+            "binary",
+            json!({"operator":"<"}),
+            json!({"inputs":[[0,0],[0,1]],"outputs":[3],"release":[0,1]}),
+        ),
+        (
+            "jump_if",
+            json!({"label":"loop"}),
+            json!({"inputs":[[0,3]],"release":[3]}),
+        ),
+        (
+            "const",
+            json!({"constant":"answer"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "return",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ),
     ];
-    for _ in 0..4 {
+    let mut main = Vec::new();
+    for global in ["start", "done"] {
         main.extend([
-            json!({"op":"make_closure","payload":{"function":"worker"}}),
-            json!({"op":"spawn","payload":{}}),
+            (
+                "const",
+                json!({"constant":"workers"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "make_waitable",
+                json!({"type":channel}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+            (
+                "store_global",
+                json!({"global":global}),
+                json!({"inputs":[[0,1]],"release":[1]}),
+            ),
         ]);
     }
     for _ in 0..4 {
         main.extend([
-            json!({"op":"load_global","payload":{"global":"start"}}),
-            json!({"op":"zero","payload":{"type":integer}}),
-            json!({"op":"waitable_send"}),
+            (
+                "make_closure",
+                json!({"function":"worker"}),
+                json!({"outputs":[2]}),
+            ),
+            ("spawn", json!({}), json!({"inputs":[[0,2]],"release":[2]})),
         ]);
     }
     for _ in 0..4 {
         main.extend([
-            json!({"op":"load_local","payload":{"local":"total"}}),
-            json!({"op":"load_global","payload":{"global":"done"}}),
-            json!({"op":"waitable_recv"}),
-            json!({"op":"binary","payload":{"operator":"+"}}),
-            json!({"op":"store_local","payload":{"local":"total"}}),
+            (
+                "load_global",
+                json!({"global":"start"}),
+                json!({"outputs":[1]}),
+            ),
+            ("zero", json!({"type":integer}), json!({"outputs":[0]})),
+            (
+                "waitable_send",
+                json!({}),
+                json!({"inputs":[[0,1],[0,0]],"release":[1,0]}),
+            ),
+        ]);
+    }
+    for _ in 0..4 {
+        main.extend([
+            (
+                "load_local",
+                json!({"local":"total"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "load_global",
+                json!({"global":"done"}),
+                json!({"outputs":[1]}),
+            ),
+            (
+                "waitable_recv",
+                json!({}),
+                json!({"inputs":[[0,1]],"outputs":[3],"release":[1]}),
+            ),
+            (
+                "binary",
+                json!({"operator":"+"}),
+                json!({"inputs":[[0,0],[0,3]],"outputs":[4],"release":[0,3]}),
+            ),
+            (
+                "store_local",
+                json!({"local":"total"}),
+                json!({"inputs":[[0,4]],"release":[4]}),
+            ),
         ]);
     }
     main.extend([
-        json!({"op":"load_local","payload":{"local":"total"}}),
-        json!({"op":"return","payload":{"result_count":1}}),
+        (
+            "load_local",
+            json!({"local":"total"}),
+            json!({"outputs":[0]}),
+        ),
+        (
+            "return",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ),
     ]);
 
     Arc::new(
         Program::load(
             &support::image(json!({
-                "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":integer}]},
+                "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":integer},{"id":"function","kind":10,"signature":{}}]},
                 "globals":[{"id":"start","type":channel},{"id":"done","type":channel}],
                 "constants":[
                     {"id":"workers","type":integer,"value":4},
@@ -164,38 +324,38 @@ fn call_defer_program() -> Arc<Program> {
                 ],
                 "functions":[
                     {"id":"fn.Main","signature":{"results":[integer]},
-                     "locals":[{"id":"total","type":integer}],"instructions":main},
-                    {"id":"worker","locals":[{"id":"result","type":integer}],"instructions":[
-                        {"op":"load_global","payload":{"global":"start"}},
-                        {"op":"waitable_recv"},{"op":"pop"},
-                        {"op":"call_direct","payload":{"function":"recovered","result_count":1}},
-                        {"op":"pop"},
-                        {"op":"call_direct","payload":{"function":"nested","result_count":1}},
-                        {"op":"store_local","payload":{"local":"result"}},
-                        {"op":"load_global","payload":{"global":"done"}},
-                        {"op":"load_local","payload":{"local":"result"}},
-                        {"op":"waitable_send"},{"op":"return","payload":{}}
-                    ]},
-                    {"id":"nested","signature":{"results":[integer]},"instructions":[
-                        {"op":"make_closure","payload":{"function":"cleanup"}},
-                        {"op":"defer_push","payload":{}},
-                        {"op":"call_direct","payload":{"function":"helper","result_count":1}},
-                        {"op":"return","payload":{"result_count":1}}
-                    ]},
-                    {"id":"cleanup","instructions":[{"op":"return","payload":{}}]},
+                     "locals":[{"id":"total","type":integer}],"code":slot_code(json!([integer,channel,function,integer,integer]),&main)},
+                    {"id":"worker","locals":[{"id":"result","type":integer}],"code":slot_code(json!([channel,integer]), &[
+                        ("load_global",json!({"global":"start"}),json!({"outputs":[0]})),
+                        ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+                        ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
+                        ("call_direct",json!({"function":"recovered","result_count":1}),json!({"outputs":[1]})),
+                        ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
+                        ("call_direct",json!({"function":"nested","result_count":1}),json!({"outputs":[1]})),
+                        ("store_local",json!({"local":"result"}),json!({"inputs":[[0,1]],"release":[1]})),
+                        ("load_global",json!({"global":"done"}),json!({"outputs":[0]})),
+                        ("load_local",json!({"local":"result"}),json!({"outputs":[1]})),
+                        ("waitable_send",json!({}),json!({"inputs":[[0,0],[0,1]],"release":[0,1]})),
+                        ("return",json!({}),json!({}))])},
+                    {"id":"nested","signature":{"results":[integer]},"code":slot_code(json!([function,integer]), &[
+                        ("make_closure",json!({"function":"cleanup"}),json!({"outputs":[0]})),
+                        ("defer_push",json!({}),json!({"inputs":[[0,0]],"release":[0]})),
+                        ("call_direct",json!({"function":"helper","result_count":1}),json!({"outputs":[1]})),
+                        ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))])},
+                    {"id":"cleanup","code":slot_code(json!([]), &[("return",json!({}),json!({}))])},
                     {"id":"helper","signature":{"results":[integer]},
-                     "locals":[{"id":"i","type":integer}],"instructions":helper},
-                    {"id":"recovered","signature":{"results":[integer]},"instructions":[
-                        {"op":"make_closure","payload":{"function":"recoverer"}},
-                        {"op":"defer_push","payload":{}},
-                        {"op":"const","payload":{"constant":"panic"}},
-                        {"op":"panic"},
-                        {"op":"zero","payload":{"type":integer}},
-                        {"op":"return","payload":{"result_count":1}}
-                    ]},
-                    {"id":"recoverer","instructions":[
-                        {"op":"recover"},{"op":"pop"},{"op":"return","payload":{}}
-                    ]}
+                     "locals":[{"id":"i","type":integer}],"code":slot_code(json!([integer,integer,integer,boolean]),&helper)},
+                    {"id":"recovered","signature":{"results":[integer]},"code":slot_code(json!([function,{"kind":3,"primitive":2},integer]), &[
+                        ("make_closure",json!({"function":"recoverer"}),json!({"outputs":[0]})),
+                        ("defer_push",json!({}),json!({"inputs":[[0,0]],"release":[0]})),
+                        ("const",json!({"constant":"panic"}),json!({"outputs":[1]})),
+                        ("panic",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
+                        ("zero",json!({"type":integer}),json!({"outputs":[2]})),
+                        ("return",json!({"result_count":1}),json!({"inputs":[[0,2]],"release":[2]}))])},
+                    {"id":"recoverer","code":slot_code(json!([{"kind":2}]), &[
+                        ("recover",json!({}),json!({"outputs":[0]})),
+                        ("pop",json!({}),json!({"inputs":[[0,0]],"release":[0]})),
+                        ("return",json!({}),json!({}))])}
                 ]
             })),
             LoadLimits::default(),

@@ -16,6 +16,7 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
+use support::slot_code;
 
 #[derive(Clone)]
 struct Host {
@@ -55,21 +56,31 @@ impl Session for Host {
 
 fn program() -> Arc<Program> {
     let bytes = support::image(json!({
-        "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}},{"id":"channel","kind":9,"direction":1,"elem":{"kind":3,"primitive":3}}]},
+        "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}},{"id":"channel","kind":9,"direction":1,"elem":{"kind":3,"primitive":3}},{"id":"function","kind":10,"signature":{}}]},
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"gate"},{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
         "globals":[{"id":"answer","type":{"kind":3,"primitive":3}}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"make_closure","payload":{"function":"worker"}},{"op":"spawn","payload":{"arg_count":0}},
-                {"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}
-            ]},
-            {"id":"worker","instructions":[
-                {"op":"const","payload":{"constant":"route"}},{"op":"zero","payload":{"type":{"kind":5,"node":"bytes"}}},
-                {"op":"call_ffi","payload":{"arg_count":2,"result_count":3}},{"op":"pop"},{"op":"pop"},{"op":"pop"},
-                {"op":"const","payload":{"constant":"answer"}},{"op":"store_global","payload":{"global":"answer"}}
-            ]},
-            {"id":"park","instructions":[{"op":"zero","payload":{"type":{"kind":9,"node":"channel"}}},{"op":"waitable_recv"},{"op":"pop"}]},
-            {"id":"read","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[{"op":"load_global","payload":{"global":"answer"}},{"op":"return","payload":{"result_count":1}}]}
+            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":10,"node":"function"},{"kind":3,"primitive":3}]), &[
+                ("make_closure",json!({"function":"worker"}),json!({"outputs":[0]})),
+                ("spawn",json!({"arg_count":0}),json!({"inputs":[[0,0]],"release":[0]})),
+                ("const",json!({"constant":"answer"}),json!({"outputs":[1]})),
+                ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))])},
+            {"id":"worker","code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+                ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
+                ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
+                ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
+                ("pop",json!({}),json!({"inputs":[[0,4]],"release":[4]})),
+                ("pop",json!({}),json!({"inputs":[[0,3]],"release":[3]})),
+                ("pop",json!({}),json!({"inputs":[[0,2]],"release":[2]})),
+                ("const",json!({"constant":"answer"}),json!({"outputs":[4]})),
+                ("store_global",json!({"global":"answer"}),json!({"inputs":[[0,4]],"release":[4]}))])},
+            {"id":"park","code":slot_code(json!([{"kind":9,"node":"channel"},{"kind":3,"primitive":3}]), &[
+                ("zero",json!({"type":{"kind":9,"node":"channel"}}),json!({"outputs":[0]})),
+                ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+                ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]}))])},
+            {"id":"read","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+                ("load_global",json!({"global":"answer"}),json!({"outputs":[0]})),
+                ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}
         ]
     }));
     let mut image: wire::ExecutionImage = serde_json::from_slice(&bytes).unwrap();

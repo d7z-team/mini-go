@@ -18,6 +18,7 @@ use std::{
 
 mod address;
 mod budget;
+mod bytes;
 mod collection;
 mod conversion;
 pub mod debug;
@@ -41,10 +42,11 @@ mod reflect_method;
 mod reflect_value;
 pub mod scheduler;
 mod select;
+mod slots;
 pub mod stats;
 pub(crate) mod task_runner;
 #[cfg(test)]
-mod test_helpers;
+pub(crate) mod test_helpers;
 mod timer;
 mod waiters;
 
@@ -138,8 +140,10 @@ pub enum PollStatus {
     Paused,
 }
 
-// Source generation/function/PC maps to the resolved generation/function.
-type CallBindings = HashMap<(u64, usize, usize), (u64, usize)>;
+// Stable logical identities are instance-owned; shared Programs never bind to
+// one instance's current revision. IDs are never reused while old code can live.
+type LogicalFunctions = HashMap<(Arc<str>, Arc<str>), usize>;
+const MAX_LOGICAL_FUNCTIONS: usize = 1 << 20;
 
 pub struct Instance {
     revision: Arc<crate::program::Revision>,
@@ -148,7 +152,8 @@ pub struct Instance {
     memory: Arc<memory::GuestMemory>,
     globals: BTreeMap<(String, String), Handle>,
     constant_values: BTreeMap<(u64, usize), Value>,
-    call_bindings: std::sync::Mutex<CallBindings>,
+    logical_functions: LogicalFunctions,
+    call_targets: Vec<Option<usize>>,
     running: scheduler::Task,
     frame_pool: Arc<frame::FramePool>,
     preparing_task: Option<scheduler::Task>,
@@ -221,17 +226,20 @@ impl Instance {
     fn create(program: Arc<Program>, limits: ExecutionLimits) -> Result<Self, RuntimeError> {
         let limits = limits.normalize()?;
         let wake = Arc::new(Wake::default());
+        let bindings = patch::FunctionBindings::prepare(&program, &LogicalFunctions::new())?;
         let mut instance = Self {
             types: program.decoded.types().clone(),
             revision: Arc::new(crate::program::Revision {
                 generation: 1,
+                logical_functions: bindings.ids,
                 program,
             }),
             heap: Arc::new(Heap::new(limits.max_objects, limits.max_heap_bytes)?),
             memory: Arc::default(),
             globals: BTreeMap::new(),
             constant_values: BTreeMap::new(),
-            call_bindings: Default::default(),
+            logical_functions: bindings.symbols,
+            call_targets: bindings.targets,
             running: scheduler::Task::default(),
             frame_pool: Arc::default(),
             preparing_task: None,
@@ -957,7 +965,17 @@ impl Instance {
                 "instance execution failed",
             ));
         }
-        while self.last_poll_steps < count {
+        // A census retry or budget failure belongs to the instruction just
+        // counted. Complete that zero-step continuation before returning.
+        while self.last_poll_steps < count
+            || self.running.pending_error.is_some()
+            || self.running.retry_instruction
+            || self
+                .running
+                .frames
+                .last()
+                .is_some_and(|frame| frame.after_init.is_some())
+        {
             self.cancel_requested_scopes()?;
             if self.debug.paused {
                 return Ok(PollStatus::Paused);
@@ -970,6 +988,9 @@ impl Instance {
                     || self.running.frames.is_empty(),
             )?;
             if self.running.frames.is_empty() && !self.schedule_next() {
+                if self.debug_pause_waiting() {
+                    return Ok(PollStatus::Paused);
+                }
                 return Ok(PollStatus::Pending);
             }
             let pending_error = self.running.pending_error.take();
@@ -979,8 +1000,7 @@ impl Instance {
                 && frame.returning.is_none()
                 && self.running.selection_completion.is_none()
                 && self.running.pending_write.is_none()
-                && frame.resume.is_none()
-                && frame.tail_return.is_none()
+                && frame.continuation.is_none()
                 && frame.after_init.is_none()
                 && frame.pc < frame.prepared.code.len();
             let counted_instruction = instruction_step && !retrying;
@@ -1013,6 +1033,37 @@ impl Instance {
                             }
                             return Err(error);
                         }
+                    }
+                }
+                if self.debug.profile_every == 0
+                    && self.debug.resume.is_none()
+                    && self.debug.breakpoints.is_empty()
+                    && !self.debug.pause.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    self.types.use_context(
+                        self.running
+                            .frames
+                            .last()
+                            .unwrap()
+                            .revision
+                            .program
+                            .decoded
+                            .types(),
+                    );
+                    let quantum = (count - self.last_poll_steps).min(usize::from(
+                        TASK_POLL_INTERVAL - self.running.scheduling_phase,
+                    ));
+                    let executed =
+                        task_runner::execute_private_slice(&mut self.running, quantum, &self.types);
+                    if executed != 0 {
+                        self.steps = self.steps.saturating_add(executed as u64);
+                        self.last_poll_steps += executed;
+                        self.timer_check_steps += executed;
+                        self.changed_scopes.insert(self.running.scope);
+                        if self.running.scheduling_phase == 0 {
+                            self.yield_task();
+                        }
+                        continue;
                     }
                 }
                 self.running.step_grant.as_mut().unwrap().consume();
@@ -1058,7 +1109,7 @@ impl Instance {
                             return Ok(());
                         }
                         if retrying {
-                            self.running.restore_instruction();
+                            self.running.rewind_instruction();
                             self.running.retry_instruction = false;
                         }
                         let pc = self.running.frames.last().unwrap().pc;
@@ -1106,10 +1157,20 @@ impl Instance {
                 if initialization_continuation {
                     self.running.finish_instruction();
                 } else {
-                    self.running.suspend_instruction();
+                    self.running.rewind_instruction();
                 }
                 let live = self.live_guest_bytes()?;
                 self.memory.publish_census(live);
+                if let Some(index) = self.running.census_completed_frame.take() {
+                    let mut frame = self.running.suspended_frames.remove(index);
+                    self.cache_frame(&mut frame)?;
+                    self.memory.recycle_frame_storage(
+                        frame.revision.generation,
+                        frame.prepared.module_index,
+                        frame.prepared.index,
+                        frame.memory,
+                    );
+                }
                 if requested > self.limits.max_allocated_bytes.saturating_sub(live) {
                     if !initialization_continuation {
                         let pc = self.running.instruction_pc;
@@ -1125,10 +1186,23 @@ impl Instance {
                     self.running.retry_instruction = true;
                 }
                 self.running.transient_roots.clear();
-                self.running.popped_frame = None;
+                if let Some(frame) = self
+                    .running
+                    .popped_frame
+                    .take()
+                    .and_then(|index| self.running.frames.get_mut(index))
+                {
+                    frame.operand_census = None;
+                }
                 if counted_instruction {
                     self.running.scheduling_phase =
                         (self.running.scheduling_phase + 1) % TASK_POLL_INTERVAL;
+                }
+                if self.running.pending_error.is_some()
+                    || self.running.retry_instruction
+                    || initialization_continuation
+                {
+                    continue;
                 }
                 return Ok(PollStatus::Running);
             }
@@ -1200,6 +1274,7 @@ impl Instance {
                     .and_then(|index| task.frames.get_mut(index))
                 {
                     frame.popped_roots.clear();
+                    frame.operand_census = None;
                 }
             }
             if self.debug.paused {
@@ -1342,7 +1417,8 @@ impl Instance {
         self.ffi_calls.close();
         self.globals.clear();
         self.constant_values.clear();
-        self.call_bindings.get_mut().unwrap().clear();
+        self.logical_functions.clear();
+        self.call_targets.clear();
         self.frame_pool.clear();
         self.retired_revisions.clear();
         self.reflected_types.clear();
@@ -1462,18 +1538,6 @@ impl Instance {
         }
     }
 
-    fn zero(&self, typ: &TypeIdentity, depth: usize) -> Result<Value, RuntimeError> {
-        let mut remaining = self.limits.max_heap_bytes;
-        Value::zero_with_budget(
-            &self.types,
-            typ,
-            depth,
-            self.limits.max_value_depth,
-            self.limits.max_sequence_elements,
-            &mut remaining,
-        )
-    }
-
     fn initialize_module(&mut self, module: &str) -> Result<bool, RuntimeError> {
         if let Some(error) = self.failed_initializations.get(module) {
             return Err(error.clone());
@@ -1537,435 +1601,6 @@ impl Instance {
         Ok(true)
     }
 
-    fn coerce(&self, mut value: Value, typ: &TypeIdentity) -> Result<Value, RuntimeError> {
-        if let Data::String(bytes) = &value.data {
-            self.check_string_size(bytes.len())?;
-        }
-        let registry = &self.types;
-        if registry.identical(&value.typ, typ)? {
-            value.typ = typ.clone();
-            return Ok(value);
-        }
-        let interface = registry.is_interface(typ)?;
-        if interface {
-            if let Data::Interface(dynamic) = value.data {
-                value = *dynamic;
-            }
-            if matches!(value.data, Data::Nil) && registry.is_interface(&value.typ)? {
-                return Ok(Value {
-                    typ: typ.clone(),
-                    data: Data::Nil,
-                });
-            }
-            let assignment = (value.typ.clone(), typ.clone());
-            let known = self
-                .interface_assignments
-                .lock()
-                .unwrap()
-                .contains(&assignment);
-            if !known {
-                if !registry.implements(&value.typ, typ)? {
-                    return Err(RuntimeError::new(
-                        "type_error",
-                        "assignment",
-                        "dynamic type does not implement interface",
-                    ));
-                }
-                let mut assignments = self.interface_assignments.lock().unwrap();
-                if assignments.len() == 256 {
-                    assignments.clear();
-                }
-                assignments.insert(assignment);
-            }
-            return Ok(Value {
-                typ: typ.clone(),
-                data: Data::Interface(Box::new(value)),
-            });
-        }
-        if registry.channel_assignable(&value.typ, typ)? {
-            value.typ = typ.clone();
-            return Ok(value);
-        }
-        if value.typ == TypeIdentity::Any
-            && matches!(value.data, Data::Nil)
-            && registry.nil_assignable(typ)?
-        {
-            return self.zero(typ, 0);
-        }
-        if let Data::Function(callee) = &value.data {
-            let revision = callee.revision.as_ref().unwrap_or(&self.revision);
-            let function = revision
-                .program
-                .function(&callee.module, &callee.function)?;
-            if let Some((module, node)) = registry.node(typ)?
-                && let Some(signature) = &node.signature
-                && registry.signature_identical_from(
-                    registry,
-                    module,
-                    signature,
-                    revision.program.decoded.types(),
-                    &callee.module,
-                    &function.declaration.signature,
-                )?
-            {
-                value.typ = typ.clone();
-                return Ok(value);
-            }
-        }
-        let source = registry.underlying(&value.typ)?;
-        let destination = registry.underlying(typ)?;
-        if (!matches!(value.typ, TypeIdentity::Named(_)) || !matches!(typ, TypeIdentity::Named(_)))
-            && registry.identical(&source, &destination)?
-        {
-            value.typ = typ.clone();
-            return Ok(value);
-        }
-        Err(RuntimeError::new(
-            "type_error",
-            "assignment",
-            format!("cannot assign {:?} to {:?}", value.typ, typ),
-        ))
-    }
-
-    fn element_type(&self, typ: &TypeIdentity) -> Result<TypeIdentity, RuntimeError> {
-        if let TypeIdentity::Slice(element) = typ {
-            return Ok((**element).clone());
-        }
-        let (module, node) = self
-            .types
-            .node(typ)?
-            .ok_or_else(|| RuntimeError::new("type_error", "container", "missing element type"))?;
-        self.types.resolve(module, &node.elem)
-    }
-
-    fn check_string_size(&self, length: usize) -> Result<(), RuntimeError> {
-        if length > self.limits.max_string_bytes {
-            return Err(RuntimeError::new(
-                "string_limit",
-                "string",
-                "string exceeds byte limit",
-            ));
-        }
-        if length as u64 > self.limits.max_heap_bytes {
-            return Err(RuntimeError::new(
-                "allocation_limit",
-                "string",
-                "string exceeds heap budget",
-            ));
-        }
-        Ok(())
-    }
-
-    fn slice_bytes(&self, value: &Value) -> Result<Vec<u8>, RuntimeError> {
-        if let Data::String(bytes) = &value.data {
-            return Ok(bytes.to_vec());
-        }
-        if let Data::Slice(slice) = &value.data {
-            let backing = self.snapshot_address(&slice.storage)?;
-            if let Data::Bytes(bytes) = &backing.data {
-                return bytes
-                    .get(slice.start..slice.start + slice.length)
-                    .map(<[u8]>::to_vec)
-                    .ok_or_else(|| {
-                        RuntimeError::new("invalid_slice", "bytes", "invalid byte view")
-                    });
-            }
-        }
-        self.slice_values(value)?
-            .into_iter()
-            .map(|value| match value.data {
-                Data::Unsigned(byte) if byte <= 255 => Ok(byte as u8),
-                _ => Err(RuntimeError::new(
-                    "type_error",
-                    "bytes",
-                    "expected byte elements",
-                )),
-            })
-            .collect()
-    }
-
-    fn slice_values(&self, value: &Value) -> Result<Vec<Value>, RuntimeError> {
-        match &value.data {
-            Data::Slice(slice) => {
-                let backing = self.snapshot_address(&slice.storage)?;
-                if let Data::Bytes(bytes) = &backing.data {
-                    return bytes
-                        .get(slice.start..slice.start + slice.length)
-                        .ok_or_else(|| {
-                            RuntimeError::new("invalid_slice", "slice", "invalid byte view")
-                        })
-                        .map(|bytes| {
-                            bytes
-                                .iter()
-                                .map(|byte| Value {
-                                    typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
-                                    data: Data::Unsigned(u64::from(*byte)),
-                                })
-                                .collect()
-                        });
-                }
-                let Data::Array(values) = &backing.data else {
-                    return Err(RuntimeError::new(
-                        "invalid_slice",
-                        "slice",
-                        "invalid backing",
-                    ));
-                };
-                Ok(values
-                    .get(slice.start..slice.start + slice.length)
-                    .ok_or_else(|| RuntimeError::new("invalid_slice", "slice", "invalid view"))?
-                    .to_vec())
-            }
-            Data::Nil => Ok(Vec::new()),
-            Data::String(bytes) => Ok(bytes
-                .iter()
-                .map(|byte| Value {
-                    typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
-                    data: Data::Unsigned(u64::from(*byte)),
-                })
-                .collect()),
-            _ => Err(RuntimeError::new("type_error", "slice", "expected slice")),
-        }
-    }
-
-    fn make_bytes(
-        &mut self,
-        typ: TypeIdentity,
-        length: usize,
-        capacity: usize,
-        initial: &[u8],
-    ) -> Result<Value, RuntimeError> {
-        if initial.len() > length
-            || length > capacity
-            || capacity > self.limits.max_sequence_elements
-            || (capacity as u64).saturating_add(272) > self.limits.max_heap_bytes
-        {
-            return Err(RuntimeError::new(
-                "allocation_limit",
-                "bytes",
-                "byte backing exceeds instance limits",
-            ));
-        }
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(capacity).map_err(|_| {
-            RuntimeError::new(
-                "allocation_limit",
-                "bytes",
-                "byte backing allocation failed",
-            )
-        })?;
-        bytes.extend_from_slice(initial);
-        bytes.resize(capacity, 0);
-        let root = self.allocate(Value {
-            typ: TypeIdentity::Any,
-            data: Data::Bytes(bytes),
-        })?;
-        Ok(Value {
-            typ,
-            data: Data::Slice(SliceValue {
-                identity: std::sync::Arc::default(),
-                storage: Address {
-                    identity: std::sync::Arc::default(),
-                    root,
-                    path: Vec::new(),
-                },
-                start: 0,
-                length,
-                capacity,
-            }),
-        })
-    }
-
-    fn make_slice(
-        &mut self,
-        typ: TypeIdentity,
-        length: usize,
-        capacity: usize,
-        initial: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
-        let element = self.element_type(&typ)?;
-        if self
-            .types
-            .identical(&element, &TypeIdentity::Primitive(wire::PrimitiveUint8))?
-        {
-            if !matches!(typ, TypeIdentity::Slice(_))
-                && !self
-                    .types
-                    .node(&typ)?
-                    .is_some_and(|(_, node)| node.kind == wire::Slice)
-            {
-                return Err(RuntimeError::new(
-                    "type_error",
-                    "slice",
-                    "expected slice type",
-                ));
-            }
-            let bytes = initial
-                .into_iter()
-                .map(|value| {
-                    let value = self.coerce(value, &element)?;
-                    match value.data {
-                        Data::Unsigned(byte) => Ok(byte as u8),
-                        _ => Err(RuntimeError::new(
-                            "type_error",
-                            "slice",
-                            "expected byte element",
-                        )),
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            return self.make_bytes(typ, length, capacity, &bytes);
-        }
-        self.make_slot_slice(typ, length, capacity, initial)
-    }
-
-    fn make_slot_slice(
-        &mut self,
-        typ: TypeIdentity,
-        length: usize,
-        capacity: usize,
-        initial: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
-        if !matches!(typ, TypeIdentity::Slice(_))
-            && !self
-                .types
-                .node(&typ)?
-                .is_some_and(|(_, node)| node.kind == wire::Slice)
-        {
-            return Err(RuntimeError::new(
-                "type_error",
-                "slice",
-                "expected slice type",
-            ));
-        }
-        if length > capacity || capacity > self.limits.max_sequence_elements {
-            return Err(RuntimeError::new(
-                "value_limit",
-                "slice",
-                "invalid or excessive slice capacity",
-            ));
-        }
-        let element = self.element_type(&typ)?;
-        if initial.len() > length {
-            return Err(RuntimeError::new(
-                "invalid_slice",
-                "slice",
-                "too many initial elements",
-            ));
-        }
-        let zero = self.zero(&element, 0)?;
-        let initial = initial
-            .into_iter()
-            .map(|value| self.coerce(value, &element))
-            .collect::<Result<Vec<_>, _>>()?;
-        let zero_bytes = zero.logical_bytes()?.saturating_sub(16);
-        let mut logical = (capacity as u64)
-            .checked_mul(16)
-            .and_then(|bytes| bytes.checked_add(272))
-            .and_then(|bytes| {
-                zero_bytes
-                    .checked_mul((capacity - initial.len()) as u64)?
-                    .checked_add(bytes)
-            })
-            .ok_or_else(|| {
-                RuntimeError::new("allocation_limit", "slice", "backing size overflow")
-            })?;
-        for value in &initial {
-            logical = logical
-                .checked_add(value.logical_bytes()?.saturating_sub(16))
-                .ok_or_else(|| {
-                    RuntimeError::new("allocation_limit", "slice", "backing size overflow")
-                })?;
-        }
-        if logical > self.limits.max_heap_bytes {
-            return Err(RuntimeError::new(
-                "allocation_limit",
-                "slice",
-                "backing exceeds heap budget",
-            ));
-        }
-        let mut values = Vec::new();
-        values.try_reserve_exact(capacity).map_err(|_| {
-            RuntimeError::new(
-                "allocation_limit",
-                "slice",
-                "slot backing allocation failed",
-            )
-        })?;
-        values.resize(capacity, zero);
-        for (destination, value) in values.iter_mut().zip(initial) {
-            *destination = value;
-        }
-        let root = self.allocate(Value {
-            typ: TypeIdentity::Any,
-            data: Data::Array(values),
-        })?;
-        Ok(Value {
-            typ,
-            data: Data::Slice(SliceValue {
-                identity: std::sync::Arc::default(),
-                storage: Address {
-                    identity: std::sync::Arc::default(),
-                    root,
-                    path: Vec::new(),
-                },
-                start: 0,
-                length,
-                capacity,
-            }),
-        })
-    }
-
-    fn index_value(&mut self, object: &Value, key: &Value) -> Result<(Value, bool), RuntimeError> {
-        if let Data::Map(root) = object.data {
-            let key = self.map_key(&object.typ, key.clone())?;
-            let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
-                return Err(RuntimeError::new("invalid_map", "map", "invalid backing"));
-            };
-            if let Some(index) = entries.find(&key, &self.types)? {
-                return Ok((entries[index].1.clone(), true));
-            }
-            return Ok((self.zero(&self.element_type(&object.typ)?, 0)?, false));
-        }
-        if matches!(object.data, Data::Nil)
-            && self
-                .types
-                .node(&object.typ)?
-                .is_some_and(|(_, node)| node.kind == wire::Map)
-        {
-            self.map_key(&object.typ, key.clone())?;
-            return Ok((self.zero(&self.element_type(&object.typ)?, 0)?, false));
-        }
-        let index = usize::try_from(key.integer()?)
-            .map_err(|_| RuntimeError::new("panic", "index", "negative index"))?;
-        let value = match &object.data {
-            Data::Array(values) => values.get(index).cloned(),
-            Data::String(bytes) => bytes.get(index).map(|byte| Value {
-                typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
-                data: Data::Unsigned(u64::from(*byte)),
-            }),
-            Data::Slice(slice) if index < slice.length => {
-                let mut address = slice.storage.clone();
-                address.path.push(PathElement::Index(slice.start + index));
-                Some(self.read_address(&address)?)
-            }
-            Data::Pointer(address) => {
-                let value = self.read_address(address)?;
-                return self.index_value(&value, key);
-            }
-            _ => None,
-        }
-        .ok_or_else(|| RuntimeError::new("panic", "index", "index outside sequence"))?;
-        Ok((value, true))
-    }
-
-    fn store_index(&mut self, object: Value, key: Value, value: Value) -> Result<(), RuntimeError> {
-        let mut write = self.prepare_index_write(object, key, value)?;
-        let mut collection = mutation::WriteCollection::IMMEDIATE;
-        while !self.attempt_write(&mut write, &mut collection)? {}
-        Ok(())
-    }
-
     fn step(&mut self) -> Result<(), RuntimeError> {
         if self.running.pending_write.is_some() {
             return self.resume_write();
@@ -1984,16 +1619,24 @@ impl Instance {
                 .types(),
         );
         if self.running.frames.last().unwrap().panic.is_some() {
-            self.running.frames.last_mut().unwrap().resume = None;
-            self.running.frames.last_mut().unwrap().tail_return = None;
+            let frame = self.running.frames.last_mut().unwrap();
+            frame.continuation = None;
+            frame.delivery.values.clear();
+            frame.delivery.reading = false;
         }
-        if let Some(resume) = self.running.frames.last_mut().unwrap().resume.take() {
-            resume.trace(&mut |handle| self.running.transient_roots.push(handle));
-            return self.resume_reflect(resume);
-        }
-        if let Some(count) = self.running.frames.last_mut().unwrap().tail_return.take() {
-            let values = self.running.pop_values(&self.frame_pool, count)?;
-            return self.begin_return(values);
+        if let Some(continuation) = self.running.frames.last_mut().unwrap().continuation.take() {
+            match continuation {
+                frame::Continuation::Intrinsic(resume) => {
+                    resume.trace(&mut |handle| self.running.transient_roots.push(handle));
+                    return self.resume_reflect(resume);
+                }
+                frame::Continuation::TailReturn(count) => {
+                    self.running.frames.last_mut().unwrap().delivery.reading = true;
+                    let values = self.running.pop_values(&self.frame_pool, count)?;
+                    self.running.frames.last_mut().unwrap().delivery.reading = false;
+                    return self.begin_return(values);
+                }
+            }
         }
         let frame = self.running.frames.last().unwrap();
         if frame.returning.is_some() {
@@ -2013,12 +1656,13 @@ impl Instance {
             self.running.frames.last_mut().unwrap().pc += 1;
             pc
         };
-        let instruction = &function.code[pc];
+        let instruction = function.code.descriptor(pc);
+        self.begin_slot_instruction(pc)?;
         use Instruction::*;
-        let initialization_target = match &instruction {
-            CallDirect(payload) | TailCallDirect(payload) => Some(&payload.module_path),
-            LoadExport(payload) => Some(&payload.module_path),
-            AddressOf(payload) if payload.kind == "export" => Some(&payload.module_path),
+        let initialization_target = match instruction {
+            Some(CallDirect(payload) | TailCallDirect(payload)) => Some(&payload.module_path),
+            Some(LoadExport(payload)) => Some(&payload.module_path),
+            Some(AddressOf(payload)) if payload.kind == "export" => Some(&payload.module_path),
             _ => None,
         };
         if let Some(target) = initialization_target
@@ -2037,6 +1681,96 @@ impl Instance {
         let mut result = None;
         use crate::program::PreparedInstruction as Prepared;
         match function.execution[pc] {
+            Prepared::TypeDispatch(index) => {
+                let dispatch = &function.type_dispatches[index];
+                if self
+                    .running
+                    .frames
+                    .last()
+                    .unwrap()
+                    .type_dispatch_value
+                    .is_none()
+                {
+                    let value = self.load_local(dispatch.subject)?;
+                    self.running.frames.last_mut().unwrap().type_dispatch_value = Some(value);
+                }
+                let value = self
+                    .running
+                    .frames
+                    .last()
+                    .unwrap()
+                    .type_dispatch_value
+                    .as_ref()
+                    .unwrap()
+                    .clone();
+                let mut offset = self.running.frames.last().unwrap().type_dispatch_index;
+                if offset == 0 && dispatch.concrete_end > 0 {
+                    let dynamic = match &value.data {
+                        Data::Interface(inner) => inner.as_ref(),
+                        _ => &value,
+                    };
+                    let nil_interface = matches!(value.data, Data::Nil)
+                        && (value.typ == TypeIdentity::Any
+                            || value.typ == TypeIdentity::Primitive(wire::PrimitiveError)
+                            || self
+                                .types
+                                .node(&value.typ)?
+                                .is_some_and(|(_, node)| node.kind == wire::Interface));
+                    if nil_interface
+                        || crate::program::concrete_dispatch_identity(&self.types, &dynamic.typ)?
+                    {
+                        let key = (!nil_interface).then(|| dynamic.typ.clone());
+                        offset = dispatch
+                            .concrete
+                            .get(&key)
+                            .copied()
+                            .unwrap_or(dispatch.concrete_end);
+                    }
+                }
+                let mut target = dispatch.fallback;
+                let mut binding = dispatch.fallback_local;
+                let mut selected = value.clone();
+                let mut matched = true;
+                if let Some(case) = dispatch.cases.get(offset) {
+                    // Only an empty interface is nil here; a boxed nil pointer
+                    // retains its concrete dynamic type.
+                    let nil_interface = matches!(value.data, Data::Nil)
+                        && (value.typ == TypeIdentity::Any
+                            || value.typ == TypeIdentity::Primitive(wire::PrimitiveError)
+                            || self
+                                .types
+                                .node(&value.typ)?
+                                .is_some_and(|(_, node)| node.kind == wire::Interface));
+                    matched = nil_interface;
+                    if let Some(typ) = &case.typ {
+                        let dynamic = match &value.data {
+                            Data::Interface(inner) => inner.as_ref(),
+                            _ => &value,
+                        };
+                        matched = !nil_interface
+                            && (self.types.identical(&dynamic.typ, typ)?
+                                || self.types.implements(&dynamic.typ, typ)?);
+                        if matched && !case.original {
+                            selected = self.coerce(dynamic.clone(), typ)?;
+                        }
+                    }
+                    target = case.target;
+                    binding = case.binding;
+                }
+                if matched {
+                    if let Some(binding) = binding {
+                        self.store_local(binding, selected, false)?;
+                    }
+                    let frame = self.running.frames.last_mut().unwrap();
+                    frame.type_dispatch_index = 0;
+                    frame.type_dispatch_value = None;
+                    frame.pc = target;
+                } else {
+                    let frame = self.running.frames.last_mut().unwrap();
+                    frame.type_dispatch_index = offset + 1;
+                    frame.pc = pc;
+                }
+            }
             Prepared::Intrinsic(intrinsic) => self.execute_intrinsic(intrinsic)?,
             Prepared::Constant(index) => {
                 result = Some(self.load_prepared_constant(&revision, index)?)
@@ -2045,6 +1779,7 @@ impl Instance {
                 index,
                 store,
                 rebind,
+                ..
             } => {
                 if !store {
                     result = Some(self.load_local(index)?);
@@ -2092,13 +1827,14 @@ impl Instance {
             Prepared::Jump {
                 target,
                 conditional,
+                negate,
             } => {
                 let jump = if conditional {
                     let value = self.running.pop()?;
                     let Data::Bool(condition) = value.data else {
                         return Err(RuntimeError::new("type_error", "jump_if", "expected bool"));
                     };
-                    condition
+                    condition != negate
                 } else {
                     true
                 };
@@ -2106,30 +1842,81 @@ impl Instance {
                     self.running.frames.last_mut().unwrap().pc = target;
                 }
             }
+            Prepared::GetPath(index) => {
+                let mut value = self.running.pop()?;
+                for step in &function.field_paths[index] {
+                    if step.indirect {
+                        let Data::Pointer(address) = value.data else {
+                            return Err(RuntimeError::new(
+                                "panic",
+                                "get_path",
+                                "nil pointer dereference",
+                            ));
+                        };
+                        value = self.read_address(&address)?;
+                    }
+                    let Data::Struct(fields) = value.data else {
+                        return Err(RuntimeError::new(
+                            "type_error",
+                            "get_path",
+                            "expected struct",
+                        ));
+                    };
+                    value = fields.field_at(step.index).cloned().ok_or_else(|| {
+                        RuntimeError::new("missing_field", "get_path", "invalid field layout")
+                    })?;
+                }
+                result = Some(value);
+            }
             Prepared::Unary(operator) => {
                 let value = self.running.pop()?;
                 result = Some(crate::operators::unary(operator, value, &self.types)?);
             }
-            Prepared::Binary(operator) => {
-                let right = self.running.pop()?;
-                let left = self.running.pop()?;
-                if operator == crate::operators::Operator::Add
+            Prepared::Binary(operator) | Prepared::CompareBranch { operator, .. } => {
+                // Inputs stay rooted in their slots until commit, including
+                // while string allocation triggers a memory census.
+                let frame = self.running.frames.last().unwrap();
+                let (left, right) = (
+                    frame.operand_from_end(pc, 1).unwrap(),
+                    frame.operand_from_end(pc, 0).unwrap(),
+                );
+                let concatenation = if operator.operator == crate::operators::Operator::Add
                     && let (Data::String(left), Data::String(right)) = (&left.data, &right.data)
                 {
-                    let length = left.len().checked_add(right.len()).ok_or_else(|| {
+                    Some(left.len().checked_add(right.len()).ok_or_else(|| {
                         RuntimeError::new("string_limit", "string", "concatenation size overflow")
-                    })?;
+                    })?)
+                } else {
+                    None
+                };
+                if let Some(length) = concatenation {
                     self.check_string_size(length)?;
                     self.charge_guest(length as u64)?;
                 }
-                result = Some(crate::operators::binary(
-                    operator,
-                    left,
-                    right,
-                    &self.types,
-                )?);
+                let frame = self.running.frames.last().unwrap();
+                let (left, right) = (
+                    frame.operand_from_end(pc, 1).unwrap(),
+                    frame.operand_from_end(pc, 0).unwrap(),
+                );
+                let value = crate::operators::binary(operator, left, right, &self.types)?;
+                self.running.frames.last_mut().unwrap().slot_input = 0;
+                if let Prepared::CompareBranch { target, when, .. } = function.execution[pc] {
+                    let Data::Bool(matched) = value.data else {
+                        unreachable!("comparison returns bool")
+                    };
+                    if matched == when {
+                        self.running.frames.last_mut().unwrap().pc = target;
+                    }
+                } else {
+                    result = Some(value);
+                }
             }
-            Prepared::Operand => match instruction {
+            Prepared::Operand | Prepared::Construct(_) => match instruction
+                .expect("unprepared operation descriptor")
+            {
+                TypeDispatch(_) | CompareBranch(_) | GetPath(_) => {
+                    unreachable!("dispatch is prepared")
+                }
                 Zero(_) => {
                     result = Some(self.zero(function.operand_types[pc].as_ref().unwrap(), 0)?);
                 }
@@ -2139,10 +1926,7 @@ impl Instance {
                 AddressOf(payload) => {
                     self.charge_guest(128)?;
                     let mut address = self.resolve_address(payload)?;
-                    address.identity = Arc::new(crate::value::PointerIdentity {
-                        path_root: address.identity.path_root,
-                        ..Default::default()
-                    });
+                    address.reset_identity(address.identity.path_root);
                     let pointee = if address.path.is_empty() {
                         self.heap.get(address.root)?.typ.clone()
                     } else {
@@ -2151,7 +1935,7 @@ impl Instance {
                     let typ = TypeIdentity::Pointer(std::sync::Arc::new(pointee));
                     result = Some(Value {
                         typ,
-                        data: Data::Pointer(address),
+                        data: Data::Pointer(std::sync::Arc::new(address)),
                     });
                 }
                 LoadIndirect => {
@@ -2183,31 +1967,99 @@ impl Instance {
                             "cannot dereference value",
                         ));
                     };
-                    self.start_address_write(address, value)?;
+                    self.start_address_write(Arc::unwrap_or_clone(address), value)?;
                 }
                 MakeStruct(payload) => {
-                    let values = self
+                    let mut values = self
                         .running
                         .pop_values(&self.frame_pool, payload.fields.len())?;
-                    self.charge_guest_object(payload.fields.len(), 0)?;
-                    let typ = function.operand_types[pc].as_ref().unwrap().clone();
-                    let mut value = self.zero(&typ, 0)?;
-                    let Data::Struct(fields) = &mut value.data else {
-                        return Err(RuntimeError::new(
-                            "type_error",
-                            "make_struct",
-                            "expected struct type",
-                        ));
+                    let Prepared::Construct(index) = function.execution[pc] else {
+                        unreachable!("prepared struct")
                     };
-                    for (name, value) in payload.fields.iter().zip(values) {
-                        let destination = fields.get_mut(name).ok_or_else(|| {
-                            RuntimeError::new("missing_field", "make_struct", name)
-                        })?;
-                        *destination = self.coerce(value, &destination.typ)?;
+                    let crate::program::AggregateLayout::Struct(layout) =
+                        &function.aggregates[index]
+                    else {
+                        unreachable!("struct layout")
+                    };
+                    if layout.limits.depth > self.limits.max_value_depth
+                        || layout.limits.max_sequence > self.limits.max_sequence_elements
+                    {
+                        return Err(RuntimeError::new(
+                            "value_limit",
+                            "make_struct",
+                            "aggregate layout exceeds value limits",
+                        ));
                     }
-                    result = Some(value);
+                    self.charge_guest_object(layout.declared_fields, 0)?;
+                    let typ = function.operand_types[pc].as_ref().unwrap().clone();
+                    let mut remaining = self
+                        .limits
+                        .max_heap_bytes
+                        .checked_sub(128 + layout.declared_fields as u64 * 16)
+                        .ok_or_else(|| {
+                            RuntimeError::new(
+                                "allocation_limit",
+                                "make_struct",
+                                "struct layout exceeds heap budget",
+                            )
+                        })?;
+                    let mut fields = Vec::with_capacity(layout.fields.len());
+                    let mut initialized = Vec::with_capacity(layout.fields.len());
+                    for (field_type, input) in &layout.fields {
+                        fields.push(if let Some(input) = input {
+                            let value = self.coerce(
+                                std::mem::replace(&mut values[*input], Value::int(0)),
+                                field_type,
+                            )?;
+                            remaining = remaining
+                                .checked_sub(value.logical_bytes()?.saturating_sub(16))
+                                .ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "allocation_limit",
+                                        "make_struct",
+                                        "field exceeds heap budget",
+                                    )
+                                })?;
+                            value
+                        } else {
+                            Value::zero_with_budget(
+                                &self.types,
+                                field_type,
+                                1,
+                                self.limits.max_value_depth,
+                                self.limits.max_sequence_elements,
+                                &mut remaining,
+                            )?
+                        });
+                        initialized.push(input.is_some());
+                    }
+                    result = Some(Value {
+                        typ,
+                        data: Data::Struct(crate::value::StructStorage::with_layout(
+                            layout.names.clone(),
+                            fields,
+                            initialized,
+                        )),
+                    });
                 }
                 MakeSequence(payload) => {
+                    let Prepared::Construct(index) = function.execution[pc] else {
+                        unreachable!("prepared sequence")
+                    };
+                    let crate::program::AggregateLayout::Sequence(layout) =
+                        &function.aggregates[index]
+                    else {
+                        unreachable!("sequence layout")
+                    };
+                    if layout.depth > self.limits.max_value_depth
+                        || layout.max_sequence > self.limits.max_sequence_elements
+                    {
+                        return Err(RuntimeError::new(
+                            "value_limit",
+                            "make_sequence",
+                            "aggregate layout exceeds value limits",
+                        ));
+                    }
                     let values = self
                         .running
                         .pop_values(&self.frame_pool, payload.element_count as usize)?;
@@ -2220,22 +2072,47 @@ impl Instance {
                     {
                         result = Some(self.make_slice(typ, values.len(), values.len(), values)?);
                     } else {
-                        let mut value = self.zero(&typ, 0)?;
-                        let Data::Array(elements) = &mut value.data else {
-                            return Err(RuntimeError::new(
-                                "type_error",
-                                "make_sequence",
-                                "expected sequence type",
-                            ));
-                        };
-                        if elements.len() != values.len() {
+                        let (module, node) = self
+                            .types
+                            .node(&typ)?
+                            .filter(|(_, node)| node.kind == wire::Array)
+                            .ok_or_else(|| {
+                                RuntimeError::new(
+                                    "type_error",
+                                    "make_sequence",
+                                    "expected sequence type",
+                                )
+                            })?;
+                        if usize::try_from(node.length).ok() != Some(values.len()) {
                             return Err(RuntimeError::new(
                                 "invalid_sequence",
                                 "make_sequence",
                                 "element count mismatch",
                             ));
                         }
-                        *elements = values;
+                        if values.len() > self.limits.max_sequence_elements {
+                            return Err(RuntimeError::new(
+                                "value_limit",
+                                "array",
+                                "array length exceeds limit",
+                            ));
+                        }
+                        let element = self.types.resolve(module, &node.elem)?;
+                        let mut elements = Vec::with_capacity(values.len());
+                        for value in values {
+                            elements.push(self.coerce(value, &element)?);
+                        }
+                        let value = Value {
+                            typ,
+                            data: Data::Array(elements.into()),
+                        };
+                        if value.logical_bytes()? > self.limits.max_heap_bytes {
+                            return Err(RuntimeError::new(
+                                "allocation_limit",
+                                "make_sequence",
+                                "array exceeds heap budget",
+                            ));
+                        }
                         result = Some(value);
                     }
                 }
@@ -2314,7 +2191,7 @@ impl Instance {
                     self.charge_guest_object(0, requested_capacity)?;
                     let root = self.allocate(Value {
                         typ: TypeIdentity::Any,
-                        data: Data::MapEntries(entries),
+                        data: Data::MapEntries(Box::new(entries)),
                     })?;
                     let map = Value {
                         typ,
@@ -2350,13 +2227,14 @@ impl Instance {
                 StoreField(payload) => {
                     let value = self.running.pop()?;
                     let object = self.running.pop()?;
-                    let Data::Pointer(mut address) = object.data else {
+                    let Data::Pointer(address) = object.data else {
                         return Err(RuntimeError::new(
                             "invalid_address",
                             "store_field",
                             "expected struct pointer",
                         ));
                     };
+                    let mut address = Arc::unwrap_or_clone(address);
                     address.path.push(PathElement::Field(payload.field.clone()));
                     self.start_address_write(address, value)?;
                 }
@@ -2369,7 +2247,7 @@ impl Instance {
                     let object = self.running.pop()?;
                     let (value, ok) = self.index_value(&object, &key)?;
                     if with_ok {
-                        self.running.frames.last_mut().unwrap().stack.push(value);
+                        self.running.frames.last_mut().unwrap().push_result(value);
                         result = Some(Value::boolean(ok));
                     } else {
                         result = Some(value);
@@ -2394,13 +2272,13 @@ impl Instance {
                     let target = &revision.program.function_table[function.targets[pc].unwrap()];
                     result = Some(Value {
                         typ: TypeIdentity::Any,
-                        data: Data::Function(FunctionValue {
+                        data: Data::Function(std::sync::Arc::new(FunctionValue {
                             index: Some(target.index),
                             revision: Some(revision.clone()),
                             module: target.module.clone(),
                             function: target.name.clone(),
                             captures,
-                        }),
+                        })),
                     });
                 }
                 CallDirect(payload) | TailCallDirect(payload) | CallValue(payload) => {
@@ -2412,26 +2290,50 @@ impl Instance {
                         function.code[self.running.frames.last().unwrap().pc - 1],
                         CallValue(_)
                     );
-                    let mut arguments = if tail {
-                        let stack = &self.running.frames.last().unwrap().stack;
-                        let start = stack
-                            .len()
-                            .checked_sub(payload.arg_count as usize)
-                            .ok_or_else(|| {
-                                RuntimeError::new(
-                                    "stack_underflow",
-                                    "tail_call",
-                                    "missing call arguments",
-                                )
-                            })?;
-                        stack[start..].to_vec()
+                    let indirect_function = if indirect {
+                        let caller = self.running.frames.last().unwrap();
+                        match &caller.input_at(pc, 0).unwrap().data {
+                            Data::Function(callee) => Some(Arc::unwrap_or_clone(callee.clone())),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let mut borrowed_arguments = if !indirect || indirect_function.is_some() {
+                        let caller_index = self.running.frames.len() - 1;
+                        self.running.popped_frame = Some(caller_index);
+                        let caller = &mut self.running.frames[caller_index];
+                        let count = payload.arg_count as usize;
+                        caller.memory.popped = memory::grow_frame_buffer(
+                            caller.memory.popped,
+                            count + usize::from(indirect),
+                            false,
+                        )?;
+                        let start = caller.slot_input.checked_sub(count).ok_or_else(|| {
+                            RuntimeError::new("invalid_operand", "frame", "input underflow")
+                        })?;
+                        caller.operand_census =
+                            Some(start - usize::from(indirect)..caller.slot_input);
+                        Some(frame::FrameArguments::Caller {
+                            frame: caller_index,
+                            suspended: false,
+                            start,
+                            count,
+                        })
+                    } else {
+                        None
+                    };
+                    let mut arguments = if borrowed_arguments.is_some() {
+                        Vec::new()
                     } else {
                         self.running.pop_values(
                             &self.frame_pool,
                             payload.arg_count as usize + usize::from(indirect),
                         )?
                     };
-                    let callee = if indirect {
+                    let callee = if let Some(callee) = indirect_function {
+                        callee
+                    } else if indirect {
                         let value = arguments.remove(0);
                         if matches!(value.data, Data::DynamicFunction(_)) {
                             return self.start_dynamic_callback(
@@ -2442,12 +2344,12 @@ impl Instance {
                             );
                         }
                         match value.data {
-                            Data::Function(callee) => callee,
+                            Data::Function(callee) => Arc::unwrap_or_clone(callee),
                             Data::Method { function, receiver } => {
                                 if let Some(receiver) = receiver {
-                                    arguments.insert(0, *receiver);
+                                    arguments.insert(0, Arc::unwrap_or_clone(receiver));
                                 }
-                                function
+                                Arc::unwrap_or_clone(function)
                             }
                             _ => {
                                 return Err(RuntimeError::new(
@@ -2467,26 +2369,14 @@ impl Instance {
                             target_index = source.index;
                         } else {
                             bound_revision = self.revision.clone();
-                            let key = (revision.generation, function.index, pc);
-                            let cached = self.call_bindings.lock().unwrap().get(&key).copied();
-                            target_index = match cached {
-                                Some((generation, index))
-                                    if generation == bound_revision.generation =>
-                                {
-                                    index
-                                }
-                                _ => {
-                                    let index = bound_revision
-                                        .program
-                                        .function(&source.module, &source.name)?
-                                        .index;
-                                    self.call_bindings
-                                        .lock()
-                                        .unwrap()
-                                        .insert(key, (bound_revision.generation, index));
-                                    index
-                                }
-                            };
+                            let logical = revision.logical_functions[source.index];
+                            target_index = self.call_targets[logical].ok_or_else(|| {
+                                RuntimeError::new(
+                                    "missing_function",
+                                    source.module.as_ref(),
+                                    source.name.as_ref(),
+                                )
+                            })?;
                         }
                         let target = &bound_revision.program.function_table[target_index];
                         FunctionValue {
@@ -2505,13 +2395,24 @@ impl Instance {
                         && self.debug.resume.is_none()
                         && !self.debug.pause.load(std::sync::atomic::Ordering::Acquire);
                     if replace {
+                        if let Some(frame::FrameArguments::Caller {
+                            frame, suspended, ..
+                        }) = &mut borrowed_arguments
+                        {
+                            *frame = self.running.suspended_frames.len();
+                            *suspended = true;
+                        }
                         self.running
                             .suspended_frames
                             .push(self.running.frames.pop().unwrap());
                     }
                     let frame_index = self.running.frames.len();
-                    let created =
-                        self.push_frame(callee, arguments, payload.result_count as usize, false);
+                    let created = self.push_frame_arguments(
+                        callee,
+                        borrowed_arguments.unwrap_or(frame::FrameArguments::Owned(arguments)),
+                        payload.result_count as usize,
+                        false,
+                    );
                     let old = if replace {
                         self.running.suspended_frames.pop()
                     } else {
@@ -2538,10 +2439,9 @@ impl Instance {
                         frame.expected_results = old.expected_results;
                     } else if tail {
                         let caller = &mut self.running.frames[frame_index - 1];
-                        caller
-                            .stack
-                            .truncate(caller.stack.len() - payload.arg_count as usize);
-                        caller.tail_return = Some(payload.result_count as usize);
+                        caller.continuation = Some(frame::Continuation::TailReturn(
+                            payload.result_count as usize,
+                        ));
                     }
                 }
                 CallInterface(payload) => {
@@ -2550,7 +2450,7 @@ impl Instance {
                         .pop_values(&self.frame_pool, payload.arg_count as usize + 1)?;
                     let value = arguments.remove(0);
                     let receiver = match value.data {
-                        Data::Interface(value) => *value,
+                        Data::Interface(value) => Arc::unwrap_or_clone(value),
                         _ => value,
                     };
                     let (owner, method) = self
@@ -2584,10 +2484,7 @@ impl Instance {
                     )?;
                 }
                 Return(payload) => {
-                    let values = self
-                        .running
-                        .pop_values(&self.frame_pool, payload.result_count as usize)?;
-                    self.begin_return(values)?;
+                    self.return_slot_values(payload.result_count as usize)?;
                 }
                 DeferPush(payload) => {
                     let value = self.running.pop()?;
@@ -2616,7 +2513,7 @@ impl Instance {
                         frame.defers.len() + 1,
                         true,
                     )?;
-                    frame.defers.push(callee);
+                    frame.defers.push(Arc::unwrap_or_clone(callee));
                 }
                 Panic => {
                     let mut value = self.running.pop()?;
@@ -2662,13 +2559,13 @@ impl Instance {
                         }
                         "function" => Value {
                             typ: TypeIdentity::Any,
-                            data: Data::Function(FunctionValue {
+                            data: Data::Function(std::sync::Arc::new(FunctionValue {
                                 index: None,
                                 revision: Some(self.revision.clone()),
                                 module: payload.module_path.clone().into(),
                                 function: export.id.clone().into(),
                                 captures: Vec::new(),
-                            }),
+                            })),
                         },
                         "global" => self
                             .heap
@@ -2706,8 +2603,7 @@ impl Instance {
                             .frames
                             .last_mut()
                             .unwrap()
-                            .stack
-                            .push(result.take().unwrap());
+                            .push_result(result.take().unwrap());
                         return Ok(());
                     }
                     if let Data::Pointer(address) = &value.data {
@@ -2781,10 +2677,20 @@ impl Instance {
                         .running
                         .pop_values(&self.frame_pool, payload.count as usize + 1)?;
                     let object = values.remove(0);
-                    if payload.expand {
-                        values = self.slice_values(&values[0])?;
+                    if payload.expand
+                        && self.types.identical(
+                            &self.element_type(&object.typ)?,
+                            &TypeIdentity::Primitive(wire::PrimitiveUint8),
+                        )?
+                    {
+                        let bytes = self.slice_bytes(&values[0])?;
+                        result = Some(self.append_bytes(object, &bytes)?);
+                    } else {
+                        if payload.expand {
+                            values = self.slice_values(&values[0])?;
+                        }
+                        result = Some(self.append_values(object, values)?);
                     }
-                    result = Some(self.append_values(object, values)?);
                 }
                 Copy => {
                     let source = self.running.pop()?;
@@ -2812,7 +2718,7 @@ impl Instance {
                             };
                             let backing = Value {
                                 typ: TypeIdentity::Any,
-                                data: Data::MapEntries(entries.cleared()),
+                                data: Data::MapEntries(Box::new(entries.cleared())),
                             };
                             let bytes = backing.logical_bytes()? + 128;
                             self.heap
@@ -2849,8 +2755,7 @@ impl Instance {
                         .frames
                         .last_mut()
                         .unwrap()
-                        .stack
-                        .extend([key, value]);
+                        .extend_results([key, value]);
                     result = Some(Value::boolean(ok));
                 }
                 MapIterClose(payload) => {
@@ -2937,7 +2842,7 @@ impl Instance {
                                 .is_some_and(|(_, node)| node.kind == wire::Interface));
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
                     let value = match value.data {
-                        Data::Interface(value) => *value,
+                        Data::Interface(value) => Arc::unwrap_or_clone(value),
                         _ => value,
                     };
                     let ok = !nil_interface
@@ -2956,7 +2861,7 @@ impl Instance {
                         self.zero(&typ, 0)?
                     };
                     if with_ok {
-                        self.running.frames.last_mut().unwrap().stack.push(value);
+                        self.running.frames.last_mut().unwrap().push_result(value);
                         result = Some(Value::boolean(ok));
                     } else {
                         result = Some(value);
@@ -2984,7 +2889,7 @@ impl Instance {
             if let Data::String(bytes) = &value.data {
                 self.check_string_size(bytes.len())?;
             }
-            self.running.frames.last_mut().unwrap().stack.push(value);
+            self.running.frames.last_mut().unwrap().push_result(value);
         }
         Ok(())
     }

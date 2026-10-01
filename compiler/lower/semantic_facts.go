@@ -78,6 +78,20 @@ func (l *lowerer) methodInfoFromSelection(selection check.Selection) (methodInfo
 		function = methodID(l.localMethodReceiverType(receiver), selection.Name)
 	} else if modulePath != "" {
 		l.ensureSourceRequirement(modulePath)
+		if function == "" {
+			base := receiver
+			if strings.HasPrefix(base, "Ptr<") && strings.HasSuffix(base, ">") {
+				base = base[len("Ptr<") : len(base)-1]
+			}
+			if imported, ok := l.importedTypeInfo(base); ok {
+				for _, method := range imported.Methods {
+					if method.Name == selection.Name {
+						function = method.FunctionID
+						break
+					}
+				}
+			}
+		}
 	}
 	if function == "" {
 		function = methodID(receiver, selection.Name)
@@ -139,10 +153,10 @@ func (l *lowerer) semanticExpressionSignature(expr ast.Expression) (types.Functi
 		return types.FunctionSignature{}, false
 	}
 	info, ok := l.semantic.Exprs[expr.NodeID]
-	if !ok || !info.HasSignature {
+	if !ok || info.Signature == nil {
 		return types.FunctionSignature{}, false
 	}
-	return info.Signature, true
+	return *info.Signature, true
 }
 
 func (l *lowerer) semanticExpressionResults(expr ast.Expression) ([]string, bool) {
@@ -245,6 +259,10 @@ func (l *lowerer) semanticSwitchFact(stmt ast.Statement) (check.SwitchInfo, bool
 }
 
 func (l *lowerer) formatSemanticType(ref types.TypeRef) string {
+	if text, ok := l.semanticTypeText[ref]; ok {
+		return text
+	}
+	original := ref
 	if l.semantic == nil || !ref.Valid() {
 		return ""
 	}
@@ -265,5 +283,11 @@ func (l *lowerer) formatSemanticType(ref types.TypeRef) string {
 	if !ok {
 		return ""
 	}
-	return l.resolveType(rewritten)
+	text = l.resolveType(rewritten)
+	// The checked table is immutable throughout lowering. Start caching only
+	// after local aliases have been rewritten; each lowerer owns its entries.
+	if l.semanticTypeText != nil && text != "" {
+		l.semanticTypeText[original] = text
+	}
+	return text
 }

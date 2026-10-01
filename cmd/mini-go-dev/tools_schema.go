@@ -70,7 +70,7 @@ func runToolsSchema(args []string, stderr io.Writer) error {
 	}
 	request := schema(reflect.TypeFor[compilerentry.ToolsRequest]())
 	response := schema(reflect.TypeFor[compilerentry.ToolsResponse]())
-	data, err := json.MarshalIndent(map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "Mini-Go compiler tools ABI", "format": compilerentry.ToolsFormat, "version": compilerentry.ToolsVersion, "request": request, "response": response, "$defs": definitions}, "", "  ")
+	data, err := json.MarshalIndent(map[string]any{"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "Mini-Go compiler tools ABI", "format": compilerentry.ToolsFormat, "version": compilerentry.ToolsVersion, "request": request, "response": response, "response_transport": map[string]any{"magic_hex": "4d4754330d0a1a0a", "header_bytes": 20, "lengths": "three u32 little-endian: metadata, image, symbols", "segments": []string{"metadata JSON with empty ImageJSON and SymbolsJSON", "raw UTF-8 ImageJSON", "raw UTF-8 SymbolsJSON"}, "max_bytes": compilerentry.MaxToolsInput}, "$defs": definitions}, "", "  ")
 	if err != nil {
 		return err
 	}

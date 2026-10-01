@@ -13,6 +13,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+use support::slot_code;
 
 #[derive(Clone, Default)]
 struct Host {
@@ -73,13 +74,15 @@ fn program() -> Arc<Program> {
     let bytes = support::image(json!({
         "type_table": {"nodes": [{"id": "bytes", "kind": 5, "elem": {"kind": 3, "primitive": 9}}]},
         "constants": [{"id": "route", "type": {"kind": 3, "primitive": 2}, "value": "echo"}],
-        "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}]}, "instructions": [
-            {"op": "const", "payload": {"constant": "route"}},
-            {"op": "zero", "payload": {"type": {"kind": 5, "node": "bytes"}}},
-            {"op": "call_ffi", "payload": {"arg_count": 2, "result_count": 3}},
-            {"op": "pop"}, {"op": "pop"}, {"op": "len"},
-            {"op": "return", "payload": {"result_count": 1}}
-        ]}]
+        "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}]},
+        "code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+            ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
+            ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
+            ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
+            ("pop",json!({}),json!({"inputs":[[0,4]],"release":[4]})),
+            ("pop",json!({}),json!({"inputs":[[0,3]],"release":[3]})),
+            ("len",json!({}),json!({"inputs":[[0,2]],"outputs":[4],"release":[2]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,4]],"release":[4]}))])}]
     }));
     Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap())
 }
@@ -132,10 +135,9 @@ fn pending_host_call_keeps_its_revision_until_delivery_or_cancellation() {
     let target = Arc::new(Program::load(&support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
-        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-            {"op":"const","payload":{"constant":"answer"}},
-            {"op":"return","payload":{"result_count":1}}
-        ]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+            ("const",json!({"constant":"answer"}),json!({"outputs":[0]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}]
     })), LoadLimits::default()).unwrap());
     for cancel in [false, true] {
         let host = Host::default();
@@ -234,12 +236,16 @@ fn result_allocation_failure_returns_host_status_and_preserves_instance() {
     let bytes = support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"echo"}],
-        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"locals":[{"id":"status","type":{"kind":3,"primitive":3}}],"instructions":[
-            {"op":"const","payload":{"constant":"route"}},{"op":"zero","payload":{"type":{"kind":5,"node":"bytes"}}},
-            {"op":"call_ffi","payload":{"arg_count":2,"result_count":3}},
-            {"op":"store_local","payload":{"local":"status"}},{"op":"pop"},{"op":"pop"},
-            {"op":"load_local","payload":{"local":"status"}},{"op":"return","payload":{"result_count":1}}
-        ]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"locals":[{"id":"status","type":{"kind":3,"primitive":3}}],
+        "code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+            ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
+            ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
+            ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
+            ("store_local",json!({"local":"status"}),json!({"inputs":[[0,4]],"release":[4]})),
+            ("pop",json!({}),json!({"inputs":[[0,3]],"release":[3]})),
+            ("pop",json!({}),json!({"inputs":[[0,2]],"release":[2]})),
+            ("load_local",json!({"local":"status"}),json!({"outputs":[4]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,4]],"release":[4]}))])}]
     }));
     let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
     for limits in [
@@ -290,18 +296,18 @@ fn construction_waits_for_initialization_and_cancellation_closes_its_session() {
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"echo"}],
         "globals":[{"id":"size","type":{"kind":3,"primitive":3}}],
         "functions":[
-            {"id":"fn.init","instructions":[
-                {"op":"const","payload":{"constant":"route"}},
-                {"op":"zero","payload":{"type":{"kind":5,"node":"bytes"}}},
-                {"op":"call_ffi","payload":{"arg_count":2,"result_count":3}},
-                {"op":"pop"},{"op":"pop"},{"op":"len"},
-                {"op":"store_global","payload":{"global":"size"}},
-                {"op":"return","payload":{}}
-            ]},
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[
-                {"op":"load_global","payload":{"global":"size"}},
-                {"op":"return","payload":{"result_count":1}}
-            ]}
+            {"id":"fn.init","code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+                ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
+                ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
+                ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
+                ("pop",json!({}),json!({"inputs":[[0,4]],"release":[4]})),
+                ("pop",json!({}),json!({"inputs":[[0,3]],"release":[3]})),
+                ("len",json!({}),json!({"inputs":[[0,2]],"outputs":[4],"release":[2]})),
+                ("store_global",json!({"global":"size"}),json!({"inputs":[[0,4]],"release":[4]})),
+                ("return",json!({}),json!({}))])},
+            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+                ("load_global",json!({"global":"size"}),json!({"outputs":[0]})),
+                ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}
         ]
     }));
     let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());

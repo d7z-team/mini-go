@@ -22,6 +22,7 @@ impl Trace for IntrinsicResume {
 
 impl Instance {
     pub(super) fn resume_reflect(&mut self, resume: IntrinsicResume) -> Result<(), RuntimeError> {
+        self.running.frames.last_mut().unwrap().delivery.reading = true;
         let (values, reflected) = match resume {
             IntrinsicResume::Send => (vec![Value::string(""), Value::boolean(true)], false),
             IntrinsicResume::Receive => {
@@ -68,6 +69,7 @@ impl Instance {
                 (values, reflected)
             }
         };
+        self.running.frames.last_mut().unwrap().delivery.reading = false;
         let results = if reflected {
             let values = values
                 .into_iter()
@@ -91,8 +93,7 @@ impl Instance {
             .frames
             .last_mut()
             .unwrap()
-            .stack
-            .extend(results);
+            .extend_results(results);
         Ok(())
     }
 
@@ -132,7 +133,7 @@ impl Instance {
         let Data::DynamicFunction(callback) = function.data else {
             unreachable!()
         };
-        let Data::Function(callee) = callback.data else {
+        let Data::Function(callee) = Arc::unwrap_or_clone(callback).data else {
             return Err(RuntimeError::new(
                 "panic",
                 "MakeFunc",
@@ -151,9 +152,12 @@ impl Instance {
             }),
         )));
         let values = self.make_slice(typ, snapshots.len(), snapshots.len(), snapshots)?;
-        self.running.frames.last_mut().unwrap().resume =
-            Some(IntrinsicResume::Callback { results, reflected });
-        self.push_frame(callee, vec![values], 1, false)
+        self.call_with_continuation(
+            Arc::unwrap_or_clone(callee),
+            vec![values],
+            1,
+            frame::Continuation::Intrinsic(IntrinsicResume::Callback { results, reflected }),
+        )
     }
 
     pub(super) fn execute_reflect_async(
@@ -250,6 +254,7 @@ impl Instance {
                         outcome: None,
                     },
                     default.is_some(),
+                    None,
                 )?;
                 return Ok(None);
             }
@@ -288,7 +293,7 @@ impl Instance {
                 }
                 let value = Value {
                     typ,
-                    data: Data::DynamicFunction(Box::new(arguments[1].clone())),
+                    data: Data::DynamicFunction(std::sync::Arc::new(arguments[1].clone())),
                 };
                 let value = self.reflect_snapshot(ReflectedValue::owned(value), 0)?;
                 return Ok(Some(vec![value, Value::string(""), Value::boolean(true)]));
@@ -387,20 +392,29 @@ impl Instance {
                                 .program
                                 .types()
                                 .resolve(&function.module, &parameter.r#type)?;
-                            values.insert(0, self.method_receiver(*receiver, &expected)?);
+                            values.insert(
+                                0,
+                                self.method_receiver(Arc::unwrap_or_clone(receiver), &expected)?,
+                            );
                         }
-                        self.running.frames.last_mut().unwrap().resume =
-                            Some(IntrinsicResume::Call {
+                        self.call_with_continuation(
+                            Arc::unwrap_or_clone(function),
+                            values,
+                            result_count,
+                            frame::Continuation::Intrinsic(IntrinsicResume::Call {
                                 count: result_count,
-                            });
-                        self.push_frame(function, values, result_count, false)?;
+                            }),
+                        )?;
                     }
                     Data::Function(callee) => {
-                        self.running.frames.last_mut().unwrap().resume =
-                            Some(IntrinsicResume::Call {
+                        self.call_with_continuation(
+                            Arc::unwrap_or_clone(callee),
+                            values,
+                            result_count,
+                            frame::Continuation::Intrinsic(IntrinsicResume::Call {
                                 count: result_count,
-                            });
-                        self.push_frame(callee, values, result_count, false)?;
+                            }),
+                        )?;
                     }
                     Data::DynamicFunction(_) => {
                         self.start_dynamic_callback(function, values, result_count, true)?
@@ -495,8 +509,12 @@ impl Instance {
                         Value::boolean(true),
                     ]));
                 }
-                self.running.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Receive);
-                self.wait_channel(channel, None, true)?;
+                self.wait_channel(
+                    channel,
+                    None,
+                    true,
+                    Some(frame::Continuation::Intrinsic(IntrinsicResume::Receive)),
+                )?;
                 return Ok(None);
             }
             let value = self
@@ -515,8 +533,12 @@ impl Instance {
             if sent {
                 return Ok(Some(vec![Value::string(""), Value::boolean(true)]));
             }
-            self.running.frames.last_mut().unwrap().resume = Some(IntrinsicResume::Send);
-            self.wait_channel(channel, Some(value), false)?;
+            self.wait_channel(
+                channel,
+                Some(value),
+                false,
+                Some(frame::Continuation::Intrinsic(IntrinsicResume::Send)),
+            )?;
             Ok(None)
         })();
         let results = match outcome {
@@ -568,8 +590,7 @@ impl Instance {
             .frames
             .last_mut()
             .unwrap()
-            .stack
-            .extend(results);
+            .extend_results(results);
         Ok(())
     }
 }

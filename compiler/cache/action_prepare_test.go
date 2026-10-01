@@ -229,7 +229,7 @@ func testPreparedOutput(t *testing.T) (PrepareAction, PreparedOutput) {
 	if !ok || node.Signature == nil {
 		t.Fatal("function signature missing")
 	}
-	artifact.Functions = []ir.Function{{ID: "fn.main", Signature: *node.Signature}}
+	artifact.Functions = []ir.Function{{Code: &ir.SlotCode{}, ID: "fn.main", Signature: *node.Signature}}
 	artifactJSON, artifactHash, err := ir.EncodeJSONAndHash(&artifact)
 	if err != nil {
 		t.Fatal(err)

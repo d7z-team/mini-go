@@ -20,7 +20,7 @@ func TestLowerASTFunctionToHIR(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Answer",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -28,7 +28,7 @@ func TestLowerASTFunctionToHIR(t *testing.T) {
 						Results: []ast.Expression{{
 							Kind:    ast.ExprLiteral,
 							Literal: "42",
-							Type:    intType,
+							Type:    &intType,
 						}},
 					}}},
 				},
@@ -62,13 +62,13 @@ func TestLowerASTVariadicFunctionMetadata(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Sum",
 					Params:  []ast.Field{{Name: "base", Type: intType}, {Name: "values", Type: intType, Variadic: true}},
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}},
@@ -113,7 +113,7 @@ func TestLowerASTStatementSpanToPackageSymbols(t *testing.T) {
 			Span: fileSpan,
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -122,7 +122,7 @@ func TestLowerASTStatementSpanToPackageSymbols(t *testing.T) {
 						Results: []ast.Expression{{
 							Kind:    ast.ExprLiteral,
 							Literal: "42",
-							Type:    intType,
+							Type:    &intType,
 						}},
 					}}},
 				},
@@ -176,7 +176,7 @@ func TestLowerStructFieldTagsToIRTypeMetadata(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{
+				Type: &ast.TypeDecl{
 					Name: "User",
 					Type: ast.TypeExpr{
 						Kind: ast.TypeStruct,
@@ -225,7 +225,7 @@ func TestLowerInterfaceTypeSetToIRTypeMetadata(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{
+				Type: &ast.TypeDecl{
 					Name: "Constraint",
 					Type: ast.TypeExpr{
 						Kind: ast.TypeInterface,
@@ -270,7 +270,7 @@ func TestLowerVariadicFunctionTypeMetadata(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{
+				Type: &ast.TypeDecl{
 					Name: "Reducer",
 					Type: ast.TypeExpr{
 						Kind: ast.TypeFunc,
@@ -313,13 +313,13 @@ func TestLowerVariadicMethodMetadata(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{
+				Type: &ast.TypeDecl{
 					Name: "Counter",
 					Type: ast.TypeExpr{Kind: ast.TypeStruct},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:     "Sum",
 					Receiver: &ast.Field{Name: "c", Type: counterType},
 					Params: []ast.Field{{
@@ -333,12 +333,12 @@ func TestLowerVariadicMethodMetadata(t *testing.T) {
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{
+				Type: &ast.TypeDecl{
 					Name: "Summarizer",
 					Type: ast.TypeExpr{
 						Kind: ast.TypeInterface,

@@ -17,10 +17,17 @@ type frame struct {
 	function           loadedFunction
 	executionContextID int64
 	pc                 int
+	typeDispatchIndex  int
+	typeDispatchValue  vmValue
+	typeDispatchActive bool
 	localCells         []*slot
 	localStorage       []slot
 	upvalueCells       []*slot
-	stack              []vmValue
+	slotValues         []vmValue
+	slotOperands       *ir.SlotOperands
+	slotPC             int
+	slotInput          int
+	slotOutput         int
 	popValues          []vmValue
 	returnValues       []vmValue
 	defers             []deferredCall
@@ -31,7 +38,7 @@ type frame struct {
 
 // frameCapacity retains the guest capacity ledger when idle buffers are evicted.
 type frameCapacity struct {
-	locals, upvalues, stack, popped, returned, defers int
+	locals, upvalues, temporaries, popped, returned, defers int
 }
 
 type slot struct {
@@ -152,7 +159,8 @@ func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, c
 	module.framePoolMu.Unlock()
 	if callFrame == nil {
 		callFrame = &frame{idleCapacity: frameCapacity{
-			locals: len(function.Decl.Locals), upvalues: len(function.Decl.Upvalues), stack: function.MaxStack,
+			locals: len(function.Decl.Locals), upvalues: len(function.Decl.Upvalues),
+			temporaries: len(function.Decl.Code.Types),
 		}}
 	}
 	if callFrame.localStorage == nil {
@@ -164,7 +172,7 @@ func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, c
 			callFrame.localCells[i] = &callFrame.localStorage[i]
 		}
 		callFrame.upvalueCells = make([]*slot, capacity.upvalues)
-		callFrame.stack = make([]vmValue, 0, capacity.stack)
+		callFrame.slotValues = make([]vmValue, capacity.temporaries)
 		callFrame.popValues = make([]vmValue, 0, capacity.popped)
 		callFrame.returnValues = make([]vmValue, 0, capacity.returned)
 		callFrame.defers = make([]deferredCall, 0, capacity.defers)
@@ -175,7 +183,10 @@ func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, c
 	callFrame.function = function
 	callFrame.executionContextID = executionContextID
 	callFrame.pc = 0
-	callFrame.stack = callFrame.stack[:0]
+	callFrame.slotPC, callFrame.slotOperands = -1, nil
+	callFrame.slotInput, callFrame.slotOutput = 0, 0
+	callFrame.typeDispatchIndex = 0
+	callFrame.typeDispatchValue, callFrame.typeDispatchActive = vmValue{}, false
 	callFrame.defers = callFrame.defers[:0]
 	for i, local := range function.Decl.Locals {
 		cell := &callFrame.localStorage[i]
@@ -185,7 +196,9 @@ func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, c
 		callFrame.localCells[i] = cell
 		if i < len(args) {
 			if err := cell.store(args[i]); err != nil {
-				callFrame.recycle()
+				if !allocated {
+					callFrame.recycle()
+				}
 				return nil, allocated, fmt.Errorf("argument %s: %w", local.ID, err)
 			}
 		}
@@ -193,7 +206,9 @@ func newFrame(module *moduleInstance, function loadedFunction, args []vmValue, c
 	for i, upvalue := range function.Decl.Upvalues {
 		capturedSlot, ok := captured[upvalue.ID]
 		if !ok || capturedSlot == nil {
-			callFrame.recycle()
+			if !allocated {
+				callFrame.recycle()
+			}
 			return nil, allocated, fmt.Errorf("missing upvalue %q", upvalue.ID)
 		}
 		callFrame.upvalueCells[i] = capturedSlot
@@ -219,14 +234,15 @@ func (f *frame) recycle() {
 	for i := range f.upvalueCells {
 		f.upvalueCells[i] = nil
 	}
-	// Every stack/defer truncation clears the released range. Only the live
+	// Every operand/defer truncation clears the released range. Only the live
 	// high-water marks remain to clear here, irrespective of retained capacity.
-	clear(f.stack)
+	clear(f.slotValues)
+	f.slotOperands = nil
 	clear(f.popValues)
 	clear(f.returnValues)
 	clear(f.defers)
 	f.mapIterators = nil
-	f.stack = f.stack[:0]
+	f.typeDispatchValue, f.typeDispatchActive = vmValue{}, false
 	f.popValues = f.popValues[:0]
 	f.returnValues = f.returnValues[:0]
 	f.defers = f.defers[:0]
@@ -241,7 +257,7 @@ func (f *frame) recycle() {
 		physicalBytes := int64(unsafe.Sizeof(*f)) +
 			int64(cap(f.localStorage))*int64(unsafe.Sizeof(slot{})) +
 			int64(cap(f.localCells)+cap(f.upvalueCells))*int64(unsafe.Sizeof((*slot)(nil))) +
-			int64(cap(f.stack)+cap(f.popValues)+cap(f.returnValues))*int64(unsafe.Sizeof(vmValue{})) +
+			int64(cap(f.slotValues)+cap(f.popValues)+cap(f.returnValues))*int64(unsafe.Sizeof(vmValue{})) +
 			int64(cap(f.defers))*int64(unsafe.Sizeof(deferredCall{}))
 		retainPhysical := physicalBytes <= maxPhysicalFrameCacheBytes-module.framePoolPhysicalBytes
 		if module.vm != nil {
@@ -267,13 +283,14 @@ func (f *frame) recycle() {
 			// evicted. A later hit restores these exact capacities without
 			// changing guest allocation history.
 			f.idleCapacity = frameCapacity{
-				locals: cap(f.localStorage), upvalues: cap(f.upvalueCells), stack: cap(f.stack),
-				popped: cap(f.popValues), returned: cap(f.returnValues), defers: cap(f.defers),
+				locals: cap(f.localStorage), upvalues: cap(f.upvalueCells),
+				temporaries: cap(f.slotValues),
+				popped:      cap(f.popValues), returned: cap(f.returnValues), defers: cap(f.defers),
 			}
 			f.localCells = nil
 			f.localStorage = nil
 			f.upvalueCells = nil
-			f.stack = nil
+			f.slotValues = nil
 			f.popValues = nil
 			f.returnValues = nil
 			f.defers = nil
@@ -288,7 +305,7 @@ func (f *frame) recycle() {
 	f.localCells = nil
 	f.localStorage = nil
 	f.upvalueCells = nil
-	f.stack = nil
+	f.slotValues = nil
 	f.popValues = nil
 	f.returnValues = nil
 	f.defers = nil
@@ -299,10 +316,10 @@ func (f *frame) logicalBytes() int64 {
 		return 0
 	}
 	if capacity := f.idleCapacity; capacity != (frameCapacity{}) {
-		slots := capacity.locals + capacity.upvalues + capacity.stack + capacity.popped + capacity.returned + capacity.defers
+		slots := capacity.locals + capacity.upvalues + capacity.temporaries + capacity.popped + capacity.returned + capacity.defers
 		return ir.RuntimeNodeBytes + int64(slots)*ir.RuntimeSlotBytes
 	}
-	return ir.RuntimeNodeBytes + int64(cap(f.localStorage)+cap(f.upvalueCells)+cap(f.stack)+cap(f.popValues)+cap(f.returnValues)+cap(f.defers))*ir.RuntimeSlotBytes
+	return ir.RuntimeNodeBytes + int64(cap(f.localStorage)+cap(f.upvalueCells)+cap(f.slotValues)+cap(f.popValues)+cap(f.returnValues)+cap(f.defers))*ir.RuntimeSlotBytes
 }
 
 func (f *frame) normalizeReturnValues(values []vmValue) ([]vmValue, error) {
@@ -359,29 +376,59 @@ func (f *frame) currentResultValues() ([]vmValue, error) {
 }
 
 func (f *frame) push(value vmValue) {
-	f.stack = append(f.stack, value)
+	target := f.slotOperands.Outputs[f.slotOutput]
+	if target&ir.LocalOutput != 0 {
+		f.localCells[target&^ir.LocalOutput].publish(value)
+	} else {
+		f.slotValues[target] = value
+	}
+	f.slotOutput++
 }
 
 func (f *frame) pop() (vmValue, error) {
-	values, err := f.popN(1)
-	if err != nil {
-		return vmValue{}, err
+	if f.slotInput == 0 {
+		return vmValue{}, errors.New("operand underflow")
 	}
-	return values[0], nil
+	f.slotInput--
+	operand := f.slotOperands.Inputs[f.slotInput]
+	if operand.Kind == ir.OperandConstant {
+		return f.module.constantValueAt(int(operand.Index))
+	}
+	if operand.Kind == ir.OperandLocal {
+		return f.localCells[operand.Index].load(), nil
+	}
+	return f.slotValues[operand.Index], nil
 }
 
 func (f *frame) popN(count int) ([]vmValue, error) {
 	if count < 0 {
 		return nil, fmt.Errorf("negative pop count %d", count)
 	}
-	if len(f.stack) < count {
-		return nil, fmt.Errorf("stack underflow: need %d values, have %d", count, len(f.stack))
+	if count > f.slotInput {
+		return nil, fmt.Errorf("operand underflow: need %d values, have %d", count, f.slotInput)
 	}
-	start := len(f.stack) - count
+	start := f.slotInput - count
 	clear(f.popValues)
-	f.popValues = append(f.popValues[:0], f.stack[start:]...)
-	clear(f.stack[start:])
-	f.stack = f.stack[:start]
+	// Reserve the entire operand batch once, preserving the buffer growth
+	// contract independently of how explicit slot inputs are materialized.
+	f.popValues = append(f.popValues[:0], make([]vmValue, count)...)
+	for index, operand := range f.slotOperands.Inputs[start:f.slotInput] {
+		var value vmValue
+		switch operand.Kind {
+		case ir.OperandConstant:
+			var err error
+			value, err = f.module.constantValueAt(int(operand.Index))
+			if err != nil {
+				return nil, err
+			}
+		case ir.OperandLocal:
+			value = f.localCells[operand.Index].load()
+		default:
+			value = f.slotValues[operand.Index]
+		}
+		f.popValues[index] = value
+	}
+	f.slotInput = start
 	return f.popValues, nil
 }
 
@@ -397,11 +444,12 @@ func (f *frame) retainReturnValues(values []vmValue) []vmValue {
 }
 
 func (f *frame) pop2() (vmValue, vmValue, error) {
-	values, err := f.popN(2)
+	right, err := f.pop()
 	if err != nil {
 		return vmValue{}, vmValue{}, err
 	}
-	return values[0], values[1], nil
+	left, err := f.pop()
+	return left, right, err
 }
 
 func (f *frame) address(payload ir.AddressPayload) (vmValue, error) {

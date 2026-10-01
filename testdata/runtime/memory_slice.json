@@ -1,120 +1,280 @@
 {
-    "module": {
-        "path": "test",
-        "package": "main"
-    },
-    "type_table": {
-        "nodes": [
-            {
-                "id": "bytes",
-                "kind": 5,
-                "elem": {
-                    "kind": 3,
-                    "primitive": 9
-                }
-            }
-        ]
-    },
-    "constants": [
-        {
-            "id": "length",
-            "type": {
-                "kind": 3,
-                "primitive": 3
-            },
-            "value": 8
+  "module": {
+    "path": "test",
+    "package": "main"
+  },
+  "type_table": {
+    "nodes": [
+      {
+        "id": "bytes",
+        "kind": 5,
+        "elem": {
+          "kind": 3,
+          "primitive": 9
         }
-    ],
-    "functions": [
-        {
-            "id": "fn.Main",
-            "signature": {
-                "results": [
-                    {
-                        "kind": 3,
-                        "primitive": 3
-                    }
-                ]
-            },
-            "locals": [
-                {
-                    "id": "slice",
-                    "type": {
-                        "kind": 5,
-                        "node": "bytes"
-                    }
-                }
-            ],
-            "instructions": [
-                {
-                    "op": "const",
-                    "payload": {
-                        "constant": "length"
-                    }
-                },
-                {
-                    "op": "const",
-                    "payload": {
-                        "constant": "length"
-                    }
-                },
-                {
-                    "op": "make_slice",
-                    "payload": {
-                        "has_capacity": true,
-                        "type": {
-                            "kind": 5,
-                            "node": "bytes"
-                        }
-                    }
-                },
-                {
-                    "op": "store_local",
-                    "payload": {
-                        "local": "slice"
-                    }
-                },
-                {
-                    "op": "const",
-                    "payload": {
-                        "constant": "length"
-                    }
-                },
-                {
-                    "op": "const",
-                    "payload": {
-                        "constant": "length"
-                    }
-                },
-                {
-                    "op": "make_slice",
-                    "payload": {
-                        "has_capacity": true,
-                        "type": {
-                            "kind": 5,
-                            "node": "bytes"
-                        }
-                    }
-                },
-                {
-                    "op": "pop"
-                },
-                {
-                    "op": "load_local",
-                    "payload": {
-                        "local": "slice"
-                    }
-                },
-                {
-                    "op": "len"
-                },
-                {
-                    "op": "return",
-                    "payload": {
-                        "result_count": 1
-                    }
-                }
-            ]
-        }
+      }
     ]
+  },
+  "constants": [
+    {
+      "id": "length",
+      "type": {
+        "kind": 3,
+        "primitive": 3
+      },
+      "value": 8
+    }
+  ],
+  "functions": [
+    {
+      "id": "fn.Main",
+      "signature": {
+        "results": [
+          {
+            "kind": 3,
+            "primitive": 3
+          }
+        ]
+      },
+      "locals": [
+        {
+          "id": "slice",
+          "type": {
+            "kind": 5,
+            "node": "bytes"
+          }
+        }
+      ],
+      "code": {
+        "types": [
+          {
+            "kind": 3,
+            "primitive": 3
+          },
+          {
+            "kind": 3,
+            "primitive": 3
+          },
+          {
+            "kind": 5,
+            "node": "bytes"
+          }
+        ],
+        "descriptors": {
+          "const": [
+            {
+              "constant": "length"
+            },
+            {
+              "constant": "length"
+            },
+            {
+              "constant": "length"
+            },
+            {
+              "constant": "length"
+            }
+          ],
+          "makeslice": [
+            {
+              "has_capacity": true,
+              "type": {
+                "kind": 5,
+                "node": "bytes"
+              }
+            },
+            {
+              "has_capacity": true,
+              "type": {
+                "kind": 5,
+                "node": "bytes"
+              }
+            }
+          ],
+          "local": [
+            {
+              "local": "slice"
+            },
+            {
+              "local": "slice"
+            }
+          ],
+          "return": [
+            {
+              "result_count": 1
+            }
+          ]
+        },
+        "instructions": [
+          [
+            3,
+            0,
+            0
+          ],
+          [
+            3,
+            1,
+            1
+          ],
+          [
+            29,
+            0,
+            2
+          ],
+          [
+            9,
+            0,
+            3
+          ],
+          [
+            3,
+            2,
+            4
+          ],
+          [
+            3,
+            3,
+            5
+          ],
+          [
+            29,
+            1,
+            6
+          ],
+          [
+            5,
+            0,
+            7
+          ],
+          [
+            8,
+            1,
+            8
+          ],
+          [
+            36,
+            0,
+            9
+          ],
+          [
+            17,
+            0,
+            10
+          ]
+        ],
+        "operands": [
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "outputs": [
+              1
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "release": [
+              0,
+              1
+            ],
+            "outputs": [
+              2
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                2
+              ]
+            ],
+            "release": [
+              2
+            ]
+          },
+          {
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "outputs": [
+              1
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ],
+              [
+                0,
+                1
+              ]
+            ],
+            "release": [
+              0,
+              1
+            ],
+            "outputs": [
+              2
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                2
+              ]
+            ],
+            "release": [
+              2
+            ]
+          },
+          {
+            "outputs": [
+              2
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                2
+              ]
+            ],
+            "release": [
+              2
+            ],
+            "outputs": [
+              0
+            ]
+          },
+          {
+            "inputs": [
+              [
+                0,
+                0
+              ]
+            ],
+            "release": [
+              0
+            ]
+          }
+        ]
+      }
+    }
+  ]
 }

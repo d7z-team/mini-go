@@ -11,6 +11,24 @@ use std::sync::Arc;
 #[test]
 fn any_constants_follow_go_scalar_decoding_and_host_boundary_failures() {
     use mini_go::{SnapshotLimits, snapshot::HostData};
+    let returning = support::slot_code(
+        json!([{"kind":2}]),
+        &[
+            ("const", json!({"constant":"raw"}), json!({"outputs":[0]})),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,0]],"release":[0]}),
+            ),
+        ],
+    );
+    let discarded = support::slot_code(
+        json!([{"kind":2}]),
+        &[
+            ("const", json!({"constant":"raw"}), json!({"outputs":[0]})),
+            ("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+        ],
+    );
     for (raw, expected) in [
         (json!(42), Some("42")),
         (json!("42"), Some("42")),
@@ -23,9 +41,7 @@ fn any_constants_follow_go_scalar_decoding_and_host_boundary_failures() {
     ] {
         let image = support::image(json!({
             "constants":[{"id":"raw","type":{"kind":2},"value":raw}],
-            "functions":[{"id":"fn.Main","signature":{"results":[{"kind":2}]},"instructions":[
-                {"op":"const","payload":{"constant":"raw"}}, {"op":"return","payload":{"result_count":1}}
-            ]}]
+            "functions":[{"id":"fn.Main","signature":{"results":[{"kind":2}]},"code":returning}]
         }));
         let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
         let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -59,7 +75,7 @@ fn any_constants_follow_go_scalar_decoding_and_host_boundary_failures() {
     for value in [json!(1.5), json!("1.5"), json!("9223372036854775808")] {
         let image = support::image(json!({
             "constants":[{"id":"raw","type":{"kind":2},"value":value}],
-            "functions":[{"id":"fn.Main","instructions":[{"op":"const","payload":{"constant":"raw"}},{"op":"pop"}]}]
+            "functions":[{"id":"fn.Main","code":discarded}]
         }));
         let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
         let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -83,7 +99,9 @@ fn preparation_validates_constant_ranges_and_exact_metadata() {
         json!({"id":"bad", "type":{"kind":3,"primitive":17}, "value":{"real":"0/2","imag":"0/1"}, "untyped":true}),
         json!({"id":"bad", "type":{"kind":3,"primitive":3}, "value":null}),
     ] {
-        let image = support::image(json!({"constants":[constant], "functions":[{"id":"fn.Main"}]}));
+        let image = support::image(
+            json!({"constants":[constant], "functions":[{"id":"fn.Main","code":{"descriptors":{}}}]}),
+        );
         assert_eq!(
             Program::load(&image, LoadLimits::default())
                 .err()
@@ -94,11 +112,19 @@ fn preparation_validates_constant_ranges_and_exact_metadata() {
     }
     let metadata =
         json!({"id":"third", "type":{"kind":3,"primitive":15}, "value":"1/3", "untyped":true});
-    let image = support::image(json!({"constants":[metadata], "functions":[{"id":"fn.Main"}]}));
-    Program::load(&image, LoadLimits::default()).unwrap();
     let image = support::image(
-        json!({"constants":[metadata], "functions":[{"id":"fn.Main", "instructions":[{"op":"const","payload":{"constant":"third"}},{"op":"pop"}]}]}),
+        json!({"constants":[metadata], "functions":[{"id":"fn.Main","code":{"descriptors":{}}}]}),
     );
+    Program::load(&image, LoadLimits::default()).unwrap();
+    let code = support::slot_code(
+        json!([{"kind":3,"primitive":15}]),
+        &[
+            ("const", json!({"constant":"third"}), json!({"outputs":[0]})),
+            ("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+        ],
+    );
+    let image =
+        support::image(json!({"constants":[metadata],"functions":[{"id":"fn.Main","code":code}]}));
     assert_eq!(
         Program::load(&image, LoadLimits::default())
             .err()
@@ -110,6 +136,49 @@ fn preparation_validates_constant_ranges_and_exact_metadata() {
 
 #[test]
 fn byte_constant_backing_is_shared_within_an_instance_and_isolated_between_instances() {
+    let integer = json!({"kind":3,"primitive":3});
+    let byte = json!({"kind":3,"primitive":9});
+    let slice = json!({"kind":5,"node":"bytes"});
+    let code = support::slot_code(
+        json!([slice, integer, byte, integer]),
+        &[
+            ("const", json!({"constant":"data"}), json!({"outputs":[0]})),
+            ("const", json!({"constant":"index"}), json!({"outputs":[1]})),
+            (
+                "load_index",
+                json!({}),
+                json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]}),
+            ),
+            (
+                "convert",
+                json!({"type":integer}),
+                json!({"inputs":[[0,2]],"outputs":[3],"release":[2]}),
+            ),
+            (
+                "store_local",
+                json!({"local":"previous"}),
+                json!({"inputs":[[0,3]],"release":[3]}),
+            ),
+            ("const", json!({"constant":"data"}), json!({"outputs":[0]})),
+            ("const", json!({"constant":"index"}), json!({"outputs":[1]})),
+            ("const", json!({"constant":"value"}), json!({"outputs":[2]})),
+            (
+                "store_index",
+                json!({}),
+                json!({"inputs":[[0,0],[0,1],[0,2]],"release":[0,1,2]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"previous"}),
+                json!({"outputs":[3]}),
+            ),
+            (
+                "return",
+                json!({"result_count":1}),
+                json!({"inputs":[[0,3]],"release":[3]}),
+            ),
+        ],
+    );
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[
@@ -117,12 +186,7 @@ fn byte_constant_backing_is_shared_within_an_instance_and_isolated_between_insta
             {"id":"index","type":{"kind":3,"primitive":3},"value":0},
             {"id":"value","type":{"kind":3,"primitive":9},"value":42}
         ],
-        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"locals":[{"id":"previous","type":{"kind":3,"primitive":3}}],"instructions":[
-            {"op":"const","payload":{"constant":"data"}}, {"op":"const","payload":{"constant":"index"}}, {"op":"load_index"},
-            {"op":"convert","payload":{"type":{"kind":3,"primitive":3}}}, {"op":"store_local","payload":{"local":"previous"}},
-            {"op":"const","payload":{"constant":"data"}}, {"op":"const","payload":{"constant":"index"}}, {"op":"const","payload":{"constant":"value"}}, {"op":"store_index"},
-            {"op":"load_local","payload":{"local":"previous"}}, {"op":"return","payload":{"result_count":1}}
-        ]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[integer]},"locals":[{"id":"previous","type":integer}],"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let entry = program.image().entries[0].name.clone();

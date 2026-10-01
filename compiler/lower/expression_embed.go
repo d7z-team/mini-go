@@ -7,6 +7,7 @@ import (
 	ir "github.com/d7z-team/mini-go/compiler/hir"
 	check "github.com/d7z-team/mini-go/compiler/semantic"
 	"github.com/d7z-team/mini-go/compiler/types"
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func (l *lowerer) lowerEmbedInitializer(expr ast.Expression) (ir.Expression, bool) {
@@ -16,7 +17,7 @@ func (l *lowerer) lowerEmbedInitializer(expr ast.Expression) (ir.Expression, boo
 		return ir.Expression{}, false
 	}
 	stringLiteral := func(value string, typ types.TypeRef) ir.Expression {
-		return ir.Expression{Kind: ir.ExprLiteral, Type: typ, Value: canonicalStringRaw(value)}
+		return ir.Expression{Kind: ir.ExprLiteral, Type: typ, Value: bytecode.EncodeStringConstant(value)}
 	}
 	switch info.Kind {
 	case check.EmbedString:
@@ -25,7 +26,7 @@ func (l *lowerer) lowerEmbedInitializer(expr ast.Expression) (ir.Expression, boo
 		return ir.Expression{
 			Kind:  ir.ExprLiteral,
 			Type:  info.Type,
-			Value: canonicalStringRaw(base64.StdEncoding.EncodeToString(expr.EmbedFiles[0].Data)),
+			Value: bytecode.EncodeStringConstant(base64.StdEncoding.EncodeToString(expr.EmbedFiles[0].Data)),
 		}, true
 	case check.EmbedFS:
 		keyType, valueType, ok := l.relations.View(info.Storage).Map()

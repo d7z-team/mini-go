@@ -73,7 +73,7 @@ func newCompilerSession(options BuildOptions) (workspace.SourceSet, *compiler.Co
 	}
 	session, err := compiler.New(compiler.Options{
 		Sources: sources, Cache: compileCache, TraceCache: options.TraceCache,
-		Optimization: compiler.OptimizationDefault,
+		Optimization: compiler.OptimizationFull,
 	})
 	if err != nil {
 		return nil, nil, err

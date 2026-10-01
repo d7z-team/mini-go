@@ -10,10 +10,10 @@ import (
 )
 
 func TestProgramMainReturnStopsSpawnedTasks(t *testing.T) {
-	artifact := lifecycleArtifact(delayedLifecycleChild(
-		ir.Instruction{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.failure"})},
-		ir.Instruction{Op: string(ir.OpPanic)},
-	))
+	artifact := lifecycleArtifact(delayedLifecycleChild(testSlotCode([]string{"String"}, []ir.Instruction{
+		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.failure"}},
+		{Op: ir.OpPanic},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})))
 	artifact.Constants = []ir.Constant{{ID: "const.failure", Type: testType("String"), Value: json.RawMessage(`"too late"`)}}
 	program := patchTestProgram(t, artifact, "program-main-return")
 	instance, err := program.Instantiate(context.Background(), InstanceOptions{})
@@ -45,12 +45,12 @@ func TestProgramMainReturnStopsSpawnedTasks(t *testing.T) {
 }
 
 func TestCancelProgramMainClosesOtherScopes(t *testing.T) {
-	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpZero), Payload: testPayload(ir.TypePayload{Type: testType("Waitable<Int>")})},
-		{Op: string(ir.OpWaitableRecv)},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	})
+	artifact := lifecycleArtifact(testSlotCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
+		{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
+		{Op: ir.OpWaitableRecv},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}, {nil, nil}}))
 	instance, err := patchTestProgram(t, artifact, "program-main-cancel").Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -85,10 +85,10 @@ func TestCancelProgramMainClosesOtherScopes(t *testing.T) {
 }
 
 func TestProgramChildPanicBeforeMainReturnFails(t *testing.T) {
-	artifact := lifecycleArtifact([]ir.Instruction{
-		{Op: string(ir.OpConst), Payload: testPayload(ir.ConstPayload{Constant: "const.failure"})},
-		{Op: string(ir.OpPanic)},
-	})
+	artifact := lifecycleArtifact(testSlotCode([]string{"String"}, []ir.Instruction{
+		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.failure"}},
+		{Op: ir.OpPanic},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}}))
 	artifact.Constants = []ir.Constant{{ID: "const.failure", Type: testType("String"), Value: json.RawMessage(`"early"`)}}
 	instance, err := patchTestProgram(t, artifact, "program-child-panic").Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {

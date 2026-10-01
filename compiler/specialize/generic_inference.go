@@ -328,8 +328,8 @@ func (s *genericSpecializer) expressionType(expr ast.Expression, substitutions m
 			}
 		}
 	}
-	if expr.Type.Kind != ast.TypeInvalid {
-		typ := cloneGenericType(expr.Type)
+	if expr.Type != nil && expr.Type.Kind != ast.TypeInvalid {
+		typ := cloneGenericType(*expr.Type)
 		s.rewriteType(&typ, substitutions)
 		return typ, true
 	}

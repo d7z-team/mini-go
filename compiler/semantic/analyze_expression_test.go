@@ -168,7 +168,7 @@ func Imported(reader lib.Reader) int64 {
 	functions := map[string]ast.FuncDecl{}
 	for _, decl := range parsed.Program.Files[0].Decls {
 		if decl.Kind == ast.DeclFunc {
-			functions[decl.Func.Name] = decl.Func
+			functions[decl.Func.Name] = *decl.Func
 		}
 	}
 	use := functions["Use"]
@@ -253,7 +253,7 @@ func Narrowed(value any) int64 {
 	functions := map[string]ast.FuncDecl{}
 	for _, decl := range parsed.Program.Files[0].Decls {
 		if decl.Kind == ast.DeclFunc {
-			functions[decl.Func.Name] = decl.Func
+			functions[decl.Func.Name] = *decl.Func
 		}
 	}
 	converted := functions["Converted"].Body.Stmts[0].Results[0]
@@ -398,7 +398,7 @@ func Use(value any) int64 {
 	var use ast.FuncDecl
 	for _, decl := range parsed.Program.Files[0].Decls {
 		if decl.Kind == ast.DeclFunc && decl.Func.Name == "Use" {
-			use = decl.Func
+			use = *decl.Func
 		}
 	}
 	firstIf, secondIf := use.Body.Stmts[0], use.Body.Stmts[1]

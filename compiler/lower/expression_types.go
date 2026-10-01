@@ -65,7 +65,7 @@ func (l *lowerer) expressionType(expr ast.Expression, scope *funcScope) string {
 			return l.expressionType(*expr.Operand, scope)
 		}
 	case ast.ExprConvert, ast.ExprAssert:
-		return l.resolveSourceType(expr.Type)
+		return l.resolveSourceTypePtr(expr.Type, nil)
 	case ast.ExprAddr:
 		if expr.Operand != nil {
 			if typ := l.expressionType(*expr.Operand, scope); typ != "" {
@@ -147,11 +147,11 @@ func (l *lowerer) expressionDeclaredType(expr ast.Expression, scope *funcScope) 
 	if typ, ok := l.inferredArrayCompositeType(expr, scope); ok {
 		return typ
 	}
-	return l.resolveSourceTypeInScope(expr.Type, scope)
+	return l.resolveSourceTypePtr(expr.Type, scope)
 }
 
 func (l *lowerer) inferredArrayCompositeType(expr ast.Expression, scope *funcScope) (string, bool) {
-	if expr.Kind != ast.ExprComposite || expr.Type.Kind != ast.TypeArray || !expr.Type.LenInfer || expr.Type.Elem == nil {
+	if expr.Kind != ast.ExprComposite || expr.Type == nil || expr.Type.Kind != ast.TypeArray || !expr.Type.LenInfer || expr.Type.Elem == nil {
 		return "", false
 	}
 	elemType := l.resolveSourceTypeInScope(*expr.Type.Elem, scope)
@@ -160,18 +160,7 @@ func (l *lowerer) inferredArrayCompositeType(expr ast.Expression, scope *funcSco
 	}
 	maxIndex := int64(-1)
 	nextIndex := int64(0)
-	items := expr.Items
-	if len(items) == 0 {
-		if len(expr.Entries) != 0 {
-			items = expr.Entries
-		} else {
-			items = make([]ast.KeyValue, 0, len(expr.Elements))
-			for _, element := range expr.Elements {
-				items = append(items, ast.KeyValue{Value: element})
-			}
-		}
-	}
-	for _, item := range items {
+	for _, item := range expr.Items {
 		index := nextIndex
 		if item.Key != nil {
 			key, ok := l.arrayCompositeKeyIndex(*item.Key, scope)
@@ -232,19 +221,19 @@ func (l *lowerer) builtinCallType(expr ast.Expression, scope *funcScope) string 
 	case "new":
 		if len(expr.Args) == 1 {
 			if isTypeArgumentExpression(expr.Args[0]) {
-				typ := l.resolveSourceType(expr.Args[0].Type)
+				typ := l.resolveSourceTypePtr(expr.Args[0].Type, nil)
 				return "Ptr<" + typ + ">"
 			}
-			if typ, ok := l.newNamedTypeArgument(expr.Args[0], scope); ok {
+			if typ, ok := l.resolveNamedTypeArgument(expr.Args[0], scope); ok {
 				return "Ptr<" + typ + ">"
 			}
-			if typ := l.defaultedNewExpressionType(expr.Args[0], scope); typ != "" {
+			if typ := l.defaultedExpressionType(expr.Args[0], scope); typ != "" {
 				return "Ptr<" + typ + ">"
 			}
 		}
 	case "make":
 		if len(expr.Args) >= 1 {
-			if typ := l.resolveSourceType(expr.Args[0].Type); typ != "" {
+			if typ := l.resolveSourceTypePtr(expr.Args[0].Type, nil); typ != "" {
 				return typ
 			}
 			return l.expressionType(expr.Args[0], scope)
@@ -342,8 +331,10 @@ func (l *lowerer) paramTypes(fields []ast.Field) ([]string, bool) {
 }
 
 func literalType(expr ast.Expression) string {
-	if typ := typeString(expr.Type); typ != "" && typ != "Any" {
-		return typ
+	if expr.Type != nil {
+		if typ := typeString(*expr.Type); typ != "" && typ != "Any" {
+			return typ
+		}
 	}
 	text := strings.TrimSpace(expr.Literal)
 	if text == "true" || text == "false" {

@@ -63,16 +63,19 @@ func (littleEndian) Uint64(b []byte) uint64 {
 }
 
 func (littleEndian) PutUint16(b []byte, value uint16) {
+	_ = b[1]
 	b[0], b[1] = byte(value), byte(value >> 8)
 }
 
 func (littleEndian) PutUint32(b []byte, value uint32) {
+	_ = b[3]
 	for i := 0; i < 4; i++ {
 		b[i] = byte(value >> uint(i * 8))
 	}
 }
 
 func (littleEndian) PutUint64(b []byte, value uint64) {
+	_ = b[7]
 	for i := 0; i < 8; i++ {
 		b[i] = byte(value >> uint(i * 8))
 	}
@@ -83,17 +86,12 @@ func (littleEndian) AppendUint16(b []byte, value uint16) []byte {
 }
 
 func (littleEndian) AppendUint32(b []byte, value uint32) []byte {
-	for i := 0; i < 4; i++ {
-		b = append(b, byte(value >> uint(i * 8)))
-	}
-	return b
+	return append(b, byte(value), byte(value >> 8), byte(value >> 16), byte(value >> 24))
 }
 
 func (littleEndian) AppendUint64(b []byte, value uint64) []byte {
-	for i := 0; i < 8; i++ {
-		b = append(b, byte(value >> uint(i * 8)))
-	}
-	return b
+	return append(b, byte(value), byte(value >> 8), byte(value >> 16), byte(value >> 24),
+	byte(value >> 32), byte(value >> 40), byte(value >> 48), byte(value >> 56))
 }
 
 func (littleEndian) String() string {
@@ -114,16 +112,19 @@ func (bigEndian) Uint64(b []byte) uint64 {
 }
 
 func (bigEndian) PutUint16(b []byte, value uint16) {
+	_ = b[1]
 	b[0], b[1] = byte(value >> 8), byte(value)
 }
 
 func (bigEndian) PutUint32(b []byte, value uint32) {
+	_ = b[3]
 	for i := 0; i < 4; i++ {
 		b[i] = byte(value >> uint((3 - i) * 8))
 	}
 }
 
 func (bigEndian) PutUint64(b []byte, value uint64) {
+	_ = b[7]
 	for i := 0; i < 8; i++ {
 		b[i] = byte(value >> uint((7 - i) * 8))
 	}
@@ -134,17 +135,12 @@ func (bigEndian) AppendUint16(b []byte, value uint16) []byte {
 }
 
 func (bigEndian) AppendUint32(b []byte, value uint32) []byte {
-	for i := 3; i >= 0; i-- {
-		b = append(b, byte(value >> uint(i * 8)))
-	}
-	return b
+	return append(b, byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value))
 }
 
 func (bigEndian) AppendUint64(b []byte, value uint64) []byte {
-	for i := 7; i >= 0; i-- {
-		b = append(b, byte(value >> uint(i * 8)))
-	}
-	return b
+	return append(b, byte(value >> 56), byte(value >> 48), byte(value >> 40), byte(value >> 32),
+	byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value))
 }
 
 func (bigEndian) String() string {

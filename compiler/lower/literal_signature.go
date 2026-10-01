@@ -7,10 +7,14 @@ import (
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func literalValue(expr ast.Expression) (json.RawMessage, string, bool) {
-	typ := typeString(expr.Type)
+	typ := ""
+	if expr.Type != nil {
+		typ = typeString(*expr.Type)
+	}
 	if typ == "" {
 		typ = "Any"
 	}
@@ -27,7 +31,7 @@ func literalValue(expr ast.Expression) (json.RawMessage, string, bool) {
 		if err != nil {
 			return nil, "", false
 		}
-		return canonicalStringRaw(value), typ, true
+		return bytecode.EncodeStringConstant(value), typ, true
 	case "Bool":
 		if text != "true" && text != "false" {
 			return nil, "", false

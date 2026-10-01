@@ -1,0 +1,29 @@
+package strings_test
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestSearchAcrossBoundedChunks(t *testing.T) {
+	text := strings.Repeat("x", 4095) + "abc" + strings.Repeat("x", 4096) + string([]byte{255})
+	if strings.Index(text, "abc") != 4095 || strings.IndexByte(text, 'b') != 4096 || strings.IndexByte(text, 255) != len(text) - 1 {
+		t.Fatalf("bounded search offsets: %d %d %d length %d", strings.Index(text, "abc"), strings.IndexByte(text, 'b'), strings.IndexByte(text, 255), len(text))
+	}
+	if strings.IndexByte(text, 'z') != -1 || strings.Index(text, "bcx") != 4096 || strings.Index("", "a") != -1 || strings.Index(text, "") != 0 {
+		t.Fatal("search boundary")
+	}
+}
+
+func TestTrimByteChunksPreservesUnicodeAndRawBytes(t *testing.T) {
+	prefix := strings.Repeat(" \t\r", 3000)
+	if strings.TrimLeft(prefix + "\xffé", " \t\r") != "\xffé" {
+		t.Fatal("byte prefix or invalid UTF-8 changed")
+	}
+	if strings.TrimSpace(prefix + "\u2003hello\u2003") != "hello" {
+		t.Fatal("Unicode space after ASCII prefix")
+	}
+	if strings.TrimLeft("ééhello", "é") != "hello" || strings.TrimLeft("xxx", "") != "xxx" {
+		t.Fatal("Unicode and empty cutsets")
+	}
+}

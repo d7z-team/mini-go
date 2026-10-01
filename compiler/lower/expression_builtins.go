@@ -178,7 +178,7 @@ func (l *lowerer) lowerBuiltinCall(expr ast.Expression, scope *funcScope) (ir.Ex
 			l.add("hirgen.builtin.arg_count", "make builtin requires a type argument", expr.Span)
 			return ir.Expression{}, false
 		}
-		typ := l.resolveSourceType(expr.Args[0].Type)
+		typ := l.resolveSourceTypePtr(expr.Args[0].Type, nil)
 		if typ == "" {
 			typ = l.expressionType(expr.Args[0], scope)
 		}

@@ -3,7 +3,7 @@ package json
 
 import "encoding/base64"
 import "bytes"
-import "math"
+import "math/floatbits"
 import "sort"
 import "encoding"
 import "reflect"
@@ -261,7 +261,8 @@ func (s *encodeState) marshalValue(out *strings.Builder, value reflect.Value) er
 		out.WriteString("null")
 		return nil
 	}
-	if (value.Kind() == reflect.Pointer || value.Kind() == reflect.Map || value.Kind() == reflect.Slice || value.Kind() == reflect.Interface) && value.IsNil() {
+	kind := value.Kind()
+	if (kind == reflect.Pointer || kind == reflect.Map || kind == reflect.Slice || kind == reflect.Interface) && value.IsNil() {
 		out.WriteString("null")
 		return nil
 	}
@@ -272,7 +273,7 @@ func (s *encodeState) marshalValue(out *strings.Builder, value reflect.Value) er
 	if s.depth > 10000 {
 		return &UnsupportedValueError{Value: value, Str: "maximum nesting depth exceeded"}
 	}
-	if value.Kind() == reflect.Pointer || value.Kind() == reflect.Map || value.Kind() == reflect.Slice {
+	if kind == reflect.Pointer || kind == reflect.Map || kind == reflect.Slice {
 		for _, previous := range s.path {
 			if reflect.SameReference(previous, value) {
 				return &UnsupportedValueError{Value: value, Str: "encountered a cycle"}
@@ -318,7 +319,7 @@ func (s *encodeState) marshalValue(out *strings.Builder, value reflect.Value) er
 			return nil
 		}
 	}
-	switch value.Kind() {
+	switch kind {
 		case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128:
 			text, err := s.marshalPrimitive(value)
 			if err != nil {
@@ -383,7 +384,7 @@ func (s *encodeState) marshalPrimitive(value reflect.Value) (string, error) {
 			return strconv.FormatUint(value.Uint(), 10), nil
 		case isJSONFloatType(typ):
 			f := value.Float()
-			if math.IsNaN(f) || math.IsInf(f, 0) {
+			if floatbits.IsNaN(f) || floatbits.IsInf(f, 0) {
 				return "", &UnsupportedValueError{Value: value, Str: strconv.FormatFloat(f, 'g', -1, 64)}
 			}
 			bits := 64
@@ -391,7 +392,7 @@ func (s *encodeState) marshalPrimitive(value reflect.Value) (string, error) {
 				bits = 32
 			}
 			format := byte('f')
-			if f != 0 && (math.Abs(f) < 1e-6 || math.Abs(f) >= 1e21) {
+			if f != 0 && (floatbits.Abs(f) < 1e-6 || floatbits.Abs(f) >= 1e21) {
 				format = 'e'
 			}
 			text := strconv.FormatFloat(f, format, -1, bits)

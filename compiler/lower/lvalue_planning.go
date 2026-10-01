@@ -204,7 +204,11 @@ func (l *lowerer) lvalueResultTemps(plans []lvaluePlan, scope *funcScope) ([]ir.
 }
 
 func (l *lowerer) lowerAddressTarget(expr ast.Expression, scope *funcScope) (addressTarget, bool) {
-	return l.lowerAddressTargetFor(expr, scope, false)
+	target, ok := l.lowerAddressTargetFor(expr, scope, false)
+	if ok {
+		target.expr.Type = l.hirType("Ptr<" + l.expressionType(expr, scope) + ">")
+	}
+	return target, ok
 }
 
 func (l *lowerer) lowerAddressTargetFor(expr ast.Expression, scope *funcScope, assignment bool) (addressTarget, bool) {

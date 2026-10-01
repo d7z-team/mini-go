@@ -51,6 +51,25 @@ impl Value {
                 let (module, node) = types.node(typ)?.unwrap();
                 match node.kind {
                     wire::Struct => {
+                        if let Some((mut value, construction_bytes)) =
+                            types.cached_zero(typ, max_depth - depth, max_elements)
+                        {
+                            *remaining =
+                                remaining.checked_sub(construction_bytes).ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "allocation_limit",
+                                        "zero",
+                                        "struct layout exceeds heap budget",
+                                    )
+                                })?;
+                            if let Data::Struct(fields) = &mut value.data {
+                                // Sharing zero storage must not merge two guest
+                                // objects in the live-memory census.
+                                *fields = fields.fresh_zero();
+                            }
+                            return Ok(value);
+                        }
+                        let budget_before = *remaining;
                         *remaining = (node.fields.len() as u64)
                             .checked_mul(16)
                             .and_then(|bytes| bytes.checked_add(128))
@@ -77,7 +96,18 @@ impl Value {
                                 )?,
                             );
                         }
-                        Data::Struct(super::StructStorage::zero(fields))
+                        let value = Value {
+                            typ: typ.clone(),
+                            data: Data::Struct(super::StructStorage::zero(fields)),
+                        };
+                        value.logical_bytes()?;
+                        types.cache_zero(
+                            &value,
+                            max_depth - depth,
+                            max_elements,
+                            budget_before - *remaining,
+                        );
+                        return Ok(value);
                     }
                     wire::Array => {
                         let length = usize::try_from(node.length)
@@ -103,7 +133,7 @@ impl Value {
                                 )
                             })?;
                         if length == 0 {
-                            Data::Array(Vec::new())
+                            Data::Array(Vec::new().into())
                         } else {
                             let zero = Self::zero_with_budget(
                                 types,
@@ -155,7 +185,7 @@ impl Value {
                                 *remaining -= copies;
                                 values.resize(length, zero);
                             }
-                            Data::Array(values)
+                            Data::Array(values.into())
                         }
                     }
                     _ => Data::Nil,
@@ -167,5 +197,107 @@ impl Value {
             typ: typ.clone(),
             data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ConstructedField, ConstructedType};
+
+    #[test]
+    fn cached_zero_charges_every_declared_blank_field() {
+        let artifact: wire::Artifact = serde_json::from_str(
+            r#"{"module":{"path":"example"},"type_table":{"nodes":[
+                {"id":"record","kind":12,"fields":[
+                    {"name":"_","type":{"kind":3,"primitive":3}},
+                    {"name":"_","type":{"kind":3,"primitive":3}},
+                    {"name":"Value","type":{"kind":3,"primitive":3}}]}]}}"#,
+        )
+        .unwrap();
+        let types = TypeRegistry::new([&artifact]).unwrap();
+        let typ = types
+            .resolve(
+                "example",
+                &wire::TypeRef {
+                    kind: wire::Struct,
+                    node: "record".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut cold_remaining = 4096;
+        Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut cold_remaining).unwrap();
+        let mut warm_remaining = 4096;
+        Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut warm_remaining).unwrap();
+        assert_eq!(cold_remaining, warm_remaining);
+        assert_eq!(4096 - cold_remaining, 128 + 3 * 16);
+        let mut budget = 4096 - cold_remaining - 1;
+        assert_eq!(
+            Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut budget)
+                .unwrap_err()
+                .code,
+            "allocation_limit"
+        );
+    }
+
+    #[test]
+    fn cached_zero_preserves_budget_depth_elements_and_copy_isolation() {
+        let mut types = TypeRegistry::new([]).unwrap();
+        let array = types
+            .construct(
+                ConstructedType::Array {
+                    length: 2,
+                    element: TypeIdentity::Primitive(wire::PrimitiveInt),
+                },
+                32,
+                16,
+            )
+            .unwrap();
+        let typ = types
+            .construct(
+                ConstructedType::Struct(vec![ConstructedField {
+                    name: "Items".into(),
+                    typ: array,
+                    tag: String::new(),
+                    embedded: false,
+                }]),
+                32,
+                16,
+            )
+            .unwrap();
+        let mut cold_remaining = 4096;
+        let mut cold =
+            Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut cold_remaining).unwrap();
+        let mut warm_remaining = 4096;
+        let warm = Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut warm_remaining).unwrap();
+        assert_eq!(cold_remaining, warm_remaining);
+        assert_eq!(cold.logical_bytes().unwrap(), 4096 - cold_remaining + 16);
+        let Data::Struct(fields) = &mut cold.data else {
+            unreachable!()
+        };
+        let Data::Array(items) = &mut fields.get_mut("Items").unwrap().data else {
+            unreachable!()
+        };
+        std::sync::Arc::make_mut(items)[0].data = Data::Integer(7);
+        let Data::Struct(fields) = &warm.data else {
+            unreachable!()
+        };
+        let Data::Array(items) = &fields["Items"].data else {
+            unreachable!()
+        };
+        assert!(matches!(items[0].data, Data::Integer(0)));
+        for (depth, elements, mut budget, code) in [
+            (16, 32, 4096 - cold_remaining - 1, "allocation_limit"),
+            (2, 32, 4096, "value_limit"),
+            (16, 1, 4096, "value_limit"),
+        ] {
+            assert_eq!(
+                Value::zero_with_budget(&types, &typ, 0, depth, elements, &mut budget)
+                    .unwrap_err()
+                    .code,
+                code
+            );
+        }
     }
 }

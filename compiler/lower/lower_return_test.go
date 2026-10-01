@@ -17,7 +17,7 @@ func TestLowerBareReturnRequiresNamedResults(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -39,31 +39,31 @@ func TestLowerLocalConstDecl(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclConst,
-							Const: ast.ValueDecl{
+							Const: &ast.ValueDecl{
 								Names:  []string{"Base"},
 								Type:   intType,
-								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: intType}},
+								Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}},
 							},
 						}},
 					}, {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclConst,
-							Const: ast.ValueDecl{
+							Const: &ast.ValueDecl{
 								Names: []string{"Answer"},
 								Type:  intType,
 								Values: []ast.Expression{{
 									Kind:     ast.ExprBinary,
 									Operator: "+",
 									Left:     &ast.Expression{Kind: ast.ExprIdent, Name: "Base"},
-									Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
+									Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
 								}},
 							},
 						}},

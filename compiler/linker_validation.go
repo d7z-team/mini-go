@@ -12,7 +12,7 @@ import (
 // validateLinkedReferences complements package-local bytecode validation with
 // references whose targets belong to another package. It runs before pruning
 // and again on the retained closure.
-func validateLinkedReferences(ctx context.Context, artifacts map[string]ir.Artifact) error {
+func validateLinkedReferences(ctx context.Context, artifacts map[string]ir.Artifact, validateBodies bool) error {
 	exports := make(map[string]map[string]ir.Export, len(artifacts))
 	functions := make(map[functionRef]struct{})
 	paths := make([]string, 0, len(artifacts))
@@ -32,8 +32,10 @@ func validateLinkedReferences(ctx context.Context, artifacts map[string]ir.Artif
 			return err
 		}
 		artifact := artifacts[path]
-		if err := ir.ValidateArtifact(&artifact); err != nil {
-			return fmt.Errorf("validate package %q: %w", path, err)
+		if validateBodies {
+			if err := ir.ValidateArtifact(&artifact); err != nil {
+				return fmt.Errorf("validate package %q: %w", path, err)
+			}
 		}
 		for _, requirement := range artifact.Requirements {
 			if requirement.Kind != ir.RequirementSource {
@@ -54,35 +56,39 @@ func validateLinkedReferences(ctx context.Context, artifacts map[string]ir.Artif
 			}
 		}
 		for _, function := range artifact.Functions {
-			for pc, instruction := range function.Instructions {
+			operations, err := function.Operations()
+			if err != nil {
+				return err
+			}
+			for pc, instruction := range operations {
 				if err := ctx.Err(); err != nil {
 					return err
 				}
 				var ref functionRef
 				switch instruction.Op {
-				case string(ir.OpCallDirect), string(ir.OpTailCallDirect):
+				case ir.OpCallDirect, ir.OpTailCallDirect:
 					var call ir.CallPayload
-					if err := ir.DecodeInstructionPayload(instruction.Payload, &call); err != nil {
+					if err := ir.ReadInstructionPayload(instruction.Payload, &call); err != nil {
 						return err
 					}
 					ref = functionRef{call.ModulePath, call.Function}
-				case string(ir.OpMakeClosure):
+				case ir.OpMakeClosure:
 					var closure ir.ClosurePayload
-					if err := ir.DecodeInstructionPayload(instruction.Payload, &closure); err != nil {
+					if err := ir.ReadInstructionPayload(instruction.Payload, &closure); err != nil {
 						return err
 					}
 					ref = functionRef{closure.ModulePath, closure.Function}
-				case string(ir.OpLoadExport):
+				case ir.OpLoadExport:
 					var member ir.ExportPayload
-					if err := ir.DecodeInstructionPayload(instruction.Payload, &member); err != nil {
+					if err := ir.ReadInstructionPayload(instruction.Payload, &member); err != nil {
 						return err
 					}
 					if _, ok := exports[member.ModulePath][member.Export]; !ok {
 						return fmt.Errorf("%s.%s instruction %d references missing export %s.%s", path, function.ID, pc, member.ModulePath, member.Export)
 					}
-				case string(ir.OpAddressOf):
+				case ir.OpAddressOf:
 					var address ir.AddressPayload
-					if err := ir.DecodeInstructionPayload(instruction.Payload, &address); err != nil {
+					if err := ir.ReadInstructionPayload(instruction.Payload, &address); err != nil {
 						return err
 					}
 					if address.ModulePath != "" {

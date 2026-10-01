@@ -58,7 +58,11 @@ func (c *sessionCache) LookupCompile(action cache.Action) (cache.Lookup, error) 
 	}
 	value, err := c.shared.LookupCompile(action)
 	if err == nil && value.Hit {
-		_, err = c.local.StoreCompile(action, value.Artifact, value.Symbols, value.ExportData)
+		var sealed cache.CompiledArtifact
+		sealed, err = cache.SealArtifact(value.Artifact)
+		if err == nil {
+			_, err = c.local.StoreCompile(action, sealed, value.Symbols, value.ExportData)
+		}
 	}
 	return value, err
 }
@@ -73,7 +77,7 @@ func (c *sessionCache) LookupCompileManifest(action cache.Action) (cache.Manifes
 	return c.shared.LookupCompileManifest(action)
 }
 
-func (c *sessionCache) StoreCompile(action cache.Action, artifact ir.Artifact, symbols ir.PackageSymbols, data cache.PackageData) (cache.Manifest, error) {
+func (c *sessionCache) StoreCompile(action cache.Action, artifact cache.CompiledArtifact, symbols ir.PackageSymbols, data cache.PackageData) (cache.Manifest, error) {
 	manifest, err := c.local.StoreCompile(action, artifact, symbols, data)
 	if err != nil {
 		return cache.Manifest{}, err

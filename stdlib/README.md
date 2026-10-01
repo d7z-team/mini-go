@@ -14,12 +14,11 @@
 
 ## 维护
 
-公开注释描述 Mini-Go 的实际行为，行为测试与源码放在同一包，Go 测试验证宿主与跨层集成。
-修改源码或 schema 后执行 `make generate`，修改 API 或注释后执行 `make doc`。
+公开注释与同目录行为测试描述实际支持的 API，Go 测试验证宿主和跨层集成。
+生成与验证顺序见[开发指南](../DEVELOPMENT.md#生成与派生物)。
 
 ```bash
 make test TEST_PACKAGES='./stdlib/...'
 ```
 
-完整流程见 [开发指南](../DEVELOPMENT.md)。移植源码保留原版权头，
-适用 [Go 许可证](LICENSE_GO)。
+移植源码保留原版权头，适用 [Go 许可证](LICENSE_GO)。

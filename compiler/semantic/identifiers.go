@@ -11,7 +11,7 @@ func (a *analyzer) validateResolvedIdentifiers(program *ast.Program) {
 		if expr.Kind != ast.ExprIdent {
 			return
 		}
-		if expr.Name == "_" || expr.Name == "type" && expr.Type.Kind != ast.TypeInvalid {
+		if expr.Name == "_" || expr.Name == "type" && expr.Type != nil && expr.Type.Kind != ast.TypeInvalid {
 			return
 		}
 		// Struct field keys and declaration names are not value expressions.

@@ -259,14 +259,14 @@ func (sizer *runtimeValueSizer) task(task *executionTask) {
 			sizer.add(iterator.logicalBytes())
 			sizer.value(iterator.object)
 		}
-		sizer.add(artifact.RuntimeNodeBytes + int64(cap(frame.localStorage)+cap(frame.upvalueCells)+cap(frame.stack)+cap(frame.popValues)+cap(frame.returnValues))*artifact.RuntimeSlotBytes)
+		sizer.add(artifact.RuntimeNodeBytes + int64(cap(frame.localStorage)+cap(frame.upvalueCells)+cap(frame.slotValues)+cap(frame.popValues)+cap(frame.returnValues))*artifact.RuntimeSlotBytes)
 		for _, cell := range frame.localCells {
 			sizer.slot(cell)
 		}
 		for _, cell := range frame.upvalueCells {
 			sizer.slot(cell)
 		}
-		for _, value := range frame.stack {
+		for _, value := range frame.slotValues {
 			sizer.value(value)
 		}
 		for _, value := range frame.popValues {
@@ -274,6 +274,9 @@ func (sizer *runtimeValueSizer) task(task *executionTask) {
 		}
 		for _, value := range frame.returnValues {
 			sizer.value(value)
+		}
+		if frame.typeDispatchActive {
+			sizer.value(frame.typeDispatchValue)
 		}
 		for _, deferred := range frame.defers {
 			sizer.value(newVMValue("Function", deferred.ref))

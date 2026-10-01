@@ -11,10 +11,13 @@ import (
 func (a *analyzer) validateTypeContracts(program *ast.Program) {
 	inferredArrays := make(map[ast.NodeID]bool)
 	ast.WalkExpressions(program, func(expr *ast.Expression) {
+		if expr.Type == nil {
+			return
+		}
 		if expr.Kind == ast.ExprComposite && expr.Type.Kind == ast.TypeArray && expr.Type.LenInfer {
 			inferredArrays[expr.Type.NodeID] = true
 		}
-		a.validateValueType(a.resolvedType(expr.Type), expr.Type.Span)
+		a.validateValueType(a.resolvedType(*expr.Type), expr.Type.Span)
 	})
 	ast.WalkTypes(program, func(typ *ast.TypeExpr) {
 		if typ.Kind == ast.TypeArray && typ.LenInfer && !inferredArrays[typ.NodeID] {

@@ -10,6 +10,15 @@ import (
 
 var testHIRTypes types.TypeTable
 
+func functionOperations(t *testing.T, function ir.Function) []ir.Instruction {
+	t.Helper()
+	operations, err := function.Operations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return operations
+}
+
 func testHIRSignature(text string) types.FunctionSignature {
 	parser := types.NewParser("test", &testHIRTypes)
 	ref, err := parser.Parse(text)

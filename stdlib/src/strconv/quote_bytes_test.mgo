@@ -1,0 +1,30 @@
+package strconv_test
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestQuotePreservesBytesAndUnicodeEscapes(t *testing.T) {
+	if _, err := strconv.Unquote("invalid"); err != strconv.ErrSyntax {
+		t.Fatal("Unquote must report ErrSyntax")
+	}
+	values := []string{"", "ASCII\n\t", "世界😀", "\x00\x80\xff", "\u0080\u00ad\ufffd", "a\"b\\c"}
+	all := make([]byte, 256)
+	for i := range all {
+		all[i] = byte(i)
+	}
+	values = append(values, string(all), strings.Repeat("a\x80世界", 512))
+	for _, value := range values {
+		for _, quoted := range []string{strconv.Quote(value), strconv.QuoteToASCII(value), strconv.QuoteToGraphic(value)} {
+			decoded, err := strconv.Unquote(quoted)
+			if err != nil || decoded != value {
+				t.Fatalf("quoted bytes did not round trip: input length %d, output length %d", len(value), len(decoded))
+			}
+		}
+	}
+	if strconv.Quote("\x80\xff") != "\"\\x80\\xff\"" || strconv.Quote("\u0080\u00ad") != "\"\\u0080\\u00ad\"" {
+		t.Fatal("byte and Unicode escapes must remain distinct")
+	}
+}

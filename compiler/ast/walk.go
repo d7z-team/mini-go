@@ -63,8 +63,8 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 			visitExpr(expr)
 		}
 		if measure != nil {
-			measure(2048, string(expr.Kind), expr.Name, expr.NameID.Text, expr.Literal, expr.Operator, expr.Field, expr.FieldID.Text)
-			measure(0, expr.NameID.Span.Start.File, expr.NameID.Span.End.File, expr.FieldID.Span.Start.File, expr.FieldID.Span.End.File)
+			measure(2048, string(expr.Kind), expr.Name, expr.NameID.Text, expr.Literal, expr.Operator, expr.Field)
+			measure(0, expr.NameID.Span.Start.File, expr.NameID.Span.End.File)
 			for _, file := range expr.EmbedFiles {
 				measure(int64(len(file.Data))+32, file.Path)
 			}
@@ -72,7 +72,7 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		if visitSpan != nil {
 			visitSpan(expr.Span)
 		}
-		walkType(&expr.Type)
+		walkType(expr.Type)
 		walkExpr(expr.Left)
 		walkExpr(expr.Right)
 		walkExpr(expr.Operand)
@@ -84,23 +84,12 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 		walkExpr(expr.Start)
 		walkExpr(expr.End)
 		walkExpr(expr.Max)
-		if len(expr.Items) != 0 {
-			for i := range expr.Items {
-				walkExpr(expr.Items[i].Key)
-				walkExpr(&expr.Items[i].Value)
-			}
-		}
-		if len(expr.Items) == 0 || measure != nil {
-			for i := range expr.Elements {
-				walkExpr(&expr.Elements[i])
-			}
-			for i := range expr.Entries {
-				walkExpr(expr.Entries[i].Key)
-				walkExpr(&expr.Entries[i].Value)
-			}
+		for i := range expr.Items {
+			walkExpr(expr.Items[i].Key)
+			walkExpr(&expr.Items[i].Value)
 		}
 		if expr.Kind == ExprFunc || measure != nil {
-			walkFunc(&expr.Func)
+			walkFunc(expr.Func)
 		}
 	}
 	walkType = func(typ *TypeExpr) {
@@ -200,9 +189,16 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 			visitSpan(decl.Span)
 		}
 		if measure != nil {
-			measure(4096, string(decl.Kind), decl.Import.Path, decl.Import.Alias, decl.Import.AliasID.Text, decl.Type.Name, decl.Type.NameID.Text)
-			measure(0, decl.Import.PathSpan.Start.File, decl.Import.PathSpan.End.File, decl.Import.AliasID.Span.Start.File, decl.Import.AliasID.Span.End.File, decl.Type.NameID.Span.Start.File, decl.Type.NameID.Span.End.File)
-			for _, value := range []ValueDecl{decl.Const, decl.Var} {
+			measure(128, string(decl.Kind))
+			if decl.Import != nil {
+				measure(512, decl.Import.Path, decl.Import.Alias, decl.Import.AliasID.Text)
+				measure(0, decl.Import.PathSpan.Start.File, decl.Import.PathSpan.End.File, decl.Import.AliasID.Span.Start.File, decl.Import.AliasID.Span.End.File)
+			}
+			for _, value := range []*ValueDecl{decl.Const, decl.Var} {
+				if value == nil {
+					continue
+				}
+				measure(1024)
 				for _, name := range value.Names {
 					measure(16, name)
 				}
@@ -213,43 +209,56 @@ func walkNodes(program *Program, visitExpr func(*Expression), visitType func(*Ty
 					measure(16, pattern)
 				}
 			}
-			for _, param := range decl.Type.TypeParams {
-				measure(128, param.Name, param.NameID.Text)
-				measure(0, param.Span.Start.File, param.Span.End.File, param.NameID.Span.Start.File, param.NameID.Span.End.File)
-			}
 			// Cloning retains every union field, including partial recovery
 			// trees. Account for that storage without changing semantic walks.
-			for _, value := range []*ValueDecl{&decl.Const, &decl.Var} {
+			for _, value := range []*ValueDecl{decl.Const, decl.Var} {
+				if value == nil {
+					continue
+				}
 				walkType(&value.Type)
 				for i := range value.Values {
 					walkExpr(&value.Values[i])
 				}
 			}
-			for i := range decl.Type.TypeParams {
-				walkType(&decl.Type.TypeParams[i].Constraint)
+			if decl.Type != nil {
+				measure(1024, decl.Type.Name, decl.Type.NameID.Text, decl.Type.NameID.Span.Start.File, decl.Type.NameID.Span.End.File)
+				for i, param := range decl.Type.TypeParams {
+					measure(128, param.Name, param.NameID.Text)
+					measure(0, param.Span.Start.File, param.Span.End.File, param.NameID.Span.Start.File, param.NameID.Span.End.File)
+					walkType(&decl.Type.TypeParams[i].Constraint)
+				}
+				walkType(&decl.Type.Type)
 			}
-			walkType(&decl.Type.Type)
-			walkFunc(&decl.Func)
+			walkFunc(decl.Func)
 			return
 		}
 		switch decl.Kind {
 		case DeclConst:
+			if decl.Const == nil {
+				return
+			}
 			walkType(&decl.Const.Type)
 			for i := range decl.Const.Values {
 				walkExpr(&decl.Const.Values[i])
 			}
 		case DeclVar:
+			if decl.Var == nil {
+				return
+			}
 			walkType(&decl.Var.Type)
 			for i := range decl.Var.Values {
 				walkExpr(&decl.Var.Values[i])
 			}
 		case DeclType:
+			if decl.Type == nil {
+				return
+			}
 			for i := range decl.Type.TypeParams {
 				walkType(&decl.Type.TypeParams[i].Constraint)
 			}
 			walkType(&decl.Type.Type)
 		case DeclFunc:
-			walkFunc(&decl.Func)
+			walkFunc(decl.Func)
 		}
 	}
 	walkStmt = func(stmt *Statement) {

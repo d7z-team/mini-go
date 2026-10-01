@@ -27,9 +27,9 @@ func (l *lowerer) lowerTypeAssertExpression(expr ast.Expression, scope *funcScop
 		return ir.Expression{}, false
 	}
 	if twoValue {
-		return ir.Expression{Kind: ir.ExprTypeAssertOK, Type: l.hirType(l.resolveSourceTypeInScope(expr.Type, scope)), Operand: &operand}, true
+		return ir.Expression{Kind: ir.ExprTypeAssertOK, Type: l.hirType(l.resolveSourceTypePtr(expr.Type, scope)), Operand: &operand}, true
 	}
-	return ir.Expression{Kind: ir.ExprTypeAssert, Type: l.hirType(l.resolveSourceTypeInScope(expr.Type, scope)), Operand: &operand}, true
+	return ir.Expression{Kind: ir.ExprTypeAssert, Type: l.hirType(l.resolveSourceTypePtr(expr.Type, scope)), Operand: &operand}, true
 }
 
 func (l *lowerer) isCallableType(typ string) bool {
@@ -206,13 +206,6 @@ func (l *lowerer) isValueNameBound(name string, span source.Span, scope *funcSco
 	return false
 }
 
-func (l *lowerer) functionResultCount(name string) int {
-	if signature, ok := l.semanticFunctionSignature(name); ok {
-		return len(signature.Results)
-	}
-	return 0
-}
-
 func (l *lowerer) recordFunctionValueType(scope *funcScope, name, signature string, variadic bool) {
 	name = strings.TrimSpace(name)
 	variadic = variadic || l.functionTypeVariadic(signature)
@@ -342,9 +335,9 @@ func (l *lowerer) expressionFunctionVariadic(expr ast.Expression, scope *funcSco
 	}
 	switch expr.Kind {
 	case ast.ExprFunc:
-		return funcDeclVariadic(expr.Func)
+		return funcDeclVariadic(*expr.Func)
 	case ast.ExprAssert, ast.ExprConvert:
-		return astFunctionTypeVariadic(expr.Type) || l.functionTypeVariadic(typeString(expr.Type))
+		return expr.Type != nil && (astFunctionTypeVariadic(*expr.Type) || l.functionTypeVariadic(typeString(*expr.Type)))
 	case ast.ExprIdent:
 		name := strings.TrimSpace(expr.Name)
 		if signature, ok := l.semanticFunctionSignature(name); ok {

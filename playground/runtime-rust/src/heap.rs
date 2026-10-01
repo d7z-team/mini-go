@@ -64,9 +64,16 @@ impl<T> Entry<T> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeapStats {
     pub collections: u64,
+    pub scanned_objects: u64,
+    pub traced_objects: u64,
+    pub scanned_edges: u64,
+    pub reclaimed_bytes: u64,
+    pub collection_nanos: u64,
     pub live_objects: usize,
     pub live_bytes: u64,
     pub total_allocated_bytes: u64,
+    /// Cumulative arena growth used to schedule tracing; excludes RAII-owned locals.
+    pub gc_pressure_bytes: u64,
     pub peak_bytes: u64,
 }
 
@@ -94,6 +101,11 @@ impl Accounting {
             .peak_bytes
             .max(self.stats.live_bytes - self.reserved_bytes);
     }
+
+    fn publish_arena_growth(&mut self, bytes: u64) {
+        self.stats.gc_pressure_bytes = self.stats.gc_pressure_bytes.saturating_add(bytes);
+        self.publish_growth(bytes);
+    }
 }
 
 /// Private task storage participates in the same quota as arena objects, but
@@ -108,6 +120,13 @@ pub(crate) struct OwnedValue<T> {
 impl<T> OwnedValue<T> {
     pub(crate) fn get(&self) -> &T {
         &self.value
+    }
+
+    /// Installs a value whose complete storage charge was reserved by frame
+    /// preparation. The caller must preserve that charge and cannot safepoint
+    /// between taking the source and installing its value.
+    pub(crate) fn commit_reserved(&mut self, value: T) {
+        self.value = value;
     }
 
     pub(crate) fn replace(&mut self, value: T, bytes: u64) -> Result<(), (RuntimeError, T)> {
@@ -353,7 +372,7 @@ impl<T: Trace> Heap<T> {
         directory.occupied.push(index);
         accounting.stats.live_objects += 1;
         accounting.stats.live_bytes = live.unwrap();
-        accounting.publish_growth(bytes);
+        accounting.publish_arena_growth(bytes);
         Ok(Handle {
             owner: self.id,
             index,
@@ -395,7 +414,7 @@ impl<T: Trace> Heap<T> {
             ));
         };
         accounting.stats.live_bytes = live;
-        accounting.publish_growth(bytes.saturating_sub(payload.bytes));
+        accounting.publish_arena_growth(bytes.saturating_sub(payload.bytes));
         payload.bytes = bytes;
         payload.edges = None;
         let previous = std::mem::replace(&mut payload.value, Arc::new(value));
@@ -451,7 +470,7 @@ impl<T: Trace> Heap<T> {
     pub(crate) fn update(
         &self,
         handle: Handle,
-        expected: &Weak<T>,
+        expected: Weak<T>,
         bytes: u64,
         edges_unchanged: bool,
         update: impl FnOnce(&mut T),
@@ -461,7 +480,7 @@ impl<T: Trace> Heap<T> {
     {
         let entry = self.entry(handle)?;
         let mut payload = entry.payload.lock().unwrap();
-        if !payload.live || !Weak::ptr_eq(expected, &Arc::downgrade(&payload.value)) {
+        if !payload.live || !Weak::ptr_eq(&expected, &Arc::downgrade(&payload.value)) {
             return Ok(false);
         }
         let mut accounting = self.accounting.lock().unwrap();
@@ -472,12 +491,16 @@ impl<T: Trace> Heap<T> {
                 RuntimeError::new("allocation_limit", "heap", "logical byte limit exceeded")
             })?;
         accounting.stats.live_bytes = live;
-        accounting.publish_growth(bytes.saturating_sub(payload.bytes));
+        accounting.publish_arena_growth(bytes.saturating_sub(payload.bytes));
         payload.bytes = bytes;
         if !edges_unchanged {
             payload.edges = None;
         }
         drop(accounting);
+        // The payload lock protects validation through commit. Consuming our
+        // token avoids forcing Arc::make_mut to detach for this Weak alone;
+        // other outstanding snapshots or tokens still trigger copy-on-write.
+        drop(expected);
         update(Arc::make_mut(&mut payload.value));
         Ok(true)
     }
@@ -494,6 +517,8 @@ impl<T: Trace> Heap<T> {
         roots: impl IntoIterator<Item = Handle>,
     ) -> Result<usize, RuntimeError> {
         let _collection = self.collection.lock().unwrap();
+        let started = web_time::Instant::now();
+        let (mut scanned, mut traced, mut edges_scanned) = (0u64, 0u64, 0u64);
         let (epoch, mut pending) = {
             let mut directory = self.directory.lock().unwrap();
             directory.mark_epoch = match directory.mark_epoch.checked_add(1) {
@@ -541,15 +566,16 @@ impl<T: Trace> Heap<T> {
                     slot.marked = epoch;
                     slot.value.as_ref().unwrap().clone()
                 };
-                let (value, mut edges) = {
+                let (value, cached_edges) = {
                     let mut payload = entry.payload.lock().unwrap();
-                    (
-                        payload.value.clone(),
-                        payload.edges.take().unwrap_or_default(),
-                    )
+                    (payload.value.clone(), payload.edges.take())
                 };
+                scanned = scanned.saturating_add(1);
                 let cacheable = value.stable_edges();
-                if edges.is_empty() || !cacheable {
+                let needs_trace = cached_edges.is_none() || !cacheable;
+                let mut edges = cached_edges.unwrap_or_default();
+                if needs_trace {
+                    traced = traced.saturating_add(1);
                     edges.clear();
                     value.trace(&mut |child| edges.push(child));
                 }
@@ -557,6 +583,7 @@ impl<T: Trace> Heap<T> {
                     RuntimeError::new("allocation_limit", "heap", "trace storage exhausted")
                 })?;
                 pending.extend(edges.iter().copied());
+                edges_scanned = edges_scanned.saturating_add(edges.len() as u64);
                 if cacheable {
                     entry.payload.lock().unwrap().edges = Some(edges);
                 }
@@ -602,8 +629,21 @@ impl<T: Trace> Heap<T> {
             accounting.stats.live_bytes -= bytes;
             accounting.stats.live_objects -= released;
             accounting.stats.collections = accounting.stats.collections.saturating_add(1);
+            accounting.stats.scanned_objects =
+                accounting.stats.scanned_objects.saturating_add(scanned);
+            accounting.stats.traced_objects =
+                accounting.stats.traced_objects.saturating_add(traced);
+            accounting.stats.scanned_edges =
+                accounting.stats.scanned_edges.saturating_add(edges_scanned);
+            accounting.stats.reclaimed_bytes =
+                accounting.stats.reclaimed_bytes.saturating_add(bytes);
         }
         drop(retired);
+        let mut accounting = self.accounting.lock().unwrap();
+        accounting.stats.collection_nanos = accounting
+            .stats
+            .collection_nanos
+            .saturating_add(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
         Ok(released)
     }
 
@@ -732,7 +772,7 @@ impl<T> PreparedMutation<T> {
         accounting.stats.live_bytes =
             accounting.stats.live_bytes - self.reserved - payload.bytes + self.bytes;
         accounting.reserved_bytes -= self.reserved;
-        accounting.publish_growth(self.bytes.saturating_sub(payload.bytes));
+        accounting.publish_arena_growth(self.bytes.saturating_sub(payload.bytes));
         self.reserved = 0;
         payload.bytes = self.bytes;
         payload.edges = None;
@@ -783,7 +823,7 @@ impl<T: Trace> AllocationBatch<'_, T> {
         let mut accounting = self.heap.accounting.lock().unwrap();
         accounting.reserved_bytes -= self.bytes;
         accounting.reserved_objects -= count;
-        accounting.publish_growth(self.bytes);
+        accounting.publish_arena_growth(self.bytes);
         self.committed = true;
     }
 }
@@ -820,6 +860,26 @@ mod tests {
         types::TypeIdentity,
         value::{Address, Data, Value},
     };
+
+    #[test]
+    fn private_values_share_the_quota_without_triggering_arena_gc_pressure() {
+        let heap = Heap::new(4, 256).unwrap();
+        let mut local = heap.own(Value::int(1), 64).unwrap();
+        assert_eq!(heap.stats().total_allocated_bytes, 64);
+        assert_eq!(heap.stats().gc_pressure_bytes, 0);
+        local.replace(Value::int(2), 96).unwrap();
+        assert_eq!(heap.stats().live_bytes, 96);
+        assert_eq!(heap.stats().total_allocated_bytes, 96);
+        assert_eq!(heap.stats().gc_pressure_bytes, 0);
+
+        let handle = heap.allocate(Value::int(3), 32).unwrap();
+        assert_eq!(heap.stats().gc_pressure_bytes, 32);
+        heap.replace(handle, Value::int(4), 48).unwrap();
+        assert_eq!(heap.stats().gc_pressure_bytes, 48);
+        drop(local);
+        assert_eq!(heap.stats().live_bytes, 48);
+        assert_eq!(heap.stats().gc_pressure_bytes, 48);
+    }
 
     #[test]
     fn prepared_mutations_reserve_growth_and_release_conflicts() {
@@ -869,7 +929,7 @@ mod tests {
         drop(snapshot);
         heap.update(
             handle,
-            &Arc::downgrade(&heap.get(handle).unwrap()),
+            Arc::downgrade(&heap.get(handle).unwrap()),
             32,
             true,
             |value| *value = Value::int(3),
@@ -912,6 +972,39 @@ mod tests {
     }
 
     #[test]
+    fn conditional_updates_preserve_readers_and_invalidate_outstanding_tokens() {
+        let heap = Heap::new(1, 32).unwrap();
+        let handle = heap.allocate(Value::int(1), 32).unwrap();
+        let snapshot = heap.get(handle).unwrap();
+        let stale = Arc::downgrade(&snapshot);
+        assert!(
+            heap.update(handle, stale.clone(), 32, true, |value| *value =
+                Value::int(2))
+                .unwrap()
+        );
+        assert_eq!(snapshot.integer().unwrap(), 1);
+        assert!(
+            !heap
+                .update(handle, stale, 32, true, |_| panic!("stale reader token"))
+                .unwrap()
+        );
+        drop(snapshot);
+
+        let token = Arc::downgrade(&heap.get(handle).unwrap());
+        let stale = token.clone();
+        assert!(
+            heap.update(handle, token, 32, true, |value| *value = Value::int(3))
+                .unwrap()
+        );
+        assert!(
+            !heap
+                .update(handle, stale, 32, true, |_| panic!("stale weak token"))
+                .unwrap()
+        );
+        assert_eq!(heap.get(handle).unwrap().integer().unwrap(), 3);
+    }
+
+    #[test]
     fn conditional_updates_reject_stale_inputs_before_quota_and_mutation() {
         let heap = Heap::new(1, 32).unwrap();
         let handle = heap.allocate(Value::int(0), 32).unwrap();
@@ -919,7 +1012,7 @@ mod tests {
         heap.replace(handle, Value::int(1), 32).unwrap();
         assert!(
             !heap
-                .update(handle, &expected, 128, false, |_| {
+                .update(handle, expected, 128, false, |_| {
                     panic!("a stale preparation must not mutate the object");
                 })
                 .unwrap()
@@ -935,7 +1028,7 @@ mod tests {
                             let next = snapshot.integer().unwrap() + 1;
                             drop(snapshot);
                             if heap
-                                .update(handle, &expected, bytes, true, |value| {
+                                .update(handle, expected, bytes, true, |value| {
                                     *value = Value::int(next);
                                 })
                                 .unwrap()
@@ -959,11 +1052,11 @@ mod tests {
         let child = heap.allocate(Value::int(42), 32).unwrap();
         let replacement = Value {
             typ: TypeIdentity::Any,
-            data: Data::Pointer(Address {
+            data: Data::Pointer(std::sync::Arc::new(Address {
                 identity: Arc::default(),
                 root: child,
                 path: Vec::new(),
-            }),
+            })),
         };
         let snapshot = heap.get(target).unwrap();
         let mutation = heap
@@ -1194,7 +1287,7 @@ mod tests {
         assert!(heap.get(other).is_ok());
         heap.update(
             root,
-            &Arc::downgrade(&heap.get(root).unwrap()),
+            Arc::downgrade(&heap.get(root).unwrap()),
             16,
             false,
             |node| node.0 = None,
@@ -1233,11 +1326,11 @@ mod tests {
         let second = heap.allocate(Value::int(2), 32).unwrap();
         let pointer = |root| Value {
             typ: TypeIdentity::Any,
-            data: Data::Pointer(Address {
+            data: Data::Pointer(std::sync::Arc::new(Address {
                 identity: std::sync::Arc::default(),
                 root,
                 path: vec![],
-            }),
+            })),
         };
         let root = heap.allocate(pointer(first), 32).unwrap();
         heap.collect_with_persistent_roots(&[root], [second])
@@ -1246,7 +1339,7 @@ mod tests {
         assert_eq!(
             heap.update(
                 root,
-                &Arc::downgrade(&heap.get(root).unwrap()),
+                Arc::downgrade(&heap.get(root).unwrap()),
                 1024,
                 false,
                 |_| panic!("quota must precede mutation")
@@ -1262,7 +1355,7 @@ mod tests {
         let bytes = heap.allocation_bytes(root).unwrap();
         heap.update(
             root,
-            &Arc::downgrade(&heap.get(root).unwrap()),
+            Arc::downgrade(&heap.get(root).unwrap()),
             bytes,
             false,
             |value| *value = pointer(second),
@@ -1274,7 +1367,7 @@ mod tests {
         let third = heap.allocate(pointer(root), 32).unwrap();
         heap.update(
             root,
-            &Arc::downgrade(&heap.get(root).unwrap()),
+            Arc::downgrade(&heap.get(root).unwrap()),
             32,
             false,
             |value| *value = pointer(third),
@@ -1310,7 +1403,7 @@ mod tests {
         let bytes = heap.allocation_bytes(root).unwrap();
         heap.update(
             root,
-            &Arc::downgrade(&heap.get(root).unwrap()),
+            Arc::downgrade(&heap.get(root).unwrap()),
             bytes,
             false,
             |node| node.0 = false,
@@ -1322,6 +1415,69 @@ mod tests {
         heap.get(root).unwrap().1.borrow_mut().clear();
         heap.collect_with_persistent_roots(&[root], []).unwrap();
         assert!(heap.get(child).is_err());
+    }
+
+    #[test]
+    fn empty_stable_edges_are_cached_and_mutation_invalidates_them() {
+        #[derive(Clone, Debug)]
+        struct Node {
+            child: Option<Handle>,
+            visits: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl Trace for Node {
+            fn stable_edges(&self) -> bool {
+                true
+            }
+            fn trace(&self, visit: &mut dyn FnMut(Handle)) {
+                self.visits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(child) = self.child {
+                    visit(child);
+                }
+            }
+        }
+        let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let heap = Heap::new(4, 128).unwrap();
+        let root = heap
+            .allocate(
+                Node {
+                    child: None,
+                    visits: visits.clone(),
+                },
+                16,
+            )
+            .unwrap();
+        heap.collect([root]).unwrap();
+        heap.collect([root]).unwrap();
+        assert_eq!(visits.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let child = heap
+            .allocate(
+                Node {
+                    child: None,
+                    visits: Arc::new(Default::default()),
+                },
+                16,
+            )
+            .unwrap();
+        heap.update(
+            root,
+            Arc::downgrade(&heap.get(root).unwrap()),
+            16,
+            false,
+            |node| node.child = Some(child),
+        )
+        .unwrap();
+        heap.collect([root]).unwrap();
+        assert!(heap.get(child).is_ok());
+        assert_eq!(visits.load(std::sync::atomic::Ordering::Relaxed), 2);
+        heap.collect([]).unwrap();
+        let stats = heap.stats();
+        assert_eq!(stats.live_objects, 0);
+        assert_eq!(stats.collections, 4);
+        assert_eq!(stats.scanned_objects, 4);
+        assert_eq!(stats.traced_objects, 3);
+        assert_eq!(stats.scanned_edges, 1);
+        assert_eq!(stats.reclaimed_bytes, 32);
     }
 
     #[test]

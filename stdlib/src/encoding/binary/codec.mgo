@@ -3,7 +3,7 @@ package binary
 import (
 	"errors"
 	"io"
-	"math"
+	"math/floatbits"
 	"reflect"
 )
 
@@ -119,20 +119,20 @@ func encodeValue(buf []byte, order ByteOrder, value reflect.Value) int {
 			order.PutUint64(buf, value.Uint())
 			return 8
 		case reflect.Float32:
-			order.PutUint32(buf, math.Float32bits(float32(value.Float())))
+			order.PutUint32(buf, floatbits.Float32bits(float32(value.Float())))
 			return 4
 		case reflect.Float64:
-			order.PutUint64(buf, math.Float64bits(value.Float()))
+			order.PutUint64(buf, floatbits.Float64bits(value.Float()))
 			return 8
 		case reflect.Complex64:
 			number := complex64(value.Complex())
-			order.PutUint32(buf, math.Float32bits(real(number)))
-			order.PutUint32(buf[4:], math.Float32bits(imag(number)))
+			order.PutUint32(buf, floatbits.Float32bits(real(number)))
+			order.PutUint32(buf[4:], floatbits.Float32bits(imag(number)))
 			return 8
 		case reflect.Complex128:
 			number := value.Complex()
-			order.PutUint64(buf, math.Float64bits(real(number)))
-			order.PutUint64(buf[8:], math.Float64bits(imag(number)))
+			order.PutUint64(buf, floatbits.Float64bits(real(number)))
+			order.PutUint64(buf[8:], floatbits.Float64bits(imag(number)))
 			return 16
 		case reflect.Array, reflect.Slice:
 			offset := 0
@@ -214,16 +214,16 @@ func decodeValue(buf []byte, order ByteOrder, value reflect.Value) int {
 			value.SetUint(order.Uint64(buf))
 			return 8
 		case reflect.Float32:
-			value.SetFloat(float64(math.Float32frombits(order.Uint32(buf))))
+			value.SetFloat(float64(floatbits.Float32frombits(order.Uint32(buf))))
 			return 4
 		case reflect.Float64:
-			value.SetFloat(math.Float64frombits(order.Uint64(buf)))
+			value.SetFloat(floatbits.Float64frombits(order.Uint64(buf)))
 			return 8
 		case reflect.Complex64:
-			value.SetComplex(complex128(complex(math.Float32frombits(order.Uint32(buf)), math.Float32frombits(order.Uint32(buf[4:])))))
+			value.SetComplex(complex128(complex(floatbits.Float32frombits(order.Uint32(buf)), floatbits.Float32frombits(order.Uint32(buf[4:])))))
 			return 8
 		case reflect.Complex128:
-			value.SetComplex(complex(math.Float64frombits(order.Uint64(buf)), math.Float64frombits(order.Uint64(buf[8:]))))
+			value.SetComplex(complex(floatbits.Float64frombits(order.Uint64(buf)), floatbits.Float64frombits(order.Uint64(buf[8:]))))
 			return 16
 		case reflect.Array, reflect.Slice:
 			offset := 0

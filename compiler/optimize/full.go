@@ -121,11 +121,11 @@ func propagateAdjacentBooleanLocals(body []hir.Statement) ([]hir.Statement, bool
 	return out, changed
 }
 
-func removeDeadPureLocalStores(body []hir.Statement) ([]hir.Statement, bool) {
+func removeDeadPureLocalStores(body []hir.Statement, resultLocals []string) ([]hir.Statement, bool) {
 	out := append([]hir.Statement(nil), body...)
 	changed := false
 	for {
-		next, removed := removeDeadPureLocalStoresOnce(out)
+		next, removed := removeDeadPureLocalStoresOnce(out, resultLocals)
 		out = next
 		changed = changed || removed
 		if !removed {
@@ -134,9 +134,14 @@ func removeDeadPureLocalStores(body []hir.Statement) ([]hir.Statement, bool) {
 	}
 }
 
-func removeDeadPureLocalStoresOnce(body []hir.Statement) ([]hir.Statement, bool) {
+func removeDeadPureLocalStoresOnce(body []hir.Statement, resultLocals []string) ([]hir.Statement, bool) {
 	labels := make(map[string]int)
 	protected := make(map[string]struct{})
+	// A recovered panic returns the current named results, even when no
+	// explicit return or closure reads them on the ordinary CFG path.
+	for _, local := range resultLocals {
+		protected[local] = struct{}{}
+	}
 	for index, statement := range body {
 		if statement.Kind == hir.StmtLabel {
 			labels[statement.Label] = index
@@ -199,6 +204,12 @@ func removeDeadPureLocalStoresOnce(body []hir.Statement) ([]hir.Statement, bool)
 func statementSuccessors(body []hir.Statement, labels map[string]int, index int) []int {
 	statement := body[index]
 	switch statement.Kind {
+	case hir.StmtTypeDispatch:
+		out := []int{labels[statement.Label]}
+		for _, match := range statement.TypeCases {
+			out = append(out, labels[match.Label])
+		}
+		return out
 	case hir.StmtJump:
 		return []int{labels[statement.Label]}
 	case hir.StmtJumpIf:
@@ -286,6 +297,9 @@ func isPureValueExpression(expression hir.Expression) bool {
 }
 
 func collectStatementLocalReads(statement hir.Statement, used map[string]struct{}) {
+	if statement.Kind == hir.StmtTypeDispatch {
+		used[statement.Local] = struct{}{}
+	}
 	for _, selected := range statement.SelectCases {
 		used[selected.Channel] = struct{}{}
 		if selected.Send != "" {

@@ -6,12 +6,12 @@ func TestMainReportsPassFailureAndPanic(t *testing.T) {
 	report := testing.Main("inner", []testing.InternalTest{
 		{Name: "pass", F: func(inner *testing.T) {}},
 		{Name: "fail", F: func(inner *testing.T) {
-			inner.Log("context")
-			inner.Error("failure")
-		}},
+				inner.Log("context")
+				inner.Error("failure")
+			}},
 		{Name: "panic", F: func(inner *testing.T) {
-			panic("boom")
-		}},
+				panic("boom")
+			}},
 	})
 	if report.Passed || len(report.Results) != 3 {
 		t.Fatal("unexpected test report")

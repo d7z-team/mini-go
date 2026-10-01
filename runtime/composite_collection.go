@@ -8,11 +8,47 @@ import (
 )
 
 func appendValue(module *moduleInstance, object vmValue, values []vmValue, expand bool) (vmValue, error) {
+	if module.isSliceType(object.Type) && module.sameRuntimeType(module.arrayElemType(object.Type), "Uint8") {
+		var bytes []byte
+		expandedBytes := false
+		if expand {
+			if len(values) != 1 {
+				return vmValue{}, errors.New("expanded append requires exactly one source argument")
+			}
+			if _, _, ok := module.arrayType(values[0].Type); ok {
+				return vmValue{}, fmt.Errorf("expanded append source must be slice, got array %s", values[0].Type)
+			}
+			if text, ok := values[0].Data.(string); ok {
+				bytes, expandedBytes = []byte(text), true
+			} else if slice, ok := values[0].Data.(*vmSlice); ok && slice != nil && slice.ByteBacked {
+				bytes, expandedBytes = slice.bytes(), true
+			} else {
+				expanded, ok := module.sliceValues(values[0])
+				if !ok {
+					return vmValue{}, fmt.Errorf("cannot expand append argument %s", values[0].Type)
+				}
+				values = expanded
+			}
+		}
+		if !expandedBytes {
+			bytes = make([]byte, len(values))
+			for index, value := range values {
+				normalized, err := module.coerceAssignableValue(value, "Uint8")
+				if err != nil {
+					return vmValue{}, err
+				}
+				n, err := numericAsUint64(normalized)
+				if err != nil {
+					return vmValue{}, err
+				}
+				bytes[index] = byte(n)
+			}
+		}
+		return appendByteValues(module, object, bytes)
+	}
 	if _, _, ok := module.arrayType(object.Type); ok {
 		return vmValue{}, fmt.Errorf("cannot append to array %s", object.Type)
 	}
-	var expandedString string
-	stringExpansion := false
 	if expand {
 		if len(values) != 1 {
 			return vmValue{}, errors.New("expanded append requires exactly one source argument")
@@ -20,39 +56,36 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 		if _, _, ok := module.arrayType(values[0].Type); ok {
 			return vmValue{}, fmt.Errorf("expanded append source must be slice, got array %s", values[0].Type)
 		}
-		if text, ok := values[0].Data.(string); ok {
-			if !module.sameRuntimeType(module.arrayElemType(object.Type), "Uint8") {
-				return vmValue{}, fmt.Errorf("expanded string append requires a byte slice, got %s", object.Type)
-			}
-			expandedString = text
-			stringExpansion = true
-		} else {
-			expanded, ok := module.sliceValues(values[0])
-			if !ok {
-				return vmValue{}, fmt.Errorf("cannot expand append argument %s", values[0].Type)
-			}
-			values = expanded
+		if _, ok := values[0].Data.(string); ok {
+			return vmValue{}, fmt.Errorf("expanded string append requires a byte slice, got %s", object.Type)
 		}
+		expanded, ok := module.sliceValues(values[0])
+		if !ok {
+			return vmValue{}, fmt.Errorf("cannot expand append argument %s", values[0].Type)
+		}
+		values = expanded
 	}
 	if !module.isSliceType(object.Type) {
 		return vmValue{}, fmt.Errorf("cannot append to %s", object.Type)
 	}
 	elemType := module.arrayElemType(object.Type)
-	var normalizedValues []vmValue
-	valueCount := len(expandedString)
-	if !stringExpansion {
-		valueCount = len(values)
-		normalizedValues = make([]vmValue, len(values))
-		for i, value := range values {
-			normalized, err := module.coerceAssignableValue(value, elemType)
-			if err != nil {
-				return vmValue{}, fmt.Errorf("append element %d: %w", i, err)
-			}
-			normalizedValues[i] = module.cloneValueForStore(normalized)
+	valueCount := len(values)
+	normalizedValues := make([]vmValue, len(values))
+	for i, value := range values {
+		normalized, err := module.coerceAssignableValue(value, elemType)
+		if err != nil {
+			return vmValue{}, fmt.Errorf("append element %d: %w", i, err)
 		}
+		normalizedValues[i] = module.cloneValueForStore(normalized)
 	}
-	oldLen, _ := sliceLen(object)
-	oldCap, _ := sliceCap(object)
+	source, valid := object.Data.(*vmSlice)
+	if !valid && object.Data != nil {
+		return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
+	}
+	oldLen, oldCap := 0, 0
+	if source != nil {
+		oldLen, oldCap = source.Len, source.Cap
+	}
 	newLength := int64(oldLen) + int64(valueCount)
 	newCapacity := int64(oldCap)
 	if newLength > newCapacity {
@@ -70,32 +103,12 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 			return vmValue{}, err
 		}
 	}
-	source, valid := object.Data.(*vmSlice)
-	if !valid && object.Data != nil {
-		return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
-	}
 	if source == nil && newLen == 0 {
 		return newSliceHeaderValue(object.Type, nil, 0, 0, 0), nil
 	}
 	var result vmValue
 	if source != nil && newLen <= oldCap {
 		result = newSliceViewValue(object.Type, source, source.Start, newLen, newCap)
-	} else if module.sameRuntimeType(elemType, "Uint8") {
-		backing := make([]byte, newCap)
-		if source != nil {
-			if source.ByteBacked {
-				copy(backing, source.bytes())
-			} else {
-				for i, value := range source.values() {
-					n, err := numericAsUint64(value)
-					if err != nil {
-						return vmValue{}, fmt.Errorf("append existing byte %d: %w", i, err)
-					}
-					backing[i] = byte(n)
-				}
-			}
-		}
-		result = newByteSliceHeaderValue(object.Type, backing, newLen, newCap)
 	} else {
 		backing := make([]vmValue, newCap)
 		if source != nil {
@@ -107,15 +120,63 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 		result = newSliceHeaderValue(object.Type, backing, 0, newLen, newCap)
 	}
 	destination := result.Data.(*vmSlice)
-	if stringExpansion {
-		destination.writeBytes(oldLen, []byte(expandedString))
-	} else {
-		for i, value := range normalizedValues {
-			if err := destination.setValueAt(oldLen+i, value); err != nil {
-				return vmValue{}, fmt.Errorf("append element %d: %w", i, err)
-			}
+	for i, value := range normalizedValues {
+		if err := destination.setValueAt(oldLen+i, value); err != nil {
+			return vmValue{}, fmt.Errorf("append element %d: %w", i, err)
 		}
 	}
+	return result, nil
+}
+
+func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmValue, error) {
+	if !module.isSliceType(object.Type) || !module.sameRuntimeType(module.arrayElemType(object.Type), "Uint8") {
+		return vmValue{}, fmt.Errorf("expected byte slice, got %s", object.Type)
+	}
+	source, ok := object.Data.(*vmSlice)
+	if !ok && object.Data != nil {
+		return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
+	}
+	oldLen, oldCap := 0, 0
+	if source != nil {
+		oldLen, oldCap = source.Len, source.Cap
+	}
+	length, capacity := int64(oldLen)+int64(len(bytes)), int64(oldCap)
+	if length > capacity {
+		capacity = max(length, int64(oldCap)*2)
+	}
+	newLen, newCap, err := module.vm.checkCollectionSize(length, capacity)
+	if err != nil {
+		return vmValue{}, err
+	}
+	if module.vm != nil && newCap > oldCap {
+		if err := module.vm.chargeAllocationBytes(int64(newCap-oldCap) * ir.RuntimeSlotBytes); err != nil {
+			return vmValue{}, err
+		}
+	}
+	if source == nil && newLen == 0 {
+		return newSliceHeaderValue(object.Type, nil, 0, 0, 0), nil
+	}
+	var result vmValue
+	if source != nil && newLen <= oldCap {
+		result = newSliceViewValue(object.Type, source, source.Start, newLen, newCap)
+	} else {
+		backing := make([]byte, newCap)
+		if source != nil {
+			if source.ByteBacked {
+				copy(backing, source.bytes())
+			} else {
+				for i, value := range source.values() {
+					n, err := numericAsUint64(value)
+					if err != nil {
+						return vmValue{}, err
+					}
+					backing[i] = byte(n)
+				}
+			}
+		}
+		result = newByteSliceHeaderValue(object.Type, backing, newLen, newCap)
+	}
+	result.Data.(*vmSlice).writeBytes(oldLen, bytes)
 	return result, nil
 }
 

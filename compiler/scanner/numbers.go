@@ -14,12 +14,12 @@ func (s *scanner) scanNumber(start int) {
 	if s.matchAt("0x") || s.matchAt("0X") {
 		hexadecimal = true
 		s.offset += 2
-		seenMantissaDigit := s.scanDigits(token.IsHexDigit)
+		seenMantissaDigit := s.scanDigits(16)
 		if s.peekByte() == '.' {
 			kind = token.Float
 			hexadecimalPoint = true
 			s.offset++
-			seenMantissaDigit = s.scanDigits(token.IsHexDigit) || seenMantissaDigit
+			seenMantissaDigit = s.scanDigits(16) || seenMantissaDigit
 		}
 		if !seenMantissaDigit {
 			s.addDiagnostic("scanner.number.digits", "numeric literal has no digits", s.offset, s.offset)
@@ -29,44 +29,45 @@ func (s *scanner) scanNumber(start int) {
 			hexadecimalExponent = true
 			s.offset++
 			s.scanSign()
-			if !s.scanDigits(token.IsDecimalDigit) {
+			if !s.scanDigits(10) {
 				s.addDiagnostic("scanner.number.digits", "numeric literal has no digits", s.offset, s.offset)
 			}
 		}
 	} else if s.matchAt("0b") || s.matchAt("0B") {
 		s.offset += 2
-		if !s.scanDigits(isBinaryDigit) {
+		if !s.scanDigits(2) {
 			s.addDiagnostic("scanner.number.digits", "numeric literal has no digits", s.offset, s.offset)
 		}
 	} else if s.matchAt("0o") || s.matchAt("0O") {
 		s.offset += 2
-		if !s.scanDigits(isOctalDigit) {
+		if !s.scanDigits(8) {
 			s.addDiagnostic("scanner.number.digits", "numeric literal has no digits", s.offset, s.offset)
 		}
 	} else {
 		if s.peekByte() == '.' {
 			kind = token.Float
 			s.offset++
-			if !s.scanDigits(token.IsDecimalDigit) {
+			if !s.scanDigits(10) {
 				s.addDiagnostic("scanner.number.digits", "numeric literal has no digits", s.offset, s.offset)
 			}
 		} else {
-			s.scanDigits(token.IsDecimalDigit)
+			s.scanDigits(10)
 			if s.peekByte() == '.' {
 				kind = token.Float
 				s.offset++
-				s.scanDigits(token.IsDecimalDigit)
+				s.scanDigits(10)
 			}
 		}
 		if s.peekByte() == 'e' || s.peekByte() == 'E' {
 			kind = token.Float
 			s.offset++
 			s.scanSign()
-			if !s.scanDigits(token.IsDecimalDigit) {
+			if !s.scanDigits(10) {
 				s.addDiagnostic("scanner.number.digits", "numeric literal has no digits", s.offset, s.offset)
 			}
 		}
 	}
+	floating := kind == token.Float
 	if s.peekByte() == 'i' {
 		s.offset++
 		kind = token.Imag
@@ -78,10 +79,10 @@ func (s *scanner) scanNumber(start int) {
 	if kind == token.Imag {
 		textEnd--
 	}
-	text := strings.ReplaceAll(s.file.Text[start:textEnd], "_", "")
-	if !hexadecimal && !strings.ContainsAny(text, ".eE") && len(text) > 1 && text[0] == '0' && (len(text) < 2 || text[1] != 'b' && text[1] != 'B' && text[1] != 'o' && text[1] != 'O') {
+	text := s.file.Text[start:textEnd]
+	if !hexadecimal && !floating && len(text) > 1 && text[0] == '0' && (len(text) < 2 || text[1] != 'b' && text[1] != 'B' && text[1] != 'o' && text[1] != 'O') {
 		for _, digit := range text[1:] {
-			if digit < '0' || digit > '7' {
+			if digit != '_' && (digit < '0' || digit > '7') {
 				s.addDiagnostic("scanner.number.octal_digit", "legacy octal literal contains a non-octal digit", start, textEnd)
 				break
 			}
@@ -91,7 +92,7 @@ func (s *scanner) scanNumber(start int) {
 		s.addDiagnostic("scanner.number.suffix", "invalid numeric literal suffix", start, s.offset)
 	}
 	s.validateNumberUnderscores(start, s.offset)
-	s.emitToken(kind, s.file.Text[start:s.offset], start, s.offset)
+	s.emitToken(kind, start, s.offset)
 }
 
 func (s *scanner) validateNumberUnderscores(start, end int) {
@@ -110,17 +111,17 @@ func (s *scanner) validateNumberUnderscores(start, end int) {
 	}
 }
 
-func (s *scanner) scanDigits(valid func(rune) bool) bool {
+func (s *scanner) scanDigits(base byte) bool {
 	seenDigit := false
 	for s.offset < len(s.file.Text) {
-		r, size := s.peekRune()
-		if valid(r) {
+		ch := s.file.Text[s.offset]
+		if ch >= '0' && ch-'0' < base && ch <= '9' || base == 16 && (ch >= 'a' && ch <= 'f' || ch >= 'A' && ch <= 'F') {
 			seenDigit = true
-			s.offset += size
+			s.offset++
 			continue
 		}
-		if r == '_' {
-			s.offset += size
+		if ch == '_' {
+			s.offset++
 			continue
 		}
 		break
@@ -132,10 +133,6 @@ func (s *scanner) scanSign() {
 	if s.peekByte() == '+' || s.peekByte() == '-' {
 		s.offset++
 	}
-}
-
-func isBinaryDigit(r rune) bool {
-	return r == '0' || r == '1'
 }
 
 func isOctalDigit(r rune) bool {

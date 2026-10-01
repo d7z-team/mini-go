@@ -188,8 +188,7 @@ func (vm *vm) newPreparedExecutionFrame(module *moduleInstance, fn loadedFunctio
 		return nil, err
 	}
 	if allocated {
-		if err := vm.chargeRuntimeObject(len(fn.Decl.Locals)+fn.MaxStack+len(upvalues)+resultSlots, 0); err != nil {
-			callFrame.recycle()
+		if err := vm.chargeRuntimeObject(len(fn.Decl.Locals)+len(fn.Decl.Code.Types)+len(upvalues)+resultSlots, 0); err != nil {
 			return nil, err
 		}
 	}
@@ -391,15 +390,6 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 		callFrame := current.frame
 		functionID := callFrame.function.Decl.ID
 		if callFrame.pc >= len(callFrame.function.Instructions) {
-			if len(callFrame.stack) != 0 {
-				return taskYield{}, nil, Error{
-					Generation:  callFrame.revisionGeneration(),
-					ProgramHash: callFrame.revisionHash(),
-					ModulePath:  callFrame.module.modulePath(),
-					FunctionID:  functionID,
-					Err:         fmt.Errorf("function completed with %d stack values", len(callFrame.stack)),
-				}
-			}
 			var values []vmValue
 			var err error
 			if callFrame.hasResultLocals() {
@@ -435,7 +425,6 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 			return taskYield{kind: taskYieldPoll}, nil, nil
 		}
 		if retrying {
-			callFrame.stack = append(callFrame.stack, callFrame.popValues...)
 			callFrame.releasePopValues()
 			task.retryInstruction = false
 		} else {
@@ -474,6 +463,7 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 				}
 			}
 		}
+		callFrame.beginSlotInstruction(pc, inst)
 		callFrame.pc++
 		if !retrying {
 			slice.executed++

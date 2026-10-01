@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/types"
@@ -58,8 +59,10 @@ func ValidateArtifactWithLimits(a *Artifact, limits ValidationLimits) error {
 		modulePath:         strings.TrimSpace(a.Module.Path),
 		types:              collectIDs(len(definedTypes), func(i int) string { return "type." + string(definedTypes[i].Identity.DeclID) }),
 		constants:          collectIDs(len(a.Constants), func(i int) string { return a.Constants[i].ID }),
+		constantOrder:      a.Constants,
 		untypedConstants:   make(map[string]bool, len(a.Constants)),
 		globals:            collectIDs(len(a.Globals), func(i int) string { return a.Globals[i].ID }),
+		globalTypes:        make(map[string]types.TypeRef, len(a.Globals)),
 		functions:          collectIDs(len(a.Functions), func(i int) string { return a.Functions[i].ID }),
 		functionSignatures: collectFunctionSignatures(a.Functions),
 		functionPCs:        collectFunctionInstructionCounts(a.Functions),
@@ -67,14 +70,14 @@ func ValidateArtifactWithLimits(a *Artifact, limits ValidationLimits) error {
 		moduleExports:      collectModuleExports(a.Requirements),
 	}
 	for i, typ := range definedTypes {
-		if err := validateDefinedType(fmt.Sprintf("type_table.nodes[%d]", i), typ, refs, &a.TypeTable); err != nil {
+		if err := validateDefinedType("type_table.nodes["+strconv.Itoa(i)+"]", typ, refs, &a.TypeTable); err != nil {
 			return err
 		}
 	}
 	constantTypes := make(map[string]types.TypeRef, len(a.Constants))
 	constantUntyped := make(map[string]bool, len(a.Constants))
 	for i, constant := range a.Constants {
-		path := fmt.Sprintf("constants[%d]", i)
+		path := "constants[" + strconv.Itoa(i) + "]"
 		if err := validateTypeRef(path+".type", constant.Type, &a.TypeTable); err != nil {
 			return err
 		}
@@ -92,30 +95,26 @@ func ValidateArtifactWithLimits(a *Artifact, limits ValidationLimits) error {
 		refs.untypedConstants[strings.TrimSpace(constant.ID)] = constant.Untyped
 	}
 	for i, global := range a.Globals {
-		if err := validateTypeRef(fmt.Sprintf("globals[%d].type", i), global.Type, &a.TypeTable); err != nil {
+		refs.globalTypes[global.ID] = global.Type
+		if err := validateTypeRef("globals["+strconv.Itoa(i)+"].type", global.Type, &a.TypeTable); err != nil {
 			return err
 		}
 	}
 	for i, fn := range a.Functions {
-		path := fmt.Sprintf("functions[%d]", i)
+		path := "functions[" + strconv.Itoa(i) + "]"
 		if strings.TrimSpace(fn.ID) == "" {
 			return missingValidationError(path+".id", errors.New("missing function id"))
 		}
 		if err := validateFunctionSignature(path+".signature", fn.Signature, &a.TypeTable); err != nil {
 			return err
 		}
-		analysis, err := validateFunctionBody(path, fn, refs, &a.TypeTable)
-		if err != nil {
+		if err := validateFunctionBody(path, fn, refs, &a.TypeTable); err != nil {
 			return err
 		}
-		if fn.MaxStack != 0 && fn.MaxStack != analysis.MaxStack {
-			return schemaMismatchValidationError(path+".max_stack", fmt.Errorf("max stack mismatch: got %d, want %d", fn.MaxStack, analysis.MaxStack))
-		}
-		a.Functions[i].MaxStack = analysis.MaxStack
 	}
 	exportNames := make(map[string]struct{}, len(a.Exports))
 	for i, export := range a.Exports {
-		path := fmt.Sprintf("exports[%d]", i)
+		path := "exports[" + strconv.Itoa(i) + "]"
 		if strings.TrimSpace(export.Name) == "" {
 			return missingValidationError(path+".name", errors.New("missing export name"))
 		}
@@ -164,8 +163,10 @@ type artifactRefs struct {
 	modulePath         string
 	types              map[string]struct{}
 	constants          map[string]struct{}
+	constantOrder      []Constant
 	untypedConstants   map[string]bool
 	globals            map[string]struct{}
+	globalTypes        map[string]types.TypeRef
 	functions          map[string]struct{}
 	functionSignatures map[string]types.FunctionSignature
 	functionPCs        map[string]int

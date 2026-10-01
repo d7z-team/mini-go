@@ -10,9 +10,9 @@ import (
 )
 
 func TestDebugSnapshotPreservesPausedTaskScope(t *testing.T) {
-	child := delayedLifecycleChild(ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})})
+	child := delayedLifecycleChild(testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}))
 	artifact := lifecycleArtifact(child)
-	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.child", pc: len(child) - 1, line: 10, column: 2})
+	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.child", pc: len(child.Instructions) - 1, line: 10, column: 2})
 	program := patchTestProgram(t, artifact, "cross-scope-debug")
 	instance, err := program.Instantiate(t.Context(), InstanceOptions{Debugger: NewDebugger()})
 	if err != nil {
@@ -73,9 +73,9 @@ func TestDebugSnapshotPreservesPausedTaskScope(t *testing.T) {
 }
 
 func TestLibraryBackgroundTaskCanBeInspectedAndContinued(t *testing.T) {
-	child := delayedLifecycleChild(ir.Instruction{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})})
+	child := delayedLifecycleChild(testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}))
 	artifact := lifecycleArtifact(child)
-	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.child", pc: len(child) - 1, line: 10, column: 2})
+	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.child", pc: len(child.Instructions) - 1, line: 10, column: 2})
 	program := patchTestProgram(t, artifact, "library-background-debug")
 	instance, err := program.Instantiate(context.Background(), InstanceOptions{Debugger: NewDebugger()})
 	if err != nil {

@@ -12,8 +12,12 @@ use mini_go::{
     program::Program,
     snapshot::HostData,
 };
-use serde::Deserialize;
+use serde::{
+    Deserialize,
+    de::{DeserializeSeed, SeqAccess, Visitor},
+};
 use std::{
+    fmt,
     io::Read,
     sync::{
         Arc,
@@ -211,35 +215,71 @@ fn current_standard_library_tests_execute_with_native_rust_providers() {
     });
 }
 
+struct VectorSequence<'a, F> {
+    run: &'a mut F,
+    filter: Option<&'a str>,
+    matched: bool,
+    failures: Vec<String>,
+}
+
+impl<'de, F: FnMut(&Vector) -> Result<(), RuntimeError>> DeserializeSeed<'de>
+    for &mut VectorSequence<'_, F>
+{
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de, F: FnMut(&Vector) -> Result<(), RuntimeError>> Visitor<'de>
+    for &mut VectorSequence<'_, F>
+{
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("an array of standard library vectors")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<(), A::Error> {
+        while let Some(vector) = sequence.next_element::<Vector>()? {
+            if self.filter.is_some_and(|filter| vector.name != filter) {
+                continue;
+            }
+            self.matched = true;
+            eprintln!("stdlib {}", vector.name);
+            if let Err(error) = (self.run)(&vector) {
+                eprintln!("stdlib {}: {error}", vector.name);
+                self.failures.push(format!("{}: {error}", vector.name));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn run_standard_library(mut run: impl FnMut(&Vector) -> Result<(), RuntimeError>) {
     let file = std::fs::File::open(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../testdata/runtime/stdlib.json.gz"
     ))
     .expect("run make generate for current stdlib images");
-    let mut bytes = Vec::new();
-    flate2::read::GzDecoder::new(file)
-        .take(512 << 20)
-        .read_to_end(&mut bytes)
-        .unwrap();
-    let vectors: Vec<Vector> = serde_json::from_slice(&bytes).unwrap();
     let filter = std::env::var("RUST_STDLIB_PACKAGE").ok();
-    let mut failures = Vec::new();
-    for vector in vectors
-        .iter()
-        .filter(|vector| filter.as_ref().is_none_or(|filter| vector.name == *filter))
-    {
-        eprintln!("stdlib {}", vector.name);
-        if let Err(error) = run(vector) {
-            eprintln!("stdlib {}: {error}", vector.name);
-            failures.push(format!("{}: {error}", vector.name));
-        }
+    let mut sequence = VectorSequence {
+        run: &mut run,
+        filter: filter.as_deref(),
+        matched: false,
+        failures: Vec::new(),
+    };
+    let reader = flate2::read::GzDecoder::new(file).take(1 << 30);
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    (&mut sequence).deserialize(&mut deserializer).unwrap();
+    deserializer.end().unwrap();
+    if let Some(filter) = filter.as_deref() {
+        assert!(sequence.matched, "unknown stdlib package {filter}");
     }
-    if let Some(filter) = filter {
-        assert!(
-            vectors.iter().any(|vector| vector.name == filter),
-            "unknown stdlib package {filter}"
-        );
-    }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert!(
+        sequence.failures.is_empty(),
+        "{}",
+        sequence.failures.join("\n")
+    );
 }

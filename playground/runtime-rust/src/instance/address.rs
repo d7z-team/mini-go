@@ -55,7 +55,8 @@ impl Instance {
                             typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
                             data: Data::Unsigned(u64::from(*byte)),
                         })
-                        .collect(),
+                        .collect::<Vec<_>>()
+                        .into(),
                 )
             };
             return Ok(std::borrow::Cow::Owned(Value { typ, data }));
@@ -69,7 +70,7 @@ impl Instance {
                     };
                     Value {
                         typ: typ.clone(),
-                        data: Data::Array(values[start..start + length].to_vec()),
+                        data: Data::Array(values[start..start + length].to_vec().into()),
                     }
                 } else {
                     value.clone()
@@ -121,7 +122,7 @@ impl Instance {
             };
             Ok(std::borrow::Cow::Owned(Value {
                 typ: typ.clone(),
-                data: Data::Array(values[start..start + length].to_vec()),
+                data: Data::Array(values[start..start + length].to_vec().into()),
             }))
         } else {
             Ok(std::borrow::Cow::Borrowed(value))
@@ -209,7 +210,7 @@ impl Instance {
             drop(snapshot);
             return self
                 .heap
-                .update(root, &expected, stored_bytes, true, |slot| *slot = value);
+                .update(root, expected, stored_bytes, true, |slot| *slot = value);
         }
         if path.is_empty() && matches!(snapshot.data, Data::Uninitialized) {
             let value = self.coerce(value.clone(), &snapshot.typ)?;
@@ -289,7 +290,7 @@ impl Instance {
             drop(snapshot);
             if self
                 .heap
-                .update(root, &expected, stored_bytes, true, |object| {
+                .update(root, expected, stored_bytes, true, |object| {
                     let Data::Bytes(bytes) = &mut object.data else {
                         unreachable!()
                     };
@@ -325,7 +326,7 @@ impl Instance {
         }
         if self
             .heap
-            .update(root, &expected, bytes, old_edges == new_edges, |object| {
+            .update(root, expected, bytes, old_edges == new_edges, |object| {
                 if let Some(value) = materialized {
                     *object = value;
                 }
@@ -343,7 +344,7 @@ impl Instance {
                         }
                         (PathElement::Index(index), Data::Array(values)) => {
                             let offset = window.take().map_or(0, |(offset, _)| offset);
-                            values.get_mut(offset + index).unwrap()
+                            Arc::make_mut(values).get_mut(offset + index).unwrap()
                         }
                         _ => unreachable!("path was validated before mutation"),
                     };
@@ -354,7 +355,7 @@ impl Instance {
                     else {
                         unreachable!()
                     };
-                    destination[start..start + length].clone_from_slice(&values);
+                    Arc::make_mut(destination)[start..start + length].clone_from_slice(&values);
                 } else {
                     *destination = value;
                 }
@@ -370,7 +371,7 @@ impl Instance {
         payload: &wire::AddressPayload,
     ) -> Result<Address, RuntimeError> {
         let frame = self.running.frames.last().unwrap();
-        let function = &frame.prepared;
+        let function = frame.prepared.clone();
         let mut address = match payload.kind.as_str() {
             "local" => Address {
                 identity: std::sync::Arc::default(),
@@ -410,12 +411,7 @@ impl Instance {
             }
         };
         let path_root = address.root;
-        let index_slots: Vec<_> = payload
-            .path
-            .iter()
-            .map(|segment| (segment.kind == "index").then(|| function.locals[&segment.local]))
-            .collect();
-        for (segment, index_slot) in payload.path.iter().zip(index_slots) {
+        for segment in payload.path.iter() {
             let value = self.read_address(&address)?;
             if matches!(value.data, Data::Nil) && self.types.pointer_element(&value.typ)?.is_some()
             {
@@ -426,7 +422,7 @@ impl Instance {
                 ));
             }
             if let Data::Pointer(pointer) = value.data {
-                address = pointer;
+                address = Arc::unwrap_or_clone(pointer);
             } else if segment.kind == "indirect" {
                 return Err(RuntimeError::new(
                     if matches!(value.data, Data::Nil) {
@@ -441,7 +437,9 @@ impl Instance {
             match segment.kind.as_str() {
                 "field" => address.path.push(PathElement::Field(segment.field.clone())),
                 "index" => {
-                    let index = self.load_local(index_slot.unwrap())?.integer()?;
+                    let index = self
+                        .load_local(function.locals[&segment.local])?
+                        .integer()?;
                     let index = usize::try_from(index)
                         .map_err(|_| RuntimeError::new("panic", "pointer", "negative index"))?;
                     if let Data::Slice(slice) = self.read_address(&address)?.data {
@@ -452,7 +450,7 @@ impl Instance {
                                 "index outside slice",
                             ));
                         }
-                        address = slice.storage;
+                        address = slice.storage.clone();
                         address.path.push(PathElement::Index(slice.start + index));
                     } else {
                         address.path.push(PathElement::Index(index));
@@ -472,18 +470,15 @@ impl Instance {
             self.snapshot_address(&address)?;
         }
         if !payload.path.is_empty() {
-            address.identity = Arc::new(crate::value::PointerIdentity {
-                path_root: Some((
-                    path_root,
-                    payload.path.len()
-                        + payload
-                            .path
-                            .iter()
-                            .filter(|segment| segment.kind == "index")
-                            .count(),
-                )),
-                ..Default::default()
-            });
+            address.reset_identity(Some((
+                path_root,
+                payload.path.len()
+                    + payload
+                        .path
+                        .iter()
+                        .filter(|segment| segment.kind == "index")
+                        .count(),
+            )));
         }
         Ok(address)
     }

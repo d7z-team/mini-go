@@ -1,0 +1,44 @@
+package floatbits
+
+// Abs returns the magnitude of f, clearing its sign bit, including for zero.
+func Abs(f float64) float64 {
+	return Float64frombits(Float64bits(f) &^ (uint64(1) << 63))
+}
+
+// Signbit reports the sign bit, including for zero and NaN.
+func Signbit(f float64) bool {
+	return Float64bits(f) >> 63 != 0
+}
+
+// Copysign returns the magnitude of x with the sign bit of y.
+func Copysign(x float64, y float64) float64 {
+	const sign uint64 = 1 << 63
+	return Float64frombits(Float64bits(x) &^ sign | Float64bits(y) & sign)
+}
+
+// Inf returns positive infinity for sign >= 0 and negative infinity otherwise.
+func Inf(sign int) float64 {
+	if sign < 0 {
+		return Float64frombits(0xfff0000000000000)
+	}
+	return Float64frombits(0x7ff0000000000000)
+}
+
+// NaN returns an IEEE not-a-number value.
+func NaN() float64 {
+	return Float64frombits(0x7ff8000000000001)
+}
+
+// IsNaN reports whether f is a not-a-number value.
+func IsNaN(f float64) bool {
+	return f != f
+}
+
+// IsInf reports whether f is infinite with the requested sign; zero accepts either sign.
+func IsInf(f float64, sign int) bool {
+	bits := Float64bits(f)
+	if bits & 0x7fffffffffffffff != 0x7ff0000000000000 {
+		return false
+	}
+	return sign == 0 || sign > 0 && bits >> 63 == 0 || sign < 0 && bits >> 63 != 0
+}

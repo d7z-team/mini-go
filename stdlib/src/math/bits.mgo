@@ -1,43 +1,27 @@
 package math
 
+import "math/floatbits"
+
 // Float64bits returns the IEEE 754 binary representation of f, with the sign
 // bit of f and the result in the same bit position.
 func Float64bits(f float64) uint64 {
-	return runtimeFloat64bits(f)
+	return floatbits.Float64bits(f)
 }
 
 // Float64frombits returns the floating-point number corresponding to b, with
 // the sign bit of b and the result in the same bit position.
 func Float64frombits(b uint64) float64 {
-	return runtimeFloat64frombits(b)
+	return floatbits.Float64frombits(b)
 }
 
 // Float32bits returns the IEEE 754 binary representation of f, with the sign
 // bit of f and the result in the same bit position.
 func Float32bits(f float32) uint32 {
-	return runtimeFloat32bits(f)
+	return floatbits.Float32bits(f)
 }
 
 // Float32frombits returns the floating-point number corresponding to b, with
 // the sign bit of b and the result in the same bit position.
 func Float32frombits(b uint32) float32 {
-	return runtimeFloat32frombits(b)
-}
-
-// These declarations are matched by exact package and function identity and
-// lowered to VM intrinsics. Arithmetic source cannot preserve NaN payloads.
-func runtimeFloat64bits(float64) uint64 {
-	panic("math intrinsic")
-}
-
-func runtimeFloat64frombits(uint64) float64 {
-	panic("math intrinsic")
-}
-
-func runtimeFloat32bits(float32) uint32 {
-	panic("math intrinsic")
-}
-
-func runtimeFloat32frombits(uint32) float32 {
-	panic("math intrinsic")
+	return floatbits.Float32frombits(b)
 }

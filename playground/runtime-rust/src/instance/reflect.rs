@@ -4,6 +4,50 @@
 use super::*;
 
 impl Instance {
+    fn reflect_dynamic_value<'a>(
+        &self,
+        mut value: &'a Value,
+    ) -> Result<Option<&'a Value>, RuntimeError> {
+        while let Data::Interface(inner) = &value.data {
+            value = inner;
+        }
+        if matches!(value.data, Data::Nil) && self.types.is_interface(&value.typ)? {
+            Ok(None)
+        } else {
+            Ok(Some(value))
+        }
+    }
+
+    fn reflect_kind(&self, typ: &TypeIdentity) -> Result<u64, RuntimeError> {
+        let typ = self.types.underlying(typ)?;
+        Ok(match typ {
+            TypeIdentity::Void => 0,
+            TypeIdentity::Any | TypeIdentity::Primitive(wire::PrimitiveError) => 20,
+            TypeIdentity::Primitive(wire::PrimitiveBool) => 1,
+            TypeIdentity::Primitive(wire::PrimitiveString) => 24,
+            TypeIdentity::Primitive(wire::PrimitiveFunction) => 19,
+            TypeIdentity::Primitive(p)
+                if (wire::PrimitiveInt..=wire::PrimitiveComplex128).contains(&p) =>
+            {
+                u64::from(p - 1)
+            }
+            TypeIdentity::Pointer(_) => 22,
+            TypeIdentity::Slice(_) => 23,
+            TypeIdentity::Structural { .. } => match self.types.node(&typ)?.unwrap().1.kind {
+                wire::Array => 17,
+                wire::Waitable => 18,
+                wire::Function => 19,
+                wire::Interface => 20,
+                wire::Map => 21,
+                wire::Pointer => 22,
+                wire::Slice => 23,
+                wire::Struct => 25,
+                _ => 0,
+            },
+            _ => 0,
+        })
+    }
+
     pub(super) fn publish_dynamic_type(
         &mut self,
         mut types: TypeRegistry,
@@ -527,7 +571,7 @@ impl Instance {
                 "invalid descriptor type",
             ));
         };
-        let Data::Struct(own_fields) = own_type.data else {
+        let Data::Struct(own_fields) = &own_type.data else {
             unreachable!()
         };
         self.reflect_struct(
@@ -574,6 +618,78 @@ impl Instance {
         mut arguments: Vec<Value>,
     ) -> Result<Vec<Value>, RuntimeError> {
         match id {
+            "reflect.inspect_describe" => {
+                let value = self.reflect_dynamic_value(&arguments[0])?;
+                let nil = value.is_none_or(|value| matches!(value.data, Data::Nil));
+                let typ = if matches!(arguments[1].data, Data::Bool(true)) {
+                    value
+                        .map(|value| self.types.pointer_element(&value.typ))
+                        .transpose()?
+                        .flatten()
+                } else {
+                    value.map(|value| value.typ.clone())
+                };
+                let (kind, comparable) = if let Some(typ) = typ {
+                    (self.reflect_kind(&typ)?, self.types.comparable(&typ)?)
+                } else {
+                    (0, false)
+                };
+                Ok(vec![
+                    Value {
+                        typ: TypeIdentity::Primitive(wire::PrimitiveUint),
+                        data: Data::Unsigned(kind),
+                    },
+                    Value::boolean(comparable),
+                    Value::boolean(nil),
+                ])
+            }
+            "reflect.inspect_element_implements" => {
+                let mut elements = [TypeIdentity::Void, TypeIdentity::Void];
+                for (index, value) in arguments.iter().enumerate() {
+                    let Some(value) = self.reflect_dynamic_value(value)? else {
+                        return Ok(vec![Value::boolean(false)]);
+                    };
+                    let Some(element) = self.types.pointer_element(&value.typ)? else {
+                        return Ok(vec![Value::boolean(false)]);
+                    };
+                    elements[index] = element;
+                }
+                Ok(vec![Value::boolean(
+                    self.types.implements(&elements[0], &elements[1])?,
+                )])
+            }
+            "reflect.inspect_assign" => {
+                let Some(target) = self.reflect_dynamic_value(&arguments[0])? else {
+                    return Ok(vec![Value::boolean(false)]);
+                };
+                let Data::Pointer(address) = &target.data else {
+                    return Ok(vec![Value::boolean(false)]);
+                };
+                let Some(element) = self.types.pointer_element(&target.typ)? else {
+                    return Ok(vec![Value::boolean(false)]);
+                };
+                let value = match self.reflect_dynamic_value(&arguments[1])? {
+                    Some(source)
+                        if matches!(source.typ, TypeIdentity::Named(_))
+                            && matches!(element, TypeIdentity::Named(_))
+                            && !self.types.is_interface(&element)?
+                            && !self.types.identical(&source.typ, &element)? =>
+                    {
+                        return Ok(vec![Value::boolean(false)]);
+                    }
+                    Some(source) => match self.coerce(source.clone(), &element) {
+                        Ok(value) => value,
+                        Err(error) if error.code == "type_error" => {
+                            return Ok(vec![Value::boolean(false)]);
+                        }
+                        Err(error) => return Err(error),
+                    },
+                    None if self.types.nil_assignable(&element)? => self.zero(&element, 0)?,
+                    None => return Ok(vec![Value::boolean(false)]),
+                };
+                self.write_address(address, value)?;
+                Ok(vec![Value::boolean(true)])
+            }
             "reflect.array_of" | "reflect.map_of" | "reflect.chan_of" | "reflect.func_of"
             | "reflect.struct_of" => {
                 use crate::types::{ConstructedField, ConstructedType};
@@ -733,7 +849,7 @@ impl Instance {
             "reflect.type_of" => {
                 let mut value = arguments.remove(0);
                 while let Data::Interface(inner) = value.data {
-                    value = *inner;
+                    value = Arc::unwrap_or_clone(inner);
                 }
                 let typ = if matches!(value.data, Data::Nil)
                     && (value.typ == TypeIdentity::Any
@@ -747,6 +863,80 @@ impl Instance {
                     self.reflect_value_type(&value)?
                 };
                 Ok(vec![self.reflect_type(&typ)?])
+            }
+            "reflect.type_kind" => {
+                let outcome = self
+                    .reflected_type(&arguments[0])
+                    .and_then(|typ| self.reflect_kind(&typ));
+                match outcome {
+                    Ok(kind) => Ok(vec![
+                        Value {
+                            typ: TypeIdentity::Primitive(wire::PrimitiveUint),
+                            data: Data::Unsigned(kind),
+                        },
+                        Value::string(""),
+                        Value::boolean(true),
+                    ]),
+                    Err(error) => Ok(vec![
+                        Value {
+                            typ: TypeIdentity::Primitive(wire::PrimitiveUint),
+                            data: Data::Unsigned(0),
+                        },
+                        Value::string(error.to_string()),
+                        Value::boolean(false),
+                    ]),
+                }
+            }
+            "reflect.type_measure" => {
+                let outcome = (|| -> Result<u64, RuntimeError> {
+                    let typ = self.reflected_type(&arguments[0])?;
+                    let Data::String(property) = &arguments[1].data else {
+                        return Err(RuntimeError::new(
+                            "reflect",
+                            id,
+                            "reflect.type_measure expects a string property",
+                        ));
+                    };
+                    match property.as_ref() {
+                        b"fields" => Ok(self
+                            .types
+                            .node(&typ)?
+                            .map_or(0, |(_, node)| node.fields.len() as u64)),
+                        b"length" => self
+                            .types
+                            .node(&typ)?
+                            .filter(|(_, node)| node.kind == wire::Array)
+                            .map(|(_, node)| node.length as u64)
+                            .ok_or_else(|| {
+                                RuntimeError::new("reflect", id, "reflect: Len of non-array type")
+                            }),
+                        b"align" | b"field_align" | b"size" | b"bits" => {
+                            let (align, size, bits) = self.reflect_layout(&typ, 0)?;
+                            Ok(match property.as_ref() {
+                                b"size" => size,
+                                b"bits" => bits,
+                                _ => align,
+                            })
+                        }
+                        _ => Err(RuntimeError::new(
+                            "reflect",
+                            id,
+                            "reflect: unknown type measurement",
+                        )),
+                    }
+                })();
+                let (result, message, valid) = match outcome {
+                    Ok(result) => (result, String::new(), true),
+                    Err(error) => (0, error.message, false),
+                };
+                Ok(vec![
+                    Value {
+                        typ: TypeIdentity::Primitive(wire::PrimitiveUint64),
+                        data: Data::Unsigned(result),
+                    },
+                    Value::string(message),
+                    Value::boolean(valid),
+                ])
             }
             "reflect.type_descriptor" => {
                 let outcome = self
@@ -841,5 +1031,64 @@ impl Instance {
             }
             _ => self.execute_reflect_value(id, arguments),
         }
+    }
+}
+
+#[cfg(test)]
+mod inspect_tests {
+    use super::*;
+
+    #[test]
+    fn assignment_budget_failure_preserves_target_and_retry_succeeds() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+            ]);
+        });
+        let mut vm = Instance::new(
+            program,
+            ExecutionLimits {
+                max_heap_bytes: 4096,
+                ..ExecutionLimits::default()
+            },
+        )
+        .unwrap();
+        vm.start("default", vec![]).unwrap();
+        let root = vm.allocate(Value::string("original")).unwrap();
+        let filler = vm.allocate(Value::string(vec![b'f'; 2500])).unwrap();
+        let target = Value {
+            typ: TypeIdentity::Pointer(Arc::new(TypeIdentity::Primitive(wire::PrimitiveString))),
+            data: Data::Pointer(Arc::new(Address {
+                identity: Arc::default(),
+                root,
+                path: vec![],
+            })),
+        };
+        // Normal dispatch retains its inputs as operand roots until publication.
+        vm.running.allocation_roots.push(target.clone());
+        vm.running.transient_roots.push(filler);
+        let source = Value::string(vec![b'x'; 2048]);
+        let error = vm
+            .execute_reflect(
+                "reflect.inspect_assign",
+                vec![target.clone(), source.clone()],
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "allocation_limit");
+        assert!(
+            matches!(&vm.heap.get(root).unwrap().data, Data::String(bytes) if bytes.as_ref() == b"original")
+        );
+        assert!(vm.heap.get(filler).is_ok());
+        vm.running.transient_roots.clear();
+        vm.collect_at_boundary().unwrap();
+        assert!(vm.heap.get(filler).is_err());
+        let result = vm
+            .execute_reflect("reflect.inspect_assign", vec![target, source])
+            .unwrap();
+        assert!(matches!(result[0].data, Data::Bool(true)));
+        assert!(
+            matches!(&vm.heap.get(root).unwrap().data, Data::String(bytes) if bytes.len() == 2048)
+        );
+        vm.close().unwrap();
     }
 }

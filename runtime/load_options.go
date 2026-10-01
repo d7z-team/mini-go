@@ -50,7 +50,9 @@ func validateArtifactLoad(artifact *ir.Artifact, options LoadOptions) error {
 	}
 	instructions := 0
 	for _, function := range artifact.Functions {
-		instructions += len(function.Instructions)
+		if function.Code != nil {
+			instructions += len(function.Code.Instructions)
+		}
 		if instructions > options.MaxInstructions {
 			return fmt.Errorf("artifact instruction limit exceeded: max %d", options.MaxInstructions)
 		}

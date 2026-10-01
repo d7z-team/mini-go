@@ -8,8 +8,7 @@ Mini-Go is an embeddable scripting engine with Go-like syntax. Go applications c
 scripts directly, Rust applications execute the same bytecode, and browsers and Node.js use the
 WebAssembly SDK. The `mini-go` CLI also runs `.mgo` files without a host application.
 
-**[Quick start](#quick-start) · [Use from Go](#use-from-go) · [Usage guide](./USAGE.md) ·
-[Standard library](./docs/reference/README.md) · [RPC](./RPC.md)**
+**[Quick start](#quick-start) · [Go](./USAGE.md) · [Rust][rust-runtime] · [Browser / Node.js][wasm-sdk] · [RPC](./RPC.md)**
 
 ## Features
 
@@ -19,9 +18,8 @@ WebAssembly SDK. The `mini-go` CLI also runs `.mgo` files without a host applica
 - **Portable runtime**: native Go and Rust backends plus a TypeScript SDK for browsers and Node.js.
 - **Tooling**: local source composition, caching, formatting, LSP, DAP, and a VS Code extension.
 
-Mini-Go includes a curated standard library for strings, containers, encoding, templates, and other
-common scripting tasks. See the [usage guide](./USAGE.md) and
-[standard library reference](./docs/reference/README.md) for the supported language and API surface.
+The curated standard library covers strings, containers, encoding, templates, and common scripting tasks.
+See the [standard library reference](./docs/reference/README.md) for supported APIs.
 
 ## Installation
 
@@ -76,22 +74,20 @@ capabilities, execution control, and hot patching.
 | Native Rust | [`mini-go` crate][crate-runtime] · [Runtime and optional compiler tools][rust-runtime] |
 | Browser and Node.js | `npm install @d7z-team/mini-go@git` · [TypeScript SDK][wasm-sdk] |
 
-Rust and npm distributions include matching compiler resources. See the component guides for
-snapshot installation and the [development guide](./DEVELOPMENT.md#rust-与-npm-发布) for versioning and releases.
+Rust and npm packages include matching compiler resources. Follow the component guides for installation and deployment.
 
 ## Documentation
 
 The detailed guides linked below are written in Chinese.
 
-| Document | Coverage |
+| Task | Guide |
 | --- | --- |
-| [Usage guide](./USAGE.md) | Embedding API, CLI, source composition, execution control, and debugging |
-| [RPC guide](./RPC.md) | Interface declarations, generated bindings, cross-language calls, and resource cleanup |
-| [Standard library reference](./docs/reference/README.md) | Generated package and API documentation |
-| [VS Code extension](./vscode-ext/README.md) | Syntax highlighting and language server configuration |
-| [Architecture](./ARCHITECTURE.md) | Component boundaries, data flow, state ownership, and lifecycle |
-| [Development guide](./DEVELOPMENT.md) | Generation, testing, cross-language verification, and performance diagnostics |
-| [Shared test data](./testdata/README.md) | Cross-backend fixtures, expectations, and update procedures |
+| Embed in Go or use the CLI | [Usage guide](./USAGE.md) |
+| Define and connect RPC services | [RPC guide](./RPC.md) |
+| Look up standard library APIs | [Generated reference](./docs/reference/README.md) |
+| Set up the editor | [VS Code extension](./vscode-ext/README.md) |
+| Understand component boundaries and ownership | [Architecture](./ARCHITECTURE.md) |
+| Build, test, diagnose, or release changes | [Development guide](./DEVELOPMENT.md) |
 
 [rust-runtime]: ./playground/runtime-rust/README.md
 [wasm-sdk]: ./playground/runtime-rust/runtime-wasm/README.md

@@ -15,8 +15,71 @@ use std::{
 };
 
 pub const FORMAT: &str = "mini-go-tools";
-pub const VERSION: u64 = 2;
+pub const VERSION: u64 = 3;
 const MAX_BYTES: usize = 64 << 20;
+
+/// Decodes the bounded Tools response frame into an owned API response.
+/// The image and symbol identities are validated when their consumers load them.
+pub fn decode_tools_response(bytes: &[u8]) -> Result<Value, RuntimeError> {
+    if bytes.len() < 20 || bytes.len() > MAX_BYTES || &bytes[..8] != b"MGT3\r\n\x1a\n" {
+        return Err(failure("invalid_argument", "invalid tools response frame"));
+    }
+    let mut ends = [20usize; 3];
+    let mut end = 20usize;
+    for (index, length) in bytes[8..20].as_chunks::<4>().0.iter().enumerate() {
+        let length = u32::from_le_bytes(*length) as usize;
+        end = end
+            .checked_add(length)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| failure("invalid_argument", "invalid tools response lengths"))?;
+        ends[index] = end;
+    }
+    if end != bytes.len() {
+        return Err(failure("invalid_argument", "trailing tools response bytes"));
+    }
+    let mut metadata: Value = serde_json::from_slice(&bytes[20..ends[0]]).map_err(json_error)?;
+    if metadata.as_object().is_some_and(|object| {
+        object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "Format"
+                    | "Version"
+                    | "CompilerID"
+                    | "Session"
+                    | "Revision"
+                    | "Analysis"
+                    | "Value"
+                    | "ImageJSON"
+                    | "SymbolsJSON"
+                    | "Sources"
+                    | "Diagnostics"
+                    | "Error"
+                    | "Recovery"
+            )
+        })
+    }) {
+        return Err(failure("invalid_argument", "unknown tools response field"));
+    }
+    if !metadata.is_object()
+        || metadata["Format"] != FORMAT
+        || metadata["Version"] != VERSION
+        || metadata["ImageJSON"] != ""
+        || metadata["SymbolsJSON"] != ""
+    {
+        return Err(failure("identity", "invalid tools response metadata"));
+    }
+    for (field, start, end) in [
+        ("ImageJSON", ends[0], ends[1]),
+        ("SymbolsJSON", ends[1], ends[2]),
+    ] {
+        metadata[field] = Value::String(
+            std::str::from_utf8(&bytes[start..end])
+                .map_err(|_| failure("invalid_argument", "invalid tools response UTF-8"))?
+                .to_owned(),
+        );
+    }
+    Ok(metadata)
+}
 
 #[derive(Default)]
 struct ControlState {
@@ -538,7 +601,7 @@ impl CompilerSession {
         if bytes.len() > MAX_BYTES {
             return Err(failure("budget", "compiler result too large"));
         }
-        let response: Value = serde_json::from_slice(&bytes).map_err(json_error)?;
+        let response = decode_tools_response(&bytes)?;
         if response["Format"] != FORMAT
             || response["Version"] != VERSION
             || response["CompilerID"].as_str()
@@ -637,6 +700,34 @@ mod native;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_frames_validate_lengths_and_preserve_raw_image_bytes() {
+        let metadata = serde_json::to_vec(
+            &json!({"Format":FORMAT,"Version":VERSION,"ImageJSON":"","SymbolsJSON":""}),
+        )
+        .unwrap();
+        let image = b"{\"text\":\"<>&\\n\"}\n";
+        let mut frame = b"MGT3\r\n\x1a\n".to_vec();
+        for length in [metadata.len(), image.len(), 0] {
+            frame.extend_from_slice(&(length as u32).to_le_bytes());
+        }
+        frame.extend_from_slice(&metadata);
+        frame.extend_from_slice(image);
+        let response = decode_tools_response(&frame).unwrap();
+        assert_eq!(response["ImageJSON"].as_str().unwrap().as_bytes(), image);
+        for length in [0, 7, 19, frame.len() - 1] {
+            assert!(decode_tools_response(&frame[..length]).is_err());
+        }
+        let mut invalid = frame.clone();
+        invalid[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(decode_tools_response(&invalid).is_err());
+        invalid = frame.clone();
+        invalid.push(0);
+        assert!(decode_tools_response(&invalid).is_err());
+        *frame.last_mut().unwrap() = 0xff;
+        assert!(decode_tools_response(&frame).is_err());
+    }
 
     #[test]
     fn admission_limits_and_exhausted_tokens_leave_no_active_work() {

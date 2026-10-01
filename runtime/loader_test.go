@@ -7,18 +7,18 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func TestLoaderUsesValidatedStackBound(t *testing.T) {
-	artifact := ir.NewArtifact("test/stack", "stack")
+func TestLoaderValidatesSlotDestinationsForStructuredAndJSONInputs(t *testing.T) {
+	artifact := ir.NewArtifact("test/slots", "slots")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.value", Signature: testSignature("function() Bool"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1})},
-		},
+		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
 	}}
 	attachRuntimeTestTypeNodes(&artifact)
-	for _, claimed := range []int{0, 1, 2} {
-		artifact.Functions[0].MaxStack = claimed
+	for _, destination := range []uint32{0, 1, 0} {
+		artifact.Functions[0].Code.Operands[0].Outputs[0] = destination
 		data, err := json.Marshal(artifact)
 		if err != nil {
 			t.Fatal(err)
@@ -30,17 +30,17 @@ func TestLoaderUsesValidatedStackBound(t *testing.T) {
 			} else {
 				loaded, err = newLoader().load(artifact)
 			}
-			if claimed == 2 {
+			if destination == 1 {
 				if err == nil {
-					t.Fatal("inconsistent stack bound accepted")
+					t.Fatal("out-of-range destination accepted")
 				}
 				continue
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if fn := loaded.Functions["fn.value"]; fn.MaxStack != 1 || fn.Decl.MaxStack != 1 {
-				t.Fatalf("loaded stack bound: prepared=%d declaration=%d", fn.MaxStack, fn.Decl.MaxStack)
+			if fn := loaded.Functions["fn.value"]; len(fn.Decl.Code.Types) != 1 || fn.Instructions[0].operands.Outputs[0] != 0 {
+				t.Fatal("prepared function lost its destination layout")
 			}
 		}
 	}
@@ -51,12 +51,12 @@ func TestLoaderRemovesLabelsAndRelocatesJumps(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpLabel), Payload: testPayload(ir.LabelPayload{Label: "entry"})},
-			{Op: string(ir.OpJump), Payload: testPayload(ir.JumpPayload{Label: "exit"})},
-			{Op: string(ir.OpLabel), Payload: testPayload(ir.LabelPayload{Label: "exit"})},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		},
+		Code: testSlotCode([]string{}, []ir.Instruction{
+			{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "entry"}},
+			{Op: ir.OpJump, Payload: ir.JumpPayload{Label: "exit"}},
+			{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "exit"}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+		}, [][2][]uint32{{nil, nil}, {nil, nil}, {nil, nil}, {nil, nil}}),
 	}}
 	attachRuntimeTestTypeNodes(&artifact)
 

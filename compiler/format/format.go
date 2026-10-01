@@ -24,7 +24,8 @@ func Source(modulePath, path, text string) Result {
 	return Document(parser.ParseDocument(modulePath, path, text))
 }
 
-func Document(document parser.Document) Result {
+func Document(input parser.Document) Result {
+	document := input.Syntax()
 	if source.HasErrors(document.Diagnostics) {
 		return Result{Text: document.File.Text, Diagnostics: append([]source.Diagnostic(nil), document.Diagnostics...)}
 	}
@@ -36,7 +37,8 @@ func Document(document parser.Document) Result {
 	return Result{Text: text}
 }
 
-func Range(document parser.Document, selected source.Span) ([]TextEdit, []source.Diagnostic) {
+func Range(input parser.Document, selected source.Span) ([]TextEdit, []source.Diagnostic) {
+	document := input.Syntax()
 	if source.HasErrors(document.Diagnostics) || !selected.Valid() || selected.Start.File != document.File.Path {
 		return nil, append([]source.Diagnostic(nil), document.Diagnostics...)
 	}
@@ -60,7 +62,7 @@ func Range(document parser.Document, selected source.Span) ([]TextEdit, []source
 	return []TextEdit{{Span: span, NewText: formatted}}, nil
 }
 
-func formattingIsland(document parser.Document, selected source.Span) source.Span {
+func formattingIsland(document parser.Syntax, selected source.Span) source.Span {
 	if len(document.Program.Files) == 1 {
 		var first, last *source.Span
 		for _, declaration := range document.Program.Files[0].Decls {
@@ -84,7 +86,8 @@ func formattingIsland(document parser.Document, selected source.Span) source.Spa
 	return span
 }
 
-func OnType(document parser.Document, offset int, typed rune) ([]TextEdit, []source.Diagnostic) {
+func OnType(input parser.Document, offset int, typed rune) ([]TextEdit, []source.Diagnostic) {
+	document := input.Syntax()
 	text := document.File.Text
 	if offset <= 0 || offset > len(text) || (typed != '}' && typed != '\n') || text[offset-1] != byte(typed) {
 		return nil, nil

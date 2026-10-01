@@ -51,11 +51,11 @@ type syntaxFacts struct {
 }
 
 type factCollector struct {
-	document parser.Document
+	document parser.Syntax
 	facts    syntaxFacts
 }
 
-func analyzeSyntax(document parser.Document) syntaxFacts {
+func analyzeSyntax(document parser.Syntax) syntaxFacts {
 	collector := factCollector{document: document, facts: syntaxFacts{
 		braces:          map[int]braceRole{},
 		operators:       map[int]operatorRole{},
@@ -97,16 +97,16 @@ func (c *factCollector) decl(decl *ast.Decl) {
 	}
 	switch decl.Kind {
 	case ast.DeclConst:
-		c.valueDecl(&decl.Const)
+		c.valueDecl(decl.Const)
 	case ast.DeclVar:
-		c.valueDecl(&decl.Var)
+		c.valueDecl(decl.Var)
 	case ast.DeclType:
 		for index := range decl.Type.TypeParams {
 			c.typ(&decl.Type.TypeParams[index].Constraint)
 		}
 		c.typ(&decl.Type.Type)
 	case ast.DeclFunc:
-		c.function(&decl.Func)
+		c.function(decl.Func)
 	}
 }
 
@@ -249,7 +249,7 @@ func (c *factCollector) expr(expr *ast.Expression) {
 	if expr == nil {
 		return
 	}
-	c.typ(&expr.Type)
+	c.typ(expr.Type)
 	switch expr.Kind {
 	case ast.ExprUnary, ast.ExprAddr, ast.ExprDeref, ast.ExprReceive:
 		c.markFirstOperator(expr.Span, expr.Operator, operatorPrefix)
@@ -270,7 +270,7 @@ func (c *factCollector) expr(expr *ast.Expression) {
 		}
 	case ast.ExprComposite:
 		start := expr.Span.Start.Offset
-		if expr.Type.Span.Valid() {
+		if expr.Type != nil && expr.Type.Span.Valid() {
 			start = expr.Type.Span.End.Offset
 		}
 		c.markBrace(expr.Span, braceComposite, start)
@@ -283,7 +283,7 @@ func (c *factCollector) expr(expr *ast.Expression) {
 			}
 		}
 	case ast.ExprFunc:
-		c.function(&expr.Func)
+		c.function(expr.Func)
 	}
 	c.expr(expr.Left)
 	c.expr(expr.Right)
@@ -296,15 +296,6 @@ func (c *factCollector) expr(expr *ast.Expression) {
 	c.expr(expr.Start)
 	c.expr(expr.End)
 	c.expr(expr.Max)
-	if len(expr.Items) == 0 {
-		for index := range expr.Elements {
-			c.expr(&expr.Elements[index])
-		}
-		for index := range expr.Entries {
-			c.expr(expr.Entries[index].Key)
-			c.expr(&expr.Entries[index].Value)
-		}
-	}
 }
 
 func (c *factCollector) typ(typ *ast.TypeExpr) {

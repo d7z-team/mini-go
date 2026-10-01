@@ -16,10 +16,26 @@ func CloneProgram(program Program) Program {
 // CloneDecl returns a structurally independent copy of decl.
 func CloneDecl(decl Decl) Decl {
 	out := decl
-	out.Const = cloneValueDecl(decl.Const)
-	out.Var = cloneValueDecl(decl.Var)
-	out.Type = cloneTypeDecl(decl.Type)
-	out.Func = cloneFuncDecl(decl.Func)
+	if decl.Import != nil {
+		value := *decl.Import
+		out.Import = &value
+	}
+	if decl.Const != nil {
+		value := cloneValueDecl(*decl.Const)
+		out.Const = &value
+	}
+	if decl.Var != nil {
+		value := cloneValueDecl(*decl.Var)
+		out.Var = &value
+	}
+	if decl.Type != nil {
+		value := cloneTypeDecl(*decl.Type)
+		out.Type = &value
+	}
+	if decl.Func != nil {
+		value := cloneFuncDecl(*decl.Func)
+		out.Func = &value
+	}
 	return out
 }
 
@@ -104,7 +120,7 @@ func cloneTypeExpr(typ TypeExpr) TypeExpr {
 		out.Key = &key
 	}
 	if typ.Len != nil {
-		length := cloneExpression(*typ.Len)
+		length := CloneExpression(*typ.Len)
 		out.Len = &length
 	}
 	out.Params = cloneFields(typ.Params)
@@ -157,7 +173,7 @@ func cloneStatement(statement Statement) Statement {
 	out := statement
 	out.Decls = cloneDecls(statement.Decls)
 	if statement.Expr != nil {
-		expr := cloneExpression(*statement.Expr)
+		expr := CloneExpression(*statement.Expr)
 		out.Expr = &expr
 	}
 	out.Left = cloneExpressions(statement.Left)
@@ -168,7 +184,7 @@ func cloneStatement(statement Statement) Statement {
 		out.Init = &init
 	}
 	if statement.Cond != nil {
-		condition := cloneExpression(*statement.Cond)
+		condition := CloneExpression(*statement.Cond)
 		out.Cond = &condition
 	}
 	if statement.Post != nil {
@@ -180,15 +196,15 @@ func cloneStatement(statement Statement) Statement {
 		out.Else = &elseStatement
 	}
 	if statement.Key != nil {
-		key := cloneExpression(*statement.Key)
+		key := CloneExpression(*statement.Key)
 		out.Key = &key
 	}
 	if statement.Value != nil {
-		value := cloneExpression(*statement.Value)
+		value := CloneExpression(*statement.Value)
 		out.Value = &value
 	}
 	if statement.Range != nil {
-		rangeExpr := cloneExpression(*statement.Range)
+		rangeExpr := CloneExpression(*statement.Range)
 		out.Range = &rangeExpr
 	}
 	if statement.Cases != nil {
@@ -218,14 +234,18 @@ func cloneCaseClause(clause CaseClause) CaseClause {
 	return out
 }
 
-func cloneExpression(expr Expression) Expression {
+// CloneExpression returns a structurally independent copy of expr.
+func CloneExpression(expr Expression) Expression {
 	out := expr
-	out.Type = cloneTypeExpr(expr.Type)
+	if expr.Type != nil {
+		typ := cloneTypeExpr(*expr.Type)
+		out.Type = &typ
+	}
 	clone := func(value *Expression) *Expression {
 		if value == nil {
 			return nil
 		}
-		out := cloneExpression(*value)
+		out := CloneExpression(*value)
 		return &out
 	}
 	out.Left = clone(expr.Left)
@@ -237,8 +257,6 @@ func cloneExpression(expr Expression) Expression {
 	out.Start = clone(expr.Start)
 	out.End = clone(expr.End)
 	out.Max = clone(expr.Max)
-	out.Elements = cloneExpressions(expr.Elements)
-	out.Entries = cloneKeyValues(expr.Entries)
 	out.Items = cloneKeyValues(expr.Items)
 	if expr.EmbedFiles != nil {
 		out.EmbedFiles = make([]EmbedFile, len(expr.EmbedFiles))
@@ -247,7 +265,10 @@ func cloneExpression(expr Expression) Expression {
 			out.EmbedFiles[i].Data = append([]byte(nil), file.Data...)
 		}
 	}
-	out.Func = cloneFuncDecl(expr.Func)
+	if expr.Func != nil {
+		function := cloneFuncDecl(*expr.Func)
+		out.Func = &function
+	}
 	return out
 }
 
@@ -257,7 +278,7 @@ func cloneExpressions(values []Expression) []Expression {
 	}
 	out := make([]Expression, len(values))
 	for i, value := range values {
-		out[i] = cloneExpression(value)
+		out[i] = CloneExpression(value)
 	}
 	return out
 }
@@ -270,10 +291,10 @@ func cloneKeyValues(values []KeyValue) []KeyValue {
 	for i, value := range values {
 		out[i] = value
 		if value.Key != nil {
-			key := cloneExpression(*value.Key)
+			key := CloneExpression(*value.Key)
 			out[i].Key = &key
 		}
-		out[i].Value = cloneExpression(value.Value)
+		out[i].Value = CloneExpression(value.Value)
 	}
 	return out
 }

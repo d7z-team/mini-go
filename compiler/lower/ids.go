@@ -1,7 +1,7 @@
 package lower
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	ir "github.com/d7z-team/mini-go/compiler/hir"
@@ -46,11 +46,11 @@ func functionID(name string) string {
 }
 
 func userInitFunctionID(index int) string {
-	return fmt.Sprintf("fn.user_init.%d", index)
+	return "fn.user_init." + strconv.Itoa(index)
 }
 
 func blankFunctionID(index int) string {
-	return fmt.Sprintf("fn.blank.%d", index)
+	return "fn.blank." + strconv.Itoa(index)
 }
 
 func constID(name string) string {
@@ -58,7 +58,7 @@ func constID(name string) string {
 }
 
 func (l *lowerer) newConstID(name string) string {
-	id := fmt.Sprintf("const.local.%d.%s", l.nextConst, strings.TrimSpace(name))
+	id := "const.local." + strconv.Itoa(l.nextConst) + "." + strings.TrimSpace(name)
 	l.nextConst++
 	return id
 }
@@ -92,7 +92,7 @@ func receiverLocalID() string {
 }
 
 func resultLocalID(index int) string {
-	return fmt.Sprintf("result.%d", index)
+	return "result." + strconv.Itoa(index)
 }
 
 func isBlankIdentifier(name string) bool {
@@ -105,7 +105,7 @@ func (l *lowerer) newLocalID(fn *ir.Function, name string) string {
 		return base
 	}
 	for {
-		id := fmt.Sprintf("%s.%d", base, l.nextSyntheticLocal)
+		id := base + "." + strconv.Itoa(l.nextSyntheticLocal)
 		l.nextSyntheticLocal++
 		if !functionHasLocalID(fn, id) {
 			return id
@@ -134,14 +134,14 @@ func isExported(name string) bool {
 }
 
 func (l *lowerer) newLabel(prefix string) string {
-	label := fmt.Sprintf(".%s.%d", prefix, l.nextLabel)
+	label := "." + prefix + "." + strconv.Itoa(l.nextLabel)
 	l.nextLabel++
 	return label
 }
 
 func (l *lowerer) newSyntheticLocal(scope *funcScope, prefix, typ string) string {
-	id := fmt.Sprintf("local.%s.%d", prefix, l.nextSyntheticLocal)
-	name := fmt.Sprintf("%s.%d", prefix, l.nextSyntheticLocal)
+	name := prefix + "." + strconv.Itoa(l.nextSyntheticLocal)
+	id := "local." + name
 	l.nextSyntheticLocal++
 	if scope != nil && scope.function != nil {
 		scope.function.Locals = append(scope.function.Locals, ir.Local{

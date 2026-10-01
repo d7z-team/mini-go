@@ -19,21 +19,21 @@ func TestLowerTypeAssertExpression(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtReturn,
 						Results: []ast.Expression{{
 							Kind: ast.ExprAssert,
-							Type: intType,
+							Type: &intType,
 							Operand: &ast.Expression{
 								Kind: ast.ExprConvert,
-								Type: anyType,
+								Type: &anyType,
 								Operand: &ast.Expression{
 									Kind:    ast.ExprLiteral,
 									Literal: "42",
-									Type:    intType,
+									Type:    &intType,
 								},
 							},
 						}},
@@ -76,13 +76,13 @@ func TestLowerInterfaceTypeSignature(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Use",
 					Params:  []ast.Field{{Name: "r", Type: interfaceType}},
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "42", Type: &intType}},
 					}}},
 				},
 			}},
@@ -105,7 +105,7 @@ func TestLowerEmbeddedInterfaceTypeSignature(t *testing.T) {
 	intType := ast.TypeExpr{Kind: ast.TypeName, Name: "Int64"}
 	readerDecl := ast.Decl{
 		Kind: ast.DeclType,
-		Type: ast.TypeDecl{
+		Type: &ast.TypeDecl{
 			Name: "Reader",
 			Type: ast.TypeExpr{Kind: ast.TypeInterface, Methods: []ast.FuncDecl{{
 				Name:    "Read",
@@ -134,7 +134,7 @@ func TestLowerEmbeddedInterfaceTypeSignature(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{readerDecl, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:   "Use",
 					Params: []ast.Field{{Name: "r", Type: interfaceType}},
 					Body:   ast.BlockStmt{},

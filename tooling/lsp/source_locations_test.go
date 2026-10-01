@@ -22,7 +22,11 @@ func TestRegisteredLibraryLocationsRemainReadOnly(t *testing.T) {
 	}
 	config := Workspace{RootPath: loaded.Root, ModulePath: loaded.ModulePath, Sources: loaded.Sources, Documents: loaded.Documents, Locations: loaded.Locations}
 	filename := filepath.Join(library, "value.mgo")
-	if got := config.documentURI("rules", "value.mgo"); got != DocumentURI(uri.File(filename)) {
+	canonicalFile, err := filepath.EvalSymlinks(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.documentURI("rules", "value.mgo"); got != DocumentURI(uri.File(canonicalFile)) {
 		t.Fatalf("URI: %q", got)
 	}
 	server := NewProtocolServer(nil)

@@ -10,7 +10,7 @@ import (
 )
 
 func (a *analyzer) finalizeLiteral(expr *ast.Expression, info ExprInfo) ExprInfo {
-	info.Type = a.resolvedType(expr.Type)
+	info.Type = a.resolvedTypePtr(expr.Type)
 	info.Mode = ExprConstant
 	info.Untyped = true
 	return info
@@ -563,8 +563,8 @@ func (a *analyzer) finalizeBuiltinCall(expr *ast.Expression, info ExprInfo, name
 }
 
 func (a *analyzer) builtinArgumentType(expr ast.Expression) types.TypeRef {
-	if expr.Kind == ast.ExprIdent && expr.Name == "type" && expr.Type.Kind != ast.TypeInvalid {
-		return a.resolvedType(expr.Type)
+	if expr.Kind == ast.ExprIdent && expr.Name == "type" && expr.Type != nil && expr.Type.Kind != ast.TypeInvalid {
+		return a.resolvedType(*expr.Type)
 	}
 	return a.info.Exprs[expr.NodeID].Type
 }

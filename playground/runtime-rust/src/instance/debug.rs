@@ -169,6 +169,10 @@ impl Instance {
             frame,
             frame.pc.saturating_sub(1),
         );
+        self.debug_stop(EventKind::Panic, info);
+    }
+
+    fn debug_stop(&mut self, kind: EventKind, frame: FrameInfo) {
         self.debug.paused = true;
         self.debug.resume = None;
         if self.debug.events.len() == 256 {
@@ -177,9 +181,25 @@ impl Instance {
         self.debug.event_sequence = self.debug.event_sequence.saturating_add(1);
         self.debug.events.push_back(DebugEvent {
             sequence: self.debug.event_sequence,
-            kind: EventKind::Panic,
-            frame: info,
+            kind,
+            frame,
         });
+    }
+
+    // An owner with only blocked tasks is already at a safe point. A pause
+    // must not wait for the external event the caller intends to inspect.
+    pub(super) fn debug_pause_waiting(&mut self) -> bool {
+        if !self.debug.pause.load(Ordering::Acquire) {
+            return false;
+        }
+        let Some(task) = self.blocked.iter().find(|task| !task.frames.is_empty()) else {
+            return false;
+        };
+        let frame = task.frames.last().unwrap();
+        let info = self.frame_info(task.id, task.scope, task.frames.len() - 1, frame, frame.pc);
+        self.debug.pause.store(false, Ordering::Release);
+        self.debug_stop(EventKind::Pause, info);
+        true
     }
 
     pub(super) fn debug_revision_changed(&mut self) {
@@ -206,7 +226,14 @@ impl Instance {
         }
     }
     pub(super) fn debug_cancel_scope(&mut self, scope: u64) {
-        if self.running.scope == scope {
+        if self.running.scope == scope
+            || (self.debug.paused
+                && self
+                    .debug
+                    .events
+                    .back()
+                    .is_some_and(|event| event.frame.scope == scope))
+        {
             self.debug.paused = false;
             self.debug.resume = None;
             self.debug.epoch = self.debug.epoch.saturating_add(1);
@@ -381,17 +408,7 @@ impl Instance {
             kind = Some(EventKind::Breakpoint);
         }
         if let Some(kind) = kind {
-            self.debug.paused = true;
-            self.debug.resume = None;
-            if self.debug.events.len() == 256 {
-                self.debug.events.pop_front();
-            }
-            self.debug.event_sequence = self.debug.event_sequence.saturating_add(1);
-            self.debug.events.push_back(DebugEvent {
-                sequence: self.debug.event_sequence,
-                kind,
-                frame: info,
-            });
+            self.debug_stop(kind, info);
             return true;
         }
         if self
@@ -426,7 +443,7 @@ impl Instance {
                     .function(&info.module, &info.function)
                     .unwrap()
                     .opcodes[info.pc]
-                    .clone();
+                    .to_owned();
                 self.debug.samples.insert(
                     key,
                     ProfileSample {
@@ -647,7 +664,12 @@ impl Instance {
     }
 
     pub fn debug_resume(&mut self, mode: StepMode) -> Result<(), RuntimeError> {
-        self.debug_resume_task(mode, self.running.id)
+        let task = self
+            .debug
+            .events
+            .back()
+            .map_or(self.running.id, |event| event.frame.reference.task);
+        self.debug_resume_task(mode, task)
     }
 
     pub fn debug_resume_task(&mut self, mode: StepMode, task: u64) -> Result<(), RuntimeError> {

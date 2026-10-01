@@ -19,66 +19,36 @@ func (l *lowerer) typeConversionCallTarget(expr ast.Expression, scope *funcScope
 	if expr.Callee == nil || expr.Callee.Kind != ast.ExprIdent {
 		return "", false
 	}
-	if expr.Callee.Name == "type" && expr.Callee.Type.Kind != ast.TypeInvalid {
-		target := l.resolveSourceType(expr.Callee.Type)
+	if expr.Callee.Name == "type" && expr.Callee.Type != nil && expr.Callee.Type.Kind != ast.TypeInvalid {
+		target := l.resolveSourceType(*expr.Callee.Type)
 		return target, target != ""
 	}
-	name := strings.TrimSpace(expr.Callee.Name)
-	if name == "" || l.isValueNameBound(name, expr.Callee.Span, scope) {
-		return "", false
-	}
-	if typ, ok := builtinTypeName(name); ok {
-		return typ, true
-	}
-	if _, ok := l.typeDecls[name]; ok {
-		return l.resolveType(name), true
-	}
-	if _, ok := l.typeAliases[name]; ok {
-		return l.resolveType(name), true
-	}
-	if export, ok := l.dotImportExport(name, expr.Callee.Span); ok && export.Kind == check.ObjectType {
-		return l.importedTypeCanonicalName(name, export), true
-	}
-	return "", false
+	return l.resolveNamedTypeArgument(*expr.Callee, scope)
 }
 
-func builtinTypeName(name string) (string, bool) {
-	switch strings.TrimSpace(name) {
-	case "bool":
-		return "Bool", true
-	case "string":
-		return "String", true
-	case "int":
-		return "Int", true
-	case "int8":
-		return "Int8", true
-	case "int16":
-		return "Int16", true
-	case "int32", "rune":
-		return "Int32", true
-	case "int64":
-		return "Int64", true
-	case "uint":
-		return "Uint", true
-	case "uint8", "byte":
-		return "Uint8", true
-	case "uint16":
-		return "Uint16", true
-	case "uint32":
-		return "Uint32", true
-	case "uint64":
-		return "Uint64", true
-	case "uintptr":
-		return "Uintptr", true
-	case "float32":
-		return "Float32", true
-	case "float64":
-		return "Float64", true
-	case "complex64":
-		return "Complex64", true
-	case "complex128":
-		return "Complex128", true
-	default:
-		return "", false
+func (l *lowerer) resolveNamedTypeArgument(expr ast.Expression, scope *funcScope) (string, bool) {
+	switch expr.Kind {
+	case ast.ExprIdent:
+		name := strings.TrimSpace(expr.Name)
+		if name == "" || l.isValueNameBound(name, expr.Span, scope) {
+			return "", false
+		}
+		if _, ok := l.typeDecls[name]; ok {
+			return l.resolveType(name), true
+		}
+		if _, ok := l.typeAliases[name]; ok {
+			return l.resolveType(name), true
+		}
+		if export, ok := l.dotImportExport(name, expr.Span); ok && export.Kind == check.ObjectType {
+			return l.importedTypeCanonicalName(name, export), true
+		}
+		return sourcePredeclaredType(name)
+	case ast.ExprSelector:
+		if _, ok := l.selectorTypeExport(expr, scope); ok {
+			if typ := l.selectorConversionType(expr, scope); typ != "" {
+				return typ, true
+			}
+		}
 	}
+	return "", false
 }

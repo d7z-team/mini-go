@@ -1,7 +1,7 @@
 package emit
 
 import (
-	"fmt"
+	"strconv"
 
 	"github.com/d7z-team/mini-go/compiler/hir"
 )
@@ -47,7 +47,7 @@ func closeExitedMapIterators(body []hir.Statement) []hir.Statement {
 			}
 		}
 		if len(closes) != 0 && stmt.Kind == hir.StmtJumpIf {
-			cleanup := fmt.Sprintf("map.cleanup.%d", index)
+			cleanup := "map.cleanup." + strconv.Itoa(index)
 			after := cleanup + ".after"
 			branch := stmt
 			branch.Label = cleanup

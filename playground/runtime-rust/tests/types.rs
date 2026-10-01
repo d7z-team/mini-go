@@ -4,6 +4,44 @@ use mini_go::{
 };
 
 #[test]
+fn repeated_type_comparisons_stay_with_their_program_context() {
+    for (length, equal) in [(2, true), (3, false), (2, true)] {
+        let artifact: wire::Artifact = serde_json::from_value(serde_json::json!({
+            "module":{"path":"example"}, "type_table":{"nodes":[
+                {"id":"a","kind":wire::Array,"length":2,"elem":{"kind":wire::Primitive,"primitive":wire::PrimitiveInt}},
+                {"id":"b","kind":wire::Array,"length":length,"elem":{"kind":wire::Primitive,"primitive":wire::PrimitiveInt}}
+            ]}
+        })).unwrap();
+        let registry = TypeRegistry::new([&artifact]).unwrap();
+        let reference = |name: &str| wire::TypeRef {
+            kind: wire::Array,
+            node: name.to_owned(),
+            ..Default::default()
+        };
+        let left = registry.resolve("example", &reference("a")).unwrap();
+        let right = registry.resolve("example", &reference("b")).unwrap();
+        for _ in 0..3 {
+            assert_eq!(registry.identical(&left, &right).unwrap(), equal);
+            assert_eq!(registry.identical(&right, &left).unwrap(), equal);
+        }
+        let mut dynamic = registry.clone();
+        let constructed = dynamic
+            .construct(
+                ConstructedType::Array {
+                    length,
+                    element: TypeIdentity::Primitive(wire::PrimitiveInt),
+                },
+                2,
+                16,
+            )
+            .unwrap();
+        assert!(dynamic.identical(&constructed, &right).unwrap());
+        assert_eq!(dynamic.identical(&constructed, &left).unwrap(), equal);
+        assert_eq!(registry.identical(&left, &right).unwrap(), equal);
+    }
+}
+
+#[test]
 fn dynamic_type_construction_is_structural_bounded_and_transactional() {
     let artifact: wire::Artifact = serde_json::from_str(r#"{
         "module":{"path":"example"}, "type_table":{"nodes":[{"id":"array","kind":6,"length":2,"elem":{"kind":3,"primitive":3}}]}

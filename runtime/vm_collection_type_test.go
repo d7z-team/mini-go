@@ -8,7 +8,7 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func TestVMMakeSequenceRejectsWrongElementType(t *testing.T) {
+func TestLoaderMakeSequenceRejectsWrongElementType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	setRuntimeTestNamedTypes(&artifact, []testNamedType{{
 		Name: "User",
@@ -22,29 +22,25 @@ func TestVMMakeSequenceRejectsWrongElementType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+		Code: testSlotCode([]string{"String", "Slice<User>"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpMakeSequence),
+			Op:      ir.OpMakeSequence,
 			Payload: testArrayPayload("Slice<User>", 1),
 		}, {
-			Op: string(ir.OpPop),
-		}},
+			Op: ir.OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), "array element 0") || !strings.Contains(err.Error(), "String is not example/module.User") {
-		t.Fatalf("expected array literal type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "String is not assignable to example/module.User") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
-func TestVMMakeMapRejectsWrongValueType(t *testing.T) {
+func TestLoaderMakeMapRejectsWrongValueType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	setRuntimeTestNamedTypes(&artifact, []testNamedType{{
 		Name: "User",
@@ -61,28 +57,24 @@ func TestVMMakeMapRejectsWrongValueType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.key"}`),
+		Code: testSlotCode([]string{"String", "String", "Map<String, User>"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.key"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpMakeMap),
+			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, User>", 1),
 		}, {
-			Op: string(ir.OpPop),
-		}},
+			Op: ir.OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {{2}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
-	vm, err := loadTestEngine(artifact)
-	if err != nil {
-		t.Fatalf("load test engine failed: %v", err)
-	}
-	_, err = runTestModuleExport(vm, "Main")
-	if err == nil || !strings.Contains(err.Error(), "map value 0") || !strings.Contains(err.Error(), "String is not example/module.User") {
-		t.Fatalf("expected map literal type error, got %v", err)
+	_, err := loadTestEngine(artifact)
+	if err == nil || !strings.Contains(err.Error(), "String is not assignable to example/module.User") {
+		t.Fatalf("expected slot validation error, got %v", err)
 	}
 }
 
@@ -100,18 +92,18 @@ func TestVMAppendRejectsWrongElementType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpMakeSequence),
+		Code: testSlotCode([]string{"Slice<User>", "String", "Slice<User>"}, []ir.Instruction{{
+			Op:      ir.OpMakeSequence,
 			Payload: testArrayPayload("Slice<User>", 0),
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpAppend),
-			Payload: json.RawMessage(`{"count":1}`),
+			Op:      ir.OpAppend,
+			Payload: ir.CountPayload{Count: 1},
 		}, {
-			Op: string(ir.OpPop),
-		}},
+			Op: ir.OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {{2}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -131,15 +123,15 @@ func TestVMAppendExpandsEveryUTF8Byte(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Slice<Uint8>"),
-		Instructions: []ir.Instruction{{
-			Op: string(ir.OpMakeSequence), Payload: testArrayPayload("Slice<Uint8>", 0),
+		Code: testSlotCode([]string{"Slice<Uint8>", "String", "Slice<Uint8>"}, []ir.Instruction{{
+			Op: ir.OpMakeSequence, Payload: testArrayPayload("Slice<Uint8>", 0),
 		}, {
-			Op: string(ir.OpConst), Payload: json.RawMessage(`{"constant":"c.text"}`),
+			Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.text"},
 		}, {
-			Op: string(ir.OpAppend), Payload: testPayload(ir.CountPayload{Count: 1, Expand: true}),
+			Op: ir.OpAppend, Payload: ir.CountPayload{Count: 1, Expand: true},
 		}, {
-			Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{ResultCount: 1}),
-		}},
+			Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, {2}}, {{2}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -185,33 +177,35 @@ func TestVMSliceStoreAndClearPreserveElementMetadata(t *testing.T) {
 				{ID: "c.name", Type: testType("String"), Value: json.RawMessage(`"Ada"`)},
 			}
 			instructions := []ir.Instruction{
-				{Op: string(ir.OpConst), Payload: json.RawMessage(`{"constant":"c.one"}`)},
-				{Op: string(ir.OpMakeSlice), Payload: testMakeSlicePayload("Slice<User>")},
-				{Op: string(ir.OpStoreLocal), Payload: json.RawMessage(`{"local":"local.users"}`)},
-				{Op: string(ir.OpLoadLocal), Payload: json.RawMessage(`{"local":"local.users"}`)},
-				{Op: string(ir.OpConst), Payload: json.RawMessage(`{"constant":"c.zero"}`)},
-				{Op: string(ir.OpConst), Payload: json.RawMessage(`{"constant":"c.name"}`)},
-				{Op: string(ir.OpMakeStruct), Payload: testStructPayload("User", "Name")},
-				{Op: string(ir.OpStoreIndex)},
+				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.one"}},
+				{Op: ir.OpMakeSlice, Payload: testMakeSlicePayload("Slice<User>")},
+				{Op: ir.OpStoreLocal, Payload: ir.LocalPayload{Local: "local.users"}},
+				{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "local.users"}},
+				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.zero"}},
+				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.name"}},
+				{Op: ir.OpMakeStruct, Payload: testStructPayload("User", "Name")},
+				{Op: ir.OpStoreIndex},
 			}
+			operands := [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}, {nil, {1}}, {nil, {0}}, {nil, {2}}, {{2}, {3}}, {{1, 0, 3}, nil}}
 			if tc.clear {
+				operands = append(operands, [2][]uint32{nil, {1}}, [2][]uint32{{1}, nil})
 				instructions = append(instructions,
-					ir.Instruction{Op: string(ir.OpLoadLocal), Payload: json.RawMessage(`{"local":"local.users"}`)},
-					ir.Instruction{Op: string(ir.OpClear)},
+					ir.Instruction{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "local.users"}},
+					ir.Instruction{Op: ir.OpClear},
 				)
 			}
 			instructions = append(instructions,
-				ir.Instruction{Op: string(ir.OpLoadLocal), Payload: json.RawMessage(`{"local":"local.users"}`)},
-				ir.Instruction{Op: string(ir.OpConst), Payload: json.RawMessage(`{"constant":"c.zero"}`)},
-				ir.Instruction{Op: string(ir.OpLoadIndex)},
-				ir.Instruction{Op: string(ir.OpLoadField), Payload: json.RawMessage(`{"field":"Name"}`)},
-				ir.Instruction{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":1}`)},
+				ir.Instruction{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "local.users"}},
+				ir.Instruction{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.zero"}},
+				ir.Instruction{Op: ir.OpLoadIndex},
+				ir.Instruction{Op: ir.OpLoadField, Payload: ir.FieldPayload{Field: "Name"}},
+				ir.Instruction{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 			)
 			artifact.Functions = []ir.Function{{
-				ID:           "fn.main",
-				Signature:    testSignature("function() String"),
-				Locals:       []ir.Local{{ID: "local.users", Type: testType("Slice<User>")}},
-				Instructions: instructions,
+				ID:        "fn.main",
+				Signature: testSignature("function() String"),
+				Locals:    []ir.Local{{ID: "local.users", Type: testType("Slice<User>")}},
+				Code:      testSlotCode([]string{"Int64", "Slice<User>", "String", "User"}, instructions, append(operands, [2][]uint32{nil, {1}}, [2][]uint32{nil, {0}}, [2][]uint32{{1, 0}, {3}}, [2][]uint32{{3}, {2}}, [2][]uint32{{2}, nil})),
 			}}
 			artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -250,63 +244,63 @@ func TestVMCopySliceUsesElementTypeMetadata(t *testing.T) {
 			{ID: "local.dst", Type: testType("Slice<User>")},
 			{ID: "local.src", Type: testType("Slice<User>")},
 		},
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+		Code: testSlotCode([]string{"Int64", "Slice<User>", "String", "User", "Slice<User>", "Int"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpMakeSlice),
+			Op:      ir.OpMakeSlice,
 			Payload: testMakeSlicePayload("Slice<User>"),
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.dst"}`),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.dst"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpMakeSlice),
+			Op:      ir.OpMakeSlice,
 			Payload: testMakeSlicePayload("Slice<User>"),
 		}, {
-			Op:      string(ir.OpStoreLocal),
-			Payload: json.RawMessage(`{"local":"local.src"}`),
+			Op:      ir.OpStoreLocal,
+			Payload: ir.LocalPayload{Local: "local.src"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.src"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.src"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.zero"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.zero"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.name"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.name"},
 		}, {
-			Op:      string(ir.OpMakeStruct),
+			Op:      ir.OpMakeStruct,
 			Payload: testStructPayload("User", "Name"),
 		}, {
-			Op: string(ir.OpStoreIndex),
+			Op: ir.OpStoreIndex,
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.dst"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.dst"},
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.src"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.src"},
 		}, {
-			Op: string(ir.OpCopy),
+			Op: ir.OpCopy,
 		}, {
-			Op: string(ir.OpPop),
+			Op: ir.OpPop,
 		}, {
-			Op:      string(ir.OpLoadLocal),
-			Payload: json.RawMessage(`{"local":"local.dst"}`),
+			Op:      ir.OpLoadLocal,
+			Payload: ir.LocalPayload{Local: "local.dst"},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.zero"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.zero"},
 		}, {
-			Op: string(ir.OpLoadIndex),
+			Op: ir.OpLoadIndex,
 		}, {
-			Op:      string(ir.OpLoadField),
-			Payload: json.RawMessage(`{"field":"Name"}`),
+			Op:      ir.OpLoadField,
+			Payload: ir.FieldPayload{Field: "Name"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}, {nil, {0}}, {{0}, {1}}, {{1}, nil}, {nil, {1}}, {nil, {0}}, {nil, {2}}, {{2}, {3}}, {{1, 0, 3}, nil}, {nil, {1}}, {nil, {4}}, {{1, 4}, {5}}, {{5}, nil}, {nil, {1}}, {nil, {0}}, {{1, 0}, {3}}, {{3}, {2}}, {{2}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -338,23 +332,23 @@ func TestVMCopySliceRejectsWrongElementType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.one"}`),
+		Code: testSlotCode([]string{"Int64", "Slice<User>", "String", "Slice<String>", "Int"}, []ir.Instruction{{
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
-			Op:      string(ir.OpMakeSlice),
+			Op:      ir.OpMakeSlice,
 			Payload: testMakeSlicePayload("Slice<User>"),
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.bad"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
-			Op:      string(ir.OpMakeSequence),
+			Op:      ir.OpMakeSequence,
 			Payload: testArrayPayload("Slice<String>", 1),
 		}, {
-			Op: string(ir.OpCopy),
+			Op: ir.OpCopy,
 		}, {
-			Op: string(ir.OpPop),
-		}},
+			Op: ir.OpPop,
+		}}, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {nil, {2}}, {{2}, {3}}, {{1, 3}, {4}}, {{4}, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 

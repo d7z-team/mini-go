@@ -142,16 +142,16 @@ func unmarshalValue(text string, pos int, target reflect.Value, options decodeOp
 	if pos >= len(text) {
 		return pos, newMarshalError("json: unexpected end of input")
 	}
-	end, valid := scanJSONValue(text, pos)
-	if !valid {
-		return pos, newMarshalError("json: invalid value")
-	}
 	if target.CanAddr() && target.Addr().CanInterface() {
 		if unmarshaler, ok := target.Addr().Interface().(Unmarshaler); ok {
+			end, valid := scanJSONValue(text, pos)
+			if !valid {
+				return pos, newMarshalError("json: invalid value")
+			}
 			return end, unmarshaler.UnmarshalJSON([]byte(text[pos:end]))
 		}
 		if textUnmarshaler, ok := target.Addr().Interface().(encoding.TextUnmarshaler); ok && text[pos:pos + 1] == "\"" {
-			decoded, _, ok := parseJSONStringValue(text, pos)
+			decoded, end, ok := parseJSONStringValue(text, pos)
 			if !ok {
 				return pos, newMarshalError("json: expected string")
 			}
@@ -159,6 +159,10 @@ func unmarshalValue(text string, pos int, target reflect.Value, options decodeOp
 		}
 	}
 	if isJSONRawMessageType(target.Type()) {
+		end, valid := scanJSONValue(text, pos)
+		if !valid {
+			return pos, newMarshalError("json: invalid value")
+		}
 		target.Set(reflect.ValueOf(RawMessage([]byte(text[pos:end]))))
 		return end, nil
 	}

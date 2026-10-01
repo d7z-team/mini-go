@@ -93,7 +93,7 @@ func (l *lowerer) lowerFuncLiteral(expr ast.Expression, outer *funcScope) (ir.Ex
 		Name:          fmt.Sprintf("literal.%d", l.nextAnonFunc),
 		RevisionLocal: true,
 		Declaration:   hirLocationPtr(expr.Span),
-		Signature:     l.hirSignature(l.signatureOf(expr.Func), funcDeclVariadic(expr.Func)),
+		Signature:     l.hirSignature(l.signatureOf(*expr.Func), funcDeclVariadic(*expr.Func)),
 	}
 	scope := newFuncScope(&fn, outer)
 	scope.resultTypes = l.typeRefsFromStrings(l.resultTypes(expr.Func.Results))

@@ -35,13 +35,16 @@ func Names(program Program) []NameOccurrence {
 }
 
 func collectDeclNames(decl *Decl, add func(Identifier, NodeID, NameRole)) {
+	if !decl.hasPayload() {
+		return
+	}
 	switch decl.Kind {
 	case DeclImport:
 		add(decl.Import.AliasID, decl.NodeID, NameImport)
 	case DeclConst:
-		collectValueNames(&decl.Const, decl.NodeID, add)
+		collectValueNames(decl.Const, decl.NodeID, add)
 	case DeclVar:
-		collectValueNames(&decl.Var, decl.NodeID, add)
+		collectValueNames(decl.Var, decl.NodeID, add)
 	case DeclType:
 		add(decl.Type.NameID, decl.NodeID, NameDefinition)
 		for i := range decl.Type.TypeParams {
@@ -49,7 +52,7 @@ func collectDeclNames(decl *Decl, add func(Identifier, NodeID, NameRole)) {
 		}
 		collectTypeNames(&decl.Type.Type, add)
 	case DeclFunc:
-		collectFuncNamesAt(&decl.Func, decl.NodeID, add)
+		collectFuncNamesAt(decl.Func, decl.NodeID, add)
 	}
 }
 
@@ -208,9 +211,12 @@ func collectExprNames(expr *Expression, add func(Identifier, NodeID, NameRole)) 
 	if expr == nil || expr.Kind == ExprInvalid {
 		return
 	}
-	add(expr.NameID, expr.NodeID, NameReference)
-	add(expr.FieldID, expr.NodeID, NameSelector)
-	collectTypeNames(&expr.Type, add)
+	if expr.Kind == ExprSelector {
+		add(expr.NameID, expr.NodeID, NameSelector)
+	} else {
+		add(expr.NameID, expr.NodeID, NameReference)
+	}
+	collectTypeNames(expr.Type, add)
 	collectExprNames(expr.Left, add)
 	collectExprNames(expr.Right, add)
 	collectExprNames(expr.Operand, add)
@@ -222,16 +228,11 @@ func collectExprNames(expr *Expression, add func(Identifier, NodeID, NameRole)) 
 	collectExprNames(expr.Start, add)
 	collectExprNames(expr.End, add)
 	collectExprNames(expr.Max, add)
-	for i := range expr.Elements {
-		collectExprNames(&expr.Elements[i], add)
+	for i := range expr.Items {
+		collectExprNames(expr.Items[i].Key, add)
+		collectExprNames(&expr.Items[i].Value, add)
 	}
-	for _, entries := range [][]KeyValue{expr.Entries, expr.Items} {
-		for i := range entries {
-			collectExprNames(entries[i].Key, add)
-			collectExprNames(&entries[i].Value, add)
-		}
-	}
-	if expr.Kind == ExprFunc {
-		collectFuncNames(&expr.Func, add)
+	if expr.Kind == ExprFunc && expr.Func != nil {
+		collectFuncNames(expr.Func, add)
 	}
 }

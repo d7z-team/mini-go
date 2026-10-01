@@ -2,7 +2,7 @@ import { WasmCompiler, type InitOutput } from "./wasm/mini_go_wasm.js";
 import { serializeError, type CompilerCommand, type WorkerPort } from "./protocol.js";
 
 /** The Rust owner controls recovery and guest protocol; this adapter only pumps slices. */
-export function compilerWorker(
+export function createCompilerHandler(
   port: WorkerPort,
   load: (url?: string) => Promise<InitOutput>,
   enqueue?: (callback: () => void) => void,

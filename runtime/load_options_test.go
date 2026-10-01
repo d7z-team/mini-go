@@ -13,7 +13,7 @@ func TestInstantiateRejectsNegativeRuntimeLimits(t *testing.T) {
 	artifact := ir.NewArtifact("test/limits", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
+		Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	program := patchTestProgram(t, artifact, "negative-limits")
 	tests := []Limits{
@@ -42,21 +42,32 @@ func TestArtifactLoadLimitsRejectOversizedShape(t *testing.T) {
 	artifact := ir.NewArtifact("test/load", "load")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main",
-		Instructions: []ir.Instruction{
-			{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-			{Op: string(ir.OpPop)},
-			{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-		},
+		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+			{Op: ir.OpPop},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}}
 	err := validateArtifactLoad(&artifact, normalizeLoadOptions(LoadOptions{MaxInstructions: 1}))
 	if err == nil || !strings.Contains(err.Error(), "instruction limit exceeded") {
 		t.Fatalf("validate artifact limit error = %v", err)
 	}
+	artifact = slotLoopArtifact(t, 9)
+	for _, limit := range []int{1, 4, 5} {
+		err := validateArtifactLoad(&artifact, normalizeLoadOptions(LoadOptions{MaxInstructions: limit}))
+		if limit < 5 {
+			if err == nil || !strings.Contains(err.Error(), "instruction limit exceeded") {
+				t.Fatalf("slot instruction limit %d: %v", limit, err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestProgramIntrospectionReturnsCopies(t *testing.T) {
 	artifact := ir.NewArtifact("test/introspection", "introspection")
-	artifact.Functions = []ir.Function{{ID: "fn.main", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}}}}
+	artifact.Functions = []ir.Function{{ID: "fn.main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main", Type: testType("function() Void")}}
 	attachRuntimeTestTypeNodes(&artifact)
 	executable, err := newLoader().load(artifact)
@@ -78,7 +89,7 @@ func TestLoadExecutionImageOwnsInput(t *testing.T) {
 	artifact := ir.NewArtifact("test/owned", "owned")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
+		Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	attachRuntimeTestTypeNodes(&artifact)
@@ -124,16 +135,16 @@ func TestLoadExecutionImageRejectsCrossModuleCallShapeMismatch(t *testing.T) {
 	rootArtifact.Requirements = []ir.Requirement{{Kind: ir.RequirementSource, ModulePath: "test/dependency", Exports: []string{"Target"}}}
 	rootArtifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op: string(ir.OpCallDirect), Payload: testPayload(ir.CallPayload{ModulePath: "test/dependency", Function: "fn.target"}),
-		}, {Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
+		Code: testSlotCode([]string{}, []ir.Instruction{{
+			Op: ir.OpCallDirect, Payload: ir.CallPayload{ModulePath: "test/dependency", Function: "fn.target"},
+		}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}, {nil, nil}}),
 	}}
 	rootArtifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	dependencyArtifact := ir.NewArtifact("test/dependency", "dependency")
 	dependencyArtifact.Functions = []ir.Function{{
 		ID: "fn.target", Signature: testSignature("function(Int) Void"),
-		Locals:       []ir.Local{{ID: "local.value", Type: testType("Int")}},
-		Instructions: []ir.Instruction{{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})}},
+		Locals: []ir.Local{{ID: "local.value", Type: testType("Int")}},
+		Code:   testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	dependencyArtifact.Exports = []ir.Export{{Name: "Target", Kind: "function", ID: "fn.target"}}
 	attachRuntimeTestTypeNodes(&rootArtifact)

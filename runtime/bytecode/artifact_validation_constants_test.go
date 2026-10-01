@@ -13,10 +13,10 @@ func TestValidateArtifactRejectsUnknownConstantReference(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Instructions: []Instruction{{
-			Op:      string(OpConst),
-			Payload: json.RawMessage(`{"constant":"c.missing"}`),
-		}},
+		Code: testSlotCode([]string{"Int"}, []Instruction{{
+			Op:      OpConst,
+			Payload: ConstPayload{Constant: "c.missing"},
+		}}, [][2][]uint32{{nil, {0}}}),
 	}}
 
 	err := testValidateArtifact(&artifact)
@@ -262,7 +262,7 @@ func TestValidateArtifactRejectsInvalidConstExportMetadata(t *testing.T) {
 
 func TestValidateArtifactRejectsUntypedNonConstExport(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{ID: "fn.Main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.Main", Signature: testSignature("function() Void")}}
 	artifact.Exports = []Export{{Name: "Main", Kind: "function", ID: "fn.Main", Untyped: true}}
 
 	err := testValidateArtifact(&artifact)

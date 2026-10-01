@@ -21,14 +21,16 @@ func (l *lowerer) compositeKind(expr ast.Expression) string {
 			return "struct"
 		}
 	}
-	typ := l.resolveSourceType(expr.Type)
-	switch expr.Type.Kind {
-	case ast.TypeArray, ast.TypeSlice:
-		return "array"
-	case ast.TypeMap:
-		return "map"
-	case ast.TypeStruct:
-		return "struct"
+	typ := l.resolveSourceTypePtr(expr.Type, nil)
+	if expr.Type != nil {
+		switch expr.Type.Kind {
+		case ast.TypeArray, ast.TypeSlice:
+			return "array"
+		case ast.TypeMap:
+			return "map"
+		case ast.TypeStruct:
+			return "struct"
+		}
 	}
 	if view, ok := l.typeView(l.resolveNamedUnderlyingType(typ)); ok {
 		switch view.Shape() {
@@ -50,9 +52,9 @@ func (l *lowerer) compositeKind(expr ast.Expression) string {
 			return "struct"
 		}
 	}
-	if len(expr.Entries) != 0 {
+	if len(expr.Items) != 0 {
 		allIdentKeys := true
-		for _, entry := range expr.Entries {
+		for _, entry := range expr.Items {
 			if entry.Key == nil || entry.Key.Kind != ast.ExprIdent {
 				allIdentKeys = false
 				break
@@ -169,13 +171,17 @@ func (l *lowerer) resolveTypeNameInFile(typ string, span source.Span) (string, b
 
 func sourcePredeclaredType(name string) (string, bool) {
 	switch strings.TrimSpace(name) {
+	case "bool":
+		return "Bool", true
+	case "string":
+		return "String", true
 	case "int":
 		return "Int", true
 	case "int8":
 		return "Int8", true
 	case "int16":
 		return "Int16", true
-	case "int32":
+	case "int32", "rune":
 		return "Int32", true
 	case "int64":
 		return "Int64", true
@@ -199,12 +205,6 @@ func sourcePredeclaredType(name string) (string, bool) {
 		return "Complex64", true
 	case "complex128":
 		return "Complex128", true
-	case "string":
-		return "String", true
-	case "bool":
-		return "Bool", true
-	case "rune":
-		return "Int32", true
 	case "any":
 		return "Any", true
 	case "error":
@@ -241,6 +241,13 @@ func (l *lowerer) resolveImportedTypeSelectorInFile(typ string, span source.Span
 
 func (l *lowerer) resolveSourceType(typ ast.TypeExpr) string {
 	return l.resolveSourceTypeInScope(typ, nil)
+}
+
+func (l *lowerer) resolveSourceTypePtr(typ *ast.TypeExpr, scope *funcScope) string {
+	if typ == nil {
+		return ""
+	}
+	return l.resolveSourceTypeInScope(*typ, scope)
 }
 
 func (l *lowerer) resolveSourceTypeInScope(typ ast.TypeExpr, scope *funcScope) string {

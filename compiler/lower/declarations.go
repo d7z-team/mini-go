@@ -14,7 +14,7 @@ func (l *lowerer) lowerTopLevelValues(program ast.Program, out *ir.Program, init
 	packageScope := newFuncScope(nil, nil)
 	for _, file := range program.Files {
 		for _, decl := range file.Decls {
-			if decl.Kind == ast.DeclVar && !l.validateVarDeclaration(decl.Var, decl.Span, &packageScope) {
+			if decl.Kind == ast.DeclVar && !l.validateVarDeclaration(*decl.Var, decl.Span, &packageScope) {
 				return nil, false
 			}
 		}
@@ -329,7 +329,7 @@ func (l *lowerer) lowerFuncDecl(decl ast.Decl, overrideID string) (ir.Function, 
 		Name:          name,
 		RevisionLocal: strings.TrimSpace(overrideID) != "",
 		Declaration:   hirLocationPtr(decl.Span),
-		Signature:     l.hirSignature(l.signatureOf(decl.Func), funcDeclVariadic(decl.Func)),
+		Signature:     l.hirSignature(l.signatureOf(*decl.Func), funcDeclVariadic(*decl.Func)),
 	}
 	scope := newFuncScope(&fn, nil)
 	scope.resultTypes = l.typeRefsFromStrings(l.resultTypes(decl.Func.Results))

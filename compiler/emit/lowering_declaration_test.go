@@ -34,8 +34,10 @@ func TestLowerProducesDeclaredConstants(t *testing.T) {
 	if len(artifact.Constants) != 1 || artifact.Constants[0].ID != "const.answer" {
 		t.Fatalf("expected declared constant, got %#v", artifact.Constants)
 	}
-	if got := artifact.Functions[0].Instructions[0].Op; got != string(ir.OpConst) {
-		t.Fatalf("expected const instruction, got %q", got)
+	code := artifact.Functions[0].Code
+	inputs := code.Operands[code.Instructions[0].Operands].Inputs
+	if code.Instructions[0].Op != ir.OpReturn || len(inputs) != 1 || inputs[0].Kind != ir.OperandConstant || artifact.Constants[inputs[0].Index].ID != "const.answer" {
+		t.Fatalf("return does not reference declared constant: %#v", inputs)
 	}
 }
 
@@ -59,11 +61,11 @@ func TestLowerProducesTypeInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lower failed: %v", err)
 	}
-	instructions := artifact.Functions[0].Instructions
-	if got := instructions[1].Op; got != string(ir.OpConvert) {
+	instructions := functionOperations(t, artifact.Functions[0])
+	if got := instructions[0].Op; got != ir.OpConvert {
 		t.Fatalf("expected convert instruction, got %q", got)
 	}
-	if got := instructions[2].Op; got != string(ir.OpTypeAssert) {
+	if got := instructions[1].Op; got != ir.OpTypeAssert {
 		t.Fatalf("expected type_assert instruction, got %q", got)
 	}
 }
@@ -97,11 +99,11 @@ func TestLowerProducesGlobalInstructions(t *testing.T) {
 	if len(artifact.Globals) != 1 || artifact.Globals[0].ID != "global.answer" {
 		t.Fatalf("expected lowered global table, got %#v", artifact.Globals)
 	}
-	instructions := artifact.Functions[0].Instructions
-	if got := instructions[1].Op; got != string(ir.OpStoreGlobal) {
+	instructions := functionOperations(t, artifact.Functions[0])
+	if got := instructions[0].Op; got != ir.OpStoreGlobal {
 		t.Fatalf("expected store_global instruction, got %q", got)
 	}
-	if got := instructions[2].Op; got != string(ir.OpLoadGlobal) {
+	if got := instructions[1].Op; got != ir.OpLoadGlobal {
 		t.Fatalf("expected load_global instruction, got %q", got)
 	}
 }
@@ -140,7 +142,7 @@ func TestLowerProducesUpvalueClosureInstructions(t *testing.T) {
 		}, {
 			ID:        "fn.main",
 			Name:      "main",
-			Signature: testHIRSignature("function() Function"),
+			Signature: testHIRSignature("function() function() Int64"),
 			Locals:    []hir.Local{{ID: "local.x", Name: "x", Type: testHIRType("Int64")}},
 			Body: []hir.Statement{{
 				Kind:  hir.StmtStoreLocal,
@@ -155,14 +157,14 @@ func TestLowerProducesUpvalueClosureInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lower failed: %v", err)
 	}
-	if got := artifact.Functions[0].Instructions[0].Op; got != string(ir.OpLoadUpvalue) {
+	if got := functionOperations(t, artifact.Functions[0])[0].Op; got != ir.OpLoadUpvalue {
 		t.Fatalf("expected load_upvalue instruction, got %q", got)
 	}
-	if got := artifact.Functions[0].Instructions[3].Op; got != string(ir.OpStoreUpvalue) {
+	if got := functionOperations(t, artifact.Functions[0])[2].Op; got != ir.OpStoreUpvalue {
 		t.Fatalf("expected store_upvalue instruction, got %q", got)
 	}
 	var payload ir.ClosurePayload
-	if err := json.Unmarshal(artifact.Functions[1].Instructions[2].Payload, &payload); err != nil {
+	if err := ir.ReadInstructionPayload(functionOperations(t, artifact.Functions[1])[1].Payload, &payload); err != nil {
 		t.Fatalf("decode closure payload failed: %v", err)
 	}
 	if payload.Function != "fn.inc" || len(payload.Captures) != 1 || payload.Captures[0].Local != "local.x" {

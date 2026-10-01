@@ -4,6 +4,10 @@ use mini_go::{
 };
 use serde_json::json;
 
+mod slots;
+#[allow(unused_imports)]
+pub use slots::slot_code;
+
 /// Builds a sealed current-contract image around a minimal test artifact.
 pub fn image(mut artifact: serde_json::Value) -> Vec<u8> {
     let contract: serde_json::Value = serde_json::from_str(wire::CONTRACT_JSON).unwrap();

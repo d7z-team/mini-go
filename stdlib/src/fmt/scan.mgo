@@ -7,7 +7,7 @@ package fmt
 import (
 	"errors"
 	"io"
-	"math"
+	"math/floatbits"
 	"reflect"
 	"strconv"
 	"unicode/utf8"
@@ -808,7 +808,7 @@ func (s *ss) convertFloat(str string, n int) float64 {
 			}
 			s.error(err)
 		}
-		return math.Ldexp(f, m)
+		return floatbits.Ldexp(f, m)
 	}
 	f, err := strconv.ParseFloat(str, n)
 	if err != nil {

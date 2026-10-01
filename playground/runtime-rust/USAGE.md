@@ -4,7 +4,7 @@
 浏览器与 Node.js 使用 [TypeScript SDK](https://github.com/d7z-team/mini-go/blob/main/playground/runtime-rust/runtime-wasm/README.md)。
 
 [调用](#加载调用与限制) · [生命周期](#等待取消与关闭) · [Tokio](#在-tokio-中执行) ·
-[宿主](#宿主能力) · [调试](#断点变量与单步) · [热更新](#热更新) · [长期运行](#长期运行) ·
+[宿主](#宿主能力) · [调试](#断点变量与单步) · [热更新](#热更新) ·
 [语言工具](#本地源码与编译器工具)
 
 示例使用 `mini_go` 根路径导出的共享 `Instance`，它可以克隆并跨线程协调执行。
@@ -13,9 +13,8 @@
 
 ## 加载、调用与限制
 
-`Program::load` 接收当前工具链的原始 JSON 镜像字节。gzip 镜像可先用
+`Program::load` 接收当前工具链的原始 JSON 字节，以保留整数精度。gzip 镜像先用
 `loader::DecodedImage::decode_gzip` 解码，再交给 `Program::prepare`。
-不要先通过其他语言的浮点 JSON 数值模型转码镜像。
 
 下面是完整的 `src/main.rs`，以命令行参数读取镜像，调用算术示例的 `default` 入口：
 
@@ -54,14 +53,17 @@ cargo run -- /path/to/go-mini/playground/runtime-rust/examples/blocks/arithmetic
 `Limits` 约束执行；两者分别配置。错误通过 `RuntimeError.code`、`path`、`message` 返回。
 共享实例正被其他操作占用时可能返回 `busy`，调用方应让出执行后重试。
 
+`Limits::max_steps` 的 0 或默认值表示每个 scope 最多 1 亿步，`UNLIMITED_STEPS`（-1）放开累计步数，
+正数设置预算。推进批次和热更新不重置预算；无限模式仍保留取消、内存及任务限制。
+
 `HostValue` 是宿主输入，`HostSnapshot` 是独立拥有数据的输出，可保留别名和循环。
 常用输入可由 `HostValue::int` 等构造；复杂值见 [snapshot 模块](src/snapshot.rs)。
-共享实例通过 `stats()` 与 `heap_stats()` 观测 VM 费用和 arena；这些数值不等于进程 RSS。
+通过 `stats()`、`heap_stats()` 观测执行与内存；通过 `start_profile` 定位源码热点。
+统计口径与性能测量见[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能)。
 
 ### 原生执行器与并行度
 
-`InstanceOptions.parallelism` 限制同一实例同时执行的 guest task，零值采用 1。原生 runtime 使用
-有界执行器调度可恢复 task；一个 worker 也能推进 spawn、等待和多个实例。
+`InstanceOptions.parallelism` 限制同一实例同时执行的 guest task，零值采用 1。
 
 需要独立控制容量时可创建 `Executor::new(workers)`，克隆后传入多个实例：
 
@@ -91,16 +93,14 @@ executor.shutdown(&Cancellation::default())?;
 | `Instance::shutdown` | 发起实例关闭并等待资源清理；取消参数只停止本次等待 |
 | `InstanceOptions::cancellation` | 仅控制实例构造和根模块初始化 |
 
-入口返回后，后台任务可能仍在运行。短任务可先 `wait` 再 `wait_scope`；常驻服务应根据
-业务生命周期保留 scope，在退出时显式取消。执行取消不保证立即打断不配合取消的宿主操作。
+入口返回后，后台任务可能仍在运行。有限调用先 `wait` 再 `wait_scope`；常驻服务在业务结束时通知脚本
+返回或显式取消。跨线程取消使用同一个 `Cancellation` 的克隆，取消后用新令牌等待 scope 收敛。
 
-跨线程取消时，克隆同一个 `Cancellation` 并调用 `cancel()`；随后用新的令牌等待 `wait_scope` 并处理错误。
-先关闭实例，再关闭应用拥有的 Host、连接和 backend。最后一个 Instance 被 drop 会发起清理；
-需要确认释放完成时，应显式等待 `shutdown`。
+停机顺序为：停止新调用和补丁，通知脚本退出，等待入口及 scope，关闭实例，最后关闭共享 Host、连接
+和 backend。最后一个 Instance 被 drop 会发起清理，需要确认完成时显式等待 `shutdown`。
+调试暂停须先恢复。正常返回执行 defer；取消不保证执行 defer，也不证明不配合取消的宿主 I/O 已停止。
 
-正常停机由宿主停止提交新入口与补丁，通知长循环通过业务控制通道返回，
-等待相关执行的 `wait` 和 `wait_scope`，再 `shutdown`。超期时直接关闭可取消剩余工作。
-调试暂停需显式恢复。正常返回执行 defer；取消不会补跑 guest defer，也不证明宿主 I/O 已停止。
+反复调用、热更新和停机的完整流程见[长期实例示例](examples/long_running.rs)。
 
 自建事件循环可调用 `Execution::poll_steps`；它返回状态及本次实际步数。
 `Pending` 时通过 `instance.wake()` 等待事件，`Paused` 时由调试器恢复，
@@ -109,8 +109,7 @@ executor.shutdown(&Cancellation::default())?;
 ## 在 Tokio 中执行
 
 VM 推进与 `wait` 是同步操作。启用 `rpc` 后，`rpc::VmExecutor` 可将它们放入
-Tokio blocking pool，并限制并发作业。复用 executor，容量满时处理 `resource_exhausted`；
-不要为每次请求创建一个 executor 来绕过容量限制。
+Tokio blocking pool，并限制并发作业。应用复用 executor，容量满时处理 `resource_exhausted`。
 
 ```toml
 [dependencies]
@@ -167,18 +166,7 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 已有帧、defer 与闭包保留旧 revision，新命名调用使用当前 revision，兼容 globals 保持状态。
 需要改变状态契约时创建新实例并由应用迁移数据。FFI 会话与共享 Host 不随补丁重建。
 宿主应结束旧循环并替换保存的闭包，以释放旧 revision。
-已有 RPC 结果和资源继续属于原会话，服务替换与关闭见
-[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#服务替换与关闭)。
-
-## 长期运行
-
-实例可反复承载有限调用，工作结束后按[生命周期约定](#等待取消与关闭)等待和关闭。
-`Limits::max_steps` 为 i64：0 或默认值表示 1 亿步，`UNLIMITED_STEPS`（-1）不限累计步数，
-正数设置有限预算，其他负数无效。推进批次和热更新不重置预算；无限模式仍保留取消、内存及任务限制。
-业务进度由宿主持久化；内存与版本存活的观测方法见
-[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#缓存与性能)。
-
-[有限宿主循环示例](examples/long_running.rs)演示无限步数配置下的有限调用、scope 等待、热更新与关闭。
+RPC 服务替换和资源关闭见[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#服务替换与关闭)。
 
 ## 本地源码与编译器工具
 
@@ -208,8 +196,10 @@ async fn open_sources(root: &std::path::Path) -> Result<LanguageService, Runtime
 ```
 
 调用方完成使用后执行 `language.close().await`。额外模块同样作为 SourceTree 提供，
-compiler 按 import 选择参与编译的包；文件 Data 使用 base64 保留二进制资源。
-装配错误不会替换当前工作区，工作区替换保留打开的缓冲区，`Editable` 可授权编辑额外包。
+compiler 按 import 选择依赖。装配错误保留当前工作区，`Editable` 可授权编辑额外包。
+
+编译器在 VM 中执行，首次分析包含导入依赖，较大工作区可能触发步数或请求期限限制。
+频繁编辑时复用会话；仅执行脚本的应用可由 Go 预先编译镜像。
 
 ### 会话生命周期
 
@@ -220,8 +210,8 @@ compiler 按 import 选择参与编译的包；文件 Data 使用 base64 保留�
 恢复仅重建已成功交付的源码输入，恢复后旧 snapshot 过期。`upgrade` 在候选会话中恢复并分析成功后切换。
 成功升级的 `UpgradeResult::cleanup_error` 单独报告旧 owner 的清理错误，此时新会话已经提交。
 
-自建事件循环可使用 `CompilerSession` 的同步推进接口；原生异步 API 自动处理交付确认。
-驱动约定见[编译会话驱动](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#编译会话驱动)。
+自建事件循环的同步推进接口见
+[编译会话驱动](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#编译会话驱动)。
 
 ### stdio 服务
 

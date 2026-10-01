@@ -5,12 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
 func validateRequirements(requirements []Requirement) error {
 	for i, requirement := range requirements {
-		path := fmt.Sprintf("requirements[%d]", i)
+		path := "requirements[" + strconv.Itoa(i) + "]"
 		if strings.TrimSpace(requirement.ModulePath) == "" {
 			return missingValidationError(path+".module_path", errors.New("missing module path"))
 		}
@@ -22,10 +23,10 @@ func validateRequirements(requirements []Requirement) error {
 			seen := make(map[string]struct{}, len(requirement.Exports))
 			for j, name := range requirement.Exports {
 				if strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
-					return requirementValidationError(fmt.Sprintf("%s.exports[%d]", path, j), errors.New("invalid source export"))
+					return requirementValidationError(path+".exports["+strconv.Itoa(j)+"]", errors.New("invalid source export"))
 				}
 				if _, duplicate := seen[name]; duplicate {
-					return requirementValidationError(fmt.Sprintf("%s.exports[%d]", path, j), errors.New("duplicate source export"))
+					return requirementValidationError(path+".exports["+strconv.Itoa(j)+"]", errors.New("duplicate source export"))
 				}
 				seen[name] = struct{}{}
 			}

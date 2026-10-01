@@ -199,18 +199,30 @@ func (i *Instance) supervise() bool {
 		i.vm.leaveOwner()
 		return false
 	}
-	batch, outcome := i.vm.machine.prepareTaskBatch(i.parallelism, defaultPollQuantum)
-	if batch != nil {
-		batch.instance = i
-		i.batch = batch
-		i.vm.publishSlices(len(batch.runs))
-		batch.launch()
-		return false
+	var outcome runOutcome
+	inline := i.parallelism == 1 && i.vm.taskObserver == nil
+	if inline {
+		outcome = i.vm.machine.run(taskInstructionQuantum)
+	} else {
+		var batch *taskBatch
+		batch, outcome = i.vm.machine.prepareTaskBatch(i.parallelism, defaultPollQuantum)
+		if batch != nil {
+			batch.instance = i
+			i.batch = batch
+			i.vm.publishSlices(len(batch.runs))
+			batch.launch()
+			return false
+		}
 	}
 	outcome = i.vm.finishPreparedOutcome(outcome)
 	var paused *Execution
 	if outcome.state == ExecutionPaused && i.vm.machine != nil && i.vm.machine.paused != nil {
 		paused = i.vm.machine.paused.execution
+	}
+	reschedule := inline && outcome.state == ExecutionRunning && i.vm.machine != nil && i.vm.machine.runnableCount() != 0
+	if reschedule && i.vm.controlWaiters.Load() != 0 {
+		i.supervisorRetry.Store(true)
+		reschedule = false
 	}
 	i.vm.sweepRetiredRevisions()
 	i.vm.leaveOwner()
@@ -222,7 +234,7 @@ func (i *Instance) supervise() bool {
 	case ExecutionFailed, ExecutionCanceled:
 		i.fail(outcome.err)
 	}
-	return false
+	return reschedule
 }
 
 func (i *Instance) applyRequestedCancellationsLocked() {

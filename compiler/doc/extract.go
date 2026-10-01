@@ -51,9 +51,10 @@ func extractPackage(modulePath string, input analysis.Package, generate bool) (P
 		return Package{}, fmt.Errorf("package %q has no semantic information", modulePath)
 	}
 	pkg := Package{ModulePath: modulePath, Name: info.Package, Generate: generate, Imports: map[string]string{}}
-	documents := make(map[string]parser.Document, len(input.Documents))
+	documents := make(map[string]parser.Syntax, len(input.Documents))
 	comments := make(map[string]commentIndex, len(input.Documents))
-	for _, document := range input.Documents {
+	for _, inputDocument := range input.Documents {
+		document := inputDocument.Syntax()
 		documents[document.File.Path] = document
 		comments[document.File.Path] = indexComments(document)
 		packageOffset := document.Program.PackageID.Span.Start.Offset
@@ -124,7 +125,7 @@ func extractPackage(modulePath string, input analysis.Package, generate bool) (P
 	return pkg, nil
 }
 
-func extractDeclaration(modulePath string, decl ast.Decl, document parser.Document, comments commentIndex, info *check.ProgramInfo) []Symbol {
+func extractDeclaration(modulePath string, decl ast.Decl, document parser.Syntax, comments commentIndex, info *check.ProgramInfo) []Symbol {
 	groupDoc := comments.leading(decl.Span.Start.Offset)
 	switch decl.Kind {
 	case ast.DeclConst, ast.DeclVar:
@@ -213,7 +214,7 @@ func extractDeclaration(modulePath string, decl ast.Decl, document parser.Docume
 	return nil
 }
 
-func extractMembers(typ ast.TypeExpr, document parser.Document, comments commentIndex) []Member {
+func extractMembers(typ ast.TypeExpr, document parser.Syntax, comments commentIndex) []Member {
 	var out []Member
 	for _, field := range typ.Fields {
 		name := field.Name
@@ -246,7 +247,7 @@ func extractMembers(typ ast.TypeExpr, document parser.Document, comments comment
 	return out
 }
 
-func extractTypeParameters(parameters []ast.TypeParam, document parser.Document) []TypeParameter {
+func extractTypeParameters(parameters []ast.TypeParam, document parser.Syntax) []TypeParameter {
 	out := make([]TypeParameter, 0, len(parameters))
 	for _, parameter := range parameters {
 		out = append(out, TypeParameter{Name: parameter.Name, Constraint: sourceSlice(document, parameter.Constraint.Span)})
@@ -272,14 +273,14 @@ func attachMethods(pkg *Package) {
 	}
 }
 
-func sourceSlice(document parser.Document, span source.Span) string {
+func sourceSlice(document parser.Syntax, span source.Span) string {
 	if !span.Valid() || span.Start.Offset < 0 || span.End.Offset > len(document.File.Text) {
 		return ""
 	}
 	return strings.TrimSpace(document.File.Text[span.Start.Offset:span.End.Offset])
 }
 
-func sourceTag(document parser.Document, span source.Span) string {
+func sourceTag(document parser.Syntax, span source.Span) string {
 	for _, token := range document.Tokens {
 		if token.Span.Start.Offset < span.End.Offset {
 			continue
@@ -294,7 +295,7 @@ func sourceTag(document parser.Document, span source.Span) string {
 	return ""
 }
 
-func sourceDeclarationSpan(document parser.Document, start int) source.Span {
+func sourceDeclarationSpan(document parser.Syntax, start int) source.Span {
 	end := start
 	paren, bracket, brace := 0, 0, 0
 	started := false
@@ -341,7 +342,7 @@ func sourceDeclarationSpan(document parser.Document, start int) source.Span {
 	return source.Span{}
 }
 
-func receiverName(field *ast.Field, document parser.Document) string {
+func receiverName(field *ast.Field, document parser.Syntax) string {
 	if field == nil {
 		return ""
 	}
@@ -359,7 +360,7 @@ func receiverName(field *ast.Field, document parser.Document) string {
 	return text
 }
 
-func embeddedName(typ ast.TypeExpr, document parser.Document) string {
+func embeddedName(typ ast.TypeExpr, document parser.Syntax) string {
 	text := strings.TrimPrefix(sourceSlice(document, typ.Span), "*")
 	if bracket := strings.IndexByte(text, '['); bracket >= 0 {
 		text = text[:bracket]

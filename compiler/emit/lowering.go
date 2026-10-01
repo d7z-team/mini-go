@@ -42,12 +42,12 @@ func LowerUnvalidatedWithSymbols(program hir.Program) (ir.Artifact, ir.PackageSy
 		})
 		symbols.Globals = append(symbols.Globals, ir.GlobalSymbol{ID: global.ID, Name: global.Name})
 	}
+	emitter := newPackageEmitter(&artifact, program.Functions)
 	for _, fn := range program.Functions {
 		out := ir.Function{
 			ID:            fn.ID,
 			RevisionLocal: fn.RevisionLocal,
 			Signature:     fn.Signature,
-			Locals:        lowerLocals(fn.Locals),
 			ResultLocals:  append([]string(nil), fn.ResultLocals...),
 			Upvalues:      lowerUpvalues(fn.Upvalues),
 		}
@@ -58,14 +58,21 @@ func LowerUnvalidatedWithSymbols(program hir.Program) (ir.Artifact, ir.PackageSy
 		for _, scope := range fn.DebugScopes {
 			functionSymbols.Scopes = append(functionSymbols.Scopes, ir.DebugScope{ID: scope.ID, Parent: scope.Parent})
 		}
-		for _, stmt := range closeExitedMapIterators(fn.Body) {
-			if err := lowerStatement(&artifact, &out, &functionSymbols, stmt); err != nil {
-				return ir.Artifact{}, ir.PackageSymbols{}, err
-			}
+		code, err := emitter.lowerFunction(&fn, &functionSymbols)
+		if err != nil {
+			return ir.Artifact{}, ir.PackageSymbols{}, err
 		}
-		for _, local := range out.Locals[len(functionSymbols.Locals):] {
-			functionSymbols.Locals = append(functionSymbols.Locals, ir.LocalSymbol{ID: local.ID, Generated: true})
+		if err := forwardLocalOperands(&code, &fn, &artifact.TypeTable, &functionSymbols); err != nil {
+			return ir.Artifact{}, ir.PackageSymbols{}, err
 		}
+		if err := directLocalResults(&code, &fn, &artifact.TypeTable, &functionSymbols); err != nil {
+			return ir.Artifact{}, ir.PackageSymbols{}, err
+		}
+		if err := allocateSlots(&code); err != nil {
+			return ir.Artifact{}, ir.PackageSymbols{}, err
+		}
+		out.Code = &code
+		out.Locals = lowerLocals(fn.Locals)
 		normalizeFunctionSymbolPCs(out, &functionSymbols)
 		artifact.Functions = append(artifact.Functions, out)
 		symbols.Functions = append(symbols.Functions, functionSymbols)
@@ -134,15 +141,16 @@ func normalizeFunctionSymbolPCs(function ir.Function, symbols *ir.FunctionSymbol
 	if symbols == nil {
 		return
 	}
-	pcs := make([]int, len(function.Instructions)+1)
+	instructions, _ := function.Operations() // Emitter has constructed valid descriptors.
+	pcs := make([]int, len(instructions)+1)
 	pc := 0
-	for index, instruction := range function.Instructions {
+	for index, instruction := range instructions {
 		pcs[index] = pc
-		if instruction.Op != string(ir.OpLabel) {
+		if instruction.Op != ir.OpLabel {
 			pc++
 		}
 	}
-	pcs[len(function.Instructions)] = pc
+	pcs[len(instructions)] = pc
 	locationsByPC := make(map[int][]ir.Location, len(symbols.Locations))
 	for _, location := range symbols.Locations {
 		finalPC := pcs[location.PC]

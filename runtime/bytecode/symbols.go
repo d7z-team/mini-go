@@ -24,6 +24,11 @@ type ProgramSymbols struct {
 	Hash         string                    `json:"hash"`
 }
 
+// EncodeProgramSymbols encodes the source sidecar using its fixed schema.
+func EncodeProgramSymbols(symbols *ProgramSymbols) ([]byte, error) {
+	return encodeCanonicalValue(symbols)
+}
+
 // PackageSymbols contains display names and final source mappings for one
 // executable package artifact.
 type PackageSymbols struct {

@@ -4,8 +4,8 @@ use super::*;
 fn entry_initialization_belongs_to_the_admitted_task() {
     let program = test_helpers::program_with_artifact(|artifact| {
         artifact["functions"] = serde_json::json!([
-            {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]},
-            {"id":"fn.init", "instructions":[{"op":"return","payload":{}}]}
+            {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])},
+            {"id":"fn.init", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
         ]);
     });
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -25,7 +25,7 @@ fn module_wait_releases_task_and_observes_completion_or_failure() {
     for failed in [false, true] {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -69,7 +69,7 @@ fn module_wait_releases_task_and_observes_completion_or_failure() {
 fn module_wait_detects_cross_task_cycle_before_parking() {
     let program = test_helpers::program_with_artifact(|artifact| {
         artifact["functions"] = serde_json::json!([
-            {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
         ]);
     });
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();

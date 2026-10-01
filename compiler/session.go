@@ -26,6 +26,7 @@ type Options struct {
 	HostCapabilities map[string][]string
 	Optimization     OptimizationLevel
 	Symbols          bool
+	PreviousAnalysis *AnalysisResult
 }
 
 // Compiler reuses checked package graphs and test source selection across
@@ -38,7 +39,7 @@ type Compiler struct {
 }
 
 // Close releases session-local graph, test snapshot, and transient cache state.
-// Persistent cache backends remain owned by the caller.
+// Caller-provided caches remain owned by the caller.
 func (s *Compiler) Close() error {
 	if s == nil {
 		return nil
@@ -63,7 +64,11 @@ func New(options Options) (*Compiler, error) {
 	}
 	options.Target = normalized
 	options.Limits = normalizeCompilerLimits(options.Limits)
-	options.Cache = newSessionCache(options.Cache, options.TransientCache)
+	// A caller-owned structured cache already provides bounded memory storage.
+	// Only persistent/custom backends need the session-local structured tier.
+	if _, structured := options.Cache.(*cache.TransientCache); !structured {
+		options.Cache = newSessionCache(options.Cache, options.TransientCache)
+	}
 	loader, err := workspace.NewLoader(options.Sources, options.Target, options.Limits.workspaceLimits())
 	if err != nil {
 		return nil, err
@@ -86,9 +91,10 @@ func (s *Compiler) request(ctx context.Context, root string, entries []EntryPoin
 		CacheVerify: s.options.CacheVerify, CacheHash: s.options.CacheHash,
 		TraceCache: s.options.TraceCache,
 		Limits:     s.options.Limits, HostCapabilities: cloneHostCapabilities(s.options.HostCapabilities),
-		Optimization: s.options.Optimization,
-		Symbols:      s.options.Symbols,
-		workspace:    s.workspace,
+		Optimization:     s.options.Optimization,
+		Symbols:          s.options.Symbols,
+		PreviousAnalysis: s.options.PreviousAnalysis,
+		workspace:        s.workspace,
 	}, nil
 }
 

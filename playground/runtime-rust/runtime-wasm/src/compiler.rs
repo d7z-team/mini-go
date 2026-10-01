@@ -23,7 +23,8 @@ impl WasmCompiler {
         let input = serde_json::from_str(request).map_err(error)?;
         self.0
             .start(input, Duration::from_millis(u64::from(timeout_ms)))
-            .map_err(error)
+            .map_err(error)?;
+        Ok(())
     }
     pub fn poll(&mut self, steps: usize) -> Result<JsValue, JsValue> {
         match self.0.poll(steps).map_err(error)? {

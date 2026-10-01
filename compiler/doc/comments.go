@@ -15,11 +15,11 @@ type commentGroup struct {
 }
 
 type commentIndex struct {
-	document parser.Document
+	document parser.Syntax
 	groups   []commentGroup
 }
 
-func indexComments(document parser.Document) commentIndex {
+func indexComments(document parser.Syntax) commentIndex {
 	var groups []commentGroup
 	for i := 0; i < len(document.Elements); i++ {
 		element := document.Elements[i]

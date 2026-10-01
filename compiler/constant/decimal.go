@@ -160,13 +160,17 @@ func MultiplySignedDecimal(left, right string) (string, bool) {
 		}
 		return out, true
 	}
-	if leftValue, err := strconv.ParseUint(left, 10, 64); err == nil {
-		if rightValue, rightErr := strconv.ParseUint(right, 10, 64); rightErr == nil && (rightValue == 0 || leftValue <= ^uint64(0)/rightValue) {
-			out := strconv.FormatUint(leftValue*rightValue, 10)
-			if negative {
-				out = "-" + out
+	// Canonical decimal strings longer than 20 digits cannot fit uint64.
+	// Avoid reparsing those big-integer operands just to observe overflow.
+	if len(left) <= 20 && len(right) <= 20 {
+		if leftValue, err := strconv.ParseUint(left, 10, 64); err == nil {
+			if rightValue, rightErr := strconv.ParseUint(right, 10, 64); rightErr == nil && (rightValue == 0 || leftValue <= ^uint64(0)/rightValue) {
+				out := strconv.FormatUint(leftValue*rightValue, 10)
+				if negative {
+					out = "-" + out
+				}
+				return out, true
 			}
-			return out, true
 		}
 	}
 	leftLimbs, rightLimbs := decimalLimbs(left), decimalLimbs(right)
@@ -311,26 +315,43 @@ func divideCanonicalDecimal(left, right string) (string, string) {
 	if comparison == 0 {
 		return "1", "0"
 	}
-	if leftValue, err := strconv.ParseUint(left, 10, 64); err == nil {
-		if rightValue, rightErr := strconv.ParseUint(right, 10, 64); rightErr == nil {
-			return strconv.FormatUint(leftValue/rightValue, 10), strconv.FormatUint(leftValue%rightValue, 10)
+	if len(left) <= 20 && len(right) <= 20 {
+		if leftValue, err := strconv.ParseUint(left, 10, 64); err == nil {
+			if rightValue, rightErr := strconv.ParseUint(right, 10, 64); rightErr == nil {
+				return strconv.FormatUint(leftValue/rightValue, 10), strconv.FormatUint(leftValue%rightValue, 10)
+			}
 		}
 	}
 	dividend, divisor := decimalLimbs(left), decimalLimbs(right)
+	quotient := make([]uint64, len(dividend)-len(divisor)+1)
+	remainder := divideDecimalLimbs(dividend, divisor, quotient)
+	return formatDecimalLimbs(quotient), formatDecimalLimbs(remainder)
+}
+
+// divideDecimalLimbs consumes dividend as remainder storage and restores divisor
+// after normalization. A nil quotient requests only the remainder for Euclid's
+// algorithm. Limbs are canonical, unsigned and least significant first.
+func divideDecimalLimbs(dividend, divisor, quotient []uint64) []uint64 {
+	if len(dividend) < len(divisor) {
+		return dividend
+	}
 	if len(divisor) == 1 {
 		remainder := uint64(0)
 		for i := len(dividend) - 1; i >= 0; i-- {
 			value := remainder*decimalLimbBase + dividend[i]
-			dividend[i] = value / divisor[0]
+			if quotient != nil {
+				quotient[i] = value / divisor[0]
+			}
 			remainder = value % divisor[0]
 		}
-		return formatDecimalLimbs(dividend), strconv.FormatUint(remainder, 10)
+		dividend[0] = remainder
+		return dividend[:1]
 	}
 	// Normalize the leading divisor limb to at least half the base. A
 	// two-limb quotient estimate then needs at most two decrements before
 	// subtraction; a final add-back corrects an estimate one unit too high.
 	width := len(divisor)
-	quotient := make([]uint64, len(dividend)-width+1)
+	quotientWidth := len(dividend) - width + 1
 	scale := decimalLimbBase / (divisor[width-1] + 1)
 	carry := uint64(0)
 	for i, limb := range divisor {
@@ -345,7 +366,7 @@ func divideCanonicalDecimal(left, right string) (string, string) {
 		carry = value / decimalLimbBase
 	}
 	dividend = append(dividend, carry)
-	for offset := len(quotient) - 1; offset >= 0; offset-- {
+	for offset := quotientWidth - 1; offset >= 0; offset-- {
 		leading := dividend[offset+width]*decimalLimbBase + dividend[offset+width-1]
 		estimate, remainder := leading/divisor[width-1], leading%divisor[width-1]
 		for estimate >= decimalLimbBase || estimate*divisor[width-2] > remainder*decimalLimbBase+dividend[offset+width-2] {
@@ -378,16 +399,24 @@ func divideCanonicalDecimal(left, right string) (string, string) {
 			}
 			dividend[offset+width] = (dividend[offset+width] + carry) % decimalLimbBase
 		}
-		quotient[offset] = estimate
+		if quotient != nil {
+			quotient[offset] = estimate
+		}
 	}
 	remainder := dividend[:width]
-	carry = 0
+	carry, divisorCarry := uint64(0), uint64(0)
 	for i := len(remainder) - 1; i >= 0; i-- {
 		value := carry*decimalLimbBase + remainder[i]
 		remainder[i] = value / scale
 		carry = value % scale
+		value = divisorCarry*decimalLimbBase + divisor[i]
+		divisor[i] = value / scale
+		divisorCarry = value % scale
 	}
-	return formatDecimalLimbs(quotient), formatDecimalLimbs(remainder)
+	for len(remainder) > 1 && remainder[len(remainder)-1] == 0 {
+		remainder = remainder[:len(remainder)-1]
+	}
+	return remainder
 }
 
 func GCDUnsignedDecimal(left, right string) string {
@@ -400,11 +429,38 @@ func GCDUnsignedDecimal(left, right string) string {
 }
 
 func gcdCanonicalDecimal(left, right string) string {
-	for right != "0" {
-		_, remainder := divideCanonicalDecimal(left, right)
-		left, right = right, remainder
+	if right == "0" {
+		return left
 	}
-	return left
+	if right == "1" || left == "1" {
+		return "1"
+	}
+	if len(left) <= 20 && len(right) <= 20 {
+		if a, err := strconv.ParseUint(left, 10, 64); err == nil {
+			if b, err := strconv.ParseUint(right, 10, 64); err == nil {
+				for b != 0 {
+					a, b = b, a%b
+				}
+				return strconv.FormatUint(a, 10)
+			}
+		}
+	}
+	dividend, divisor := decimalLimbs(left), decimalLimbs(right)
+	for len(divisor) > 1 {
+		remainder := divideDecimalLimbs(dividend, divisor, nil)
+		dividend, divisor = divisor, remainder
+	}
+	a, b := divisor[0], uint64(0)
+	if a == 0 {
+		return formatDecimalLimbs(dividend)
+	}
+	for i := len(dividend) - 1; i >= 0; i-- {
+		b = (b*decimalLimbBase + dividend[i]) % a
+	}
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return strconv.FormatUint(a, 10)
 }
 
 func Pow2UnsignedDecimal(bits int) string {

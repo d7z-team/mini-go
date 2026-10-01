@@ -40,9 +40,8 @@ func validateConstantValue(path string, constant Constant, table *types.TypeTabl
 			}
 			return nil
 		case types.PrimitiveString:
-			var value string
-			if err := json.Unmarshal(raw, &value); err != nil {
-				return newValidationError(path, errors.New("String constant requires JSON string"))
+			if _, err := DecodeStringConstant(raw); err != nil {
+				return newValidationError(path, err)
 			}
 			return nil
 		}

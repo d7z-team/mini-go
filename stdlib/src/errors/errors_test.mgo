@@ -45,7 +45,7 @@ func TestErrorsAsConcreteInterfaceAndCustom(t *testing.T) {
 func TestErrorsAsRecognizesErrorMethodType(t *testing.T) {
 	var target *codedError
 	if !errors.As(&codedError{code: 9}, &target) || target == nil || target.Code() != 9 {
-		t.Fatalf("As should recognize Error through reflect.Method.Type")
+		t.Fatalf("As should recognize Error through the runtime method set")
 	}
 }
 

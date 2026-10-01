@@ -261,17 +261,8 @@ func validateExpression(expr Expression, add func(string, string, source.Span)) 
 			validateExpression(arg, add)
 		}
 	case ExprComposite:
-		if expr.Type.Kind != TypeInvalid {
-			validateTypeExpr(expr.Type, expr.Span, add)
-		}
-		for _, element := range expr.Elements {
-			validateExpression(element, add)
-		}
-		for _, entry := range expr.Entries {
-			if entry.Key != nil {
-				validateExpression(*entry.Key, add)
-			}
-			validateExpression(entry.Value, add)
+		if expr.Type != nil && expr.Type.Kind != TypeInvalid {
+			validateTypeExpr(*expr.Type, expr.Span, add)
 		}
 		for _, item := range expr.Items {
 			if item.Key != nil {
@@ -280,13 +271,21 @@ func validateExpression(expr Expression, add func(string, string, source.Span)) 
 			validateExpression(item.Value, add)
 		}
 	case ExprFunc:
-		validateFuncDecl(expr.Func, expr.Span, add)
+		if expr.Func == nil {
+			add("ast.expr.func.missing", "function expression requires a function body", expr.Span)
+		} else {
+			validateFuncDecl(*expr.Func, expr.Span, add)
+		}
 	case ExprEmbed:
 		if len(expr.EmbedFiles) == 0 {
 			add("ast.expr.embed.files_missing", "embed initializer requires at least one file", expr.Span)
 		}
 	case ExprConvert, ExprAssert:
-		validateTypeExpr(expr.Type, expr.Span, add)
+		if expr.Type == nil {
+			add("ast.type.kind.missing", "missing type kind", expr.Span)
+		} else {
+			validateTypeExpr(*expr.Type, expr.Span, add)
+		}
 		if expr.Operand == nil {
 			add("ast.expr.convert.operand.missing", "missing conversion/assert operand", expr.Span)
 			return

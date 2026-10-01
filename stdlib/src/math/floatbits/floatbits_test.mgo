@@ -1,0 +1,58 @@
+package floatbits_test
+
+import (
+	"math/floatbits"
+	"testing"
+)
+
+func TestRepresentationAndSigns(t *testing.T) {
+	for _, bits := range []uint64{0, 1, 0x8000000000000000, 0x7ff0000000000000, 0xfff0000000000000, 0x7ff8000000001234, 0xfff8000000001234} {
+		value := floatbits.Float64frombits(bits)
+		if floatbits.Float64bits(value) != bits || floatbits.Signbit(value) != (bits >> 63 != 0) {
+			t.Fatalf("representation changed: %x", bits)
+		}
+		if floatbits.Float64bits(floatbits.Abs(value)) != bits & 0x7fffffffffffffff {
+			t.Fatalf("absolute value changed magnitude: %x", bits)
+		}
+		negativeZero := floatbits.Float64frombits(0x8000000000000000)
+		if floatbits.Float64bits(floatbits.Copysign(value, negativeZero)) != bits | 0x8000000000000000 {
+			t.Fatalf("sign copy changed magnitude: %x", bits)
+		}
+	}
+	for _, bits := range []uint32{0, 1, 0x80000000, 0x7f800000, 0x7fc01234} {
+		if floatbits.Float32bits(floatbits.Float32frombits(bits)) != bits {
+			t.Fatalf("float32 representation changed: %x", bits)
+		}
+	}
+	if !floatbits.IsInf(floatbits.Inf(-1), -1) || floatbits.IsInf(floatbits.Inf(-1), 1) || !floatbits.IsInf(floatbits.Inf(1), 0) || floatbits.IsInf(floatbits.NaN(), 0) || !floatbits.IsNaN(floatbits.NaN()) {
+		t.Fatal("non-finite classification failed")
+	}
+}
+
+func TestScalingAtIEEEBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		bits uint64
+		exponent int
+		want uint64
+	}{
+		{0, 1 << 62, 0},
+		{0x8000000000000000, -(1 << 62), 0x8000000000000000},
+		{1, 52, 0x0010000000000000},
+		{0x0010000000000000, -1, 0x0008000000000000},
+		{1, -1, 0},
+		{3, -1, 2},
+		{0x8000000000000001, -1, 0x8000000000000000},
+		{0x3ff8000000000000, 2, 0x4018000000000000},
+		{0x7fefffffffffffff, 1, 0x7ff0000000000000},
+		{1, 1 << 62, 0x7ff0000000000000},
+		{0x8000000000000001, 1 << 62, 0xfff0000000000000},
+		{0xffefffffffffffff, -(1 << 62), 0x8000000000000000},
+		{0x7ff8000000001234, 1 << 62, 0x7ff8000000001234},
+		{0xfff0000000000000, -(1 << 62), 0xfff0000000000000},
+	} {
+		got := floatbits.Float64bits(floatbits.Ldexp(floatbits.Float64frombits(test.bits), test.exponent))
+		if got != test.want {
+			t.Fatalf("Ldexp(%x, %d) = %x, want %x", test.bits, test.exponent, got, test.want)
+		}
+	}
+}

@@ -19,12 +19,12 @@ func wrapper(value int) int { return target(value) }
 		t.Fatalf("diagnostics = %#v", result.Diagnostics)
 	}
 	if function, _, ok := artifactFunctionByName(result.Artifact, result.Symbols, "wrapper"); ok {
-		for _, instruction := range function.Instructions {
-			if instruction.Op == string(ir.OpTailCallDirect) {
+		for _, instruction := range functionOperations(t, function) {
+			if instruction.Op == ir.OpTailCallDirect {
 				return
 			}
 		}
-		t.Fatalf("wrapper instructions = %#v", function.Instructions)
+		t.Fatalf("wrapper instructions = %#v", functionOperations(t, function))
 	}
 	t.Fatal("missing wrapper function")
 }

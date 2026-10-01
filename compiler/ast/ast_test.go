@@ -23,7 +23,7 @@ func TestValidateProgramAcceptsTaggedUnionAST(t *testing.T) {
 			Decls: []Decl{{
 				Kind: DeclFunc,
 				Span: span,
-				Func: FuncDecl{
+				Func: &FuncDecl{
 					Name: "main",
 					Results: []Field{{
 						Type: intType,
@@ -34,7 +34,7 @@ func TestValidateProgramAcceptsTaggedUnionAST(t *testing.T) {
 							Results: []Expression{{
 								Kind:    ExprLiteral,
 								Literal: "42",
-								Type:    intType,
+								Type:    &intType,
 							}},
 						}},
 					},
@@ -56,10 +56,10 @@ func TestValidateProgramRejectsDuplicateFunction(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []Decl{{
 				Kind: DeclFunc,
-				Func: FuncDecl{Name: "main"},
+				Func: &FuncDecl{Name: "main"},
 			}, {
 				Kind: DeclFunc,
-				Func: FuncDecl{Name: "main"},
+				Func: &FuncDecl{Name: "main"},
 			}},
 		}},
 	}
@@ -77,16 +77,16 @@ func TestValidateProgramAllowsRepeatedBlankDeclarations(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []Decl{{
 				Kind: DeclType,
-				Type: TypeDecl{Name: "_", Type: intType},
+				Type: &TypeDecl{Name: "_", Type: intType},
 			}, {
 				Kind: DeclType,
-				Type: TypeDecl{Name: "_", Type: intType},
+				Type: &TypeDecl{Name: "_", Type: intType},
 			}, {
 				Kind: DeclFunc,
-				Func: FuncDecl{Name: "_"},
+				Func: &FuncDecl{Name: "_"},
 			}, {
 				Kind: DeclFunc,
-				Func: FuncDecl{Name: "_"},
+				Func: &FuncDecl{Name: "_"},
 			}},
 		}},
 	}
@@ -104,7 +104,7 @@ func TestValidateProgramRejectsBlankInterfaceMethod(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []Decl{{
 				Kind: DeclType,
-				Type: TypeDecl{
+				Type: &TypeDecl{
 					Name: "I",
 					Type: TypeExpr{Kind: TypeInterface, Methods: []FuncDecl{{Name: "_"}}},
 				},
@@ -137,7 +137,7 @@ func TestValidateProgramRejectsMalformedExpression(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []Decl{{
 				Kind: DeclFunc,
-				Func: FuncDecl{
+				Func: &FuncDecl{
 					Name: "main",
 					Body: BlockStmt{Stmts: []Statement{{
 						Kind: StmtExpr,

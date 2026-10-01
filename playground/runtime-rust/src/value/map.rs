@@ -28,12 +28,13 @@ struct MapKey<'a>(&'a Value);
 
 impl Hash for MapKey<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let mut pending = vec![self.0];
-        while let Some(value) = pending.pop() {
+        let mut pending = Vec::new();
+        let mut value = self.0;
+        loop {
             // Interface boxing and type aliases do not change the hash. The
             // equality check still distinguishes dynamic named identities.
-            if let Data::Interface(value) = &value.data {
-                pending.push(value);
+            if let Data::Interface(inner) = &value.data {
+                value = inner;
                 continue;
             }
             std::mem::discriminant(&value.data).hash(state);
@@ -52,7 +53,7 @@ impl Hash for MapKey<'_> {
                 Data::ResourceRef(handle) => handle.hash(state),
                 Data::Array(values) => {
                     values.len().hash(state);
-                    pending.extend(values);
+                    pending.extend(values.iter());
                 }
                 Data::Struct(fields) => {
                     fields.len().hash(state);
@@ -63,6 +64,8 @@ impl Hash for MapKey<'_> {
                 }
                 _ => unreachable!("map keys are checked for comparability before indexing"),
             }
+            let Some(next) = pending.pop() else { break };
+            value = next;
         }
     }
 }
@@ -91,7 +94,19 @@ impl MapStorage {
         key: &Value,
         types: &TypeRegistry,
     ) -> Result<Option<usize>, RuntimeError> {
-        let hash = self.hasher.hash_one(MapKey(key));
+        self.find_hashed(key, self.key_hash(key), types)
+    }
+
+    pub(crate) fn key_hash(&self, key: &Value) -> u64 {
+        self.hasher.hash_one(MapKey(key))
+    }
+
+    pub(crate) fn find_hashed(
+        &self,
+        key: &Value,
+        hash: u64,
+        types: &TypeRegistry,
+    ) -> Result<Option<usize>, RuntimeError> {
         if let Some(indexes) = self.buckets.get(&hash) {
             for index in indexes {
                 if crate::operators::equal(&self.entries[*index].0, key, types)? {
@@ -103,12 +118,16 @@ impl MapStorage {
     }
 
     pub(crate) fn insert(&mut self, key: Value, value: Value) {
+        let hash = self.key_hash(&key);
+        self.insert_hashed(key, value, hash);
+    }
+
+    pub(crate) fn insert_hashed(&mut self, key: Value, value: Value, hash: u64) {
         self.identities.next_id += 1;
         self.identities.ids.push(self.identities.next_id);
         self.identities
             .positions
             .insert(self.identities.next_id, self.entries.len());
-        let hash = self.hasher.hash_one(MapKey(&key));
         self.buckets
             .entry(hash)
             .or_default()
@@ -255,7 +274,7 @@ mod tests {
         assert_eq!(storage.len(), 4);
         let named = |name: &str| Value {
             typ: TypeIdentity::Any,
-            data: Data::Interface(Box::new(Value {
+            data: Data::Interface(std::sync::Arc::new(Value {
                 typ: TypeIdentity::Named(std::sync::Arc::new(wire::TypeKey {
                     module_path: "test".into(),
                     decl_id: name.into(),

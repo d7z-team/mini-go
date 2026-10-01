@@ -8,7 +8,7 @@ type IntrinsicID string
 
 // IntrinsicSchema identifies the descriptor and execution semantics used by
 // call_intrinsic instructions.
-const IntrinsicSchema = "minigo.intrinsic.v5"
+const IntrinsicSchema = "minigo.intrinsic.v9"
 
 // IntrinsicEffect describes how an intrinsic interacts with VM state.
 type IntrinsicEffect uint8
@@ -37,16 +37,22 @@ type IntrinsicDescriptor struct {
 var reflectRuntimeType = types.TypeKey{ModulePath: "reflect", DeclID: "runtimeType"}
 
 var intrinsicDescriptors = []IntrinsicDescriptor{
+	{ID: "reflect.inspect_describe", SourceModule: "reflect/inspect", SourceFunction: "runtimeDescribe", Signature: "function(Any, Bool) tuple(Uint, Bool, Bool)", ArgCount: 2, ResultCount: 3},
+	{ID: "reflect.inspect_element_implements", SourceModule: "reflect/inspect", SourceFunction: "runtimeElementImplements", Signature: "function(Any, Any) Bool", ArgCount: 2, ResultCount: 1},
+	{ID: "reflect.inspect_assign", SourceModule: "reflect/inspect", SourceFunction: "runtimeAssign", Signature: "function(Any, Any) Bool", ArgCount: 2, ResultCount: 1, Effect: IntrinsicMutatesVM},
+	{ID: "strings.index_byte", SourceModule: "strings", SourceFunction: "runtimeIndexByte", Signature: "function(String, Int, Int, Uint8) Int", ArgCount: 4, ResultCount: 1},
+	{ID: "reflect.type_kind", SourceModule: "reflect", SourceFunction: "runtimeTypeKind", Signature: "function(reflect.Type) tuple(Uint, String, Bool)", ArgCount: 1, ResultCount: 3},
+	{ID: "reflect.type_measure", SourceModule: "reflect", SourceFunction: "runtimeTypeMeasure", Signature: "function(reflect.Type, String) tuple(Uint64, String, Bool)", ArgCount: 2, ResultCount: 3},
 	{ID: "sync.mutex_lock", SourceModule: "sync", SourceFunction: "runtimeMutexLock", Signature: "function(Ptr<Waitable<Bool>>)", ArgCount: 1, Effect: IntrinsicMayBlock},
 	{ID: "sync.mutex_try_lock", SourceModule: "sync", SourceFunction: "runtimeMutexTryLock", Signature: "function(Ptr<Waitable<Bool>>) Bool", ArgCount: 1, ResultCount: 1, Effect: IntrinsicMutatesVM},
 	{ID: "sync.mutex_unlock", SourceModule: "sync", SourceFunction: "runtimeMutexUnlock", Signature: "function(Ptr<Waitable<Bool>>)", ArgCount: 1, Effect: IntrinsicMutatesVM},
 	{ID: "crypto.rand.read", SourceModule: "crypto/rand", SourceFunction: "runtimeRead", Signature: "function(Slice<Uint8>) tuple(Int, String, Bool)", ArgCount: 1, ResultCount: 3, Effect: IntrinsicMutatesVM},
 	{ID: "crypto.sha256.block", SourceModule: "crypto/sha256", SourceFunction: "runtimeBlock", Signature: "function(Array<8, Uint32>, Slice<Uint8>) Array<8, Uint32>", ArgCount: 2, ResultCount: 1, Effect: IntrinsicPure},
 	{ID: "ffi.call", SourceModule: "ffi", SourceFunction: "runtimeCall", Signature: "function(String, Slice<Uint8>) tuple(Slice<Uint8>, String, Int)", ArgCount: 2, ResultCount: 3, Effect: IntrinsicMayBlock},
-	{ID: "math.float64_bits", SourceModule: "math", SourceFunction: "runtimeFloat64bits", Signature: "function(Float64) Uint64", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
-	{ID: "math.float64_from_bits", SourceModule: "math", SourceFunction: "runtimeFloat64frombits", Signature: "function(Uint64) Float64", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
-	{ID: "math.float32_bits", SourceModule: "math", SourceFunction: "runtimeFloat32bits", Signature: "function(Float32) Uint32", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
-	{ID: "math.float32_from_bits", SourceModule: "math", SourceFunction: "runtimeFloat32frombits", Signature: "function(Uint32) Float32", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
+	{ID: "math.float64_bits", SourceModule: "math/floatbits", SourceFunction: "runtimeFloat64bits", Signature: "function(Float64) Uint64", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
+	{ID: "math.float64_from_bits", SourceModule: "math/floatbits", SourceFunction: "runtimeFloat64frombits", Signature: "function(Uint64) Float64", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
+	{ID: "math.float32_bits", SourceModule: "math/floatbits", SourceFunction: "runtimeFloat32bits", Signature: "function(Float32) Uint32", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
+	{ID: "math.float32_from_bits", SourceModule: "math/floatbits", SourceFunction: "runtimeFloat32frombits", Signature: "function(Uint32) Float32", ArgCount: 1, ResultCount: 1, Effect: IntrinsicPure},
 	{ID: "reflect.type_of", SourceModule: "reflect", SourceFunction: "runtimeTypeOf", Signature: "function(Any) reflect.Type", DynamicResult: reflectRuntimeType, ArgCount: 1, ResultCount: 1},
 	{ID: "reflect.type_descriptor", SourceModule: "reflect", SourceFunction: "runtimeTypeDescriptor", Signature: "function(reflect.Type) tuple(reflect.runtimeTypeData, String, Bool)", ArgCount: 1, ResultCount: 3},
 	{ID: "reflect.deep_equal", SourceModule: "reflect", SourceFunction: "runtimeDeepEqual", Signature: "function(Any, Any) Bool", ArgCount: 2, ResultCount: 1},

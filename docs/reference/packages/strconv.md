@@ -411,7 +411,7 @@ QuoteToGraphic returns a quoted Go string literal, leaving Unicode graphic chara
 func QuotedPrefix(s string) (string, error)
 ```
 
-QuotedPrefix returns the valid quoted string at the beginning of s.
+QuotedPrefix returns the valid quoted literal at the beginning of s.
 
 ### func Unquote
 
@@ -419,7 +419,7 @@ QuotedPrefix returns the valid quoted string at the beginning of s.
 func Unquote(s string) (string, error)
 ```
 
-Unquote interprets s as a single-quoted, double-quoted, or backquoted Go string literal, returning the string value that s quotes.  (If s is single-quoted, it would be a Go character literal; Unquote returns the corresponding one-character string. For an empty character literal Unquote returns the empty string.)
+Unquote decodes a quoted string or character literal.
 
 ### func UnquoteChar
 
@@ -427,14 +427,7 @@ Unquote interprets s as a single-quoted, double-quoted, or backquoted Go string 
 func UnquoteChar(s string, quote byte) (rune, bool, string, error)
 ```
 
-UnquoteChar decodes the first character or byte in the escaped string or character literal represented by the string s. It returns four values:
-
- 1. value, the decoded Unicode code point or byte value;
- 2. multibyte, a boolean indicating whether the decoded character requires a multibyte UTF-8 representation;
- 3. tail, the remainder of the string after the character; and
- 4. an error that will be nil if the character is syntactically valid.
-
-The second argument, quote, specifies the type of literal being parsed and therefore which escaped quote character is permitted. If set to a single quote, it permits the sequence \\' and disallows unescaped '. If set to a double quote, it permits \\" and disallows unescaped ". If set to zero, it does not permit either escape and allows both quote characters to appear unescaped.
+UnquoteChar decodes the first escaped character or byte, returning its value, whether it is Unicode, and the unconsumed tail. Quote selects the allowed escaped quote character; zero permits neither escaped quote.
 
 ## Types
 

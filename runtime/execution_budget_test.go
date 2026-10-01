@@ -44,8 +44,8 @@ func TestTasksShareAnExactConcurrentStepLimit(t *testing.T) {
 				t.Fatalf("worker %d limit error: %v", worker, errors[worker])
 			}
 		}
-		if total != limit || budget.steps.Load() != limit || budget.profilePhase.Load() != limit {
-			t.Fatalf("%d workers: executed=%d charged=%d profile=%d", workers, total, budget.steps.Load(), budget.profilePhase.Load())
+		if total != limit || budget.steps.Load() != limit {
+			t.Fatalf("%d workers: executed=%d charged=%d", workers, total, budget.steps.Load())
 		}
 	}
 }
@@ -62,10 +62,10 @@ func TestStepGrantReturnsUnusedAllowanceWithoutChargingIt(t *testing.T) {
 	if err := second.consumeStep(4); err != errStepBudgetReserved {
 		t.Fatalf("another task's unspent grant must yield, got %v", err)
 	}
+	first.releaseStepGrant()
 	if budget.steps.Load() != 1 {
 		t.Fatal("reservation was reported as execution")
 	}
-	first.releaseStepGrant()
 	for range 3 {
 		if err := second.consumeStep(4); err != nil {
 			t.Fatal(err)
@@ -81,11 +81,11 @@ func TestStepGrantReturnsUnusedAllowanceWithoutChargingIt(t *testing.T) {
 
 func TestReservedStepAllowanceParksDriverUntilGrantReturns(t *testing.T) {
 	artifact := ir.NewArtifact("budget/handoff", "main")
-	artifact.Functions = []ir.Function{{ID: "fn.main", Signature: testSignature("function()"), Instructions: []ir.Instruction{
-		{Op: string(ir.OpZero), Payload: testTypePayload("Bool")},
-		{Op: string(ir.OpPop)},
-		{Op: string(ir.OpReturn), Payload: testPayload(ir.ReturnPayload{})},
-	}}}
+	artifact.Functions = []ir.Function{{ID: "fn.main", Signature: testSignature("function()"), Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+		{Op: ir.OpZero, Payload: testTypePayload("Bool")},
+		{Op: ir.OpPop},
+		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
+	}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})}}
 	vm, err := loadTestEngine(artifact)
 	if err != nil {
 		t.Fatal(err)
@@ -147,10 +147,10 @@ func TestSharedStepLimits(t *testing.T) {
 
 func TestUnlimitedStepsPreservePollCountsAndSampling(t *testing.T) {
 	artifact := ir.NewArtifact("budget/loop", "main")
-	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
-		{Op: string(ir.OpLabel), Payload: testPayload(ir.LabelPayload{Label: "loop"})},
-		{Op: string(ir.OpJump), Payload: testPayload(ir.JumpPayload{Label: "loop"})},
-	}}}
+	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{
+		{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "loop"}},
+		{Op: ir.OpJump, Payload: ir.JumpPayload{Label: "loop"}},
+	}, [][2][]uint32{{nil, nil}, {nil, nil}})}}
 	instance, err := patchTestProgram(t, artifact, "budget-loop").Instantiate(t.Context(), InstanceOptions{Limits: Limits{MaxSteps: UnlimitedSteps}, GuestProfile: GuestProfileOptions{SampleEvery: 4, MaxEntries: 8}})
 	if err != nil {
 		t.Fatal(err)

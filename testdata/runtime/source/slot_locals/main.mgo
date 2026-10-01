@@ -1,0 +1,69 @@
+package main
+
+type Flag bool
+type Count int32
+
+const (
+	first = max(iota, 0)
+	second
+	third
+)
+
+func flip(value Flag) Flag { return !value }
+func increment(value Count) Count { return value + 1 }
+
+func captured() int {
+	x := 40
+	change := func() int { x = 99; return 2 }
+	answer := x + change()
+	if x != 99 { return 0 }
+	return answer
+}
+
+func named() (answer int) {
+	answer = 40
+	defer func() { answer += 2 }()
+	return answer
+}
+
+func pointerOrder(first *int, change int) int { return *first + change }
+
+func pointers() bool {
+	var empty *int
+	if empty != nil { return false }
+	x, y := 40, 100
+	p := &x
+	saved := p
+	p = &y
+	*saved = 41
+	*p = 101
+	if x != 41 || y != 101 { return false }
+	p = saved
+	change := func() int { p = &y; return 1 }
+	return pointerOrder(p, change()) == 42 && *p == 101
+}
+
+func Main() int {
+	if first != 0 || second != 1 || third != 2 { return 9 }
+	if !pointers() { return 10 }
+	x, y := 40, 2
+	x, y = y, x
+	if x != 2 || y != 40 { return 1 }
+	x, y, x = y, x, x+y
+	if x != 42 || y != 2 { return 2 }
+	var zero int
+	if zero+2 != 2 { return 3 }
+	sum := 0
+	for i := 0; i < 10; i++ { sum += i }
+	if sum != 45 { return 4 }
+	if captured() != 42 || named() != 42 { return 5 }
+	if flip(Flag(true)) || increment(Count(41)) != 42 { return 8 }
+	var value any = 42
+	switch n := value.(type) {
+	case int:
+		if n != 42 { return 6 }
+	default:
+		return 7
+	}
+	return 42
+}

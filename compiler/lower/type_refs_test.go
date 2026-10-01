@@ -186,7 +186,7 @@ func TestLowererPreservesArrayAndSliceTypeSemantics(t *testing.T) {
 		typeDecls: map[string]ast.TypeExpr{
 			"Counter": {Kind: ast.TypeName, Name: "int"},
 			"Vector": {Kind: ast.TypeArray, Len: &ast.Expression{
-				Kind: ast.ExprLiteral, Literal: "2", Type: ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
+				Kind: ast.ExprLiteral, Literal: "2", Type: &ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
 			}, Elem: &ast.TypeExpr{Kind: ast.TypeName, Name: "Counter"}},
 			"Scores": {Kind: ast.TypeSlice, Elem: &ast.TypeExpr{Kind: ast.TypeName, Name: "Counter"}},
 		},

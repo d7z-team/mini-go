@@ -1,10 +1,12 @@
 # 使用指南
 
-本文说明 Go 嵌入、执行控制和 CLI，首次接入可从[完整嵌入示例](#完整嵌入示例)开始；
-RPC 接入见 [RPC.md](RPC.md)，Rust 原生 API 见 [Rust 使用指南](playground/runtime-rust/USAGE.md)。
+本文面向 Go 宿主应用和 CLI 用户。首次接入从[完整嵌入示例](#完整嵌入示例)开始；
+RPC、Rust 和浏览器接入分别见 [RPC 指南](RPC.md)、[Rust 指南](playground/runtime-rust/USAGE.md)
+与 [TypeScript SDK](playground/runtime-rust/runtime-wasm/README.md)。
 
-按任务查阅：[嵌入](#嵌入-api) · [源码装配](#源码装配) · [执行与取消](#运行实例) · [宿主能力](#系统能力) ·
-[热更新](#运行时热更新) · [命令行与模块](#cli) · [编辑器](#编辑器与调试符号)。
+按任务查阅：[嵌入](#嵌入-api) · [源码装配](#源码装配) · [资源](#嵌入资源) · [执行与取消](#运行实例) ·
+[停机](#优雅停机) · [宿主能力](#系统能力) · [热更新](#运行时热更新) ·
+[命令行](#cli) · [编辑器](#编辑器与调试符号)。
 
 ## 嵌入 API
 
@@ -17,7 +19,8 @@ RPC 接入见 [RPC.md](RPC.md)，Rust 原生 API 见 [Rust 使用指南](playgro
 | `Run` | 编译并运行默认入口 |
 | `Test` | 构建并运行全部或指定的 `*_test.mgo` 测试 |
 
-Engine 由创建方关闭。共享缓存可通过 `Config.Cache` 注入，backend 仍由创建方管理。
+Engine 由创建方关闭。共享缓存可通过 `Config.Cache` 注入，backend 仍由创建方管理；
+自定义实现见[缓存接入约定](DEVELOPMENT.md#自定义缓存)。
 
 ### 完整嵌入示例
 
@@ -94,6 +97,24 @@ Engine 自动提供标准库源码。额外源码可通过 `NewStandardLibrary`�
 
 惰性源码树要求底层 FS 在使用期间保持稳定；目录内容改变后应创建新快照再编译。
 
+## 嵌入资源
+
+`workspace.SourcePackage.Resources` 保存 package-relative 资源，资源内容参与编译缓存 identity：
+
+```go
+workspace.SourcePackage{
+	ModulePath: "example/assets",
+	Files: []source.File{{Path: "assets.mgo", Text: `package assets
+import "embed"
+//go:embed templates/*.txt
+var Files embed.FS
+`}},
+	Resources: []workspace.ResourceFile{{Path: "templates/welcome.txt", Data: []byte("hello")}},
+}
+```
+
+文件系统源码发现会将 `.mgo` 作为源码，包目录中的普通文件可通过 `//go:embed` 嵌入。
+
 ## 运行实例
 
 Program 可复用，每个 Instance 持有独立状态。创建实例后，根据入口类型选择调用方式，
@@ -133,12 +154,8 @@ library scope 超过限制时仅该 scope 失败；main scope 超限会结束实
 `minigo.UnlimitedSteps`（-1）以保留取消和其他限制、放开累计步数，其他负值无效。
 `Execution.ScopeStats` 与 `Instance.RuntimeStats` 提供一致的状态快照；guest 内存统计用于逻辑计费，
 不等同于 Go heap 或进程 RSS。
-
-### 长期运行
-
-长期实例宜承载有限业务调用，并在每次调用后等待 scope 结束。持续服务可按上述配置放开步数限制，
-业务进度由宿主持久化；旧代码的保留原因可用[版本引用诊断](#检查补丁与版本引用)检查。
-内存与性能诊断见[开发指南](DEVELOPMENT.md#缓存与性能)。
+热点定位可配置 `InstanceOptions.GuestProfile` 并读取 `Execution.GuestProfile()`；
+统计口径与测量方式见[性能诊断](DEVELOPMENT.md#缓存与性能)。
 
 ### 优雅停机
 
@@ -146,20 +163,7 @@ library scope 超过限制时仅该 scope 失败；main scope 超限会结束实
 调试暂停需要显式恢复；仅等待 scope 不会推进尚未返回的前台入口。
 最后调用 `Shutdown` 取消剩余工作并释放实例拥有的资源。共享 Host 和 backend 在实例清理完成后关闭。
 
-例如，宿主已停止接纳并通知脚本退出，且当前由本调用方推进 execution 时，
-总退出期限 30 秒中给业务 10 秒正常返回，其余时间用于清理：
-
-```go
-total, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-defer cancel()
-grace, stop := context.WithTimeout(total, 10*time.Second)
-_, runErr := execution.Wait(grace)
-_, scopeErr := execution.WaitScope(grace)
-stop()
-closeErr := instance.Shutdown(total)
-// 等待关闭超时不代表清理完成；保留宿主 owner，并可再次等待 Shutdown。
-return errors.Join(runErr, scopeErr, closeErr)
-```
+业务退出和清理可使用不同的 context 期限。`Shutdown` 等待超时后，保留宿主资源并再次等待终态。
 
 正常返回会执行 guest defer；取消关闭不保证执行 defer。VM scope 已结束也不能证明不配合取消的宿主 I/O 已退出。
 
@@ -202,7 +206,7 @@ return err
 
 输出写入宿主的 `io.Writer`，`RunResult.Values` 只包含入口返回值。需要捕获输出时传入自己的 Writer。
 Instance 只拥有自己打开的 FFI Session；共享宿主的关闭顺序见[优雅停机](#优雅停机)。
-`Shutdown(ctx)` 可限制清理等待时间，`Close` 使用 background context。
+`Close` 使用 background context；需要限制清理等待时间时使用 `Shutdown(ctx)`。
 
 ## 运行时热更新
 
@@ -224,7 +228,7 @@ fmt.Printf("revision %d: %s\n", patch.Current.Generation, patch.Current.Hash)
 return nil
 ```
 
-PreparePatch 失败时保持原状态，未提交的 plan 应 Close。ApplyPatch 在实例 owner
+PreparePatch 失败时保持原状态，未提交的 plan 应 Close。ApplyPatch 在实例
 安全点执行；执行中可能返回 busy，基准 revision 已变化则返回 stale_plan。
 这两类提交失败会关闭 plan，重试前需重新 PreparePatch；成功后 Close 可安全调用。
 
@@ -240,38 +244,8 @@ globals、导出与命名类型/函数的状态契约；需要改变这些契约
 准备成功后可用 `plan.Inspect()` 查看带基准 generation 的报告。报告只描述差异，最终准入仍由
 `PreparePatch` 与 `ApplyPatch` 决定。
 
-`Instance.RevisionRetention(ctx)` 返回已发布版本的存活摘要，包含 current、显式 pin 数和
-最近一次扫描的全局根保留状态；未提交候选在 `PendingTarget` 中单独返回。`RetainedRevisions` 只列出已发布版本。
-需要定位长期保留的旧代码时，可显式查询：
-
-```go
-roots, err := instance.RevisionRoots(ctx, generation, runtime.RevisionRootLimits{
-    MaxNodes: 10000,
-    MaxDepth: 64,
-    MaxRoots: 100,
-})
-```
-
-结果说明任务、帧和 global 等如何引用版本；`Complete=false` 表示扫描被限制截断。查询不改变引用关系，
-引用解除后旧版本自然回收。
-
-## 嵌入资源
-
-`workspace.SourcePackage.Resources` 保存 package-relative 资源，资源内容参与编译缓存 identity：
-
-```go
-workspace.SourcePackage{
-	ModulePath: "example/assets",
-	Files: []source.File{{Path: "assets.mgo", Text: `package assets
-import "embed"
-//go:embed templates/*.txt
-var Files embed.FS
-`}},
-	Resources: []workspace.ResourceFile{{Path: "templates/welcome.txt", Data: []byte("hello")}},
-}
-```
-
-文件系统源码发现会将 `.mgo` 作为源码，包目录中的普通文件可通过 `//go:embed` 嵌入。
+`Instance.RevisionRetention(ctx)` 提供版本存活摘要，`RevisionRoots` 在指定扫描限额内列出任务、帧和
+全局变量等保留来源。`Complete=false` 表示结果被截断；查询不改变引用关系，引用解除后旧版本自然回收。
 
 ## CLI
 
@@ -288,13 +262,12 @@ mini-go fmt file.mgo
 
 `-C` 是全局参数，写在子命令之前，缺省当前目录。目录模式以该目录为源码根，
 `-module` 指定逻辑前缀，缺省 `app`；`.` 选择根包，`./...` 选择其下包树。
+用 `-C` 指向应用源码目录，并将大型构建产物和依赖安装目录放在源码根之外，避免扫描无关文件。
 run/check 的操作数全部为 `.mgo` 文件时，文件必须位于同一目录，组成
 `command-line-arguments`，只选入点名源码；该模式使用 `-source` 提供其他模块。
 
-源码和测试分别使用 `.mgo`、`_test.mgo`；Go 宿主与生成的 Go binding 可放在同一目录。
-`fmt` 的文件输入接受 `.mgo` 和 `.mrpc`。
-`rpc generate` 从 `.mrpc` 原子生成 Go、Mini-Go、Rust 或 TypeScript binding；参数、类型映射与示例见
-[RPC 使用指南](RPC.md#从脚本调用-go)和[TypeScript API](RPC.md#typescript--javascript-api)。
+Go 宿主与生成的 Go binding 可和 `.mgo` 文件放在同一目录。`fmt` 接受 `.mgo` 和 `.mrpc`；
+RPC binding 生成见 [RPC 指南](RPC.md)。
 
 `run -max-steps=0` 使用默认预算，`-max-steps=-1` 不限制 guest 累计步数。
 `run` 与 `gateway` 支持 `-shutdown-timeout=30s`，清理各阶段共用总截止时间。
@@ -351,13 +324,8 @@ library 调试接口包括 `SetBreakpoints`、`DebugSnapshot`、`DebugScopes` �
 源码单步和变量检查需要 `ProgramSymbols`；变量与源码引用在恢复执行后失效。热更新后断点按新 revision
 重新解析，历史帧继续显示其所属 generation 的符号。
 
-Go 应用通过 `compiler/language` 查询语言信息，或使用 `compiler/service.Session`
-管理文档更新、分析与构建；会话使用完毕调用 `Close`。
-版本和快照的关系见 [架构](ARCHITECTURE.md#语言服务与调试)。
-
-非 Go 项目可使用 [Rust 语言工具](playground/runtime-rust/USAGE.md#本地源码与编译器工具) 或
-[浏览器/Node 语言工具](playground/runtime-rust/runtime-wasm/README.md#编译器与语言工具)，
-在独立 VM 中复用同一套编译器与语言规则。
+Go 应用通过 `compiler/language` 查询语言信息，或用 `compiler/service.Session` 管理文档、分析和构建，
+使用完毕调用 `Close`。版本与快照的关系见[架构](ARCHITECTURE.md#语言服务与调试)。
 
 ## 语言与标准库
 

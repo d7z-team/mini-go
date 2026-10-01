@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
@@ -20,7 +19,7 @@ func TestLowerDirectFunctionCallToArtifact(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "AddOne",
 					Params: []ast.Field{{
 						Name: "x",
@@ -39,14 +38,14 @@ func TestLowerDirectFunctionCallToArtifact(t *testing.T) {
 							Right: &ast.Expression{
 								Kind:    ast.ExprLiteral,
 								Literal: "1",
-								Type:    intType,
+								Type:    &intType,
 							},
 						}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -60,7 +59,7 @@ func TestLowerDirectFunctionCallToArtifact(t *testing.T) {
 							Args: []ast.Expression{{
 								Kind:    ast.ExprLiteral,
 								Literal: "41",
-								Type:    intType,
+								Type:    &intType,
 							}},
 						}},
 					}}},
@@ -79,16 +78,19 @@ func TestLowerDirectFunctionCallToArtifact(t *testing.T) {
 	var mainInstructions []ir.Instruction
 	for _, function := range artifact.Functions {
 		if function.ID == "fn.Main" {
-			mainInstructions = function.Instructions
+			mainInstructions, err = function.Operations()
+			if err != nil {
+				t.Fatal(err)
+			}
 			break
 		}
 	}
-	call, ok := findInstruction(mainInstructions, string(ir.OpCallDirect))
+	call, ok := findInstruction(mainInstructions, ir.OpCallDirect)
 	if !ok {
 		t.Fatalf("Main does not contain a direct call: %#v", mainInstructions)
 	}
 	var payload ir.CallPayload
-	if err := json.Unmarshal(call.Payload, &payload); err != nil {
+	if err := ir.ReadInstructionPayload(call.Payload, &payload); err != nil {
 		t.Fatalf("decode direct call payload: %v", err)
 	}
 	if payload.Function != "fn.AddOne" || payload.ArgCount != 1 || payload.ResultCount != 1 {
@@ -105,20 +107,20 @@ func TestLowerDirectCallResultCounts(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{Name: "Log"},
+				Func: &ast.FuncDecl{Name: "Log"},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Pair",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}, {Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}, {Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}, {Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -164,18 +166,18 @@ func TestLowerVariadicDirectCallPacksArgs(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Sum",
 					Params:  []ast.Field{{Name: "xs", Type: intType, Variadic: true}},
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -184,9 +186,9 @@ func TestLowerVariadicDirectCallPacksArgs(t *testing.T) {
 							Kind:   ast.ExprCall,
 							Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Sum"}),
 							Args: []ast.Expression{
-								{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
-								{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
-								{Kind: ast.ExprLiteral, Literal: "3", Type: intType},
+								{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
+								{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
+								{Kind: ast.ExprLiteral, Literal: "3", Type: &intType},
 							},
 						}},
 					}}},

@@ -13,26 +13,26 @@ func TestDebuggerSchemaSpawnedContext(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpMakeClosure),
-			Payload: json.RawMessage(`{"function":"fn.child"}`),
+		Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
+			Op:      ir.OpMakeClosure,
+			Payload: ir.ClosurePayload{Function: "fn.child"},
 		}, {
-			Op:      string(ir.OpSpawn),
-			Payload: json.RawMessage(`{"arg_count":0}`),
+			Op:      ir.OpSpawn,
+			Payload: ir.CallPayload{ArgCount: 0},
 		}, {
-			Op:      string(ir.OpConst),
-			Payload: json.RawMessage(`{"constant":"c.answer"}`),
+			Op:      ir.OpConst,
+			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":1}`),
-		}},
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 1},
+		}}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
 		ID:        "fn.child",
 		Signature: testSignature("function() Void"),
-		Instructions: []ir.Instruction{{
-			Op:      string(ir.OpReturn),
-			Payload: json.RawMessage(`{"result_count":0}`),
-		}},
+		Code: testSlotCode([]string{}, []ir.Instruction{{
+			Op:      ir.OpReturn,
+			Payload: ir.ReturnPayload{ResultCount: 0},
+		}}, [][2][]uint32{{nil, nil}}),
 	}}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.child", pc: 0, line: 8, column: 2})
@@ -65,14 +65,14 @@ func TestDebuggerSchemaSpawnedContext(t *testing.T) {
 func TestStepAfterSpawnStaysWithTheSelectedTask(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Functions = []ir.Function{
-		{ID: "fn.main", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpMakeClosure), Payload: json.RawMessage(`{"function":"fn.child"}`)},
-			{Op: string(ir.OpSpawn), Payload: json.RawMessage(`{"arg_count":0}`)},
-			{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":0}`)},
-		}},
-		{ID: "fn.child", Signature: testSignature("function() Void"), Instructions: []ir.Instruction{
-			{Op: string(ir.OpReturn), Payload: json.RawMessage(`{"result_count":0}`)},
-		}},
+		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, []ir.Instruction{
+			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
+			{Op: ir.OpSpawn, Payload: ir.CallPayload{ArgCount: 0}},
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
+		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
+		{ID: "fn.child", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{
+			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
+		}, [][2][]uint32{{nil, nil}})},
 	}
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	setTestInstructionLocations(t, &artifact,

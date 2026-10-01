@@ -17,19 +17,17 @@ func TestMapIteratorTracksEntriesAcrossMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &frame{module: module}
+	f := &frame{module: module, slotValues: make([]vmValue, 3), slotOperands: &ir.SlotOperands{Outputs: []uint32{0, 1, 2}}}
 	if err = f.initMapIterator("range", object); err != nil {
 		t.Fatal(err)
 	}
 	sum := int64(0)
 	for range 3 {
+		f.slotOutput = 0
 		if err = f.nextMapIterator("range"); err != nil {
 			t.Fatal(err)
 		}
-		values, err := f.popN(3)
-		if err != nil {
-			t.Fatal(err)
-		}
+		values := f.slotValues
 		if values[2].Data == true {
 			v, _ := values[1].signedValue()
 			sum += v
@@ -47,10 +45,11 @@ func TestMapIteratorTracksEntriesAcrossMutation(t *testing.T) {
 	if _, err = setIndexValue(module, object, newVMValue("Float64", float64(1)), newVMValue("Int", int64(99))); err != nil {
 		t.Fatal(err)
 	}
+	f.slotOutput = 0
 	if err = f.nextMapIterator("range"); err != nil {
 		t.Fatal(err)
 	}
-	values, _ := f.popN(3)
+	values := f.slotValues
 	if values[2].Data != false {
 		t.Fatal("visited entry inserted after iterator initialization")
 	}
@@ -82,7 +81,7 @@ func TestMapIteratorSkipsReinsertedKeyAndObservesUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &frame{module: module}
+	f := &frame{module: module, slotValues: make([]vmValue, 3), slotOperands: &ir.SlotOperands{Outputs: []uint32{0, 1, 2}}}
 	if err = f.initMapIterator("range", object); err != nil {
 		t.Fatal(err)
 	}
@@ -94,15 +93,17 @@ func TestMapIteratorSkipsReinsertedKeyAndObservesUpdates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	f.slotOutput = 0
 	if err = f.nextMapIterator("range"); err != nil {
 		t.Fatal(err)
 	}
-	values, _ := f.popN(3)
+	values := f.slotValues
 	requireValues(t, values, newVMValue("Int", int64(2)), newVMValue("Int", int64(42)), newBoolValue(true))
+	f.slotOutput = 0
 	if err = f.nextMapIterator("range"); err != nil {
 		t.Fatal(err)
 	}
-	values, _ = f.popN(3)
+	values = f.slotValues
 	if values[2].Data != false {
 		t.Fatal("reinserted key visited")
 	}

@@ -14,13 +14,14 @@ import (
 func (e *Engine) index(snapshot *Snapshot) {
 	for modulePath, pkg := range snapshot.packages {
 		info := pkg.Checked.Info
-		for _, occurrence := range pkg.Occurrences {
+		for i := range pkg.Occurrences {
+			occurrence := &pkg.Occurrences[i]
 			uri, document, ok := snapshot.Document(modulePath, occurrence.Name.Span.Start.File)
 			if !ok {
 				continue
 			}
-			key := occurrenceKey(modulePath, pkg.Checked.Program, info, occurrence)
-			indexed := indexedOccurrence{Occurrence: occurrence, URI: uri, ModulePath: modulePath, Key: key}
+			key := occurrenceKey(modulePath, pkg.Checked.Program, info, *occurrence)
+			indexed := indexedOccurrence{Occurrence: occurrence, ModulePath: modulePath, Key: key}
 			snapshot.occurrences[uri] = append(snapshot.occurrences[uri], indexed)
 			selected, err := document.Index.Range(occurrence.Name.Span.Start.Offset, occurrence.Name.Span.End.Offset)
 			if err != nil {

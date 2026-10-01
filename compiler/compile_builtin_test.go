@@ -30,11 +30,39 @@ func Main() int64 {
 		t.Fatalf("expected no diagnostics, got %#v", result.Diagnostics)
 	}
 	for _, fn := range result.Artifact.Functions {
-		for _, instruction := range fn.Instructions {
-			if instruction.Op == string(ir.OpLoadExport) {
+		for _, instruction := range functionOperations(t, fn) {
+			if instruction.Op == ir.OpLoadExport {
 				t.Fatalf("constant min/max should be folded before artifact emit: %#v", instruction)
 			}
 		}
+	}
+}
+
+func TestCompileSourceTypeArgumentsAndValueShadowing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source string
+	}{
+		{"byte", "func Main() byte { p := new(byte); *p = byte(42); return *p }"},
+		{"rune", "func Main() rune { p := new(rune); *p = rune(42); return *p }"},
+		{"named alias", "type Small byte; type Alias = Small; func Main() Small { p := new(Alias); *p = Small(42); return *p }"},
+		{"interface", "func Main() any { p := new(any); *p = 42; return *p }"},
+		{"error interface", "func Main() error { p := new(error); return *p }"},
+		{"interface conversion", "func Main() any { return any(42) }"},
+		{"shadowed type", "func Main() int { byte := func(v int) int { return v + 1 }; p := new(byte(41)); return *p }"},
+		{"shadowed any type", "type any int; func Main() int { p := new(any); *p = any(42); return int(*p) }"},
+		{"shadowed error type", "type error int; func Main() int { p := new(error); *p = error(42); return int(*p) }"},
+		{"shadowed byte type", "type byte int; func Main() int { p := new(byte); *p = byte(42); return int(*p) }"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := compileTestSource("example/main", "main.mgo", "package main\n"+tc.source+"\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.OK() {
+				t.Fatalf("type argument or shadowed value failed: %#v", result.Diagnostics)
+			}
+		})
 	}
 }
 

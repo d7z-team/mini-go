@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func TestStateVectorsPreserveFailedStartAndDeterministicReuse(t *testing.T) {
-	input := []byte(`{"module":{"path":"test","package":"main"},"constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],"functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"instructions":[{"op":"const","payload":{"constant":"answer"}},{"op":"return","payload":{"result_count":1}}]}]}`)
+func TestStateVectorsPreserveFailedStartAccountingAndDeterminism(t *testing.T) {
+	input := []byte(fmt.Sprintf(`{"module":{"path":"test","package":"main"},"constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],"functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":{"types":[{"kind":3,"primitive":3}],"instructions":[[%d,0,0],[%d,0,1]],"descriptors":{"const":[{"constant":"answer"}],"return":[{"result_count":1}]},"operands":[{"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]}}]}`, bytecode.OpConst, bytecode.OpReturn))
 	inputs := map[string][]byte{"entry": input}
 	encoded, err := GenerateStateVectors(context.Background(), inputs)
 	if err != nil {
@@ -30,21 +33,13 @@ func TestStateVectorsPreserveFailedStartAndDeterministicReuse(t *testing.T) {
 		if vector.Limit != 128 {
 			continue
 		}
-		if vector.Actions[0].Error != "execution.allocation_limit" || vector.Actions[1].Operation != "start" || vector.Actions[1].Error != "" {
-			t.Fatalf("failed frame preparation and subsequent reuse: %+v", vector.Actions)
+		if len(vector.Actions) != 4 {
+			t.Fatalf("constrained invocation actions: %+v", vector.Actions)
 		}
-		last := vector.Actions[len(vector.Actions)-1]
-		if last.State != "completed" || last.Memory != [4]int64{128, 128, 384, 128} {
-			t.Fatalf("reused frame result: %+v", last)
-		}
-		canceled := false
 		for _, action := range vector.Actions {
-			if action.Operation == "cancel" {
-				canceled = action.Error == ""
+			if action.Operation != "start" || action.Error != "execution.allocation_limit" || action.Memory != [4]int64{} {
+				t.Fatalf("failed frame charge reused or leaked memory: %+v", action)
 			}
-		}
-		if !canceled {
-			t.Fatal("missing successful cancellation before reuse")
 		}
 		return
 	}

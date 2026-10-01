@@ -3,6 +3,7 @@ package bytecode
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/types"
@@ -20,7 +21,7 @@ func validateDefinedType(path string, typ types.TypeNode, refs artifactRefs, tab
 	}
 	methodIdentities := map[string]struct{}{}
 	for i, method := range typ.Methods {
-		methodPath := fmt.Sprintf("%s.methods[%d]", path, i)
+		methodPath := path + ".methods[" + strconv.Itoa(i) + "]"
 		if strings.TrimSpace(method.Name) == "" {
 			return missingValidationError(methodPath+".name", errors.New("missing method name"))
 		}

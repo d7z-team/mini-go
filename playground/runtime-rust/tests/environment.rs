@@ -16,6 +16,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
+use support::slot_code;
 
 #[derive(Default)]
 struct ManualClock(AtomicU64);
@@ -44,14 +45,14 @@ fn computing_with_a_timer_reads_time_at_bounded_owner_boundaries() {
         "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":{"kind":3,"primitive":1}}]},
         "constants":[{"id":"capacity","type":{"kind":3,"primitive":3},"value":1},
             {"id":"delay","type":{"kind":3,"primitive":7},"value":1000000}],
-        "functions":[{"id":"fn.Main","instructions":[
-            {"op":"const","payload":{"constant":"capacity"}},
-            {"op":"make_waitable","payload":{"type":{"kind":9,"node":"channel"}}},
-            {"op":"const","payload":{"constant":"delay"}},
-            {"op":"zero","payload":{"type":{"kind":3,"primitive":7}}},
-            {"op":"call_intrinsic","payload":{"id":"time.timer_start","arg_count":3}},
-            {"op":"label","payload":{"label":"loop"}},
-            {"op":"jump","payload":{"label":"loop"}}]}]
+        "functions":[{"id":"fn.Main","code":slot_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"channel"},{"kind":3,"primitive":7},{"kind":3,"primitive":7}]), &[
+            ("const",json!({"constant":"capacity"}),json!({"outputs":[0]})),
+            ("make_waitable",json!({"type":{"kind":9,"node":"channel"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+            ("const",json!({"constant":"delay"}),json!({"outputs":[2]})),
+            ("zero",json!({"type":{"kind":3,"primitive":7}}),json!({"outputs":[3]})),
+            ("call_intrinsic",json!({"id":"time.timer_start","arg_count":3}),json!({"inputs":[[0,1],[0,2],[0,3]],"release":[1,2,3]})),
+            ("label",json!({"label":"loop"}),json!({})),
+            ("jump",json!({"label":"loop"}),json!({}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let clock = Arc::new(CountingClock(AtomicU64::new(0)));
@@ -89,14 +90,20 @@ fn timer_event_resumes_a_blocked_task_only_after_deadline() {
             {"id": "delay", "type": {"kind": 3, "primitive": 7}, "value": 10},
             {"id": "result", "type": {"kind": 3, "primitive": 3}, "value": 42}
         ],
-        "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}]}, "locals": [{"id": "channel", "type": {"kind": 9, "node": "channel"}}], "instructions": [
-            {"op": "const", "payload": {"constant": "capacity"}}, {"op": "make_waitable", "payload": {"type": {"kind": 9, "node": "channel"}}},
-            {"op": "store_local", "payload": {"local": "channel"}}, {"op": "load_local", "payload": {"local": "channel"}},
-            {"op": "const", "payload": {"constant": "delay"}}, {"op": "zero", "payload": {"type": {"kind": 3, "primitive": 7}}},
-            {"op": "call_intrinsic", "payload": {"id": "time.timer_start", "arg_count": 3}},
-            {"op": "load_local", "payload": {"local": "channel"}}, {"op": "waitable_recv"}, {"op": "pop"},
-            {"op": "const", "payload": {"constant": "result"}}, {"op": "return", "payload": {"result_count": 1}}
-        ]}]
+        "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}]}, "locals": [{"id": "channel", "type": {"kind": 9, "node": "channel"}}],
+        "code":slot_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"channel"},{"kind":3,"primitive":7},{"kind":3,"primitive":7},{"kind":3,"primitive":1}]), &[
+            ("const",json!({"constant":"capacity"}),json!({"outputs":[0]})),
+            ("make_waitable",json!({"type":{"kind":9,"node":"channel"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+            ("store_local",json!({"local":"channel"}),json!({"inputs":[[0,1]],"release":[1]})),
+            ("load_local",json!({"local":"channel"}),json!({"outputs":[1]})),
+            ("const",json!({"constant":"delay"}),json!({"outputs":[2]})),
+            ("zero",json!({"type":{"kind":3,"primitive":7}}),json!({"outputs":[3]})),
+            ("call_intrinsic",json!({"id":"time.timer_start","arg_count":3}),json!({"inputs":[[0,1],[0,2],[0,3]],"release":[1,2,3]})),
+            ("load_local",json!({"local":"channel"}),json!({"outputs":[1]})),
+            ("waitable_recv",json!({}),json!({"inputs":[[0,1]],"outputs":[4],"release":[1]})),
+            ("pop",json!({}),json!({"inputs":[[0,4]],"release":[4]})),
+            ("const",json!({"constant":"result"}),json!({"outputs":[0]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     for workers in [1, 2] {
@@ -156,15 +163,27 @@ fn partial_entropy_failure_preserves_written_bytes_and_count() {
             {"id": "one", "type": {"kind": 3, "primitive": 3}, "value": 1}
         ],
         "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}, {"kind": 3, "primitive": 1}]},
-        "locals": [{"id": "bytes", "type": {"kind": 5, "node": "bytes"}}, {"id": "ok", "type": {"kind": 3, "primitive": 1}}], "instructions": [
-            {"op": "const", "payload": {"constant": "length"}}, {"op": "make_slice", "payload": {"type": {"kind": 5, "node": "bytes"}}},
-            {"op": "store_local", "payload": {"local": "bytes"}}, {"op": "load_local", "payload": {"local": "bytes"}},
-            {"op": "call_intrinsic", "payload": {"id": "crypto.rand.read", "arg_count": 1, "result_count": 3}},
-            {"op": "store_local", "payload": {"local": "ok"}}, {"op": "pop"},
-            {"op": "load_local", "payload": {"local": "bytes"}}, {"op": "zero", "payload": {"type": {"kind": 3, "primitive": 3}}}, {"op": "load_index"}, {"op": "convert", "payload": {"type": {"kind": 3, "primitive": 3}}}, {"op": "binary", "payload": {"operator": "+"}},
-            {"op": "load_local", "payload": {"local": "bytes"}}, {"op": "const", "payload": {"constant": "one"}}, {"op": "load_index"}, {"op": "convert", "payload": {"type": {"kind": 3, "primitive": 3}}}, {"op": "binary", "payload": {"operator": "+"}},
-            {"op": "load_local", "payload": {"local": "ok"}}, {"op": "return", "payload": {"result_count": 2}}
-        ]}]
+        "locals": [{"id": "bytes", "type": {"kind": 5, "node": "bytes"}}, {"id": "ok", "type": {"kind": 3, "primitive": 1}}],
+        "code":slot_code(json!([{"kind":3,"primitive":3},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":1},{"kind":3,"primitive":3},{"kind":3,"primitive":9},{"kind":3,"primitive":3}]), &[
+            ("const",json!({"constant":"length"}),json!({"outputs":[0]})),
+            ("make_slice",json!({"type":{"kind":5,"node":"bytes"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+            ("store_local",json!({"local":"bytes"}),json!({"inputs":[[0,1]],"release":[1]})),
+            ("load_local",json!({"local":"bytes"}),json!({"outputs":[1]})),
+            ("call_intrinsic",json!({"id":"crypto.rand.read","arg_count":1,"result_count":3}),json!({"inputs":[[0,1]],"outputs":[0,2,3],"release":[1]})),
+            ("store_local",json!({"local":"ok"}),json!({"inputs":[[0,3]],"release":[3]})),
+            ("pop",json!({}),json!({"inputs":[[0,2]],"release":[2]})),
+            ("load_local",json!({"local":"bytes"}),json!({"outputs":[1]})),
+            ("zero",json!({"type":{"kind":3,"primitive":3}}),json!({"outputs":[4]})),
+            ("load_index",json!({}),json!({"inputs":[[0,1],[0,4]],"outputs":[5],"release":[1,4]})),
+            ("convert",json!({"type":{"kind":3,"primitive":3}}),json!({"inputs":[[0,5]],"outputs":[4],"release":[5]})),
+            ("binary",json!({"operator":"+"}),json!({"inputs":[[0,0],[0,4]],"outputs":[6],"release":[0,4]})),
+            ("load_local",json!({"local":"bytes"}),json!({"outputs":[1]})),
+            ("const",json!({"constant":"one"}),json!({"outputs":[4]})),
+            ("load_index",json!({}),json!({"inputs":[[0,1],[0,4]],"outputs":[5],"release":[1,4]})),
+            ("convert",json!({"type":{"kind":3,"primitive":3}}),json!({"inputs":[[0,5]],"outputs":[4],"release":[5]})),
+            ("binary",json!({"operator":"+"}),json!({"inputs":[[0,6],[0,4]],"outputs":[0],"release":[6,4]})),
+            ("load_local",json!({"local":"ok"}),json!({"outputs":[3]})),
+            ("return",json!({"result_count":2}),json!({"inputs":[[0,0],[0,3]],"release":[0,3]}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -184,14 +203,21 @@ fn stopping_a_timer_closes_its_signal_and_releases_waiters() {
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"signal","kind":9,"direction":1,"elem":{"kind":3,"primitive":1}}]},
         "constants":[{"id":"capacity","type":{"kind":3,"primitive":3},"value":1},{"id":"delay","type":{"kind":3,"primitive":7},"value":30000000000_i64}],
-        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":1}]},"locals":[{"id":"signal","type":{"kind":9,"node":"signal"}}],"instructions":[
-            {"op":"const","payload":{"constant":"capacity"}}, {"op":"make_waitable","payload":{"type":{"kind":9,"node":"signal"}}},
-            {"op":"store_local","payload":{"local":"signal"}}, {"op":"load_local","payload":{"local":"signal"}},
-            {"op":"const","payload":{"constant":"delay"}}, {"op":"zero","payload":{"type":{"kind":3,"primitive":7}}},
-            {"op":"call_intrinsic","payload":{"id":"time.timer_start","arg_count":3}},
-            {"op":"load_local","payload":{"local":"signal"}}, {"op":"call_intrinsic","payload":{"id":"time.timer_stop","arg_count":1,"result_count":1}}, {"op":"pop"},
-            {"op":"load_local","payload":{"local":"signal"}}, {"op":"waitable_recv"}, {"op":"return","payload":{"result_count":1}}
-        ]}]
+        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":1}]},"locals":[{"id":"signal","type":{"kind":9,"node":"signal"}}],
+        "code":slot_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"signal"},{"kind":3,"primitive":7},{"kind":3,"primitive":7},{"kind":3,"primitive":1}]), &[
+            ("const",json!({"constant":"capacity"}),json!({"outputs":[0]})),
+            ("make_waitable",json!({"type":{"kind":9,"node":"signal"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+            ("store_local",json!({"local":"signal"}),json!({"inputs":[[0,1]],"release":[1]})),
+            ("load_local",json!({"local":"signal"}),json!({"outputs":[1]})),
+            ("const",json!({"constant":"delay"}),json!({"outputs":[2]})),
+            ("zero",json!({"type":{"kind":3,"primitive":7}}),json!({"outputs":[3]})),
+            ("call_intrinsic",json!({"id":"time.timer_start","arg_count":3}),json!({"inputs":[[0,1],[0,2],[0,3]],"release":[1,2,3]})),
+            ("load_local",json!({"local":"signal"}),json!({"outputs":[1]})),
+            ("call_intrinsic",json!({"id":"time.timer_stop","arg_count":1,"result_count":1}),json!({"inputs":[[0,1]],"outputs":[4],"release":[1]})),
+            ("pop",json!({}),json!({"inputs":[[0,4]],"release":[4]})),
+            ("load_local",json!({"local":"signal"}),json!({"outputs":[1]})),
+            ("waitable_recv",json!({}),json!({"inputs":[[0,1]],"outputs":[4],"release":[1]})),
+            ("return",json!({"result_count":1}),json!({"inputs":[[0,4]],"release":[4]}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();

@@ -14,7 +14,7 @@ func (l *lowerer) inferPackageGlobalTypes(program ast.Program) {
 				if decl.Kind != ast.DeclVar {
 					continue
 				}
-				if l.inferGlobalDeclTypes(decl.Var) {
+				if l.inferGlobalDeclTypes(*decl.Var) {
 					changed = true
 				}
 			}

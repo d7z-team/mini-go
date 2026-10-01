@@ -39,6 +39,7 @@
 - [`math`](packages/math.md) - Package math provides basic constants and mathematical functions.
 - [`math/bits`](packages/math/bits.md) - Package bits implements bit counting and manipulation functions for unsigned integer types.
 - [`math/cmplx`](packages/math/cmplx.md) - Package cmplx provides basic constants and mathematical functions for complex numbers.
+- [`math/floatbits`](packages/math/floatbits.md) - Package floatbits provides IEEE representation and scaling operations.
 - [`math/rand/v2`](packages/math/rand/v2.md) - Package rand implements pseudo-random number generators suitable for tasks such as simulation, but it should not be used for security-sensitive work.
 - [`net`](packages/net.md) - Package net provides portable network interfaces and in-memory connections.
 - [`net/netip`](packages/net/netip.md) - Package netip defines an IP address type that's a small value type.
@@ -48,12 +49,14 @@
 - [`path`](packages/path.md) - Package path implements utility routines for manipulating slash-separated paths.
 - [`path/filepath`](packages/path/filepath.md) - Package filepath implements portable slash-separated path operations and filesystem helpers backed by the injected os filesystem.
 - [`reflect`](packages/reflect.md) - Package reflect provides runtime type inspection and writable value access for Mini-Go values.
+- [`reflect/inspect`](packages/reflect/inspect.md) - Package inspect provides small dynamic type queries and assignment without materializing reflection descriptors.
 - [`regexp`](packages/regexp.md) - Package regexp implements regular expression search.
 - [`regexp/syntax`](packages/regexp/syntax.md) - Package syntax parses regular expressions into parse trees and compiles parse trees into programs.
 - [`rpc`](packages/rpc.md) - Package rpc provides the transport-neutral support used by generated MRPC clients and services.
 - [`slices`](packages/slices.md) - Package slices defines various functions useful with slices of any type.
 - [`sort`](packages/sort.md) - Package sort provides primitives for sorting slices and user-defined collections.
 - [`strconv`](packages/strconv.md) - Package strconv implements conversions to and from string representations of basic data types.
+- [`strconv/literal`](packages/strconv/literal.md) - Package literal decodes Go-style quoted literals without numeric formatting or Unicode tables.
 - [`strings`](packages/strings.md) - Package strings implements simple functions to manipulate UTF-8 encoded strings.
 - [`sync`](packages/sync.md) - Package sync provides basic synchronization primitives such as mutual exclusion locks.
 - [`testing`](packages/testing.md) - Package testing provides the test state and report types used to execute Mini-Go *_test.mgo functions.

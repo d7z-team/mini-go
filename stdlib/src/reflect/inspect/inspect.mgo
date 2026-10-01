@@ -1,0 +1,71 @@
+// Package inspect provides small dynamic type queries and assignment without
+// materializing reflection descriptors. The operations use the current VM's
+// type registry and ordinary assignment rules.
+package inspect
+
+// Kind constants match reflect.Kind.
+const (
+	Invalid uint = iota
+	Bool
+	Int
+	Int8
+	Int16
+	Int32
+	Int64
+	Uint
+	Uint8
+	Uint16
+	Uint32
+	Uint64
+	Uintptr
+	Float32
+	Float64
+	Complex64
+	Complex128
+	Array
+	Chan
+	Func
+	Interface
+	Map
+	Pointer
+	Slice
+	String
+	Struct
+	UnsafePointer
+)
+
+// Describe returns the dynamic type's kind and comparability, and whether the
+// dynamic value is nil. With element=true it describes a pointer's element
+// type without dereferencing the pointer; nil still describes the pointer.
+// A nil interface or a non-pointer element query has kind Invalid.
+func Describe(value any, element bool) (uint, bool, bool) {
+	return runtimeDescribe(value, element)
+}
+
+// ElementImplements reports whether the type pointed to by value implements
+// the interface pointed to by witness. Both pointers may be nil. It returns
+// false if either argument is not a pointer or witness does not point to an
+// interface.
+func ElementImplements(value any, witness any) bool {
+	return runtimeElementImplements(value, witness)
+}
+
+// Assign assigns source to the value pointed to by target using assignment,
+// not conversion, rules. It returns false without changing target if target
+// is not a non-nil pointer or source is not assignable. A nil source clears
+// a nil-capable target. Resource failures propagate as VM errors.
+func Assign(target any, source any) bool {
+	return runtimeAssign(target, source)
+}
+
+func runtimeDescribe(value any, element bool) (uint, bool, bool) {
+	panic("reflect.inspect_describe intrinsic unavailable")
+}
+
+func runtimeElementImplements(value any, witness any) bool {
+	panic("reflect.inspect_element_implements intrinsic unavailable")
+}
+
+func runtimeAssign(target any, source any) bool {
+	panic("reflect.inspect_assign intrinsic unavailable")
+}

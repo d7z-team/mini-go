@@ -80,19 +80,24 @@ impl Instance {
             destination: SelectDestination::Locals(payload),
             outcome: None,
         };
-        self.start_selection(selection, fallback)
+        self.start_selection(selection, fallback, None)
     }
 
     pub(super) fn start_selection(
         &mut self,
         selection: Selection,
         fallback: bool,
+        continuation: Option<frame::Continuation>,
     ) -> Result<(), RuntimeError> {
         let mut selection = self.prepare_selection(selection)?;
         self.running.selection_completion = Some(Box::new(selection.clone()));
         let ready = self.try_selection(&mut selection);
         self.running.selection_completion = None;
-        if !ready? {
+        let ready = ready?;
+        if let Some(continuation) = continuation {
+            self.running.frames.last_mut().unwrap().continuation = Some(continuation);
+        }
+        if !ready {
             if fallback {
                 selection.outcome = Some(SelectOutcome {
                     index: -1,
@@ -114,6 +119,7 @@ impl Instance {
         channel: Value,
         send: Option<Value>,
         with_ok: bool,
+        continuation: Option<frame::Continuation>,
     ) -> Result<(), RuntimeError> {
         let destination = if send.is_some() {
             SelectDestination::Send
@@ -131,6 +137,7 @@ impl Instance {
                 outcome: None,
             },
             false,
+            continuation,
         )
     }
 
@@ -170,7 +177,7 @@ impl Instance {
                     }
                     None => self.reflect_struct("Value", [])?,
                 };
-                self.running.frames.last_mut().unwrap().stack.extend([
+                self.running.frames.last_mut().unwrap().extend_results([
                     Value::int(index as i64),
                     value,
                     Value::boolean(received),
@@ -200,9 +207,9 @@ impl Instance {
                 }
                 SelectDestination::Receive(with_ok) => {
                     let frame = self.running.frames.last_mut().unwrap();
-                    frame.stack.push(outcome.value.unwrap());
+                    frame.push_result(outcome.value.unwrap());
                     if with_ok {
-                        frame.stack.push(Value::boolean(outcome.received));
+                        frame.push_result(Value::boolean(outcome.received));
                     }
                 }
                 SelectDestination::Send => {}
@@ -371,10 +378,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selection_preflight_does_not_publish_a_resume_state() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([
+                {"id":"fn.Main", "code":{"descriptors":{}}}
+            ]);
+        });
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", vec![]).unwrap();
+        let scope = vm.running.scope;
+        let limit = vm.limits.max_allocated_bytes;
+        vm.limits.max_allocated_bytes = vm.memory.stats().live_bytes;
+        vm.running.begin_instruction(0);
+        let selection = Selection {
+            cases: vec![],
+            destination: SelectDestination::Send,
+            outcome: None,
+        };
+        let continuation = || {
+            Some(frame::Continuation::Intrinsic(
+                reflect_async::IntrinsicResume::Send,
+            ))
+        };
+        assert_eq!(
+            vm.start_selection(selection.clone(), false, continuation())
+                .unwrap_err()
+                .code,
+            "census_required"
+        );
+        assert!(vm.running.frames[0].continuation.is_none());
+        assert!(vm.running.selection_completion.is_none());
+        assert!(vm.blocked.is_empty());
+        vm.running.finish_instruction();
+        vm.limits.max_allocated_bytes = limit;
+        vm.start_selection(selection, false, continuation())
+            .unwrap();
+        assert_eq!(vm.blocked.len(), 1);
+        assert!(matches!(
+            vm.blocked.iter().next().unwrap().frames[0].continuation,
+            Some(frame::Continuation::Intrinsic(
+                reflect_async::IntrinsicResume::Send
+            ))
+        ));
+        vm.cancel_scope(scope).unwrap();
+        assert!(vm.blocked.is_empty());
+        vm.close().unwrap();
+    }
+
+    #[test]
     fn pending_selection_cannot_match_itself_and_cancellation_removes_all_roots() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -397,11 +452,11 @@ mod tests {
         };
         let sent = Value {
             typ: TypeIdentity::Any,
-            data: Data::Pointer(Address {
+            data: Data::Pointer(std::sync::Arc::new(Address {
                 identity: Arc::default(),
                 root: value,
                 path: vec![],
-            }),
+            })),
         };
         vm.park(scheduler::Blocked::Select(Box::new(Selection {
             cases: vec![
@@ -437,7 +492,7 @@ mod tests {
     fn crossing_selections_commit_both_winners_and_withdraw_every_other_case() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "instructions":[{"op":"return","payload":{}}]}
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();

@@ -56,7 +56,7 @@ func (machine *executionMachine) startPanic(task *executionTask, current *execut
 		ModulePath:         panicState.err.ModulePath,
 		FunctionID:         panicState.err.FunctionID,
 		PC:                 panicState.err.PC,
-		Op:                 string(ir.OpPanic),
+		Op:                 ir.OpPanic.String(),
 		ExecutionContextID: task.id,
 		Loc:                panicState.err.Loc,
 		Err:                panicState.err,

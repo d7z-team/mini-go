@@ -9,8 +9,8 @@ import (
 
 func genericExprType(expr ast.Expression, substitutions map[string]ast.TypeExpr) (ast.TypeExpr, bool) {
 	if expr.Kind == ast.ExprIdent {
-		if expr.Name == "type" && expr.Type.Kind != ast.TypeInvalid {
-			typ := cloneGenericType(expr.Type)
+		if expr.Name == "type" && expr.Type != nil && expr.Type.Kind != ast.TypeInvalid {
+			typ := cloneGenericType(*expr.Type)
 			substituteGenericType(&typ, substitutions)
 			return typ, true
 		}

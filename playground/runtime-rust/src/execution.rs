@@ -1216,6 +1216,7 @@ impl Execution {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::instance::test_helpers::slot_code;
     use serde_json::json;
     use std::{
         collections::HashSet,
@@ -1231,62 +1232,113 @@ mod tests {
             serde_json::from_str(crate::contract_generated::CONTRACT_JSON).unwrap();
         let integer = json!({"kind":3,"primitive":3});
         let channel = json!({"kind":9,"node":"channel"});
-        let mut main = vec![
-            json!({"op":"const","payload":{"constant":"capacity"}}),
-            json!({"op":"make_waitable","payload":{"type":channel}}),
-            json!({"op":"store_global","payload":{"global":"start"}}),
-            json!({"op":"const","payload":{"constant":"capacity"}}),
-            json!({"op":"make_waitable","payload":{"type":channel}}),
-            json!({"op":"store_global","payload":{"global":"ready"}}),
-            json!({"op":"const","payload":{"constant":"capacity"}}),
-            json!({"op":"make_waitable","payload":{"type":channel}}),
-            json!({"op":"store_global","payload":{"global":"release"}}),
-            json!({"op":"const","payload":{"constant":"capacity"}}),
-            json!({"op":"make_waitable","payload":{"type":channel}}),
-            json!({"op":"store_global","payload":{"global":"done"}}),
-        ];
-        for _ in 0..4 {
+        let function = json!({"kind":10,"node":"function"});
+        let mut main = Vec::new();
+        for global in ["start", "ready", "release", "done"] {
             main.extend([
-                json!({"op":"make_closure","payload":{"function":"worker"}}),
-                json!({"op":"spawn","payload":{"arg_count":0}}),
+                (
+                    "const",
+                    json!({"constant":"capacity"}),
+                    json!({"outputs":[0]}),
+                ),
+                (
+                    "make_waitable",
+                    json!({"type":channel}),
+                    json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+                ),
+                (
+                    "store_global",
+                    json!({"global":global}),
+                    json!({"inputs":[[0,1]],"release":[1]}),
+                ),
             ]);
         }
         for _ in 0..4 {
             main.extend([
-                json!({"op":"load_global","payload":{"global":"start"}}),
-                json!({"op":"zero","payload":{"type":integer}}),
-                json!({"op":"waitable_send"}),
+                (
+                    "make_closure",
+                    json!({"function":"worker"}),
+                    json!({"outputs":[2]}),
+                ),
+                (
+                    "spawn",
+                    json!({"arg_count":0}),
+                    json!({"inputs":[[0,2]],"release":[2]}),
+                ),
             ]);
         }
         for _ in 0..4 {
             main.extend([
-                json!({"op":"load_global","payload":{"global":"ready"}}),
-                json!({"op":"waitable_recv"}),
-                json!({"op":"pop"}),
+                (
+                    "load_global",
+                    json!({"global":"start"}),
+                    json!({"outputs":[1]}),
+                ),
+                ("zero", json!({"type":integer}), json!({"outputs":[0]})),
+                (
+                    "waitable_send",
+                    json!({}),
+                    json!({"inputs":[[0,1],[0,0]],"release":[1,0]}),
+                ),
             ]);
         }
         for _ in 0..4 {
             main.extend([
-                json!({"op":"load_global","payload":{"global":"release"}}),
-                json!({"op":"zero","payload":{"type":integer}}),
-                json!({"op":"waitable_send"}),
+                (
+                    "load_global",
+                    json!({"global":"ready"}),
+                    json!({"outputs":[1]}),
+                ),
+                (
+                    "waitable_recv",
+                    json!({}),
+                    json!({"inputs":[[0,1]],"outputs":[0],"release":[1]}),
+                ),
+                ("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})),
+            ]);
+        }
+        for _ in 0..4 {
+            main.extend([
+                (
+                    "load_global",
+                    json!({"global":"release"}),
+                    json!({"outputs":[1]}),
+                ),
+                ("zero", json!({"type":integer}), json!({"outputs":[0]})),
+                (
+                    "waitable_send",
+                    json!({}),
+                    json!({"inputs":[[0,1],[0,0]],"release":[1,0]}),
+                ),
             ]);
         }
         let mut background = main.clone();
-        background.push(json!({"op":"return","payload":{}}));
+        background.push(("return", json!({}), json!({})));
         for index in 0..4 {
             main.extend([
-                json!({"op":"load_global","payload":{"global":"done"}}),
-                json!({"op":"waitable_recv"}),
+                (
+                    "load_global",
+                    json!({"global":"done"}),
+                    json!({"outputs":[1]}),
+                ),
+                (
+                    "waitable_recv",
+                    json!({}),
+                    json!({"inputs":[[0,1]],"outputs":[0],"release":[1]}),
+                ),
             ]);
             if index != 3 {
-                main.push(json!({"op":"pop"}));
+                main.push(("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})));
             }
         }
-        main.push(json!({"op":"return","payload":{"result_count":1}}));
+        main.push((
+            "return",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,0]],"release":[0]}),
+        ));
         let mut artifact = json!({
             "module":{"path":"test","package":"main"},
-            "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":integer}]},
+            "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":integer},{"id":"function","kind":10,"signature":{}}]},
             "globals":[
                 {"id":"start","type":channel},{"id":"ready","type":channel},
                 {"id":"release","type":channel},{"id":"done","type":channel}
@@ -1297,29 +1349,31 @@ mod tests {
                 {"id":"limit","type":integer,"value":limit}
             ],
             "functions":[
-                {"id":"fn.Main","signature":{"results":[integer]},"instructions":main},
-                {"id":"fn.Background","instructions":background},
-                {"id":"worker","locals":[{"id":"i","type":integer}],"instructions":[
-                    {"op":"load_global","payload":{"global":"start"}},
-                    {"op":"waitable_recv"},{"op":"pop"},
-                    {"op":"load_global","payload":{"global":"ready"}},
-                    {"op":"zero","payload":{"type":integer}},
-                    {"op":"waitable_send"},
-                    {"op":"load_global","payload":{"global":"release"}},
-                    {"op":"waitable_recv"},{"op":"pop"},
-                    {"op":"label","payload":{"label":"loop"}},
-                    {"op":"load_local","payload":{"local":"i"}},
-                    {"op":"const","payload":{"constant":"one"}},
-                    {"op":"binary","payload":{"operator":"+"}},
-                    {"op":"store_local","payload":{"local":"i"}},
-                    {"op":"load_local","payload":{"local":"i"}},
-                    {"op":"const","payload":{"constant":"limit"}},
-                    {"op":"binary","payload":{"operator":"<"}},
-                    {"op":"jump_if","payload":{"label":"loop"}},
-                    {"op":"load_global","payload":{"global":"done"}},
-                    {"op":"load_local","payload":{"local":"i"}},
-                    {"op":"waitable_send"},{"op":"return","payload":{}}
-                ]}
+                {"id":"fn.Main","signature":{"results":[integer]},"code":slot_code(json!([integer,channel,function]),&main)},
+                {"id":"fn.Background","code":slot_code(json!([integer,channel,function]),&background)},
+                {"id":"worker","locals":[{"id":"i","type":integer}],"code":slot_code(json!([channel,integer,integer,integer,{"kind":3,"primitive":1}]), &[
+                    ("load_global",json!({"global":"start"}),json!({"outputs":[0]})),
+                    ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+                    ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
+                    ("load_global",json!({"global":"ready"}),json!({"outputs":[0]})),
+                    ("zero",json!({"type":integer}),json!({"outputs":[1]})),
+                    ("waitable_send",json!({}),json!({"inputs":[[0,0],[0,1]],"release":[0,1]})),
+                    ("load_global",json!({"global":"release"}),json!({"outputs":[0]})),
+                    ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+                    ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
+                    ("label",json!({"label":"loop"}),json!({})),
+                    ("load_local",json!({"local":"i"}),json!({"outputs":[1]})),
+                    ("const",json!({"constant":"one"}),json!({"outputs":[2]})),
+                    ("binary",json!({"operator":"+"}),json!({"inputs":[[0,1],[0,2]],"outputs":[3],"release":[1,2]})),
+                    ("store_local",json!({"local":"i"}),json!({"inputs":[[0,3]],"release":[3]})),
+                    ("load_local",json!({"local":"i"}),json!({"outputs":[1]})),
+                    ("const",json!({"constant":"limit"}),json!({"outputs":[2]})),
+                    ("binary",json!({"operator":"<"}),json!({"inputs":[[0,1],[0,2]],"outputs":[4],"release":[1,2]})),
+                    ("jump_if",json!({"label":"loop"}),json!({"inputs":[[0,4]],"release":[4]})),
+                    ("load_global",json!({"global":"done"}),json!({"outputs":[0]})),
+                    ("load_local",json!({"local":"i"}),json!({"outputs":[1]})),
+                    ("waitable_send",json!({}),json!({"inputs":[[0,0],[0,1]],"release":[0,1]})),
+                    ("return",json!({}),json!({}))])}
             ]
         });
         artifact["format"] = contract["spec"]["format"].clone();
@@ -1672,44 +1726,48 @@ mod tests {
     }
 
     #[test]
-    fn one_worker_executor_advances_multiple_instances_without_pinned_supervisors() {
+    fn executor_advances_multiple_instances_across_worker_and_parallelism_settings() {
         let program = parallel_program();
-        let executor = Executor::new(1).unwrap();
-        let instances = (0..2)
-            .map(|_| {
-                program
-                    .instantiate(InstanceOptions {
-                        parallelism: 4,
-                        executor: Some(executor.clone()),
-                        ..Default::default()
+        for workers in [1, 4] {
+            for parallelism in [1, 4] {
+                let executor = Executor::new(workers).unwrap();
+                let instances = (0..2)
+                    .map(|_| {
+                        program
+                            .instantiate(InstanceOptions {
+                                parallelism,
+                                executor: Some(executor.clone()),
+                                ..Default::default()
+                            })
+                            .unwrap()
                     })
-                    .unwrap()
-            })
-            .collect::<Vec<_>>();
-        let executions = instances
-            .iter()
-            .map(|instance| instance.start("default", Vec::new()).unwrap())
-            .collect::<Vec<_>>();
-        std::thread::scope(|scope| {
-            let waits = executions
-                .iter()
-                .map(|execution| {
-                    scope.spawn(|| {
-                        execution.wait(&Cancellation::default())?;
-                        execution.wait_scope(&Cancellation::default())
-                    })
-                })
-                .collect::<Vec<_>>();
-            for wait in waits {
-                wait.join().unwrap().unwrap();
+                    .collect::<Vec<_>>();
+                let executions = instances
+                    .iter()
+                    .map(|instance| instance.start("default", Vec::new()).unwrap())
+                    .collect::<Vec<_>>();
+                std::thread::scope(|scope| {
+                    let waits = executions
+                        .iter()
+                        .map(|execution| {
+                            scope.spawn(|| {
+                                execution.wait(&Cancellation::default())?;
+                                execution.wait_scope(&Cancellation::default())
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    for wait in waits {
+                        wait.join().unwrap().unwrap();
+                    }
+                });
+                executor.shutdown(&Cancellation::default()).unwrap();
+                assert!(
+                    instances
+                        .iter()
+                        .all(|instance| instance.shutdown_result().is_some())
+                );
             }
-        });
-        executor.shutdown(&Cancellation::default()).unwrap();
-        assert!(
-            instances
-                .iter()
-                .all(|instance| instance.shutdown_result().is_some())
-        );
+        }
     }
 
     #[test]
@@ -1849,14 +1907,13 @@ mod tests {
                     break;
                 }
             }
-            // Entry completion and scope completion are intentionally
-            // distinct: the final child may still need to return after its
-            // channel send released the root. It may do so before this thread
-            // can sample live scope stats, so assert the two stable boundaries
-            // instead of racing the supervisor between them.
-            assert_eq!(total, 64_119);
             execution.wait_scope(&Cancellation::default()).unwrap();
-            assert_eq!(execution.scope_stats().steps, total as u64 + 1);
+            // The final child's return can occur before or after the root's
+            // completion is observed. Its step belongs to the same scope,
+            // regardless of which driver advanced it.
+            let scope_steps = execution.scope_stats().steps;
+            assert_eq!(scope_steps, 64_120);
+            assert!(scope_steps - total as u64 <= 1);
             instance.shutdown(&Cancellation::default()).unwrap();
             executor.shutdown(&Cancellation::default()).unwrap();
         }

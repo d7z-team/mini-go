@@ -8,6 +8,25 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 
+fn string_constant_bytes(raw: &str) -> Result<Vec<u8>, ()> {
+    if raw.starts_with('"') {
+        return serde_json::from_str::<String>(raw)
+            .map(String::into_bytes)
+            .map_err(|_| ());
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Encoded {
+        bytes: String,
+    }
+    let encoded: Encoded = serde_json::from_str(raw).map_err(|_| ())?;
+    let bytes = STANDARD.decode(&encoded.bytes).map_err(|_| ())?;
+    if STANDARD.encode(&bytes) != encoded.bytes {
+        return Err(());
+    }
+    Ok(bytes)
+}
+
 pub(crate) enum PreparedConstant {
     Scalar(Value),
     Bytes { typ: TypeIdentity, bytes: Vec<u8> },
@@ -71,7 +90,9 @@ impl PreparedConstant {
                 TypeIdentity::Primitive(wire::PrimitiveBool) => {
                     serde_json::from_str::<bool>(raw).is_ok()
                 }
-                TypeIdentity::Primitive(wire::PrimitiveString) => raw.starts_with('"'),
+                TypeIdentity::Primitive(wire::PrimitiveString) => {
+                    string_constant_bytes(raw).is_ok()
+                }
                 TypeIdentity::Any => true,
                 _ => false,
             };
@@ -154,12 +175,9 @@ impl PreparedConstant {
             TypeIdentity::Primitive(wire::PrimitiveBool) => {
                 Data::Bool(serde_json::from_str(raw).map_err(|_| invalid())?)
             }
-            TypeIdentity::Primitive(wire::PrimitiveString) => Data::String(
-                serde_json::from_str::<String>(raw)
-                    .map_err(|_| invalid())?
-                    .into_bytes()
-                    .into(),
-            ),
+            TypeIdentity::Primitive(wire::PrimitiveString) => {
+                Data::String(string_constant_bytes(raw).map_err(|_| invalid())?.into())
+            }
             TypeIdentity::Primitive(primitive)
                 if (wire::PrimitiveInt..=wire::PrimitiveInt64).contains(&primitive) =>
             {
@@ -262,4 +280,35 @@ fn exact_rational(text: &str) -> bool {
         && unsigned(denominator)
         && denominator != "0"
         && (numerator != "0" || denominator == "1")
+}
+
+#[cfg(test)]
+mod string_tests {
+    use super::string_constant_bytes;
+
+    #[test]
+    fn byte_strings_preserve_payloads_and_reject_ambiguous_encoding() {
+        assert_eq!(
+            string_constant_bytes(r#"{"bytes":"AP+A"}"#),
+            Ok(vec![0, 255, 128])
+        );
+        assert_eq!(
+            string_constant_bytes(r#""世界""#),
+            Ok("世界".as_bytes().to_vec())
+        );
+        for raw in [
+            r#"null"#,
+            r#"{}"#,
+            r#"{"bytes":null}"#,
+            r#"{"bytes":1}"#,
+            r#"{"bytes":"AB=="}"#,
+            r#"{"bytes":"AA==\n"}"#,
+            r#"{"bytes":"!"}"#,
+            r#"{"bytes":"AA==","bytes":"AQ=="}"#,
+            r#"{"bytes":"AA==","extra":0}"#,
+            r#"{"bytes":"AA=="} {}"#,
+        ] {
+            assert!(string_constant_bytes(raw).is_err(), "accepted {raw}");
+        }
+    }
 }

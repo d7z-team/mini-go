@@ -70,11 +70,11 @@ func (a *analyzer) predeclareMethodSignature(decl *ast.FuncDecl, scope ScopeID) 
 func (a *analyzer) analyzeDecl(decl *ast.Decl, scope ScopeID, local bool) {
 	switch decl.Kind {
 	case ast.DeclConst, ast.DeclVar:
-		value := &decl.Const
+		value := decl.Const
 		kind := ObjectConst
 		mutable := false
 		if decl.Kind == ast.DeclVar {
-			value = &decl.Var
+			value = decl.Var
 			kind = ObjectVar
 			mutable = true
 		}
@@ -174,7 +174,7 @@ func (a *analyzer) analyzeDecl(decl *ast.Decl, scope ScopeID, local bool) {
 				objectID = object.ID
 			}
 		}
-		a.analyzeFunc(&decl.Func, scope, objectID)
+		a.analyzeFunc(decl.Func, scope, objectID)
 	}
 }
 

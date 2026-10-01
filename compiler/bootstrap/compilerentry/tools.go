@@ -16,11 +16,12 @@ import (
 	"github.com/d7z-team/mini-go/compiler/source"
 	"github.com/d7z-team/mini-go/compiler/target"
 	"github.com/d7z-team/mini-go/compiler/workspace"
+	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 const (
 	ToolsFormat   = "mini-go-tools"
-	ToolsVersion  = 2
+	ToolsVersion  = 3
 	MaxToolsInput = 64 << 20
 )
 
@@ -107,16 +108,15 @@ func (s *ToolService) Call(input []byte) []byte {
 	if err != nil {
 		response.Error = &ToolsError{Code: "invalid_argument", Message: err.Error()}
 	}
-	var output bytes.Buffer
-	encoder := json.NewEncoder(&output)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(response); err != nil {
-		return []byte(`{"Format":"mini-go-tools","Version":2,"Error":{"Code":"internal","Message":"encode tools response"}}`)
+	output, encodeErr := encodeToolsResponse(response)
+	if encodeErr != nil {
+		code := "internal"
+		if errors.Is(encodeErr, errToolsOutputBudget) {
+			code = "budget"
+		}
+		output, _ = encodeToolsResponse(ToolsResponse{Format: ToolsFormat, Version: ToolsVersion, CompilerID: compiler.Identity(), Error: &ToolsError{Code: code, Message: encodeErr.Error()}})
 	}
-	if output.Len() > MaxToolsInput {
-		return []byte(`{"Format":"mini-go-tools","Version":2,"Error":{"Code":"budget","Message":"tool output exceeds byte limit"}}`)
-	}
-	return output.Bytes()
+	return output
 }
 
 // Execute accepts a native context. Go integrations normally use service.Session
@@ -316,19 +316,17 @@ func (s *ToolService) execute(ctx context.Context, request ToolsRequest, respons
 	case "build/prepare":
 		result, err := s.session.Build(ctx, request.Build)
 		if err == nil && result.Result.Image != nil {
-			var encoded bytes.Buffer
-			encoder := json.NewEncoder(&encoded)
-			encoder.SetEscapeHTML(false)
-			if encodeErr := encoder.Encode(result.Result.Image); encodeErr != nil {
+			encoded, encodeErr := bytecode.EncodeExecutionImage(result.Result.Image)
+			if encodeErr != nil {
 				return encodeErr
 			}
-			response.ImageJSON = encoded.String()
+			response.ImageJSON = string(encoded)
 			if result.Result.Symbols != nil {
-				encoded.Reset()
-				if encodeErr := encoder.Encode(result.Result.Symbols); encodeErr != nil {
+				encoded, encodeErr = bytecode.EncodeProgramSymbols(result.Result.Symbols)
+				if encodeErr != nil {
 					return encodeErr
 				}
-				response.SymbolsJSON = encoded.String()
+				response.SymbolsJSON = string(encoded)
 			}
 		}
 		response.Diagnostics = result.Result.Checked.Diagnostics

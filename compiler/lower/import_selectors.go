@@ -63,8 +63,8 @@ func (l *lowerer) importedVariable(expr ast.Expression) (string, string, bool) {
 	if !ok || !info.Category.Addressable() {
 		return "", "", false
 	}
-	if info.Selection.Kind == check.SelectionPackageMember {
-		return info.Selection.ModulePath, info.Selection.Name, true
+	if selection := l.semantic.Selections[expr.NodeID]; selection.Kind == check.SelectionPackageMember {
+		return selection.ModulePath, selection.Name, true
 	}
 	if expr.Kind == ast.ExprIdent {
 		if object, ok := l.semantic.Object(info.Object); ok && object.Kind == check.ObjectVar && object.ExportName != "" && object.ModulePath != "" {

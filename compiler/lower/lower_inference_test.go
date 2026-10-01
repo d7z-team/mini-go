@@ -17,27 +17,27 @@ func TestLowerInfersLocalTypeFromCompositeInitializer(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"m"},
 							Values: []ast.Expression{{
 								Kind: ast.ExprComposite,
-								Type: mapType,
-								Entries: []ast.KeyValue{{
-									Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "a", Type: stringType}),
-									Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+								Type: &mapType,
+								Items: []ast.KeyValue{{
+									Key:   ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "a", Type: &stringType}),
+									Value: ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 								}},
 							}},
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names:  []string{"k"},
 							Type:   stringType,
-							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "init", Type: stringType}},
+							Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "init", Type: &stringType}},
 						}}},
 					}, {
 						Kind:  ast.StmtRange,
@@ -82,7 +82,7 @@ func TestLowerFunctionValueParameterCallInfersResultType(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Keep",
 					Params:  []ast.Field{{Name: "mapping", Type: mapperType}},
 					Results: []ast.Field{{Type: boolType}},
@@ -90,7 +90,7 @@ func TestLowerFunctionValueParameterCallInfersResultType(t *testing.T) {
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"mapped"},
 								Values: []ast.Expression{{
 									Kind:   ast.ExprCall,
@@ -98,7 +98,7 @@ func TestLowerFunctionValueParameterCallInfersResultType(t *testing.T) {
 									Args: []ast.Expression{{
 										Kind:    ast.ExprLiteral,
 										Literal: "97",
-										Type:    runeType,
+										Type:    &runeType,
 									}},
 								}},
 							},
@@ -112,7 +112,7 @@ func TestLowerFunctionValueParameterCallInfersResultType(t *testing.T) {
 							Right: ptrExpr(ast.Expression{
 								Kind:    ast.ExprLiteral,
 								Literal: "0",
-								Type:    runeType,
+								Type:    &runeType,
 							}),
 						}},
 					}}},

@@ -261,7 +261,7 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 				for _, group := range []struct {
 					name   string
 					values []vmValue
-				}{{"stack", frame.stack}, {"popped", frame.popValues}, {"return", frame.returnValues}} {
+				}{{"slot", frame.slotValues}, {"popped", frame.popValues}, {"return", frame.returnValues}} {
 					for n, value := range group.values {
 						if stopped {
 							break
@@ -270,6 +270,11 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 						ref.Path += fmt.Sprintf("/%s %d", group.name, n)
 						inspect(ref, value)
 					}
+				}
+				if frame.typeDispatchActive {
+					ref := root
+					ref.Path += "/type dispatch"
+					inspect(ref, frame.typeDispatchValue)
 				}
 				for n, deferred := range frame.defers {
 					if stopped {

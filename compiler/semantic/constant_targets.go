@@ -59,7 +59,7 @@ func (a *analyzer) validateConstantTarget(expr ast.Expression, target types.Type
 		valid = primitive == sourcePrimitive
 		if !valid && conversion && primitive == types.PrimitiveString {
 			value, ok := a.evaluateConstantExpression(expr, a.info.NodeScopes[expr.NodeID])
-			rational, numeric := constant.ParseRationalLiteral(value.Text)
+			rational, numeric := value.Rational()
 			_, integer := rational.Integer()
 			valid = ok && numeric && integer
 		}
@@ -98,7 +98,8 @@ func (a *analyzer) constantValueFits(value constant.Value, target types.TypeRef,
 	}
 	view := a.info.Relations.View(target)
 	if numeric, ok := view.NumericInfo(); ok {
-		text := value.Text
+		var rational constant.Rational
+		var ok bool
 		if value.Imag != "" {
 			imaginaryPart, valid := constant.ParseRationalLiteral(value.Imag)
 			if !valid {
@@ -111,9 +112,10 @@ func (a *analyzer) constantValueFits(value constant.Value, target types.TypeRef,
 			} else if imaginaryPart.Numerator != "0" {
 				return false
 			}
-			text = value.Real
+			rational, ok = constant.ParseRationalLiteral(value.Real)
+		} else {
+			rational, ok = value.Rational()
 		}
-		rational, ok := constant.ParseRationalLiteral(text)
 		if !ok {
 			return false
 		}

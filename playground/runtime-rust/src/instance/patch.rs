@@ -1,6 +1,52 @@
 //! Read-only preparation and atomic publication at an owner boundary.
 use super::*;
 
+pub(super) struct FunctionBindings {
+    pub symbols: LogicalFunctions,
+    pub ids: Vec<usize>,
+    pub targets: Vec<Option<usize>>,
+}
+
+impl FunctionBindings {
+    pub(super) fn prepare(
+        program: &Program,
+        published: &LogicalFunctions,
+    ) -> Result<Self, RuntimeError> {
+        let mut symbols = published.clone();
+        let mut ids = vec![usize::MAX; program.function_table.len()];
+        let mut targets = vec![None; symbols.len()];
+        for function in &program.function_table {
+            if function.declaration.revision_local {
+                continue;
+            }
+            let key = (function.module.clone(), function.name.clone());
+            let id = match symbols.get(&key) {
+                Some(&id) => id,
+                None => {
+                    if symbols.len() >= MAX_LOGICAL_FUNCTIONS {
+                        return Err(RuntimeError::new(
+                            "function_limit",
+                            "patch",
+                            "logical function identity limit exceeded",
+                        ));
+                    }
+                    let id = symbols.len();
+                    symbols.insert(key, id);
+                    targets.push(None);
+                    id
+                }
+            };
+            ids[function.index] = id;
+            targets[id] = Some(function.index);
+        }
+        Ok(Self {
+            symbols,
+            ids,
+            targets,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevisionInfo {
     pub generation: u64,
@@ -347,14 +393,18 @@ impl Instance {
         for (key, handle) in keys.into_iter().zip(allocations.handles()) {
             globals.insert(key, *handle);
         }
+        let bindings = FunctionBindings::prepare(&plan.target, &self.logical_functions)?;
         let next = Arc::new(crate::program::Revision {
             generation,
+            logical_functions: bindings.ids,
             program: plan.target,
         });
         self.retired_revisions
             .insert(self.revision.generation, Arc::downgrade(&self.revision));
         allocations.commit();
         self.revision = next;
+        self.logical_functions = bindings.symbols;
+        self.call_targets = bindings.targets;
         self.frame_pool.clear();
         self.types = plan.types;
         self.interface_assignments.get_mut().unwrap().clear();

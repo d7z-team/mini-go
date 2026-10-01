@@ -103,17 +103,15 @@ func (category ValueCategory) Assignable() bool {
 }
 
 type ExprInfo struct {
-	Type         types.TypeRef
-	Mode         ExprMode
-	Untyped      bool
-	Category     ValueCategory
-	LeftTarget   types.TypeRef
-	RightTarget  types.TypeRef
-	Results      []types.TypeRef
-	Object       ObjectID
-	Selection    Selection
-	Signature    types.FunctionSignature
-	HasSignature bool
+	Type        types.TypeRef
+	Mode        ExprMode
+	Untyped     bool
+	Category    ValueCategory
+	LeftTarget  types.TypeRef
+	RightTarget types.TypeRef
+	Results     []types.TypeRef
+	Object      ObjectID
+	Signature   *types.FunctionSignature
 }
 
 type CompositeInfo struct {
@@ -298,85 +296,7 @@ func (p *ProgramInfo) Object(id ObjectID) (Object, bool) {
 // TypeExact reports whether semantic analysis has resolved every value needed
 // to format the type.
 func (p *ProgramInfo) TypeExact(ref types.TypeRef) bool {
-	if p == nil || !ref.Valid() {
-		return false
-	}
-	seen := map[types.TypeID]bool{}
-	var exact func(types.TypeRef) bool
-	exact = func(current types.TypeRef) bool {
-		if !current.Valid() {
-			return true
-		}
-		if current.Kind == types.TypeParameter || current.Kind == types.Instance {
-			return false
-		}
-		if current.Node == "" || seen[current.Node] {
-			return true
-		}
-		seen[current.Node] = true
-		node, ok := p.TypeTable.Node(current)
-		if !ok {
-			return false
-		}
-		if node.Kind == types.Named && !node.Alias && !node.Underlying.Valid() {
-			return false
-		}
-		if node.Kind == types.Array && node.Length == types.UnknownArrayLength {
-			return false
-		}
-		if !exact(node.AliasTarget) || !exact(node.Underlying) || !exact(node.Elem) || !exact(node.Key) || !exact(node.Constraint) || !exact(node.Base) {
-			return false
-		}
-		for _, item := range node.TypeArgs {
-			if !exact(item) {
-				return false
-			}
-		}
-		for _, item := range node.Tuple {
-			if !exact(item) {
-				return false
-			}
-		}
-		for _, field := range node.Fields {
-			if !exact(field.Type) {
-				return false
-			}
-		}
-		if node.Signature != nil {
-			for _, param := range node.Signature.Params {
-				if !exact(param.Type) {
-					return false
-				}
-			}
-			for _, result := range node.Signature.Results {
-				if !exact(result) {
-					return false
-				}
-			}
-		}
-		for _, method := range node.Methods {
-			if !exact(method.Receiver) {
-				return false
-			}
-			for _, param := range method.Signature.Params {
-				if !exact(param.Type) {
-					return false
-				}
-			}
-			for _, result := range method.Signature.Results {
-				if !exact(result) {
-					return false
-				}
-			}
-		}
-		for _, term := range node.Terms {
-			if !exact(term.Type) {
-				return false
-			}
-		}
-		return true
-	}
-	return exact(ref)
+	return p != nil && p.TypeTable.TypeExact(ref)
 }
 
 func (p *ProgramInfo) Constant(node ast.NodeID) (constant.Value, bool) {

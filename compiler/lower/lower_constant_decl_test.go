@@ -16,26 +16,26 @@ func TestLowerTopLevelIntConstExpression(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names:  []string{"Shift"},
 					Type:   intType,
-					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "5", Type: intType}},
+					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "5", Type: &intType}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Mask"},
 					Type:  intType,
 					Values: []ast.Expression{{
 						Kind:     ast.ExprBinary,
 						Operator: "<<",
-						Left:     &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+						Left:     &ast.Expression{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 						Right:    &ast.Expression{Kind: ast.ExprIdent, Name: "Shift"},
 					}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -63,26 +63,26 @@ func TestLowerTopLevelStringConstExpression(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names:  []string{"Prefix"},
 					Type:   stringType,
-					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: `"mini"`, Type: stringType}},
+					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: `"mini"`, Type: &stringType}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Name"},
 					Type:  stringType,
 					Values: []ast.Expression{{
 						Kind:     ast.ExprBinary,
 						Operator: "+",
 						Left:     &ast.Expression{Kind: ast.ExprIdent, Name: "Prefix"},
-						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: `"-go"`, Type: stringType},
+						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: `"-go"`, Type: &stringType},
 					}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: stringType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -112,14 +112,14 @@ func TestLowerTopLevelFloatConstExpression(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names:  []string{"Half"},
 					Type:   floatType,
-					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1.5", Type: floatType}},
+					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "1.5", Type: &floatType}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Total"},
 					Type:  floatType,
 					Values: []ast.Expression{{
@@ -129,21 +129,21 @@ func TestLowerTopLevelFloatConstExpression(t *testing.T) {
 							Kind:     ast.ExprBinary,
 							Operator: "*",
 							Left:     &ast.Expression{Kind: ast.ExprIdent, Name: "Half"},
-							Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: intType},
+							Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: &intType},
 						},
-						Right: &ast.Expression{Kind: ast.ExprLiteral, Literal: "39.5", Type: floatType},
+						Right: &ast.Expression{Kind: ast.ExprLiteral, Literal: "39.5", Type: &floatType},
 					}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Large"},
 					Type:  boolType,
 					Values: []ast.Expression{{
 						Kind:     ast.ExprBinary,
 						Operator: ">",
 						Left:     &ast.Expression{Kind: ast.ExprIdent, Name: "Total"},
-						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "42", Type: intType},
+						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "42", Type: &intType},
 					}},
 				},
 			}},
@@ -177,14 +177,14 @@ func TestLowerTopLevelBoolConstExpression(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names:  []string{"Enabled"},
 					Type:   boolType,
-					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "true", Type: boolType}},
+					Values: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "true", Type: &boolType}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Gate"},
 					Type:  boolType,
 					Values: []ast.Expression{{
@@ -194,32 +194,32 @@ func TestLowerTopLevelBoolConstExpression(t *testing.T) {
 						Right: &ast.Expression{
 							Kind:     ast.ExprUnary,
 							Operator: "!",
-							Operand:  &ast.Expression{Kind: ast.ExprLiteral, Literal: "false", Type: boolType},
+							Operand:  &ast.Expression{Kind: ast.ExprLiteral, Literal: "false", Type: &boolType},
 						},
 					}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Small"},
 					Type:  boolType,
 					Values: []ast.Expression{{
 						Kind:     ast.ExprBinary,
 						Operator: "<",
-						Left:     &ast.Expression{Kind: ast.ExprLiteral, Literal: "5", Type: intType},
-						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "6", Type: intType},
+						Left:     &ast.Expression{Kind: ast.ExprLiteral, Literal: "5", Type: &intType},
+						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: "6", Type: &intType},
 					}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Ordered"},
 					Type:  boolType,
 					Values: []ast.Expression{{
 						Kind:     ast.ExprBinary,
 						Operator: "<",
-						Left:     &ast.Expression{Kind: ast.ExprLiteral, Literal: `"a"`, Type: stringType},
-						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: `"b"`, Type: stringType},
+						Left:     &ast.Expression{Kind: ast.ExprLiteral, Literal: `"a"`, Type: &stringType},
+						Right:    &ast.Expression{Kind: ast.ExprLiteral, Literal: `"b"`, Type: &stringType},
 					}},
 				},
 			}},
@@ -254,37 +254,37 @@ func TestLowerTopLevelConstConversions(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "Counter", Type: intType},
+				Type: &ast.TypeDecl{Name: "Counter", Type: intType},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Base"},
 					Values: []ast.Expression{{
 						Kind:    ast.ExprConvert,
-						Type:    intType,
-						Operand: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: intType}),
+						Type:    &intType,
+						Operand: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "40", Type: &intType}),
 					}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Bonus"},
 					Type:  counterType,
 					Values: []ast.Expression{{
 						Kind:    ast.ExprConvert,
-						Type:    counterType,
-						Operand: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: intType}),
+						Type:    &counterType,
+						Operand: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "2", Type: &intType}),
 					}},
 				},
 			}, {
 				Kind: ast.DeclConst,
-				Const: ast.ValueDecl{
+				Const: &ast.ValueDecl{
 					Names: []string{"Letter"},
 					Type:  stringType,
 					Values: []ast.Expression{{
 						Kind:    ast.ExprConvert,
-						Type:    stringType,
-						Operand: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "65", Type: runeType}),
+						Type:    &stringType,
+						Operand: ptrExpr(ast.Expression{Kind: ast.ExprLiteral, Literal: "65", Type: &runeType}),
 					}},
 				},
 			}},
@@ -321,7 +321,7 @@ func TestLowerBuiltinTypeCallConversion(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: boolType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -335,13 +335,13 @@ func TestLowerBuiltinTypeCallConversion(t *testing.T) {
 								Args: []ast.Expression{{
 									Kind:    ast.ExprLiteral,
 									Literal: "128512",
-									Type:    intType,
+									Type:    &intType,
 								}},
 							}),
 							Right: ptrExpr(ast.Expression{
 								Kind:    ast.ExprLiteral,
 								Literal: "128512",
-								Type:    runeType,
+								Type:    &runeType,
 							}),
 						}},
 					}}},
@@ -367,11 +367,11 @@ func TestLowerNilConversionInsideBuiltinCall(t *testing.T) {
 	sliceType := ast.TypeExpr{Kind: ast.TypeSlice, Elem: &intType}
 	nilSlice := ast.Expression{
 		Kind: ast.ExprConvert,
-		Type: sliceType,
+		Type: &sliceType,
 		Operand: ptrExpr(ast.Expression{
 			Kind:    ast.ExprLiteral,
 			Literal: "nil",
-			Type:    ast.TypeExpr{Kind: ast.TypeName, Name: "Any"},
+			Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Any"},
 		}),
 	}
 	appendCall := ast.Expression{
@@ -379,14 +379,14 @@ func TestLowerNilConversionInsideBuiltinCall(t *testing.T) {
 		Callee: ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "append"}),
 		Args: []ast.Expression{
 			nilSlice,
-			{Kind: ast.ExprLiteral, Literal: "1", Type: intType},
+			{Kind: ast.ExprLiteral, Literal: "1", Type: &intType},
 		},
 	}
 	file := ast.File{
 		Path: "main.mgo",
 		Decls: []ast.Decl{{
 			Kind: ast.DeclFunc,
-			Func: ast.FuncDecl{
+			Func: &ast.FuncDecl{
 				Name:    "Main",
 				Results: []ast.Field{{Type: sliceType}},
 				Body: ast.BlockStmt{Stmts: []ast.Statement{{
@@ -423,18 +423,18 @@ func TestLowerNamedFunctionNilConversion(t *testing.T) {
 	handlerType := ast.TypeExpr{Kind: ast.TypeName, Name: "Handler"}
 	nilHandler := ast.Expression{
 		Kind: ast.ExprConvert,
-		Type: handlerType,
+		Type: &handlerType,
 		Operand: ptrExpr(ast.Expression{
 			Kind:    ast.ExprLiteral,
 			Literal: "nil",
-			Type:    ast.TypeExpr{Kind: ast.TypeName, Name: "Any"},
+			Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Any"},
 		}),
 	}
 	file := ast.File{
 		Path: "main.mgo",
 		Decls: []ast.Decl{
-			{Kind: ast.DeclType, Type: ast.TypeDecl{Name: "Handler", Type: functionType}},
-			{Kind: ast.DeclFunc, Func: ast.FuncDecl{
+			{Kind: ast.DeclType, Type: &ast.TypeDecl{Name: "Handler", Type: functionType}},
+			{Kind: ast.DeclFunc, Func: &ast.FuncDecl{
 				Name:    "Main",
 				Results: []ast.Field{{Type: handlerType}},
 				Body: ast.BlockStmt{Stmts: []ast.Statement{{

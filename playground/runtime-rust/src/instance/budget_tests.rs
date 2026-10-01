@@ -1,16 +1,18 @@
 use super::*;
+use serde_json::json;
+use test_helpers::slot_code;
 
 #[test]
 fn saturated_totals_preserve_poll_fairness_and_sampling() {
     let program = super::test_helpers::program_with_artifact(|artifact| {
+        artifact["type_table"] = json!({"nodes":[{"id":"function","kind":10,"signature":{}}]});
         artifact["functions"] = serde_json::json!([
-            {"id":"fn.Main", "instructions":[
-                {"op":"make_closure","payload":{"function":"child"}},
-                {"op":"spawn","payload":{"arg_count":0}},
-                {"op":"label","payload":{"label":"loop"}},
-                {"op":"jump","payload":{"label":"loop"}}
-            ]},
-            {"id":"child", "instructions":[{"op":"return","payload":{"result_count":0}}]}
+            {"id":"fn.Main", "code":slot_code(json!([{"kind":10,"node":"function"}]), &[
+                ("make_closure",json!({"function":"child"}),json!({"outputs":[0]})),
+                ("spawn",json!({"arg_count":0}),json!({"inputs":[[0,0]],"release":[0]})),
+                ("label",json!({"label":"loop"}),json!({})),
+                ("jump",json!({"label":"loop"}),json!({}))])},
+            {"id":"child", "code":slot_code(json!([]), &[("return",json!({}),json!({}))])}
         ]);
     });
     let mut vm = Instance::new(

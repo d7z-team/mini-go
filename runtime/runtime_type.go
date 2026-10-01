@@ -126,8 +126,7 @@ type vmType struct {
 	Ref           types.TypeRef
 	Table         *types.TypeTable
 	text          string
-	underlyingRef types.TypeRef
-	hasUnderlying bool
+	underlyingRef *types.TypeRef
 	standalone    bool
 }
 
@@ -136,8 +135,7 @@ func runtimeTypeWithTable(ref types.TypeRef, table *types.TypeTable) vmType {
 	if table != nil && ref.Kind == types.Named {
 		underlying := table.Underlying(ref)
 		if underlying.Valid() && underlying != ref {
-			runtimeType.underlyingRef = underlying
-			runtimeType.hasUnderlying = true
+			runtimeType.underlyingRef = &underlying
 		}
 	}
 	return runtimeType

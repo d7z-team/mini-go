@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/cache"
 	"github.com/d7z-team/mini-go/compiler/emit"
 	"github.com/d7z-team/mini-go/compiler/lower"
@@ -62,6 +61,7 @@ type Request struct {
 	HostCapabilities map[string][]string
 	Optimization     OptimizationLevel
 	Symbols          bool
+	PreviousAnalysis *AnalysisResult
 	workspace        *workspace.Loader
 }
 
@@ -86,20 +86,24 @@ func (r Result) Artifact(modulePath string) (ir.Artifact, bool) {
 }
 
 type compiledPackage struct {
-	Artifact    ir.Artifact
-	Symbols     ir.PackageSymbols
-	Checked     check.CheckedProgram
-	ExportData  cache.PackageData
-	Diagnostics []source.Diagnostic
+	CacheArtifact cache.CompiledArtifact
+	Artifact      ir.Artifact
+	Symbols       ir.PackageSymbols
+	Checked       check.CheckedProgram
+	ExportData    cache.PackageData
+	Diagnostics   []source.Diagnostic
 }
 
 func (r compiledPackage) OK() bool {
 	return !source.HasErrors(r.Diagnostics)
 }
 
-func compileParsedPackageWithLimits(ctx context.Context, program ast.Program, options lower.Options, dependencies map[string]cache.PackageData, limits Limits, optimization OptimizationLevel) (compiledPackage, error) {
+func compileParsedPackageWithLimits(ctx context.Context, parsed workspace.OwnedPackage, previous *check.CheckedProgram, options lower.Options, dependencies map[string]cache.PackageData, limits Limits, optimization OptimizationLevel) (compiledPackage, error) {
+	if previous == nil {
+		parsed.Syntax.DiscardDocuments()
+	}
 	packageDependencies := make(map[string]cache.PackageData)
-	pending := sourceImportPaths(program)
+	pending := append([]string(nil), parsed.Imports...)
 	for next := 0; next < len(pending); next++ {
 		path := pending[next]
 		if _, seen := packageDependencies[path]; seen {
@@ -146,7 +150,13 @@ func compileParsedPackageWithLimits(ctx context.Context, program ast.Program, op
 			}
 		}
 	}
-	sourceChecked, err := analyzeProgram(ctx, program, options.Dependencies, limits)
+	var sourceChecked check.CheckedProgram
+	var err error
+	if previous != nil {
+		sourceChecked = *previous
+	} else {
+		sourceChecked, _, err = analyzeParsedProgram(ctx, parsed.Syntax, options.Dependencies, limits)
+	}
 	if err != nil {
 		return compiledPackage{}, err
 	}
@@ -186,26 +196,27 @@ func compileParsedPackageWithLimits(ctx context.Context, program ast.Program, op
 	}
 	hirProgram, err = optimize.Apply(hirProgram, optimize.Level(optimization))
 	if err != nil {
-		return compiledPackage{Diagnostics: []source.Diagnostic{diagnostic("compiler.optimize", "optimize module "+program.ModulePath+": "+err.Error())}}, nil
+		return compiledPackage{Diagnostics: []source.Diagnostic{diagnostic("compiler.optimize", "optimize module "+sourceProgram.ModulePath+": "+err.Error())}}, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return compiledPackage{}, err
 	}
 	artifact, symbols, err := emit.LowerUnvalidatedWithSymbols(hirProgram)
 	if err != nil {
-		return compiledPackage{Diagnostics: []source.Diagnostic{diagnostic("compiler.emit", "lower module "+program.ModulePath+": "+err.Error())}}, nil
+		return compiledPackage{Diagnostics: []source.Diagnostic{diagnostic("compiler.emit", "lower module "+sourceProgram.ModulePath+": "+err.Error())}}, nil
 	}
-	if err := ir.ValidateArtifact(&artifact); err != nil {
-		return compiledPackage{Diagnostics: []source.Diagnostic{diagnostic("compiler.emit", "validate module "+program.ModulePath+": "+err.Error())}}, nil
+	sealed, err := cache.SealArtifact(artifact)
+	if err != nil {
+		return compiledPackage{Diagnostics: []source.Diagnostic{diagnostic("compiler.emit", "validate module "+sourceProgram.ModulePath+": "+err.Error())}}, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return compiledPackage{}, err
 	}
-	packageData, err := buildPackageData(sourceProgram, artifact, symbols, sourceChecked.Info)
+	packageData, err := buildPackageData(sourceProgram, artifact, sealed.Hash(), symbols, sourceChecked.Info)
 	if err != nil {
 		return compiledPackage{}, err
 	}
-	return compiledPackage{Artifact: artifact, Symbols: symbols, Checked: sourceChecked, ExportData: packageData}, nil
+	return compiledPackage{Artifact: artifact, CacheArtifact: sealed, Symbols: symbols, Checked: sourceChecked, ExportData: packageData}, nil
 }
 
 type packageCacheLookup struct {
@@ -216,11 +227,18 @@ type packageCacheLookup struct {
 	ExportHash    string
 	Hit           bool
 	ReuseArtifact bool
+	Action        cache.Action
 	ActionKey     string
 	Unlock        func()
 }
 
 func Compile(request Request) (Result, error) {
+	return compile(request, true)
+}
+
+// Prepare keeps action artifacts unbound until reachable code has been pruned.
+// Public Compile still returns fully bound, content-addressed artifacts.
+func compile(request Request, bindDependencies bool) (Result, error) {
 	request.Context = requestContext(request.Context)
 	if err := request.Context.Err(); err != nil {
 		return Result{}, err
@@ -234,10 +252,19 @@ func Compile(request Request) (Result, error) {
 		return Result{}, err
 	}
 	request.Target = normalizedTarget
-	if request.Cache == nil && !request.CacheHash {
-		return compileWorkspace(request, nil)
+	// Built-in caches validate artifacts before exposing a hit. Adapt custom
+	// caches at the public boundary before reusing their structured results.
+	switch request.Cache.(type) {
+	case nil, cache.Store, *cache.Store, *cache.TransientCache, *sessionCache:
+	default:
+		session := newSessionCache(request.Cache, cache.TransientConfig{})
+		defer session.Close()
+		request.Cache = session
 	}
-	return compileWorkspace(request, &workspaceBuildCache{request: request})
+	if request.Cache == nil && !request.CacheHash {
+		return compileWorkspace(request, nil, bindDependencies)
+	}
+	return compileWorkspace(request, &workspaceBuildCache{request: request}, bindDependencies)
 }
 
 func requestContext(ctx context.Context) context.Context {

@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"errors"
 
 	"github.com/d7z-team/mini-go/compiler/ast"
 	"github.com/d7z-team/mini-go/compiler/types"
@@ -114,26 +113,14 @@ func (c *TransientCache) LookupCompile(action Action) (Lookup, error) {
 	return lookup, nil
 }
 
-func (c *TransientCache) StoreCompile(action Action, artifact ir.Artifact, symbols ir.PackageSymbols, data PackageData) (Manifest, error) {
-	if artifact.Module.Path != action.ModulePath || artifact.Module.Package != action.Package || !artifactRequirementsUnbound(artifact) {
-		return Manifest{}, errors.New("artifact does not match cache action")
-	}
-	if err := data.Validate(); err != nil {
+func (c *TransientCache) StoreCompile(action Action, sealed CompiledArtifact, symbols ir.PackageSymbols, data PackageData) (Manifest, error) {
+	if err := validateCompileEntry(action, sealed, symbols, data); err != nil {
 		return Manifest{}, err
 	}
+	artifact, artifactHash := sealed.artifact, sealed.hash
 	key, err := action.Key()
 	if err != nil {
 		return Manifest{}, err
-	}
-	artifactHash, err := ir.Hash(&artifact)
-	if err != nil {
-		return Manifest{}, err
-	}
-	if err := ir.ValidatePackageSymbols(&artifact, artifactHash, &symbols); err != nil {
-		return Manifest{}, err
-	}
-	if data.ModulePath != artifact.Module.Path || data.Package != artifact.Module.Package || data.ArtifactHash != artifactHash {
-		return Manifest{}, errors.New("export data does not match artifact")
 	}
 	manifest := NewManifest(artifact, artifactHash, data.ExportHash)
 	size := cacheEntryBytes(key, estimateArtifactBytes(artifact), estimatePackageSymbolsBytes(symbols), estimatePackageDataBytes(data))
@@ -144,7 +131,7 @@ func (c *TransientCache) StoreCompile(action Action, artifact ir.Artifact, symbo
 		return manifest, nil
 	}
 	entry := transientCompileEntry{
-		lookup:   Lookup{Artifact: ir.CloneArtifact(artifact), Symbols: ir.ClonePackageSymbols(symbols), ExportData: clonePackageData(data), ArtifactHash: artifactHash, ExportHash: data.ExportHash},
+		lookup:   Lookup{Artifact: artifact, Symbols: ir.ClonePackageSymbols(symbols), ExportData: clonePackageData(data), ArtifactHash: artifactHash, ExportHash: data.ExportHash},
 		manifest: manifest, size: size,
 	}
 	c.mu.Lock()
@@ -205,17 +192,7 @@ func (c *TransientCache) StorePrepare(action PrepareAction, output PreparedOutpu
 		lookup: PrepareLookup{Image: ir.CloneExecutionImage(output.Image), TestManifest: append([]TestEntry(nil), output.TestManifest...)},
 		size:   size,
 	}
-	c.mu.Lock()
-	if previous, ok := c.prepare[key]; ok {
-		c.bytes -= uint64(previous.size)
-	} else {
-		c.order = append(c.order, transientOrderEntry{key: key, isPrepare: true})
-	}
-	c.prepare[key] = entry
-	c.bytes += uint64(entry.size)
-	c.stats.Stores++
-	c.evictLocked()
-	c.mu.Unlock()
+	c.storePrepareEntry(key, entry)
 	return nil
 }
 
@@ -254,6 +231,11 @@ func (c *TransientCache) StoreSymbols(action SymbolAction, symbols ir.ProgramSym
 	}
 	owned := ir.CloneProgramSymbols(symbols)
 	entry := transientPrepareEntry{symbols: &owned, size: size}
+	c.storePrepareEntry(key, entry)
+	return nil
+}
+
+func (c *TransientCache) storePrepareEntry(key string, entry transientPrepareEntry) {
 	c.mu.Lock()
 	if previous, ok := c.prepare[key]; ok {
 		c.bytes -= uint64(previous.size)
@@ -265,7 +247,6 @@ func (c *TransientCache) StoreSymbols(action SymbolAction, symbols ir.ProgramSym
 	c.stats.Stores++
 	c.evictLocked()
 	c.mu.Unlock()
-	return nil
 }
 
 func (c *TransientCache) LockCompile(ctx context.Context, action Action) (func(), error) {
@@ -376,8 +357,14 @@ func estimateArtifactBytes(artifact ir.Artifact) int64 {
 		for _, local := range function.ResultLocals {
 			size = cacheEntryBytes(local, size)
 		}
-		for _, instruction := range function.Instructions {
-			size = cacheEntryBytes(instruction.Op, size, int64(len(instruction.Payload)))
+		if code := function.Code; code != nil {
+			size += int64(code.Descriptors.Bytes()) + int64(len(code.Instructions))*12
+			for _, typ := range code.Types {
+				size += estimateTypeRefBytes(typ)
+			}
+			for _, operands := range code.Operands {
+				size += int64(len(operands.Inputs))*8 + int64(len(operands.Outputs)+len(operands.Release)+len(operands.ReleaseBefore))*4
+			}
 		}
 	}
 	return size
@@ -473,7 +460,7 @@ func estimateExecutionImageBytes(image ir.ExecutionImage) int64 {
 		size = cacheEntryBytes(capability, size)
 	}
 	for modulePath, archive := range image.Packages {
-		size = cacheEntryBytes(modulePath, size, int64(len(archive.Artifact)), int64(len(archive.ArtifactHash)))
+		size = cacheEntryBytes(modulePath, size, int64(len(archive.Artifact)), int64(len(archive.ArtifactHash)), archive.ValidationBytes())
 	}
 	for _, entry := range image.Entries {
 		size = cacheEntryBytes(entry.Name, size, int64(len(entry.ModulePath)+len(entry.FunctionID)))

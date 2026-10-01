@@ -1,8 +1,114 @@
-//! Guest conversions shared by bytecode and reflection.
+//! Guest zero values, assignment and conversions shared by bytecode and reflection.
 
 use super::*;
 
 impl Instance {
+    pub(super) fn coerce(
+        &self,
+        mut value: Value,
+        typ: &TypeIdentity,
+    ) -> Result<Value, RuntimeError> {
+        if let Data::String(bytes) = &value.data {
+            self.check_string_size(bytes.len())?;
+        }
+        let registry = &self.types;
+        if registry.identical(&value.typ, typ)? {
+            value.typ = typ.clone();
+            return Ok(value);
+        }
+        let interface = registry.is_interface(typ)?;
+        if interface {
+            if let Data::Interface(dynamic) = value.data {
+                value = Arc::unwrap_or_clone(dynamic);
+            }
+            if matches!(value.data, Data::Nil) && registry.is_interface(&value.typ)? {
+                return Ok(Value {
+                    typ: typ.clone(),
+                    data: Data::Nil,
+                });
+            }
+            let assignment = (value.typ.clone(), typ.clone());
+            let known = self
+                .interface_assignments
+                .lock()
+                .unwrap()
+                .contains(&assignment);
+            if !known {
+                if !registry.implements(&value.typ, typ)? {
+                    return Err(RuntimeError::new(
+                        "type_error",
+                        "assignment",
+                        "dynamic type does not implement interface",
+                    ));
+                }
+                let mut assignments = self.interface_assignments.lock().unwrap();
+                if assignments.len() == 256 {
+                    assignments.clear();
+                }
+                assignments.insert(assignment);
+            }
+            return Ok(Value {
+                typ: typ.clone(),
+                data: Data::Interface(std::sync::Arc::new(value)),
+            });
+        }
+        if registry.channel_assignable(&value.typ, typ)? {
+            value.typ = typ.clone();
+            return Ok(value);
+        }
+        if value.typ == TypeIdentity::Any
+            && matches!(value.data, Data::Nil)
+            && registry.nil_assignable(typ)?
+        {
+            return self.zero(typ, 0);
+        }
+        if let Data::Function(callee) = &value.data {
+            let revision = callee.revision.as_ref().unwrap_or(&self.revision);
+            let function = revision
+                .program
+                .function(&callee.module, &callee.function)?;
+            if let Some((module, node)) = registry.node(typ)?
+                && let Some(signature) = &node.signature
+                && registry.signature_identical_from(
+                    registry,
+                    module,
+                    signature,
+                    revision.program.decoded.types(),
+                    &callee.module,
+                    &function.declaration.signature,
+                )?
+            {
+                value.typ = typ.clone();
+                return Ok(value);
+            }
+        }
+        let source = registry.underlying(&value.typ)?;
+        let destination = registry.underlying(typ)?;
+        if (!matches!(value.typ, TypeIdentity::Named(_)) || !matches!(typ, TypeIdentity::Named(_)))
+            && registry.identical(&source, &destination)?
+        {
+            value.typ = typ.clone();
+            return Ok(value);
+        }
+        Err(RuntimeError::new(
+            "type_error",
+            "assignment",
+            format!("cannot assign {:?} to {:?}", value.typ, typ),
+        ))
+    }
+
+    pub(super) fn zero(&self, typ: &TypeIdentity, depth: usize) -> Result<Value, RuntimeError> {
+        let mut remaining = self.limits.max_heap_bytes;
+        Value::zero_with_budget(
+            &self.types,
+            typ,
+            depth,
+            self.limits.max_value_depth,
+            self.limits.max_sequence_elements,
+            &mut remaining,
+        )
+    }
+
     pub(super) fn retype_value(
         &self,
         mut value: Value,
@@ -34,23 +140,22 @@ impl Instance {
                         )
                     })?;
                 for field in node.fields.iter() {
-                    let previous = fields.remove(&field.name).ok_or_else(|| {
+                    let destination = fields.get_mut(&field.name).ok_or_else(|| {
                         RuntimeError::new("type_error", "convert", "typed view field is missing")
                     })?;
                     let field_type = self.types.resolve(module, &field.r#type)?;
-                    fields.insert(
-                        field.name.clone(),
-                        self.retype_value(previous, &field_type, depth + 1)?,
-                    );
+                    *destination =
+                        self.retype_value(destination.clone(), &field_type, depth + 1)?;
                 }
             }
             Data::Array(values) => {
                 let element = self.element_type(typ)?;
-                for value in values {
+                for value in Arc::make_mut(values) {
                     *value = self.retype_value(value.clone(), &element, depth + 1)?;
                 }
             }
             Data::Pointer(address) => {
+                let address = Arc::make_mut(address);
                 let element = match self.types.underlying(typ)? {
                     TypeIdentity::Pointer(element) => (*element).clone(),
                     _ => self.element_type(typ)?,
@@ -74,7 +179,7 @@ impl Instance {
                     .identical(original.pointee.as_ref().unwrap(), &element)?
                 {
                     address.identity = Arc::new(crate::value::PointerIdentity {
-                        key: original.key,
+                        key: std::sync::OnceLock::from(original.key),
                         path_root: original.root.map(|root| (root, original.slots)),
                         array_capacity: original.array.map(|(_, _, capacity)| capacity),
                         ..Default::default()
@@ -145,7 +250,7 @@ impl Instance {
                         Data::Array(values) => values.len() - slice.start,
                         _ => unreachable!("validated slice backing"),
                     };
-                    let mut address = slice.storage;
+                    let mut address = slice.storage.clone();
                     address.identity = Arc::new(crate::value::PointerIdentity {
                         array_capacity: Some(capacity),
                         ..Default::default()
@@ -155,7 +260,7 @@ impl Instance {
                         length,
                         typ: element,
                     });
-                    Data::Pointer(address)
+                    Data::Pointer(std::sync::Arc::new(address))
                 }
                 Data::Nil if length == 0 => Data::Nil,
                 _ => {
@@ -200,7 +305,7 @@ impl Instance {
                 elements.truncate(length);
                 Value {
                     typ,
-                    data: Data::Array(elements),
+                    data: Data::Array(elements.into()),
                 }
             } else if matches!(value.data, Data::String(_))
                 && (matches!(self.types.underlying(&typ)?, TypeIdentity::Slice(_))

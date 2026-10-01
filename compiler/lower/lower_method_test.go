@@ -15,8 +15,8 @@ func TestLowerReceiverPreservesNamedIdentity(t *testing.T) {
 			program, diagnostics := lowerTestProgram(ast.Program{
 				ModulePath: "example/main", Package: "main",
 				Files: []ast.File{{Path: "main.mgo", Decls: []ast.Decl{
-					{Kind: ast.DeclType, Type: ast.TypeDecl{Name: name, Type: ast.TypeExpr{Kind: ast.TypeStruct}}},
-					{Kind: ast.DeclFunc, Func: ast.FuncDecl{Name: "Touch", Receiver: &ast.Field{Name: "value", Type: receiver}}},
+					{Kind: ast.DeclType, Type: &ast.TypeDecl{Name: name, Type: ast.TypeExpr{Kind: ast.TypeStruct}}},
+					{Kind: ast.DeclFunc, Func: &ast.FuncDecl{Name: "Touch", Receiver: &ast.Field{Name: "value", Type: receiver}}},
 				}}},
 			})
 			if len(diagnostics) != 0 {
@@ -46,7 +46,7 @@ func TestLowerMethodDeclarationAndSelectorCall(t *testing.T) {
 	counterType := ast.TypeExpr{Kind: ast.TypeName, Name: "Counter"}
 	counterStruct := ast.TypeExpr{Kind: ast.TypeStruct, Fields: []ast.Field{{Name: "Value", Type: intType}}}
 	intLiteral := func(value string) ast.Expression {
-		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType}
+		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType}
 	}
 	program, diagnostics := lowerTestProgram(ast.Program{
 		ModulePath: "example/main",
@@ -55,10 +55,10 @@ func TestLowerMethodDeclarationAndSelectorCall(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "Counter", Type: counterStruct},
+				Type: &ast.TypeDecl{Name: "Counter", Type: counterStruct},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:     "Add",
 					Receiver: &ast.Field{Name: "c", Type: counterType},
 					Params:   []ast.Field{{Name: "delta", Type: intType}},
@@ -79,19 +79,19 @@ func TestLowerMethodDeclarationAndSelectorCall(t *testing.T) {
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"c"},
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: counterType,
-									Entries: []ast.KeyValue{{
+									Type: &counterType,
+									Items: []ast.KeyValue{{
 										Key:   ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Value"}),
 										Value: intLiteral("40"),
 									}},
@@ -141,7 +141,7 @@ func TestLowerAutoAddressPointerReceiverMethodCall(t *testing.T) {
 	counterPtrType := ast.TypeExpr{Kind: ast.TypePointer, Elem: &counterType}
 	counterStruct := ast.TypeExpr{Kind: ast.TypeStruct, Fields: []ast.Field{{Name: "Value", Type: intType}}}
 	intLiteral := func(value string) ast.Expression {
-		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: intType}
+		return ast.Expression{Kind: ast.ExprLiteral, Literal: value, Type: &intType}
 	}
 	program, diagnostics := lowerTestProgram(ast.Program{
 		ModulePath: "example/main",
@@ -150,29 +150,29 @@ func TestLowerAutoAddressPointerReceiverMethodCall(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "Counter", Type: counterStruct},
+				Type: &ast.TypeDecl{Name: "Counter", Type: counterStruct},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:     "Inc",
 					Receiver: &ast.Field{Name: "c", Type: counterPtrType},
 					Params:   []ast.Field{{Name: "delta", Type: intType}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:    "Main",
 					Results: []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
 						Decls: []ast.Decl{{
 							Kind: ast.DeclVar,
-							Var: ast.ValueDecl{
+							Var: &ast.ValueDecl{
 								Names: []string{"c"},
 								Values: []ast.Expression{{
 									Kind: ast.ExprComposite,
-									Type: counterType,
-									Entries: []ast.KeyValue{{
+									Type: &counterType,
+									Items: []ast.KeyValue{{
 										Key:   ptrExpr(ast.Expression{Kind: ast.ExprIdent, Name: "Value"}),
 										Value: intLiteral("40"),
 									}},
@@ -229,32 +229,32 @@ func TestLowerMethodValueCreatesWrapperFunction(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "Counter", Type: counterStruct},
+				Type: &ast.TypeDecl{Name: "Counter", Type: counterStruct},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:     "Add",
 					Receiver: &ast.Field{Name: "c", Type: counterType},
 					Params:   []ast.Field{{Name: "delta", Type: intType}},
 					Results:  []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"c"},
 							Type:  counterType,
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"f"},
 							Values: []ast.Expression{{
 								Kind:    ast.ExprSelector,
@@ -313,33 +313,33 @@ func TestLowerMethodExpressionCreatesFunctionValue(t *testing.T) {
 			Path: "main.mgo",
 			Decls: []ast.Decl{{
 				Kind: ast.DeclType,
-				Type: ast.TypeDecl{Name: "Counter", Type: counterStruct},
+				Type: &ast.TypeDecl{Name: "Counter", Type: counterStruct},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:     "Add",
 					Receiver: &ast.Field{Name: "c", Type: counterType},
 					Params:   []ast.Field{{Name: "delta", Type: intType}},
 					Results:  []ast.Field{{Type: intType}},
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind:    ast.StmtReturn,
-						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: intType}},
+						Results: []ast.Expression{{Kind: ast.ExprLiteral, Literal: "0", Type: &intType}},
 					}}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name:     "Inc",
 					Receiver: &ast.Field{Name: "c", Type: counterPtrType},
 					Params:   []ast.Field{{Name: "delta", Type: intType}},
 				},
 			}, {
 				Kind: ast.DeclFunc,
-				Func: ast.FuncDecl{
+				Func: &ast.FuncDecl{
 					Name: "Main",
 					Body: ast.BlockStmt{Stmts: []ast.Statement{{
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"f"},
 							Values: []ast.Expression{{
 								Kind:    ast.ExprSelector,
@@ -349,7 +349,7 @@ func TestLowerMethodExpressionCreatesFunctionValue(t *testing.T) {
 						}}},
 					}, {
 						Kind: ast.StmtDecl,
-						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: ast.ValueDecl{
+						Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
 							Names: []string{"g"},
 							Values: []ast.Expression{{
 								Kind: ast.ExprSelector,

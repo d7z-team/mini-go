@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 // taskBatch is one owner-selected group of independent task quanta. The owner
@@ -266,9 +268,17 @@ func (machine *executionMachine) runDataInstruction(task *executionTask, current
 		}
 		return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
 	}
-	if len(callFrame.stack) != 0 && (inst.op == preparedBinary || inst.op == preparedConvert || inst.op == preparedCallIntrinsic) {
-		if err := machine.vm.validateRuntimeValue(callFrame.stack[len(callFrame.stack)-1]); err != nil {
-			return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
+	if inst.op == preparedBinary || inst.op == preparedConvert || inst.op == preparedCallIntrinsic {
+		for _, destination := range callFrame.slotOperands.Outputs[:callFrame.slotOutput] {
+			var value vmValue
+			if destination&ir.LocalOutput != 0 {
+				value = callFrame.localCells[destination&^ir.LocalOutput].load()
+			} else {
+				value = callFrame.slotValues[destination]
+			}
+			if err := machine.vm.validateRuntimeValue(value); err != nil {
+				return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
+			}
 		}
 	}
 	return taskYield{}, nil
@@ -302,13 +312,22 @@ func (i *Instance) driveTasks(ctx context.Context, budget int, waitForOwner bool
 				return runOutcome{state: ExecutionPending, executed: total}
 			}
 			var immediate runOutcome
-			batch, immediate = i.vm.machine.prepareTaskBatch(i.parallelism, budget-total)
+			if i.parallelism == 1 && i.vm.taskObserver == nil {
+				immediate = i.vm.machine.run(min(budget-total, taskInstructionQuantum))
+			} else {
+				batch, immediate = i.vm.machine.prepareTaskBatch(i.parallelism, budget-total)
+			}
 			if batch == nil {
 				immediate = i.vm.finishPreparedOutcome(immediate)
 				i.vm.leaveOwner()
 				i.driveMu.Unlock()
+				progressed := immediate.executed
+				total += progressed
 				immediate.executed = total
-				return immediate
+				if immediate.state != ExecutionRunning || total >= budget || progressed == 0 {
+					return immediate
+				}
+				continue
 			}
 			batch.instance = i
 			i.batch = batch
