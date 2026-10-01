@@ -121,6 +121,7 @@ CARGO_TARGET_DIR="$consumer_target" cargo run --release --manifest-path "$consum
 
 fixtures=${MINIGO_WASM_FIXTURES:-"$output/cargo-target/wasm-fixtures"}
 if [[ ! -f "$fixtures/answer.json" ]]; then
+	make -C "$source_root" artifacts
 	MINIGO_WASM_FIXTURES="$fixtures" CARGO_TARGET_DIR="$consumer_target" \
 		cargo test --manifest-path "$source_root/playground/runtime-rust/Cargo.toml" --locked --test wasm_driver
 fi

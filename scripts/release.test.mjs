@@ -79,7 +79,13 @@ test("release manifest rewrite keeps Cargo and npm versions aligned", async (t) 
   const version = "0.0.42-git.g123abcd";
   run(
     process.execPath,
-    [path.join(scripts, "set-release-version.mjs"), version, repository],
+    [
+      path.join(scripts, "release-version.mjs"),
+      "--set",
+      version,
+      "--repository",
+      repository,
+    ],
     repository,
   );
   const manifest = await readFile(

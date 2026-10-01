@@ -5,8 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { planRelease, waitForCI } from "./release-plan.mjs";
-import { isDocumentation, requestJSON } from "./changes.mjs";
+import { planRelease } from "./release-plan.mjs";
 
 const scripts = fileURLToPath(new URL("../../scripts/", import.meta.url));
 
@@ -29,7 +28,7 @@ async function releaseFixture(t) {
   const directory = await mkdtemp(path.join(tmpdir(), "mini-go-release-plan-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   run("git", ["init", "-q", "-b", "main"], directory);
-  const fixture = { directory, ci: {}, npm: [], crates: [], requests: [] };
+  const fixture = { directory, npm: [], crates: [], requests: [] };
   fixture.commit = async (files, removed = []) => {
     for (const [name, data] of Object.entries(files)) {
       await mkdir(path.dirname(path.join(directory, name)), {
@@ -63,31 +62,6 @@ async function releaseFixture(t) {
   };
   fixture.request = async (url) => {
     fixture.requests.push(url);
-    if (url.endsWith("/git/ref/heads/main"))
-      return { object: { sha: fixture.release.commit } };
-    if (url.startsWith("https://api.github.com/")) {
-      const workflow = /workflows\/([^/]+)\//.exec(url)[1];
-      const query = new URL(url).searchParams;
-      assert.equal(query.get("head_sha"), fixture.release.commit);
-      assert.equal(query.get("branch"), "main");
-      assert.equal(query.get("event"), "push");
-      const override = fixture.ci[workflow];
-      return {
-        workflow_runs:
-          override === null
-            ? []
-            : [
-                {
-                  head_sha: fixture.release.commit,
-                  head_branch: "main",
-                  event: "push",
-                  status: "completed",
-                  conclusion: "success",
-                  ...override,
-                },
-              ],
-      };
-    }
     if (url.startsWith("https://registry.npmjs.org/")) {
       return {
         versions: Object.fromEntries(
@@ -116,16 +90,6 @@ async function releaseFixture(t) {
       request: fixture.request,
       ...options,
     });
-  fixture.wait = (options = {}) =>
-    waitForCI({
-      repository: "d7z-team/mini-go",
-      sha: fixture.release.commit,
-      request: fixture.request,
-      pause: async () => {
-        throw new Error("Unexpected CI wait");
-      },
-      ...options,
-    });
   fixture.base = await fixture.commit({
     "main.go": "package main\n",
     "README.md": "guide\n",
@@ -134,113 +98,6 @@ async function releaseFixture(t) {
   fixture.crates = [[fixture.base.version]];
   return fixture;
 }
-
-test("documentation classification uses suffixes and payload directories", () => {
-  for (const name of [
-    "README.md",
-    "new/guide.MD",
-    "guide.mdx",
-    "guide.rst",
-    "docs/api.json",
-    "testdata/README_zh.md",
-  ]) {
-    assert.equal(isDocumentation(name), true, name);
-  }
-  for (const name of [
-    "main.go",
-    "lib.rs",
-    "sdk.ts",
-    "stdlib/errors.mgo",
-    "api.mrpc",
-    "Cargo.lock",
-    "package.json",
-    "Makefile",
-    ".github/workflows/publish.yml",
-    "LICENSE",
-    "unknown.txt",
-    "testdata/input.md",
-    "compiler/testdata/input.rst",
-    "tests/fixtures/page.mdx",
-    "assets/page.md",
-  ]) {
-    assert.equal(isDocumentation(name), false, name);
-  }
-});
-
-test("release waits for both exact-commit push workflows", async (t) => {
-  const fixture = await releaseFixture(t);
-  await fixture.commit({ "main.go": "package changed\n" });
-  for (const workflow of ["go-test.yml", "runtime-rust.yml"]) {
-    for (const state of [
-      null,
-      { status: "queued" },
-      { status: "in_progress" },
-    ]) {
-      fixture.ci[workflow] = state;
-      let polls = 0;
-      assert.equal(
-        (
-          await fixture.wait({
-            pause: async (ms) => {
-              assert.equal(ms, 30_000);
-              polls++;
-              delete fixture.ci[workflow];
-            },
-          })
-        ).publish,
-        true,
-      );
-      assert.equal(polls, 1);
-    }
-    for (const state of [
-      { head_sha: "other" },
-      { head_branch: "topic" },
-      { event: "pull_request" },
-    ]) {
-      fixture.ci[workflow] = state;
-      await assert.rejects(fixture.wait(), /does not match/);
-    }
-    for (const conclusion of ["failure", "cancelled", "timed_out", "skipped"]) {
-      fixture.ci[workflow] = { conclusion };
-      assert.equal((await fixture.wait()).publish, false);
-    }
-    delete fixture.ci[workflow];
-  }
-  assert.equal((await fixture.wait()).publish, true);
-});
-
-test("CI wait stops on a newer main, a bounded deadline, or an API error", async (t) => {
-  const fixture = await releaseFixture(t);
-  const sha = fixture.release.commit;
-  await fixture.commit({ "main.go": "package next\n" });
-  assert.match((await fixture.wait({ sha })).reason, /superseded/);
-  fixture.ci["go-test.yml"] = null;
-  let clock = 0;
-  await assert.rejects(
-    fixture.wait({
-      now: () => clock,
-      pause: async () => {
-        clock = 50 * 60_000;
-      },
-    }),
-    /Timed out/,
-  );
-  for (const request of [
-    async () => {
-      throw new Error("request failed");
-    },
-    async () => ({}),
-  ]) {
-    await assert.rejects(fixture.wait({ request }), /request failed|Invalid/);
-  }
-  await assert.rejects(
-    fixture.wait({
-      request: async (url) =>
-        url.includes("/workflows/") ? {} : fixture.request(url),
-    }),
-    /Invalid CI/,
-  );
-});
 
 test("only trusted current main candidates reach registry planning", async (t) => {
   const fixture = await releaseFixture(t);
@@ -386,27 +243,4 @@ test("registry failures cannot become an empty publication baseline", async (t) 
     }),
     /Repeated/,
   );
-});
-
-test("HTTP lookup treats only explicit allowed 404 as a missing package", async (t) => {
-  const fetch = t.mock.method(globalThis, "fetch");
-  for (const status of [401, 403, 429, 500]) {
-    fetch.mock.mockImplementation(
-      async () => new Response("failure", { status }),
-    );
-    await assert.rejects(
-      requestJSON("https://example.test", { allowMissing: true }),
-      /HTTP/,
-    );
-  }
-  fetch.mock.mockImplementation(
-    async () => new Response("missing", { status: 404 }),
-  );
-  assert.equal(
-    await requestJSON("https://example.test", { allowMissing: true }),
-    null,
-  );
-  await assert.rejects(requestJSON("https://example.test"), /HTTP 404/);
-  fetch.mock.mockImplementation(async () => new Response("not json"));
-  await assert.rejects(requestJSON("https://example.test"), SyntaxError);
 });

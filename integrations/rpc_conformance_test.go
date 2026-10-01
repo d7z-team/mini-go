@@ -14,13 +14,13 @@ import (
 	"github.com/d7z-team/mini-go/tooling/rpccheck"
 )
 
-// Peer executables are built by make test-rpc-conformance. Each side both serves
+// Peer executables are built by make test-interop. Each side both serves
 // and calls, so the matrix also checks symmetric request and resource ownership.
 func TestRPCPeerConformance(t *testing.T) {
 	peers := map[string]string{"go": os.Getenv("MINIGO_RPC_GO_PEER"), "rust": os.Getenv("MINIGO_RPC_RUST_PEER")}
 	for _, path := range peers {
 		if path == "" {
-			t.Skip("run make test-rpc-conformance to build both peers")
+			t.Skip("run make test-interop to build both peers")
 		}
 	}
 	for serverLanguage, serverPath := range peers {
@@ -92,7 +92,7 @@ func TestRPCGatewayConformance(t *testing.T) {
 	peers := map[string]string{"go": os.Getenv("MINIGO_RPC_GO_PEER"), "rust": os.Getenv("MINIGO_RPC_RUST_PEER")}
 	for _, path := range peers {
 		if path == "" {
-			t.Skip("run make test-rpc-conformance to build both peers")
+			t.Skip("run make test-interop to build both peers")
 		}
 	}
 	for serverLanguage, serverPath := range peers {

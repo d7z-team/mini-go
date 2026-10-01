@@ -23,12 +23,14 @@ Go 工具链由 [Makefile](Makefile) 的 `GOTOOLCHAIN` 固定；Rust 最低版�
 ```bash
 make test TEST_PACKAGES='./compiler/semantic' TEST_FLAGS='-run TestName'
 make test TEST_PACKAGES='./rpc/... ./integrations'
-make race RACE_PACKAGES='./rpc/...'
+make race TEST_PACKAGES='./rpc/...'
 make lint test build
 ```
 
 `TEST_FLAGS` 替换默认 Go 测试参数；`-count=1` 只跳过 Go 测试结果缓存，Mini-Go 编译缓存仍可复用。
 `make coverage` 使用相同包与参数设置，输出 `coverage.txt` 和 `coverage.html`。
+`make check` 聚合 Go、Rust、WASM、跨进程与脚本验证；首次使用先准备工具链、执行 `make deps artifacts`。
+修改生成输入后先运行 `make generate`。普通 build/lint/test 只读核对身份，缺失镜像或身份过期时明确失败。
 
 | 改动范围 | 最低验证 |
 | --- | --- |
@@ -36,9 +38,9 @@ make lint test build
 | 并发、取消或资源生命周期 | 取消、关闭与失败回收；Go 对应包 race、Rust owner/GC、SDK Worker 生命周期 |
 | compiler、stdlib、schema 或 generator | `make generate` 后运行受影响测试 |
 | stdlib API 或源码注释 | `make doc` 和相关测试 |
-| Rust 原生实现 | 目标 Cargo 测试、`make runtime-rust-lint`；共享 VM 行为加跑 `make runtime-rust-test`，相关 feature 按下文补测 |
-| TypeScript / WASM | `make runtime-wasm-test`，以及目标配置的 Rust Clippy |
-| RPC 跨语言契约 | 两侧测试和 `make test-rpc-conformance` |
+| Rust 原生实现 | 目标 Cargo 测试、`make lint-rust test-rust` |
+| TypeScript / WASM | `make test-wasm`，包含 wasm32 Clippy |
+| RPC 跨语言契约 | 两侧测试和 `make test-interop` |
 | 手写文档 | 链接、章节锚点、命令和示例；不运行生成或全量测试 |
 
 生成和构建完成后再运行消费产物的测试。性能采样及严格超时测试与重型构建分开执行。
@@ -47,11 +49,12 @@ make lint test build
 
 ### CI 变更判断
 
-[changes.yml](.github/workflows/changes.yml) 为 Go、Rust 与语法 fuzz 判断改动范围。
+[publish.yml](.github/workflows/publish.yml) 统一编排 Go、Rust 和发布；
+[changes.yml](.github/workflows/changes.yml) 为 CI 与全仓 Go fuzz 判断改动范围。
 PR 对比合并基点，其他事件对比当前历史上最近一次成功运行；没有可靠基线时执行完整检查。
 因此，失败后的文档提交仍可能触发代码验证。
 
-分类规则及测试位于 [.github/scripts](.github/scripts/)，运行 `make ci-script-test`。
+分类规则及测试位于 [.github/scripts](.github/scripts/)，运行 `make test-scripts`。
 本地边界检查、打包和版本脚本位于 [scripts](scripts/)，独立于 GitHub 环境。
 
 ## 生成与派生物
@@ -82,11 +85,12 @@ opcode 的输入输出数量以 [opcode_contract.go](runtime/bytecode/opcode_con
 独立运行消费方测试前，可补齐缺失的本地镜像：
 
 ```bash
-make runtime-artifacts       # runtime、stdlib 和 compiler 镜像
-make runtime-compiler-image  # 仅 compiler 镜像
+make artifacts       # runtime、stdlib 和 compiler 镜像
+make compiler-image  # 仅 compiler 镜像
 ```
 
-这两个目标只补齐缺失文件；修改输入后使用 `make generate` 更新已有产物。
+这两个目标先只读验证 compiler identity，再补齐缺失文件；修改输入后使用 `make generate` 更新已有产物。
+CI 完整生成后检查 Git 差异，保证生成结果与提交一致。单独的身份检查不替代完整生成一致性验证。
 手写文档按 [文档职责](AGENTS.md#文档职责) 维护；调查、设计、实验和实施记录保存在 `/tmp`。
 
 ### 生成预编译示例
@@ -123,15 +127,14 @@ API 见 [Rust 使用指南](playground/runtime-rust/USAGE.md)。
 
 | 命令 | 范围 |
 | --- | --- |
-| `make runtime-rust-lint` | rustfmt、workspace 与相关 feature/target 的 Clippy |
-| `make runtime-rust-test` | 默认 VM 测试和 release 编译器/LSP/DAP 测试 |
-| `make runtime-rust-rpc-test` | RPC、生成 binding 和 Gateway |
-| `make runtime-rust-host-test` | 原生 Host 与清理生命周期 |
-| `make runtime-rust-host-conformance` | Rust provider 执行标准库镜像 |
-| `make runtime-rust-conformance` | Go provider 经 broker 执行同一镜像 |
-| `make test-rpc-conformance` | Go/Rust Endpoint 与 Gateway 互操作 |
-| `make runtime-compiler-test` | Rust、Node 和 Chromium 的 compiler tooling |
-| `make runtime-rust-bench` | 执行、分配和 GC 基准 |
+| `make lint-rust` | rustfmt、默认/最小 feature 编译、workspace 完整 Clippy |
+| `make test-rust` | release VM、编译器/LSP/DAP、RPC/Gateway、Host 和原生标准库测试 |
+| `make test-interop` | Go/Rust Endpoint/Gateway 互操作与 Go provider 标准库验证，需要 Go、Cargo 和 Node.js |
+| `make bench-rust` | 执行、分配与 GC 基准 |
+
+`test-rust` 启用 `language-server,rpc-gateway,stdlib-host`，由 Cargo 自动发现测试。
+局部运行可传 `RUST_TEST_FLAGS='--test compiler_session'` 或直接使用 Cargo。
+跨进程 peer 路径按 Cargo metadata 解析，支持 `CARGO_TARGET_DIR`。
 
 调度、GC、热更新或帧复用改动应覆盖步骤计费、不同并行度、共享状态、等待、初始化、取消和关闭，
 以及 GC/Patch/DAP 安全点。编译会话测试使用 release 模式并遵守请求期限。
@@ -144,16 +147,18 @@ API 见 [Rust 使用指南](playground/runtime-rust/USAGE.md)。
 
 ```bash
 rustup target add wasm32-unknown-unknown
+make deps artifacts
 npm exec --prefix playground/runtime-rust/runtime-wasm -- playwright install chromium firefox
-make runtime-wasm-test
-make runtime-wasm-pack
+make test-wasm
+make pack-wasm
 ```
 
-`runtime-wasm-test` 构建 SDK 与分发产物，检查 TypeScript 和生成绑定，验证 codec、Worker 生命周期、
+`test-wasm` 构建 SDK 与分发产物，检查 TypeScript、生成绑定与 wasm32 Clippy，验证 codec、Worker 生命周期、
 浏览器、Node、双向 RPC 与安装包。runtime 默认测试 Chromium 和 Firefox，`MINIGO_BROWSERS`
 可选择引擎；tools 和安装包消费测试使用 Chromium。编译会话测试串行运行。
 
-在 SDK 目录中可单独运行 `npm ci`、`npm run build` 和 `npm run lint`；
+依赖由 `make deps` 显式安装，构建不重新安装依赖。`pack-wasm` 复用本次完成的构建，默认输出到 `build/npm/`。
+在 SDK 目录中可单独运行 `npm ci`、`npm run build` 和 `npm run lint`，compiler 镜像需事先准备；
 `npm run build -- --core` 构建不含 RPC 的版本。`WASM_BINDGEN` 可指定绑定工具，
 `MINIGO_BUILD_STD=1` 使用 rust-src 和 Cargo build-std。部署见
 [SDK 指南](playground/runtime-rust/runtime-wasm/README.md)。
@@ -161,13 +166,16 @@ make runtime-wasm-pack
 ### Fuzz 与自举
 
 ```bash
-FUZZTIME=30s make fuzz-syntax
-FUZZTIME=30s make fuzz-runtime
-make bootstrap-test
+make fuzz-list
+FUZZTIME=30s make fuzz
+make fuzz FUZZ_PACKAGES='./compiler/... ./tooling/...' FUZZ_PATTERN='Parse'
+make test TEST_PACKAGES='./compiler/bootstrap' TEST_FLAGS='-run TestCompilerImage -count=1 -timeout=5m'
 ```
 
 普通测试运行固定 seeds；持续变异检查成功不变量和失败后的状态完整性。语法终止性由 compiler
 的确定性 limits 保证。fuzz 默认单 worker，资源充足时通过 `FUZZ_PARALLEL` 调整。
+fuzz 从 Go 包与测试列表自动发现目标，默认范围为全仓；筛选无匹配和发现失败均返回错误。
+`FUZZTIME` 按每个目标计费，列出目标后再估算总时长。定时 CI 每个目标使用 3 分钟，按全仓规模配置任务期限。
 
 Go 自举比较原生与 VM compiler 的检查结果，固定语料进一步比较镜像、hash、符号和诊断；
 Rust 常规测试消费预编译镜像。
@@ -192,12 +200,13 @@ MINIGO_DEBUG=cachehash=1,cacheverify=1 go run ./cmd/mini-go check main.mgo
 ```
 
 `cacheverify` 在命中后重建并比较结果。`make cache-clean` 清理 Mini-Go 缓存；
-`make clean` 另清理根构建目录和 Go test/fuzz 缓存。Rust target、node_modules 和 dist 按所属工具管理。
+`make clean` 只清理 bin、build 和覆盖率输出。Go test/fuzz 缓存按需显式使用 `go clean -testcache -fuzzcache`；
+Rust target、node_modules 和 dist 按所属工具管理。
 日常验证保留缓存，冷启动实验单独记录缓存状态。
 
 ### 性能测量
 
-使用 Go benchmark/pprof 或 `make runtime-rust-bench`。固定输入、结果、构建参数、镜像身份和并行度，
+使用 Go benchmark/pprof 或 `make bench-rust`。固定输入、结果、构建参数、镜像身份和并行度，
 串行保留多轮原始采样。消融每次只改变一个机制，功能、计费和回收单独验收。
 测试二进制和 profile 输出指定到 `/tmp`，例如 `go test -c -o /tmp/mini-go-runtime.test ./runtime`。
 
@@ -268,7 +277,7 @@ crate 与 npm 包采用同一提交快照版本 `0.0.<git commit count>-git.g<�
 正式发布要求完整历史与干净工作区。
 
 ```bash
-make release-script-test
+make test-scripts
 make release-package
 make release-verify
 ```
@@ -277,9 +286,12 @@ make release-verify
 并通过独立 Rust、Node 和 Chromium consumer 验证。调试未提交内容可设置
 `RELEASE_FLAGS=--allow-dirty`，生成的 `.dirty` 版本仅供本地验证。
 
-[publish.yml](.github/workflows/publish.yml) 在 main push 后，根据 CI 和分发验证结果发布同一提交的两端包。
-准入、版本与补发规则集中在 [release-plan.mjs](.github/scripts/release-plan.mjs)。
-失败后修复代码或重跑 CI，再重跑对应发布。
+[publish.yml](.github/workflows/publish.yml) 在 main push 的 Go、Rust 检查通过后，通过 job 依赖推进发布，
+验证 WASM 与分发产物后发布同一提交的两端包。PR 只执行验证。
+已有成功基线且代码未变化时可复用检查结果。发布前再次核对 main，避免发布被新提交替代的候选。
+注册表准入与补发规则集中在 [release-plan.mjs](.github/scripts/release-plan.mjs)，
+版本计算和 staging manifest 写入集中在 [release-version.mjs](scripts/release-version.mjs)。
+失败后修复代码并推送，或在该次 CI 中重跑失败的 job。
 
 ## 编辑器扩展
 

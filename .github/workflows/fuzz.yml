@@ -1,4 +1,4 @@
-name: Syntax fuzz
+name: Go fuzz
 
 on:
   schedule:
@@ -13,15 +13,19 @@ jobs:
   changes:
     uses: ./.github/workflows/changes.yml
     with:
-      workflow: syntax-fuzz.yml
+      workflow: fuzz.yml
   fuzz:
     needs: changes
     if: needs.changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.6'
           cache: true
-      - run: FUZZTIME=3m FUZZ_PARALLEL=1 make fuzz-syntax
+      - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+      - run: rustup default 1.98.1
+      - run: make artifacts
+      - run: FUZZTIME=3m FUZZ_PARALLEL=1 make fuzz

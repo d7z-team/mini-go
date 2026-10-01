@@ -36,4 +36,4 @@ jobs:
         run: node .github/scripts/changes.mjs
       - name: Verify CI scripts
         if: steps.changes.outputs.changed == 'true'
-        run: make ci-script-test
+        run: make test-scripts

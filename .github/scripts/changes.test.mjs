@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { planCI } from "./changes.mjs";
+import { planCI, isDocumentation, requestJSON } from "./changes.mjs";
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(tmpdir(), "mini-go-ci-changes-"));
@@ -46,7 +46,7 @@ async function fixture(t) {
     planCI({
       directory,
       repository: "d7z-team/mini-go",
-      workflow: "go-test.yml",
+      workflow: "publish.yml",
       branch: "main",
       eventName: "push",
       event: {},
@@ -120,15 +120,14 @@ test("scheduled and manual fuzz skip code already covered by a successful run", 
   await f.commit({ "README.md": "next" });
   for (const eventName of ["schedule", "workflow_dispatch"]) {
     assert.equal(
-      (await f.plan({ eventName, workflow: "syntax-fuzz.yml" })).changed,
+      (await f.plan({ eventName, workflow: "fuzz.yml" })).changed,
       false,
     );
   }
   assert.equal(new URL(f.requests[0]).searchParams.has("event"), false);
   await f.commit({ "compiler/input.go": "package compiler\n" });
   assert.equal(
-    (await f.plan({ eventName: "schedule", workflow: "syntax-fuzz.yml" }))
-      .changed,
+    (await f.plan({ eventName: "schedule", workflow: "fuzz.yml" })).changed,
     true,
   );
 });
@@ -179,4 +178,59 @@ test("history errors fail explicitly instead of skipping validation", async (t) 
     f.plan({ eventName: "pull_request", event: {} }),
     /Invalid PR/,
   );
+});
+
+test("documentation classification uses suffixes and payload directories", () => {
+  for (const name of [
+    "README.md",
+    "new/guide.MD",
+    "guide.mdx",
+    "guide.rst",
+    "docs/api.json",
+    "testdata/README_zh.md",
+  ]) {
+    assert.equal(isDocumentation(name), true, name);
+  }
+  for (const name of [
+    "main.go",
+    "lib.rs",
+    "sdk.ts",
+    "stdlib/errors.mgo",
+    "api.mrpc",
+    "Cargo.lock",
+    "package.json",
+    "Makefile",
+    ".github/workflows/publish.yml",
+    "LICENSE",
+    "unknown.txt",
+    "testdata/input.md",
+    "compiler/testdata/input.rst",
+    "tests/fixtures/page.mdx",
+    "assets/page.md",
+  ]) {
+    assert.equal(isDocumentation(name), false, name);
+  }
+});
+
+test("HTTP lookup treats only explicit allowed 404 as a missing package", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch");
+  for (const status of [401, 403, 429, 500]) {
+    fetch.mock.mockImplementation(
+      async () => new Response("failure", { status }),
+    );
+    await assert.rejects(
+      requestJSON("https://example.test", { allowMissing: true }),
+      /HTTP/,
+    );
+  }
+  fetch.mock.mockImplementation(
+    async () => new Response("missing", { status: 404 }),
+  );
+  assert.equal(
+    await requestJSON("https://example.test", { allowMissing: true }),
+    null,
+  );
+  await assert.rejects(requestJSON("https://example.test"), /HTTP 404/);
+  fetch.mock.mockImplementation(async () => new Response("not json"));
+  await assert.rejects(requestJSON("https://example.test"), SyntaxError);
 });

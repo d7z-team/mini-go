@@ -76,7 +76,7 @@
   跨语言命令编排留在 Makefile；Go 测试仅在验证 CLI、生成代码编译或
   跨进程行为确有需要时启动子进程，不包装整套测试命令。测试自行回收实例、连接与 goroutine。
 - 重型 compiler、stdlib 和集成测试复用 `MINIGO_CACHE` 或默认磁盘缓存；cache contract、故障注入和阶段单元测试使用隔离 backend。
-  日常验证不先清缓存；冷启动验证和用户要求清理时才执行 `make clean`。
+  日常验证复用缓存；冷启动验证使用隔离缓存，确需清理 Mini-Go 缓存时显式执行 `make cache-clean`。
 - fuzz 同时验证成功不变量和失败后的状态完整性。语法终止性使用 compiler 的确定性 limits，
   不用 goroutine 超时或 `recover` 掩盖 panic。
 - 共享语义优先加入 `testdata/` 所属语料并让各后端独立断言，避免多个包装测试重复运行完全相同的场景。

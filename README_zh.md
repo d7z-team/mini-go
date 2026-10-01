@@ -2,7 +2,7 @@
 
 [English](./README.md)
 
-[![Go 测试与覆盖率][go-ci-badge]][go-ci]
+[![CI][ci-badge]][ci]
 
 Mini-Go 是使用 Go-like 语法的嵌入式脚本引擎。Go 应用直接编译并调用脚本，Rust 应用执行同一字节码，
 浏览器与 Node.js 通过 WebAssembly SDK 接入；`mini-go` CLI 也可以独立运行 `.mgo` 文件。
@@ -82,8 +82,8 @@ Rust 与 npm 包均包含匹配的编译器资源，安装和部署方式见对�
 | 理解组件边界和状态归属 | [架构](./ARCHITECTURE.md) |
 | 构建、测试、诊断和发布 | [开发指南](./DEVELOPMENT.md) |
 
-[go-ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml/badge.svg
-[go-ci]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml
+[ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml/badge.svg
+[ci]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml
 
 ## 参与开发
 

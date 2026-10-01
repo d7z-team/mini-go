@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { access, cp, mkdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -32,7 +32,10 @@ if (!expected || run(tool, ["--version"], true).trim() !== `wasm-bindgen ${expec
 }
 const args = process.argv.slice(2);
 if (args.some((arg) => arg !== "--core")) throw new Error("Usage: npm run build -- [--core]");
-run("make", ["-C", path.resolve(root, "../../.."), "runtime-compiler-image"]);
+const compiler = path.resolve(root, "../assets/compiler.json.gz");
+await access(compiler).catch(() => {
+  throw new Error("Compiler image unavailable; run make compiler-image at the repository root");
+});
 const metadata = JSON.parse(
   run(
     "cargo",
@@ -72,10 +75,7 @@ run(process.execPath, [
 ]);
 await cp(wasm, path.join(staging, "wasm"), { recursive: true });
 await mkdir(path.join(staging, "tools"), { recursive: true });
-await cp(
-  path.resolve(root, "../assets/compiler.json.gz"),
-  path.join(staging, "tools/compiler.json.gz"),
-);
+await cp(compiler, path.join(staging, "tools/compiler.json.gz"));
 await mkdir(path.join(root, ".build"), { recursive: true });
 // A failed Rust/TypeScript build leaves the previous distribution usable.
 const backup = path.join(root, ".build/previous");

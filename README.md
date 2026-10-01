@@ -2,7 +2,7 @@
 
 [简体中文](./README_zh.md)
 
-[![Go tests and coverage][go-ci-badge]][go-ci]
+[![CI][ci-badge]][ci]
 
 Mini-Go is an embeddable scripting engine with Go-like syntax. Go applications compile and invoke
 scripts directly, Rust applications execute the same bytecode, and browsers and Node.js use the
@@ -92,8 +92,8 @@ The detailed guides linked below are written in Chinese.
 [rust-runtime]: ./playground/runtime-rust/README.md
 [wasm-sdk]: ./playground/runtime-rust/runtime-wasm/README.md
 [crate-runtime]: https://crates.io/crates/mini-go
-[go-ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml/badge.svg
-[go-ci]: https://github.com/d7z-team/mini-go/actions/workflows/go-test.yml
+[ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml/badge.svg
+[ci]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml
 
 ## Contributing
 

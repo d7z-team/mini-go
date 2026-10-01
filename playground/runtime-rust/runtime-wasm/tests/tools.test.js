@@ -14,7 +14,7 @@ for (const workload of workloads) {
     `Node compiler workload ${workload.Name} preserves warm snapshots`,
     { timeout: 60_000 },
     async (t) => {
-      t.diagnostic(JSON.stringify(await exerciseCompilerWorkload(tools, workload)));
+      t.diagnostic(JSON.stringify(await exerciseCompilerWorkload(tools, workload, t.signal)));
     },
   );
   test(

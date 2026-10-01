@@ -185,7 +185,7 @@ fn run_package(vector: &Vector, bridge: &dyn mini_go::ffi::Bridge) -> Result<(),
 #[cfg(feature = "host-conformance")]
 fn current_standard_library_tests_execute_with_actual_go_providers() {
     let broker_path = std::env::var("MINIGO_HOST_BROKER")
-        .expect("run make runtime-rust-conformance to build the Go provider broker");
+        .expect("run make test-interop to build the Go provider broker");
     run_standard_library(|vector| {
         let bridge = broker::BrokerBridge::new(&broker_path)?;
         run_package(vector, &bridge)

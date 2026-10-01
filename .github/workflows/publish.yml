@@ -1,24 +1,100 @@
-name: Publish Rust and npm packages
+name: CI
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: publish-packages
-  cancel-in-progress: false
-
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      workflow: publish.yml
+
+  go:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
+      - run: rustup default 1.98.1
+      - uses: actions/cache@v4
+        with:
+          path: /tmp/mini-go/cache
+          key: mini-go-oracle-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'compiler/**/*.go', 'runtime/**/*.go', 'ffi/**/*.go', 'stdlib/**/*.go', 'stdlib/**/*.mgo', 'tooling/runtimecheck/*.go') }}
+          restore-keys: mini-go-oracle-${{ runner.os }}-
+      - run: make generate
+      - run: git diff --exit-code
+      - run: make lint
+      - name: Test with coverage
+        run: |
+          make coverage
+          {
+            echo '### Go test coverage'
+            echo
+            echo '```text'
+            go tool cover -func=coverage.txt | tail -n 1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: |
+            coverage.txt
+            coverage.html
+          if-no-files-found: error
+          retention-days: 14
+      - run: make build
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - run: rustup default 1.98.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            playground/runtime-rust/target
+          key: rust-runtime-${{ runner.os }}-1.98.1-${{ hashFiles('playground/runtime-rust/Cargo.lock') }}
+      - run: make artifacts
+      - run: make lint-rust test-rust test-interop
+
   plan:
+    needs: [changes, go, rust]
     if: >-
+      always() && !cancelled() &&
+      needs.changes.result == 'success' &&
+      (needs.changes.outputs.changed == 'false' ||
+       (needs.go.result == 'success' && needs.rust.result == 'success')) &&
       github.repository == 'd7z-team/mini-go' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       sha: ${{ steps.plan.outputs.sha }}
@@ -30,21 +106,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.2"
-      - run: make ci-script-test release-script-test
       - name: Decide whether to publish
         id: plan
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           git fetch --no-tags origin main
           node .github/scripts/release-plan.mjs
 
   publish:
     needs: plan
-    if: needs.plan.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     environment: release
+    concurrency:
+      group: publish-packages
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -103,14 +179,12 @@ jobs:
       - name: Install WASM and browser tools
         run: |
           cargo install wasm-bindgen-cli --version 0.2.128 --locked
-          npm --prefix playground/runtime-rust/runtime-wasm ci
+          make deps
           npm exec --prefix playground/runtime-rust/runtime-wasm -- playwright install --with-deps chromium firefox
       - name: Verify TypeScript, WASM and compiler tooling
         run: |
-          make runtime-compiler-image
-          cargo clippy --locked --manifest-path playground/runtime-rust/Cargo.toml \
-            --target wasm32-unknown-unknown -p mini-go -p mini-go-wasm --all-features -- -D warnings
-          make runtime-wasm-test
+          make artifacts
+          make test-wasm
       - name: Build and verify release artifacts
         run: |
           export GOCACHE="$(go env GOCACHE)"

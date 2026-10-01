@@ -58,15 +58,8 @@ rust="$source_root/playground/runtime-rust"
 wasm="$rust/runtime-wasm"
 cargo_target=${CARGO_TARGET_DIR:-"$output/cargo-target"}
 
-node "$source_root/scripts/set-release-version.mjs" "$version" "$source_root"
-identity="$source_root/runtime/bytecode/identity.go"
-identity_before=$(sha256sum "$identity" | cut -d ' ' -f 1)
-make -C "$source_root" runtime-compiler-image
-identity_after=$(sha256sum "$identity" | cut -d ' ' -f 1)
-if [[ "$identity_before" != "$identity_after" ]]; then
-	echo "compiler identity is stale; run make generate and commit the result" >&2
-	exit 1
-fi
+node "$source_root/scripts/release-version.mjs" --set "$version" --repository "$source_root"
+make -C "$source_root" compiler-image
 
 compiler="$rust/assets/compiler.json.gz"
 compiler_sha256=$(sha256sum "$compiler" | cut -d ' ' -f 1)

@@ -18,4 +18,4 @@ make test TEST_PACKAGES='./integrations'
 ```
 
 普通集成测试也由 `make test` 自动发现，并复用 Mini-Go 编译缓存。
-跨语言通信矩阵需要先构建 peer，使用[开发指南](../DEVELOPMENT.md#rust-验证)中的 `make test-rpc-conformance`。
+跨语言通信矩阵需要先构建 peer，使用[开发指南](../DEVELOPMENT.md#rust-验证)中的 `make test-interop`。
