@@ -87,13 +87,23 @@ func New(config Config) (*Engine, error) {
 	if config.Cache != nil {
 		compiledCache = cache.New(config.Cache)
 	}
+	hostCapabilities := make(map[string][]string)
+	if config.Libraries != nil {
+		for path, capabilities := range config.Libraries.packageCapabilities {
+			names := make([]string, len(capabilities))
+			for i, capability := range capabilities {
+				names[i] = string(capability)
+			}
+			hostCapabilities[path] = names
+		}
+	}
 	frontend, err := compiler.New(compiler.Options{
 		Sources: sources, Target: config.Target, Cache: compiledCache,
 		Optimization:     config.Optimization,
 		Limits:           config.Limits,
 		Symbols:          config.Symbols,
 		TransientCache:   config.TransientCache,
-		HostCapabilities: hostCapabilitiesByPackage(config.Libraries),
+		HostCapabilities: hostCapabilities,
 	})
 	if err != nil {
 		return nil, err
@@ -117,20 +127,6 @@ func (e *Engine) Close() error {
 	e.compiler = nil
 	e.capabilities = nil
 	return err
-}
-
-func hostCapabilitiesByPackage(libraries *LibrarySet) map[string][]string {
-	out := make(map[string][]string)
-	if libraries != nil {
-		for path, capabilities := range libraries.packageCapabilities {
-			names := make([]string, len(capabilities))
-			for i, capability := range capabilities {
-				names[i] = string(capability)
-			}
-			out[path] = names
-		}
-	}
-	return out
 }
 
 // AvailableHostCapabilities returns the host services declared by the embedded

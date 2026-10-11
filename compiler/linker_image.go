@@ -28,12 +28,6 @@ type linkRequest struct {
 	IncludeSymbols   bool
 }
 
-// Prepare computes the executable function closure and seals an ExecutionImage.
-func linkExecutionImage(request linkRequest) (ir.ExecutionImage, error) {
-	image, _, err := linkProgram(request)
-	return image, err
-}
-
 func linkProgram(request linkRequest) (ir.ExecutionImage, *ir.ProgramSymbols, error) {
 	request.Context = requestContext(request.Context)
 	if err := request.Context.Err(); err != nil {

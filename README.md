@@ -4,36 +4,28 @@
 
 [![CI][ci-badge]][ci]
 
-Mini-Go is an embeddable scripting engine with Go-like syntax. Go applications compile and invoke
-scripts directly, Rust applications execute the same bytecode, and browsers and Node.js use the
-WebAssembly SDK. The `mini-go` CLI also runs `.mgo` files without a host application.
+Mini-Go is an embeddable scripting engine with Go-like syntax. Go applications compile and run
+scripts directly, Rust applications execute the same bytecode, and the TypeScript runtime supports
+browsers and Node.js. The `mini-go` CLI can also run `.mgo` files without a host application.
 
-**[Quick start](#quick-start) · [Go](./USAGE.md) · [Rust][rust-runtime] · [Browser / Node.js][wasm-sdk] · [RPC](./RPC.md)**
+## Highlights
 
-## Features
+- Go-like language with generics, closures, channels, reflection, and embedded resources.
+- Isolated instances with cancellation, resource limits, observability, and hot patching.
+- Host capabilities and generated Go, Mini-Go, Rust, and TypeScript MRPC bindings.
+- Go, Rust, and TypeScript runtimes backed by the same bytecode contract.
+- Formatting, LSP, DAP, caching, and a VS Code extension.
 
-- **Go-like language**: generics and generic methods, promoted-field literals, closures, channels and select, defer/panic/recover, reflection, and embedded resources.
-- **Controlled execution**: isolated instances, bounded parallelism, cancellation, limits, observability, and hot patching.
-- **Host integration**: FFI capabilities and generated Go, Mini-Go, Rust, and TypeScript MRPC bindings.
-- **Portable runtime**: native Go and Rust backends plus a TypeScript SDK for browsers and Node.js.
-- **Tooling**: local source composition, caching, formatting, LSP, DAP, and a VS Code extension.
+The standard library is a curated Go-compatible subset. Its supported surface is listed in the
+[generated reference](./docs/reference/README.md).
 
-The curated standard library covers strings, containers, encoding, templates, and common scripting tasks.
-See the [standard library reference](./docs/reference/README.md) for supported APIs.
+## Install and run
 
-## Installation
-
-The host toolchain requires Go 1.26 or later. Mini-Go's language and standard library have their own
-support scope; see [language and standard library](./USAGE.md#语言与标准库).
+The Go host toolchain requires Go 1.26 or later:
 
 ```bash
 go install github.com/d7z-team/mini-go/cmd/mini-go@latest
 ```
-
-Add Go's binary installation directory (`GOBIN`, or `GOPATH/bin` when `GOBIN` is unset) to `PATH`.
-To embed Mini-Go as a Go dependency, continue with [Use from Go](#use-from-go).
-
-## Quick start
 
 Create `hello.mgo`:
 
@@ -45,64 +37,58 @@ func main() {
 }
 ```
 
-Check and run it:
+Then check and run it:
 
 ```bash
 mini-go check hello.mgo
 mini-go run hello.mgo
 ```
 
-The program prints `Hello, Mini-Go!`. Mini-Go source files use `.mgo` and tests use `_test.mgo`.
-For multiple files, directories, and local modules, see the [CLI guide](./USAGE.md#cli).
+Mini-Go source files use `.mgo`; tests use `_test.mgo`. The [Go and CLI guide](./USAGE.md) covers
+multi-file projects, local modules, host capabilities, execution control, and hot patching.
 
-## Use from Go
-
-Add the module to the host application:
+## Embed in Go
 
 ```bash
 go get github.com/d7z-team/mini-go
 ```
 
-The embedding flow is: provide sources → create an Engine → compile a Program → instantiate it →
-call an entry point. Programs are reusable; each instance owns isolated state. The
-[usage guide](./USAGE.md) contains a complete example and covers source composition, host
-capabilities, execution control, and hot patching.
+An embedding application provides sources, creates an `Engine`, compiles a reusable `Program`, and
+instantiates isolated runtime state. Start with the [complete Go example](./USAGE.md#完整嵌入示例).
 
 ## Other runtimes
 
 | Environment | Package and guide |
 | --- | --- |
-| Native Rust | [`mini-go` crate][crate-runtime] · [Runtime and optional compiler tools][rust-runtime] |
-| Browser and Node.js | `npm install @d7z-team/mini-go@git` · [TypeScript SDK][wasm-sdk] |
+| Native Rust | [`mini-go` crate][crate-runtime] · [Rust runtime][rust-runtime] |
+| Browser and Node.js | `npm install @d7z-team/mini-go` · [TypeScript runtime][typescript-runtime] |
 
-Rust and npm packages include matching compiler resources. Follow the component guides for installation and deployment.
+Compiler resources and runtime artifacts must come from the same toolchain version. Packaging and
+deployment details live in the component guides.
 
 ## Documentation
 
-The detailed guides linked below are written in Chinese.
+The detailed guides below are written in Chinese.
 
 | Task | Guide |
 | --- | --- |
-| Embed in Go or use the CLI | [Usage guide](./USAGE.md) |
+| Embed in Go or use the CLI | [Go and CLI guide](./USAGE.md) |
 | Define and connect RPC services | [RPC guide](./RPC.md) |
-| Look up standard library APIs | [Generated reference](./docs/reference/README.md) |
-| Set up the editor | [VS Code extension](./vscode-ext/README.md) |
-| Understand component boundaries and ownership | [Architecture](./ARCHITECTURE.md) |
-| Build, test, diagnose, or release changes | [Development guide](./DEVELOPMENT.md) |
+| Use native Rust | [Rust runtime][rust-runtime] |
+| Use Browser or Node.js | [TypeScript runtime][typescript-runtime] |
+| Configure the editor | [VS Code extension](./vscode-ext/README.md) |
+| Understand component boundaries | [Architecture](./ARCHITECTURE.md) |
+| Build, test, diagnose, or release | [Development guide](./DEVELOPMENT.md) |
 
-[rust-runtime]: ./playground/runtime-rust/README.md
-[wasm-sdk]: ./playground/runtime-rust/runtime-wasm/README.md
-[crate-runtime]: https://crates.io/crates/mini-go
-[ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml/badge.svg
-[ci]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml
-
-## Contributing
-
-Read the [architecture](./ARCHITECTURE.md) and [development guide](./DEVELOPMENT.md) before making
-changes. Run `make help` at the repository root to list build and verification targets. When
-reporting an issue, include a minimal `.mgo` program, the command, and the expected and actual result.
+Run `make help` for repository commands. Contribution rules are in [AGENTS.md](./AGENTS.md).
 
 ## License
 
-Mini-Go is licensed under the [MIT License](./LICENSE). Source ported from the Go standard library
-retains its original copyright notices and is covered by the [Go license](./stdlib/LICENSE_GO).
+Mini-Go uses the [MIT License](./LICENSE). Ported Go standard-library sources retain their original
+copyright notices and use the [Go license](./stdlib/LICENSE_GO).
+
+[rust-runtime]: ./playground/runtime-rust/README.md
+[typescript-runtime]: ./playground/runtime-typescript/README.md
+[crate-runtime]: https://crates.io/crates/mini-go
+[ci-badge]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml/badge.svg
+[ci]: https://github.com/d7z-team/mini-go/actions/workflows/publish.yml

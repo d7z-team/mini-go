@@ -330,7 +330,62 @@ struct GuestLease {
     closing: Cancellation,
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+impl ProviderLease for GuestLease {
+    fn invoke(
+        &self,
+        context: CallContext,
+        method: Method,
+        arguments: Vec<Value>,
+    ) -> BoxFuture<'_, Result<ProviderResult>> {
+        Box::pin(async move {
+            if self.closing.is_cancelled() || !self.contract.methods.contains(&method) {
+                return Err(Status::new("unavailable", "RPC guest lease closed"));
+            }
+            self.provider.invoke(context, method, None, arguments).await
+        })
+    }
+    fn close(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async {
+            self.closing.cancel();
+            Ok(())
+        })
+    }
+}
+struct GuestResource {
+    provider: Arc<GuestProvider>,
+    reference: ResourceRef,
+}
+impl Resource for GuestResource {
+    fn invoke(
+        &self,
+        context: CallContext,
+        method: String,
+        arguments: Vec<Value>,
+    ) -> BoxFuture<'_, Result<Vec<Value>>> {
+        Box::pin(async move {
+            let method = self
+                .provider
+                .contract
+                .methods
+                .iter()
+                .find(|m| m.resource_type_hash == self.reference.type_hash && m.name == method)
+                .cloned()
+                .ok_or_else(|| {
+                    Status::new("unimplemented", "RPC guest resource method unavailable")
+                })?;
+            Ok(self
+                .provider
+                .invoke(context, method, Some(self.reference.clone()), arguments)
+                .await?
+                .values)
+        })
+    }
+    fn close(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(self.provider.release(self.reference.clone()))
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -407,7 +462,7 @@ mod tests {
             for _ in 0..3 {
                 let event = guest
                     .accept(CallContext::with_deadline(
-                        web_time::Instant::now() + std::time::Duration::from_secs(1),
+                        std::time::Instant::now() + std::time::Duration::from_secs(1),
                     ))
                     .await
                     .unwrap();
@@ -420,59 +475,5 @@ mod tests {
             routes.shutdown().await.unwrap();
             guest.close();
         }
-    }
-}
-impl ProviderLease for GuestLease {
-    fn invoke(
-        &self,
-        context: CallContext,
-        method: Method,
-        arguments: Vec<Value>,
-    ) -> BoxFuture<'_, Result<ProviderResult>> {
-        Box::pin(async move {
-            if self.closing.is_cancelled() || !self.contract.methods.contains(&method) {
-                return Err(Status::new("unavailable", "RPC guest lease closed"));
-            }
-            self.provider.invoke(context, method, None, arguments).await
-        })
-    }
-    fn close(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async {
-            self.closing.cancel();
-            Ok(())
-        })
-    }
-}
-struct GuestResource {
-    provider: Arc<GuestProvider>,
-    reference: ResourceRef,
-}
-impl Resource for GuestResource {
-    fn invoke(
-        &self,
-        context: CallContext,
-        method: String,
-        arguments: Vec<Value>,
-    ) -> BoxFuture<'_, Result<Vec<Value>>> {
-        Box::pin(async move {
-            let method = self
-                .provider
-                .contract
-                .methods
-                .iter()
-                .find(|m| m.resource_type_hash == self.reference.type_hash && m.name == method)
-                .cloned()
-                .ok_or_else(|| {
-                    Status::new("unimplemented", "RPC guest resource method unavailable")
-                })?;
-            Ok(self
-                .provider
-                .invoke(context, method, Some(self.reference.clone()), arguments)
-                .await?
-                .values)
-        })
-    }
-    fn close(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(self.provider.release(self.reference.clone()))
     }
 }

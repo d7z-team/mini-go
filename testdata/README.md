@@ -17,7 +17,7 @@
 
 ## 运行时一致性数据
 
-Go、Rust 和 WASM 独立验证 `runtime/` 中的执行结果与生命周期：
+Go、Rust 和 TypeScript 独立验证 `runtime/` 中的执行结果与生命周期：
 
 | 输入 | 用途 |
 | --- | --- |

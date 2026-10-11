@@ -7,11 +7,11 @@ pub mod compiler;
 pub mod dap;
 #[cfg(feature = "compiler")]
 pub mod language;
-#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+#[cfg(feature = "language-server")]
 pub mod lsp;
-#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+#[cfg(feature = "language-server")]
 mod server;
-#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+#[cfg(feature = "language-server")]
 mod transport;
 #[cfg(feature = "compiler")]
 pub use compiler::{CompilerOptions, CompilerSession};
@@ -19,7 +19,7 @@ pub use compiler::{CompilerOptions, CompilerSession};
 pub use dap::DebugSession;
 #[cfg(feature = "compiler")]
 pub use language::LanguageService;
-#[cfg(all(feature = "language-server", not(target_arch = "wasm32")))]
+#[cfg(feature = "language-server")]
 pub use lsp::LanguageServer;
 
 pub mod contract;
@@ -28,7 +28,6 @@ pub mod contract_generated;
 pub mod environment;
 pub mod error;
 pub mod execution;
-#[cfg(not(target_arch = "wasm32"))]
 mod executor_pool;
 pub mod ffi;
 pub mod heap;
@@ -39,14 +38,13 @@ pub mod program;
 #[cfg(feature = "rpc")]
 pub mod rpc;
 pub mod snapshot;
-#[cfg(all(feature = "stdlib-host", not(target_arch = "wasm32")))]
+#[cfg(feature = "stdlib-host")]
 pub mod stdlib_host;
 pub mod symbols;
 pub mod types;
 pub mod value;
 
 pub use error::RuntimeError;
-#[cfg(not(target_arch = "wasm32"))]
 pub use execution::Executor;
 pub use execution::{
     Debugger, Execution, ExecutionState, InstanceOptions, ScopeStats, SharedInstance as Instance,

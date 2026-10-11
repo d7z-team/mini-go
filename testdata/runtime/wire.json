@@ -210,12 +210,12 @@
     "input": {
       "artifact": {
         "number": 18446744073709551615,
-        "text": "<>&  "
+        "text": "<>&\u2028\u2029"
       },
       "artifact_hash": "abc"
     },
-    "canonical": "{\"artifact\":{\"number\":18446744073709551615,\"text\":\"<>&\u2028\u2029\"},\"artifact_hash\":\"abc\"}",
-    "hash": "114cd3f77bca790e1841406d9b90d66923ffd98208d78c074ef54ee9ef9a4aa7"
+    "canonical": "{\"artifact\":{\"number\":18446744073709551615,\"text\":\"<>&\\u2028\\u2029\"},\"artifact_hash\":\"abc\"}",
+    "hash": "2170e94a5236545637fa3205944d440a992b5dc5609c2a3ed1162fd1c3222677"
   },
   {
     "name": "ordered_packages",

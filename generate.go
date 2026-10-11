@@ -23,7 +23,7 @@ package minigo
 //go:generate go run ./cmd/mini-go-dev rpc-fixtures -root testdata/stdlib-host
 //go:generate go run ./cmd/mini-go-dev contract-spec -out spec/bytecode.json
 
-//go:generate go run ./cmd/mini-go-dev runtime-contract -out playground/runtime-rust/src/contract_generated.rs -vectors testdata/runtime/wire.json
+//go:generate go run ./cmd/mini-go-dev runtime-contract -out playground/runtime-rust/src/contract_generated.rs -typescript-out playground/runtime-typescript/src/vm/contract.generated.ts -vectors testdata/runtime/wire.json
 
 //go:generate go run ./cmd/mini-go-dev runtime-vectors -out testdata/runtime/execution.json.gz
 

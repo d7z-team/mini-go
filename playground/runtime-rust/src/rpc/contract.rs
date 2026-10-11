@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use web_time::Instant;
+use std::time::Instant;
 
 pub const CONTRACT_PROTOCOL: &str = "minigo.rpc.contract.v2";
 pub const FFI_PROTOCOL: &str = "minigo.mrpc.ffi/v3";

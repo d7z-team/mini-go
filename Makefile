@@ -14,7 +14,7 @@ export FUZZ_PATTERN ?= ^Fuzz
 export FUZZTIME ?= 10s
 export FUZZ_PARALLEL ?= 1
 RUST_TEST_FLAGS ?=
-WASM_PACK_OUTPUT ?= $(CURDIR)/build/npm
+TYPESCRIPT_PACK_OUTPUT ?= $(CURDIR)/build/npm
 RELEASE_OUTPUT ?= $(CURDIR)/build/release
 RELEASE_FLAGS ?=
 
@@ -24,22 +24,17 @@ minigo_dev := go run ./cmd/mini-go-dev
 minigo_sources = $(shell find stdlib/src stdlib/host -type f \( -name '*.mgo' -o -name '*.mrpc' \) -print | sort) rpc/gateway/control.mrpc
 rust_dir := playground/runtime-rust
 cargo_flags := --locked --manifest-path $(rust_dir)/Cargo.toml
-wasm_dir := $(rust_dir)/runtime-wasm
-npm := npm --prefix $(wasm_dir)
-wasm_fixtures := $(CURDIR)/build/wasm-fixtures
+typescript_dir := playground/runtime-typescript
+npm := npm --prefix $(typescript_dir)
+typescript_compiler_dir := $(typescript_dir)/.build/compiler
+typescript_compiler_wasm := $(typescript_compiler_dir)/mini-go-compiler.wasm
 runtime_images := testdata/runtime/execution.json.gz testdata/runtime/stdlib.json.gz
 compiler_image := $(rust_dir)/assets/compiler.json.gz
-wasm_cargo_flags := --target wasm32-unknown-unknown
-ifeq ($(MINIGO_BUILD_STD),1)
-wasm_cargo_flags += -Z build-std=std,panic_abort
-wasm_env := RUSTC_BOOTSTRAP=1
-endif
-
 .PHONY: help check generate doc artifacts compiler-image _check-identity _check-runtime-images _check-artifacts
 help: ## 显示常用目标与说明
 	@awk 'BEGIN { print "用法：make <目标> [变量=值]\n" } /^[a-zA-Z][a-zA-Z0-9_-]*:.*## / { split($$0, parts, ":"); sub(/^.*## /, ""); printf "  %-24s %s\n", parts[1], $$0 }' $(MAKEFILE_LIST)
 
-check: lint test build lint-rust test-rust test-interop test-wasm test-scripts ## 完整验证；先准备工具、deps 和生成产物
+check: lint test build lint-rust test-rust test-interop test-typescript test-scripts ## 完整验证；先准备工具、deps 和生成产物
 
 # generate 更新全部事实；artifacts 只在身份匹配时补齐未随 Git 分发的镜像。
 generate: ## 更新全部绑定、契约、镜像与 manifest
@@ -130,24 +125,31 @@ test-interop: _check-artifacts _rpc-go-peer ## Go/Rust RPC 互操作与 Go provi
 	@MINIGO_HOST_BROKER="$(CURDIR)/bin/mini-go-dev" cargo test $(cargo_flags) --release -p mini-go --features host-conformance --test stdlib -- --nocapture
 
 # 依赖安装显式执行，npm build 不回调根生成流程。
-.PHONY: deps build-wasm lint-wasm test-wasm pack-wasm
+.PHONY: deps _typescript-compiler-assets build-typescript lint-typescript test-typescript pack-typescript
 deps: ## 按 lockfile 安装 SDK 开发依赖
 	@$(npm) ci
 
-build-wasm: _check-artifacts ## 构建 TypeScript、Worker、WASM 与 compiler 分发
+_typescript-compiler-assets:
+	@mkdir -p "$(typescript_compiler_dir)"
+	@GOOS=js GOARCH=wasm go build -trimpath -o "$(typescript_compiler_wasm)" ./cmd/mini-go-compiler-wasm
+	@go_root="$$(go env GOROOT)"; \
+		wasm_exec="$$go_root/lib/wasm/wasm_exec.js"; \
+		if test ! -f "$$wasm_exec"; then wasm_exec="$$go_root/misc/wasm/wasm_exec.js"; fi; \
+		test -f "$$wasm_exec" || { echo "Go wasm_exec.js was not found below $$go_root" >&2; exit 1; }; \
+		install -m 0644 "$$wasm_exec" "$(typescript_compiler_dir)/wasm_exec.js"
+
+build-typescript: _check-runtime-images _typescript-compiler-assets ## 构建 TypeScript runtime、Worker 与 Go compiler WASM 分发
 	@$(npm) run build
 
-lint-wasm: build-wasm ## SDK 类型/格式与 wasm32 Clippy
+lint-typescript: build-typescript ## SDK strict 类型、生成绑定与格式检查
 	@$(npm) run lint
-	@$(wasm_env) cargo clippy $(cargo_flags) $(wasm_cargo_flags) -p mini-go -p mini-go-wasm --all-features -- -D warnings
 
-test-wasm: lint-wasm _rpc-go-peer ## WASM driver、Node、浏览器、RPC、语言工具与安装包测试
-	@MINIGO_WASM_FIXTURES="$(wasm_fixtures)" cargo test $(cargo_flags) --test wasm_driver
-	@MINIGO_WASM_FIXTURES="$(wasm_fixtures)" MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" $(npm) test
+test-typescript: lint-typescript _rpc-go-peer ## Node、浏览器、RPC、Go compiler、debug 与安装包测试
+	@MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" $(npm) test
 
-pack-wasm: build-wasm ## 将当前构建打包到 WASM_PACK_OUTPUT
-	@mkdir -p "$(WASM_PACK_OUTPUT)"
-	@cd $(wasm_dir) && npm pack --ignore-scripts --pack-destination "$(WASM_PACK_OUTPUT)"
+pack-typescript: build-typescript ## 将当前构建打包到 TYPESCRIPT_PACK_OUTPUT
+	@mkdir -p "$(TYPESCRIPT_PACK_OUTPUT)"
+	@cd $(typescript_dir) && npm pack --ignore-scripts --pack-destination "$(TYPESCRIPT_PACK_OUTPUT)"
 
 .PHONY: test-scripts release-package release-verify clean cache-clean
 test-scripts: ## 验证构建编排、CI 与发布脚本

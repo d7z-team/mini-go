@@ -55,41 +55,43 @@ fi
 
 source_root="$output/source"
 rust="$source_root/playground/runtime-rust"
-wasm="$rust/runtime-wasm"
+typescript="$source_root/playground/runtime-typescript"
 cargo_target=${CARGO_TARGET_DIR:-"$output/cargo-target"}
 
 node "$source_root/scripts/release-version.mjs" --set "$version" --repository "$source_root"
 make -C "$source_root" compiler-image
 
 compiler="$rust/assets/compiler.json.gz"
-compiler_sha256=$(sha256sum "$compiler" | cut -d ' ' -f 1)
+runtime_compiler_sha256=$(sha256sum "$compiler" | cut -d ' ' -f 1)
 export CARGO_TARGET_DIR="$cargo_target"
 cargo fetch --manifest-path "$rust/Cargo.toml" --locked
 cargo package --manifest-path "$rust/Cargo.toml" --locked --offline -p mini-go
 cp "$cargo_target/package/mini-go-$version.crate" "$output/"
 
-npm --prefix "$wasm" ci
-npm --prefix "$wasm" run build
-if [[ $(sha256sum "$compiler" | cut -d ' ' -f 1) != "$compiler_sha256" ]]; then
-	echo "npm build replaced the release compiler image" >&2
+npm --prefix "$typescript" ci
+make -C "$source_root" build-typescript
+if [[ $(sha256sum "$compiler" | cut -d ' ' -f 1) != "$runtime_compiler_sha256" ]]; then
+	echo "TypeScript build replaced the Rust runtime compiler image" >&2
 	exit 1
 fi
-(cd "$wasm" && npm pack --ignore-scripts --json --pack-destination "$output") >"$output/npm-pack.json"
+typescript_compiler_sha256=$(sha256sum "$typescript/dist/compiler/mini-go-compiler.wasm" | cut -d ' ' -f 1)
+(cd "$typescript" && npm pack --ignore-scripts --json --pack-destination "$output") >"$output/npm-pack.json"
 npm_tarball="$output/d7z-team-mini-go-$version.tgz"
 test -f "$npm_tarball"
 
 tar -tf "$output/mini-go-$version.crate" >"$output/mini-go.files"
 tar -tf "$npm_tarball" >"$output/npm.files"
 
-node - "$output/release.json" "$version" "$commit" "$commit_count" "$short_commit" "$compiler_sha256" <<'NODE'
+node - "$output/release.json" "$version" "$commit" "$commit_count" "$short_commit" "$runtime_compiler_sha256" "$typescript_compiler_sha256" <<'NODE'
 const { writeFileSync } = require("node:fs");
-const [filename, version, commit, count, shortCommit, compilerSHA256] = process.argv.slice(2);
+const [filename, version, commit, count, shortCommit, runtimeCompilerSHA256, typescriptCompilerSHA256] = process.argv.slice(2);
 writeFileSync(filename, `${JSON.stringify({
   version,
   commit,
   commitCount: Number(count),
   shortCommit,
-  compilerSHA256,
+  runtimeCompilerSHA256,
+  typescriptCompilerSHA256,
   crates: [`mini-go-${version}.crate`],
   npm: `d7z-team-mini-go-${version}.tgz`,
 }, null, 2)}\n`);

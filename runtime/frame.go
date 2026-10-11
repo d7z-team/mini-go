@@ -578,10 +578,6 @@ func loadAddressPath(module *moduleInstance, root vmValue, path []ir.AddressPath
 	return current, nil
 }
 
-func storeAddressPath(module *moduleInstance, root vmValue, path []ir.AddressPathSegment, indexes []vmValue, value vmValue) (vmValue, error) {
-	return storeAddressPathMode(module, root, path, indexes, value, true)
-}
-
 func storeAddressPathMode(module *moduleInstance, root vmValue, path []ir.AddressPathSegment, indexes []vmValue, value vmValue, cloneLeaf bool) (vmValue, error) {
 	if len(path) == 0 {
 		return value, nil

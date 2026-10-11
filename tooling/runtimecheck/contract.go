@@ -37,61 +37,10 @@ type Contract struct {
 // models. Sources are used to discover intrinsic IDs; their descriptors are
 // obtained from the runtime contract rather than copied into this generator.
 func GenerateRustContract(sources fs.FS) ([]byte, error) {
-	data, err := fs.ReadFile(sources, "runtime/bytecode/intrinsic.go")
+	contract, err := loadRuntimeContract(sources)
 	if err != nil {
 		return nil, err
 	}
-	file, err := parser.ParseFile(token.NewFileSet(), "intrinsic.go", data, 0)
-	if err != nil {
-		return nil, err
-	}
-	contract := Contract{
-		CompilerID:      bytecode.CompilerIdentity,
-		ExecutionFormat: bytecode.ExecutionFormat, ExecutionVersion: bytecode.ExecutionVersion,
-		ExecutionContract: bytecode.ExecutionContract, IntrinsicSchema: bytecode.IntrinsicSchema,
-		Spec:  bytecode.CurrentSpec(),
-		Costs: map[string]int{"node": bytecode.RuntimeNodeBytes, "slot": bytecode.RuntimeSlotBytes, "map_entry": bytecode.RuntimeMapEntryBytes, "byte": bytecode.RuntimeByteBytes},
-	}
-	contract.BufferLayout, err = describeBufferLayout(sources)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[bytecode.IntrinsicID]bool{}
-	ast.Inspect(file, func(node ast.Node) bool {
-		pair, ok := node.(*ast.KeyValueExpr)
-		if !ok {
-			return true
-		}
-		key, ok := pair.Key.(*ast.Ident)
-		if !ok || key.Name != "ID" {
-			return true
-		}
-		literal, ok := pair.Value.(*ast.BasicLit)
-		if !ok || literal.Kind != token.STRING {
-			return true
-		}
-		text, parseErr := strconv.Unquote(literal.Value)
-		if parseErr != nil {
-			err = parseErr
-			return false
-		}
-		id := bytecode.IntrinsicID(text)
-		descriptor, found := bytecode.Intrinsic(id)
-		if !found || seen[id] {
-			err = fmt.Errorf("intrinsic declaration %q is missing or duplicated", id)
-			return false
-		}
-		seen[id] = true
-		contract.Intrinsics = append(contract.Intrinsics, descriptor)
-		return true
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(contract.Intrinsics) == 0 {
-		return nil, errors.New("no intrinsic declarations discovered")
-	}
-	sort.Slice(contract.Intrinsics, func(i, j int) bool { return contract.Intrinsics[i].ID < contract.Intrinsics[j].ID })
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	encoder.SetEscapeHTML(false)
@@ -282,6 +231,164 @@ func GenerateRustContract(sources fs.FS) ([]byte, error) {
 		}
 	}
 	return out.Bytes(), g.err
+}
+
+func loadRuntimeContract(sources fs.FS) (Contract, error) {
+	data, err := fs.ReadFile(sources, "runtime/bytecode/intrinsic.go")
+	if err != nil {
+		return Contract{}, err
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "intrinsic.go", data, 0)
+	if err != nil {
+		return Contract{}, err
+	}
+	contract := Contract{
+		CompilerID:      bytecode.CompilerIdentity,
+		ExecutionFormat: bytecode.ExecutionFormat, ExecutionVersion: bytecode.ExecutionVersion,
+		ExecutionContract: bytecode.ExecutionContract, IntrinsicSchema: bytecode.IntrinsicSchema,
+		Spec:  bytecode.CurrentSpec(),
+		Costs: map[string]int{"node": bytecode.RuntimeNodeBytes, "slot": bytecode.RuntimeSlotBytes, "map_entry": bytecode.RuntimeMapEntryBytes, "byte": bytecode.RuntimeByteBytes},
+	}
+	contract.BufferLayout, err = describeBufferLayout(sources)
+	if err != nil {
+		return Contract{}, err
+	}
+	seen := map[bytecode.IntrinsicID]bool{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		pair, ok := node.(*ast.KeyValueExpr)
+		if !ok {
+			return true
+		}
+		key, ok := pair.Key.(*ast.Ident)
+		if !ok || key.Name != "ID" {
+			return true
+		}
+		literal, ok := pair.Value.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return true
+		}
+		text, parseErr := strconv.Unquote(literal.Value)
+		if parseErr != nil {
+			err = parseErr
+			return false
+		}
+		id := bytecode.IntrinsicID(text)
+		descriptor, found := bytecode.Intrinsic(id)
+		if !found || seen[id] {
+			err = fmt.Errorf("intrinsic declaration %q is missing or duplicated", id)
+			return false
+		}
+		seen[id] = true
+		contract.Intrinsics = append(contract.Intrinsics, descriptor)
+		return true
+	})
+	if err != nil {
+		return Contract{}, err
+	}
+	if len(contract.Intrinsics) == 0 {
+		return Contract{}, errors.New("no intrinsic declarations discovered")
+	}
+	sort.Slice(contract.Intrinsics, func(i, j int) bool { return contract.Intrinsics[i].ID < contract.Intrinsics[j].ID })
+	return contract, nil
+}
+
+// GenerateTypeScriptContract emits the identities and dense lookup tables used
+// by the TypeScript loader and interpreter. The Go bytecode model remains the
+// only hand-maintained source of opcode, intrinsic, and type-kind numbers.
+func GenerateTypeScriptContract(sources fs.FS) ([]byte, error) {
+	contract, err := loadRuntimeContract(sources)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.MarshalIndent(contract, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	enums, err := loadContractEnums(sources)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	out.WriteString("// Code generated by mini-go-dev runtime-contract; DO NOT EDIT.\n\n")
+	out.WriteString("export const CONTRACT = ")
+	out.Write(encoded)
+	out.WriteString(" as const;\n\n")
+	out.WriteString("export const OPCODE_NAMES = [\n  \"invalid\",\n")
+	for _, opcode := range contract.Spec.Opcodes {
+		fmt.Fprintf(&out, "  %q,\n", opcode.Op)
+	}
+	out.WriteString("] as const;\n\nexport const OPCODE_DESCRIPTOR_TABLES = [\n  \"\",\n")
+	for _, opcode := range contract.Spec.Opcodes {
+		fmt.Fprintf(&out, "  %q,\n", strings.ReplaceAll(opcode.Payload, "_", ""))
+	}
+	out.WriteString("] as const;\n\nexport const OPCODE_ARITIES = [\n  null,\n")
+	for _, opcode := range contract.Spec.Opcodes {
+		if opcode.Arity.Kind == "fixed" {
+			fmt.Fprintf(&out, "  [%d, %d],\n", opcode.Arity.Inputs, opcode.Arity.Outputs)
+		} else {
+			out.WriteString("  null,\n")
+		}
+	}
+	out.WriteString("] as const;\n\n")
+	for _, group := range []string{"Kind", "PrimitiveKind", "ChannelDir"} {
+		fmt.Fprintf(&out, "export const %s = {\n", group)
+		for ordinal, name := range enums[group] {
+			fmt.Fprintf(&out, "  %s: %d,\n", name, ordinal)
+		}
+		out.WriteString("} as const;\n\n")
+	}
+	out.WriteString("export const INTRINSICS = new Map([\n")
+	for _, intrinsic := range contract.Intrinsics {
+		fmt.Fprintf(&out, "  [%q, { args: %d, results: %d, effect: %d }],\n", intrinsic.ID, intrinsic.ArgCount, intrinsic.ResultCount, intrinsic.Effect)
+	}
+	out.WriteString("] as const);\n")
+	return out.Bytes(), nil
+}
+
+func loadContractEnums(sources fs.FS) (map[string][]string, error) {
+	model, err := fs.ReadFile(sources, "compiler/types/model.go")
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parser.ParseFile(token.NewFileSet(), "model.go", model, 0)
+	if err != nil {
+		return nil, err
+	}
+	groups := make(map[string][]string)
+	for _, declaration := range parsed.Decls {
+		group, ok := declaration.(*ast.GenDecl)
+		if !ok || group.Tok != token.CONST || len(group.Specs) == 0 {
+			continue
+		}
+		first, ok := group.Specs[0].(*ast.ValueSpec)
+		if !ok {
+			continue
+		}
+		kind, ok := first.Type.(*ast.Ident)
+		if !ok || (kind.Name != "Kind" && kind.Name != "PrimitiveKind" && kind.Name != "ChannelDir") {
+			continue
+		}
+		for ordinal, spec := range group.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || (ordinal > 0 && len(value.Values) != 0) {
+				return nil, fmt.Errorf("unsupported enum declaration %s", kind.Name)
+			}
+			if ordinal == 0 {
+				if len(value.Values) != 1 {
+					return nil, fmt.Errorf("expected iota: %s", kind.Name)
+				}
+				ident, ok := value.Values[0].(*ast.Ident)
+				if !ok || ident.Name != "iota" {
+					return nil, fmt.Errorf("expected iota: %s", kind.Name)
+				}
+			}
+			groups[kind.Name] = append(groups[kind.Name], value.Names[0].Name)
+		}
+	}
+	if len(groups) != 3 {
+		return nil, errors.New("missing compiler type enums")
+	}
+	return groups, nil
 }
 
 type rustModelGenerator struct {

@@ -5,7 +5,6 @@ use crate::error::RuntimeError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Condvar;
 use std::sync::{
     Arc, Mutex, Weak,
@@ -366,10 +365,8 @@ impl Completion {
 pub struct Wake {
     epoch: AtomicU64,
     wait_lock: Mutex<()>,
-    #[cfg(not(target_arch = "wasm32"))]
     changed: Condvar,
     waiter: Mutex<Option<Waker>>,
-    #[cfg(not(target_arch = "wasm32"))]
     supervisor: Mutex<Option<Waker>>,
 }
 
@@ -380,14 +377,12 @@ impl Wake {
     pub fn signal(&self) {
         let guard = self.wait_lock.lock().unwrap();
         self.epoch.fetch_add(1, Ordering::Release);
-        #[cfg(not(target_arch = "wasm32"))]
         self.changed.notify_all();
         drop(guard);
         let waiter = self.waiter.lock().unwrap().take();
         if let Some(waiter) = waiter {
             waiter.wake();
         }
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let supervisor = self.supervisor.lock().unwrap().clone();
             if let Some(supervisor) = supervisor {
@@ -395,7 +390,6 @@ impl Wake {
             }
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn set_supervisor(&self, waker: Waker) {
         *self.supervisor.lock().unwrap() = Some(waker);
     }
@@ -412,7 +406,6 @@ impl Wake {
             Poll::Pending
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn wait(&self, observed: u64, timeout: std::time::Duration) {
         let guard = self.wait_lock.lock().unwrap();
         drop(

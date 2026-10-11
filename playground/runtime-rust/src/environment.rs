@@ -1,7 +1,7 @@
 //! Injectable wall/monotonic time and entropy for deterministic owner polling.
 
 use crate::error::RuntimeError;
-use web_time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub trait Clock: Send + Sync {
     fn unix_time(&self) -> (i64, u32);

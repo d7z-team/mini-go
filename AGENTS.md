@@ -3,7 +3,7 @@
 本文件适用于整个仓库。修改子目录前检查是否有更近的 `AGENTS.md`，其局部规则优先；
 用户在当前任务中的明确要求优先于仓库约定。
 
-项目由 Go 编译器与运行时、Rust 执行后端和 TypeScript WASM SDK 组成。
+项目由 Go 编译器与运行时、Rust 原生执行后端、TypeScript VM/SDK 和 Go compiler WASM 组成。
 按任务阅读相关资料，不必预先遍历全部文档：
 
 | 任务 | 入口 |
@@ -12,7 +12,7 @@
 | 工具链、生成、测试、诊断 | [DEVELOPMENT.md](DEVELOPMENT.md) |
 | Go API / CLI / RPC | [USAGE.md](USAGE.md)、[RPC.md](RPC.md) |
 | Rust 原生 API | [Rust 使用指南](playground/runtime-rust/USAGE.md) |
-| Browser / Node SDK | [runtime-wasm README](playground/runtime-rust/runtime-wasm/README.md) |
+| Browser / Node SDK | [runtime-typescript README](playground/runtime-typescript/README.md) |
 | 跨语言语料 | [testdata README](testdata/README.md) |
 
 ## 工作方式
@@ -31,8 +31,9 @@
 - Go 使用 `gofmt`；Rust 使用 `cargo fmt` 和 Clippy；TypeScript 保持 strict 类型检查并使用项目 Prettier 配置。
 - Rust 核对 Cargo feature 与目标平台，区分根路径的共享 `Instance` 和 `instance::Instance` 底层 VM。
   同步 VM 工作交给有界执行器，异步任务明确传递取消并等待清理；库错误沿用现有 Result/error 类型。
-- TypeScript 共用 SDK 管理 Worker 通信与生命周期，browser/node 入口只适配平台；编译会话协议与恢复语义归 Rust。
-  对外二进制输入保持调用方所有权，保留 BigInt 和图快照语义；修改 SDK 源码后重新构建分发产物。
+- TypeScript 共用 runtime 包管理 VM、RPC Endpoint、Worker 通信与生命周期，browser/node 入口只适配平台；
+  Compiler Worker 运行 Go compiler WASM，会话队列、恢复和升级语义归 TypeScript。
+  对外二进制输入保持调用方所有权，保留 BigInt 和图快照语义；修改源码后重新构建分发产物。
 
 ## 架构与派生物
 

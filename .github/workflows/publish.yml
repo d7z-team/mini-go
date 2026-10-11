@@ -84,13 +84,34 @@ jobs:
       - run: make artifacts
       - run: make lint-rust test-rust test-interop
 
+  typescript:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+          cache-dependency-path: playground/runtime-typescript/package-lock.json
+      - run: make deps
+      - run: npm exec --prefix playground/runtime-typescript -- playwright install --with-deps chromium firefox
+      - run: make test-typescript
+
   plan:
-    needs: [changes, go, rust]
+    needs: [changes, go, rust, typescript]
     if: >-
       always() && !cancelled() &&
       needs.changes.result == 'success' &&
       (needs.changes.outputs.changed == 'false' ||
-       (needs.go.result == 'success' && needs.rust.result == 'success')) &&
+       (needs.go.result == 'success' && needs.rust.result == 'success' &&
+        needs.typescript.result == 'success')) &&
       github.repository == 'd7z-team/mini-go' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -153,12 +174,11 @@ jobs:
           cache: true
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
       - run: rustup default 1.98.1
-      - run: rustup target add wasm32-unknown-unknown
       - uses: actions/setup-node@v4
         with:
           node-version: "22.22.2"
           cache: npm
-          cache-dependency-path: playground/runtime-rust/runtime-wasm/package-lock.json
+          cache-dependency-path: playground/runtime-typescript/package-lock.json
       - name: Install publishing npm
         run: |
           npm install --global --prefix "$RUNNER_TEMP/publishing-npm" npm@12.0.2
@@ -176,15 +196,14 @@ jobs:
           path: /tmp/mini-go/cache
           key: mini-go-oracle-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'compiler/**/*.go', 'runtime/**/*.go', 'ffi/**/*.go', 'stdlib/**/*.go', 'stdlib/**/*.mgo', 'tooling/runtimecheck/*.go') }}
           restore-keys: mini-go-oracle-${{ runner.os }}-
-      - name: Install WASM and browser tools
+      - name: Install TypeScript and browser tools
         run: |
-          cargo install wasm-bindgen-cli --version 0.2.128 --locked
           make deps
-          npm exec --prefix playground/runtime-rust/runtime-wasm -- playwright install --with-deps chromium firefox
-      - name: Verify TypeScript, WASM and compiler tooling
+          npm exec --prefix playground/runtime-typescript -- playwright install --with-deps chromium firefox
+      - name: Verify TypeScript runtime and Go compiler tooling
         run: |
           make artifacts
-          make test-wasm
+          make test-typescript
       - name: Build and verify release artifacts
         run: |
           export GOCACHE="$(go env GOCACHE)"

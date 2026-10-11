@@ -5,6 +5,11 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
+func linkExecutionImage(request linkRequest) (ir.ExecutionImage, error) {
+	image, _, err := linkProgram(request)
+	return image, err
+}
+
 func linkerTestCode(slotTypes []types.TypeRef, instructions []ir.Instruction, operands []ir.SlotOperands) *ir.SlotCode {
 	if len(instructions) != len(operands) {
 		panic("linker fixture instruction/operand count mismatch")

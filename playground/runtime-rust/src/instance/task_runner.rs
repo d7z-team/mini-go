@@ -3,10 +3,8 @@
 //! operations use the owner's instruction transaction.
 
 use super::{frame::Local, scheduler::Task, *};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::executor_pool::{Next, Pool};
 use crate::program::{Instruction, PreparedConstant, PreparedInstruction};
-#[cfg(not(target_arch = "wasm32"))]
 use std::{
     sync::{
         Arc, Mutex,
@@ -16,22 +14,18 @@ use std::{
     task::Wake as _,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) const INSTRUCTION_QUANTUM: usize = 1024;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct TaskRun {
     pub(super) task: Task,
     pub(super) steps: usize,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct TaskBatch {
     receiver: mpsc::Receiver<(usize, TaskRun)>,
     runs: Vec<Option<TaskRun>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl TaskBatch {
     pub(crate) fn try_complete(&mut self) -> Result<Option<Vec<TaskRun>>, RuntimeError> {
         loop {
@@ -158,7 +152,6 @@ pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn run_private_batch(
     pool: &Arc<Pool>,
     batch: Vec<(Task, usize)>,
@@ -170,7 +163,6 @@ pub(super) fn run_private_batch(
         .map_err(|error| (error, Vec::new()))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn start_private_batch(
     pool: &Arc<Pool>,
     batch: Vec<(Task, usize)>,
@@ -232,7 +224,6 @@ pub(super) fn start_private_batch(
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn run_private_slice(mut task: Task, quantum: usize, mut types: TypeRegistry) -> TaskRun {
     types.use_context(task.frames.last().unwrap().revision.program.decoded.types());
     let steps = execute_private_slice(&mut task, quantum, &types);
@@ -651,7 +642,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
     fn private_slice_stops_at_its_granted_budget() {
         let mut vm = Instance::new(division_program(2), ExecutionLimits::default()).unwrap();
         vm.start("default", vec![]).unwrap();

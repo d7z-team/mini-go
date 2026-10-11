@@ -12,10 +12,6 @@ import (
 	"github.com/d7z-team/mini-go/compiler/cache"
 )
 
-func runCLI(args []string, stdout, stderr io.Writer) error {
-	return runCLIContext(context.Background(), args, stdout, stderr)
-}
-
 func runCLIContext(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("mini-go", flag.ContinueOnError)
 	flags.SetOutput(stderr)

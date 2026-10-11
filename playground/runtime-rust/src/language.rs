@@ -1,7 +1,5 @@
 use crate::compiler::CompilerSession;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::{error::RuntimeError, ffi::Cancellation};
-#[cfg(not(target_arch = "wasm32"))]
 use serde_json::{Value, json};
 
 mod sources;
@@ -10,7 +8,6 @@ pub use sources::*;
 pub struct LanguageService {
     pub session: CompilerSession,
 }
-#[cfg(not(target_arch = "wasm32"))]
 impl LanguageService {
     pub async fn new(image: &[u8]) -> Result<Self, RuntimeError> {
         Ok(Self {

@@ -2,7 +2,6 @@
 import {
   RPCStatus,
   bytesCodec,
-  enumCodec,
   lazyCodec,
   localResource,
   mapCodec,
@@ -16,14 +15,10 @@ import {
   type RPCCallOptions,
   type RPCCodec,
   type RPCConnection,
-  type RPCComplex,
   type RPCContract,
   type RPCMethod,
   type RPCProvider,
-  type RPCResource,
-  type RPCResourceDescriptor,
   type RPCServerContext,
-  type RPCValue,
 } from "@d7z-team/mini-go/rpc";
 import * as types from "./types.js";
 
@@ -88,7 +83,7 @@ export function createLaboratoryProvider(handler: LaboratoryHandler): RPCProvide
       case "conformance.service.v1::Laboratory.Echo": {
       if (arguments_.length !== 1)
         throw new RPCStatus("invalid_argument", "invalid MRPC argument count");
-      const argument0 = lazyCodec(() => PacketCodec).decode(arguments_[0]);
+      const argument0 = lazyCodec(() => PacketCodec).decode(arguments_[0]!);
       const result = await handler.echo(context, argument0);
       return [
         lazyCodec(() => PacketCodec).encode(result),
@@ -97,7 +92,7 @@ export function createLaboratoryProvider(handler: LaboratoryHandler): RPCProvide
       case "conformance.service.v1::Laboratory.Tree": {
       if (arguments_.length !== 1)
         throw new RPCStatus("invalid_argument", "invalid MRPC argument count");
-      const argument0 = lazyCodec(() => NodeCodec).decode(arguments_[0]);
+      const argument0 = lazyCodec(() => NodeCodec).decode(arguments_[0]!);
       const result = await handler.tree(context, argument0);
       return [
         lazyCodec(() => NodeCodec).encode(result),
@@ -106,7 +101,7 @@ export function createLaboratoryProvider(handler: LaboratoryHandler): RPCProvide
       case "conformance.service.v1::Laboratory.Open": {
       if (arguments_.length !== 1)
         throw new RPCStatus("invalid_argument", "invalid MRPC argument count");
-      const argument0 = rpcCodecs.int64.decode(arguments_[0]);
+      const argument0 = rpcCodecs.int64.decode(arguments_[0]!);
       const result = await handler.open(context, argument0);
       if (!Array.isArray(result) || result.length !== 2)
         throw new RPCStatus("internal", "MRPC handler returned an invalid result tuple");
@@ -118,7 +113,7 @@ export function createLaboratoryProvider(handler: LaboratoryHandler): RPCProvide
       case "conformance.service.v1::Laboratory.Read": {
       if (arguments_.length !== 1)
         throw new RPCStatus("invalid_argument", "invalid MRPC argument count");
-      const argument0 = localResource(arguments_[0], "1d6e2eea7b022010108295ecb2d1a8f6881b84e976fb096cfdba5de535718e3d", types.CounterResourceDescriptor);
+      const argument0 = localResource(arguments_[0]!, "1d6e2eea7b022010108295ecb2d1a8f6881b84e976fb096cfdba5de535718e3d", types.CounterResourceDescriptor);
       const result = await handler.read(context, argument0);
       return [
         rpcCodecs.int64.encode(result),
@@ -156,7 +151,7 @@ export class LaboratoryClient {
       (values) => {
         if (values.length !== 1)
           throw new RPCStatus("protocol", "invalid MRPC result count");
-        return lazyCodec(() => PacketCodec).decode(values[0]);
+        return lazyCodec(() => PacketCodec).decode(values[0]!);
       },
       options,
     );
@@ -170,7 +165,7 @@ export class LaboratoryClient {
       (values) => {
         if (values.length !== 1)
           throw new RPCStatus("protocol", "invalid MRPC result count");
-        return lazyCodec(() => NodeCodec).decode(values[0]);
+        return lazyCodec(() => NodeCodec).decode(values[0]!);
       },
       options,
     );
@@ -185,8 +180,8 @@ export class LaboratoryClient {
         if (values.length !== 2)
           throw new RPCStatus("protocol", "invalid MRPC result count");
         return [
-          types.CounterClient.from(this.binding, values[0]),
-          lazyCodec(() => types.DetailsCodec).decode(values[1]),
+          types.CounterClient.from(this.binding, values[0]!),
+          lazyCodec(() => types.DetailsCodec).decode(values[1]!),
         ];
       },
       options,
@@ -201,7 +196,7 @@ export class LaboratoryClient {
       (values) => {
         if (values.length !== 1)
           throw new RPCStatus("protocol", "invalid MRPC result count");
-        return rpcCodecs.int64.decode(values[0]);
+        return rpcCodecs.int64.decode(values[0]!);
       },
       options,
     );
@@ -214,7 +209,7 @@ export class LaboratoryClient {
       (values) => {
         if (values.length !== 1)
           throw new RPCStatus("protocol", "invalid MRPC result count");
-        return rpcCodecs.int64.decode(values[0]);
+        return rpcCodecs.int64.decode(values[0]!);
       },
       options,
     );

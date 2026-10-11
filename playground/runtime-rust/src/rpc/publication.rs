@@ -536,7 +536,7 @@ impl PublicationRegistry {
         delivery: &oneshot::Sender<Result<Attachment>>,
     ) -> Result<(String, String)> {
         let context =
-            CallContext::with_deadline(web_time::Instant::now() + self.options.control_timeout);
+            CallContext::with_deadline(std::time::Instant::now() + self.options.control_timeout);
         let client = wire::PublicationClient::bind(
             context.clone(),
             endpoint.as_ref(),

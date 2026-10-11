@@ -90,6 +90,7 @@ func runRuntimeContract(args []string, stderr io.Writer) error {
 	flags := flag.NewFlagSet("runtime-contract", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	output := flags.String("out", "", "generated Rust contract declarations")
+	typeScriptOutput := flags.String("typescript-out", "", "generated TypeScript contract declarations")
 	vectors := flags.String("vectors", "", "canonical wire verification inputs")
 	root := flags.String("root", ".", "repository root")
 	if err := flags.Parse(args); err != nil {
@@ -108,6 +109,15 @@ func runRuntimeContract(args []string, stderr io.Writer) error {
 	}
 	if err := writeGeneratedFile(*output, data); err != nil {
 		return err
+	}
+	if *typeScriptOutput != "" {
+		data, err = runtimecheck.GenerateTypeScriptContract(os.DirFS(*root))
+		if err != nil {
+			return err
+		}
+		if err := writeGeneratedFile(*typeScriptOutput, data); err != nil {
+			return err
+		}
 	}
 	if *vectors != "" {
 		return writeGeneratedFile(*vectors, oracle)

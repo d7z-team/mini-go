@@ -517,7 +517,7 @@ impl<T: Trace> Heap<T> {
         roots: impl IntoIterator<Item = Handle>,
     ) -> Result<usize, RuntimeError> {
         let _collection = self.collection.lock().unwrap();
-        let started = web_time::Instant::now();
+        let started = std::time::Instant::now();
         let (mut scanned, mut traced, mut edges_scanned) = (0u64, 0u64, 0u64);
         let (epoch, mut pending) = {
             let mut directory = self.directory.lock().unwrap();

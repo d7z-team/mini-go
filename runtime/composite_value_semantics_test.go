@@ -22,13 +22,18 @@ func TestNestedStructAssignmentCopiesOnMutation(t *testing.T) {
 
 	left := module.cloneValueForStore(value)
 	right := module.cloneValueForStore(left)
-	updated, err := storeAddressPath(module, right, []ir.AddressPathSegment{
+	cell := newSlot(parentType, module, false)
+	if err := cell.store(right); err != nil {
+		t.Fatal(err)
+	}
+	pointer := newPathPointerValue(intType, "parent.Child.X", cell, []ir.AddressPathSegment{
 		{Kind: "field", Field: "Child"},
 		{Kind: "field", Field: "X"},
-	}, nil, newVMValue(intType, int64(2)))
-	if err != nil {
+	}, nil)
+	if err := storePointer(pointer, newVMValue(intType, int64(2))); err != nil {
 		t.Fatalf("mutate copied struct: %v", err)
 	}
+	updated := cell.load()
 
 	leftChild, err := loadFieldValue(module, left, "Child")
 	if err != nil {

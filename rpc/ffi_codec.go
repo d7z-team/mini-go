@@ -111,30 +111,6 @@ func decodeFFIRequest(data []byte, limits Limits) (ffiRequest, error) {
 	return request, err
 }
 
-func encodeFFIRequest(request ffiRequest) []byte {
-	var encoder wireEncoder
-	encoder.String(request.Version)
-	encoder.String(request.Operation)
-	encoder.String(request.Target)
-	encoder.Uint(request.Lease)
-	encoder.String(request.Contract.Protocol)
-	encoder.Uint(uint64(len(request.Contract.Methods)))
-	for _, method := range request.Contract.Methods {
-		encodeWireMethod(&encoder, method)
-	}
-	encoder.String(request.Options.AffinityKey)
-	encodeWireLabels(&encoder, request.Options.Labels)
-	encodeWireMethod(&encoder, request.Method)
-	encodeWireResource(&encoder, request.Receiver)
-	encoder.Raw(request.Payload)
-	encodeWireResource(&encoder, request.Resource)
-	encoder.Uint(request.RequestID)
-	encoder.String(string(request.Code))
-	encoder.String(request.Message)
-	encoder.Int(request.TimeoutNanos)
-	return encoder.data
-}
-
 func encodeFFIResponse(response ffiResponse) []byte {
 	var encoder wireEncoder
 	encoder.String(response.Version)
@@ -147,45 +123,4 @@ func encodeFFIResponse(response ffiResponse) []byte {
 	encoder.String(string(response.Code))
 	encoder.String(response.Message)
 	return encoder.data
-}
-
-func decodeFFIResponse(data []byte) (ffiResponse, error) {
-	limits := normalizeLimits(Limits{})
-	if len(data) > limits.MaxMessageBytes {
-		return ffiResponse{}, errors.New("MRPC FFI response exceeds message limit")
-	}
-	decoder := newWireDecoder(data, limits.MaxMessageBytes)
-	response := ffiResponse{}
-	var err error
-	response.Version, err = decoder.String()
-	if err == nil {
-		response.Operation, err = decoder.String()
-	}
-	if err == nil {
-		response.Lease, err = decoder.Uint()
-	}
-	if err == nil {
-		response.RequestID, err = decoder.Uint()
-	}
-	if err == nil {
-		response.Method, err = decodeWireMethod(decoder)
-	}
-	if err == nil {
-		response.Receiver, err = decodeWireResource(decoder)
-	}
-	if err == nil {
-		response.Payload, err = decoder.Raw()
-	}
-	var code string
-	if err == nil {
-		code, err = decoder.String()
-		response.Code = Code(code)
-	}
-	if err == nil {
-		response.Message, err = decoder.String()
-	}
-	if err == nil {
-		err = decoder.Done()
-	}
-	return response, err
 }

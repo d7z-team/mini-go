@@ -24,10 +24,6 @@ type endpointAssembly struct {
 	received  int
 }
 
-func encodeEndpointFragment(messageID uint64, total, offset int, data []byte, maxFrameBytes int) ([]byte, error) {
-	return encodeEndpointFragmentTo(nil, messageID, total, offset, data, maxFrameBytes)
-}
-
 func encodeEndpointFragmentTo(dst []byte, messageID uint64, total, offset int, data []byte, maxFrameBytes int) ([]byte, error) {
 	if total <= 0 || offset < 0 || len(data) == 0 || offset > total || len(data) > total-offset || messageID == 0 && (offset != 0 || len(data) != total) {
 		return nil, errors.New("invalid rpc fragment")

@@ -232,7 +232,7 @@ async fn admitted_calls_preserve_caller_deadline_and_cancellation_status() {
         owner
             .invoke(
                 CallContext::with_deadline(
-                    web_time::Instant::now() + std::time::Duration::from_millis(700),
+                    std::time::Instant::now() + std::time::Duration::from_millis(700),
                 ),
                 Call {
                     method: deadline_method,

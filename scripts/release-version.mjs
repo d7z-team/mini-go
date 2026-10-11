@@ -65,7 +65,6 @@ export async function setReleaseVersion(version, repository = process.cwd()) {
     "mini-go",
     "mini-go-rpc-peer-rust",
     "mini-go-tools",
-    "mini-go-wasm",
   ]) {
     const expression = new RegExp(
       `(name = "${name}"\\nversion = ")[^"]+("\\n)`,
@@ -76,7 +75,7 @@ export async function setReleaseVersion(version, repository = process.cwd()) {
   }
   await writeFile(lockPath, lock);
 
-  const npmDirectory = path.join(rust, "runtime-wasm");
+  const npmDirectory = path.join(repository, "playground/runtime-typescript");
   const packagePath = path.join(npmDirectory, "package.json");
   const packageJSON = JSON.parse(await readFile(packagePath, "utf8"));
   if (packageJSON.version !== "0.0.0-dev") {

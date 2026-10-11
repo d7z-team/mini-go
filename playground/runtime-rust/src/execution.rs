@@ -10,7 +10,6 @@ use crate::{
     snapshot::{HostSnapshot, SnapshotLimits},
     value::Value,
 };
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Weak;
 use std::{
     cell::Cell,
@@ -31,13 +30,11 @@ thread_local! {
 /// Bounded native worker pool shared by any number of instances. Instances do
 /// not own threads; closing an executor is an explicit host action after all
 /// attached instances have stopped.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct Executor {
     inner: Arc<ExecutorInner>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct ExecutorInner {
     pool: Arc<crate::executor_pool::Pool>,
     controls: Mutex<Vec<Weak<Control>>>,
@@ -45,7 +42,6 @@ struct ExecutorInner {
     shared: bool,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Executor {
     pub fn new(workers: usize) -> Result<Self, RuntimeError> {
         Ok(Self {
@@ -187,7 +183,6 @@ pub struct InstanceOptions {
     /// Zero selects one. Tasks use the process-wide bounded executor and do
     /// not own operating-system threads.
     pub parallelism: usize,
-    #[cfg(not(target_arch = "wasm32"))]
     pub executor: Option<Executor>,
     #[cfg(test)]
     pub(crate) task_observer: Option<Arc<dyn Fn(u64, bool) + Send + Sync>>,
@@ -202,7 +197,6 @@ impl Default for InstanceOptions {
             clock: Arc::new(crate::environment::SystemClock::default()),
             entropy: Arc::new(crate::environment::SystemEntropy),
             parallelism: 1,
-            #[cfg(not(target_arch = "wasm32"))]
             executor: None,
             #[cfg(test)]
             task_observer: None,
@@ -261,7 +255,6 @@ impl Record {
 
 struct State {
     machine: Option<Instance>,
-    #[cfg(not(target_arch = "wasm32"))]
     batch: Option<crate::instance::task_runner::TaskBatch>,
     supervisor_waiting: bool,
     records: BTreeMap<u64, Arc<Record>>,
@@ -271,18 +264,14 @@ struct State {
 struct Control {
     state: Mutex<State>,
     wake: Arc<Wake>,
-    #[cfg(not(target_arch = "wasm32"))]
     supervised: bool,
     closing: AtomicBool,
     control_waiters: AtomicUsize,
     handles: AtomicUsize,
     pause: Arc<AtomicBool>,
     close_sender: std::sync::mpsc::Sender<Arc<Control>>,
-    #[cfg(not(target_arch = "wasm32"))]
     parallelism: usize,
-    #[cfg(not(target_arch = "wasm32"))]
     task_observer: Option<Arc<dyn Fn(u64, bool) + Send + Sync>>,
-    #[cfg(not(target_arch = "wasm32"))]
     executor: Executor,
 }
 
@@ -444,7 +433,6 @@ struct Owner {
     records: BTreeMap<u64, Arc<Record>>,
     notify: bool,
     shutdown: Option<Result<(), RuntimeError>>,
-    #[cfg(not(target_arch = "wasm32"))]
     batch: Option<crate::instance::task_runner::TaskBatch>,
 }
 
@@ -462,7 +450,6 @@ impl Owner {
 
     fn acquire_raw(control: &Arc<Control>) -> Result<Self, RuntimeError> {
         let mut state = control.state.lock().unwrap();
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(batch) = state.batch.as_mut() {
             let Some(runs) = batch.try_complete()? else {
                 return Err(RuntimeError::new(
@@ -485,7 +472,6 @@ impl Owner {
             records: std::mem::take(&mut state.records),
             notify: false,
             shutdown: None,
-            #[cfg(not(target_arch = "wasm32"))]
             batch: None,
         })
     }
@@ -502,11 +488,6 @@ impl Owner {
                 "synchronous VM reentry is not allowed",
             ));
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            Self::acquire_raw(control)
-        }
-        #[cfg(not(target_arch = "wasm32"))]
         {
             control.control_waiters.fetch_add(1, Ordering::AcqRel);
             // A supervised instance may be asleep in its executor or have
@@ -593,7 +574,6 @@ impl Owner {
                 "execution is no longer active",
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
         let status = machine.poll_parallel(
             count,
             self.control.parallelism,
@@ -601,8 +581,6 @@ impl Owner {
             &self.control.control_waiters,
             self.control.task_observer.as_ref(),
         );
-        #[cfg(target_arch = "wasm32")]
-        let status = machine.poll_steps(count);
         let steps = machine.last_poll_steps;
         if record.cancellation.is_cancelled() {
             record.refresh(machine);
@@ -651,7 +629,6 @@ impl Drop for Owner {
     fn drop(&mut self) {
         OWNER_DEPTH.with(|depth| depth.set(depth.get() - 1));
         let mut machine = self.machine.take().unwrap();
-        #[cfg(not(target_arch = "wasm32"))]
         if self.batch.is_some() {
             let mut state = self.control.state.lock().unwrap();
             state.records = std::mem::take(&mut self.records);
@@ -694,7 +671,6 @@ impl Drop for Owner {
         state.stats = machine.stats();
         state.records = std::mem::take(&mut self.records);
         state.machine = Some(machine);
-        #[cfg(not(target_arch = "wasm32"))]
         {
             debug_assert!(state.batch.is_none());
             state.batch = self.batch.take();
@@ -714,18 +690,15 @@ impl Drop for Owner {
 }
 
 impl SharedInstance {
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(program: Arc<Program>, limits: ExecutionLimits) -> Result<Self, RuntimeError> {
         Self::from_machine(Instance::new(program, limits)?)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_machine(mut machine: Instance) -> Result<Self, RuntimeError> {
         machine.initialize_root(&Cancellation::default())?;
         Self::attach(machine, true, 1, Executor::shared()?, None)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_machine_with_options(
         mut machine: Instance,
         parallelism: usize,
@@ -756,21 +729,14 @@ impl SharedInstance {
                 "root initialization must complete before attaching a driver",
             ));
         }
-        Self::attach(
-            machine,
-            false,
-            1,
-            #[cfg(not(target_arch = "wasm32"))]
-            Executor::shared()?,
-            None,
-        )
+        Self::attach(machine, false, 1, Executor::shared()?, None)
     }
 
     fn attach(
         machine: Instance,
         supervised: bool,
         parallelism: usize,
-        #[cfg(not(target_arch = "wasm32"))] executor: Executor,
+        executor: Executor,
         task_observer: Option<Arc<dyn Fn(u64, bool) + Send + Sync>>,
     ) -> Result<Self, RuntimeError> {
         let wake = machine.wake();
@@ -781,29 +747,22 @@ impl SharedInstance {
                 supervisor_waiting: false,
                 stats: machine.stats(),
                 machine: Some(machine),
-                #[cfg(not(target_arch = "wasm32"))]
                 batch: None,
                 records: BTreeMap::new(),
                 shutdown: None,
             }),
             wake,
-            #[cfg(not(target_arch = "wasm32"))]
             supervised,
             closing: AtomicBool::new(false),
             control_waiters: AtomicUsize::new(0),
             handles: AtomicUsize::new(1),
             pause,
             close_sender,
-            #[cfg(not(target_arch = "wasm32"))]
             parallelism: parallelism.max(1),
-            #[cfg(not(target_arch = "wasm32"))]
             task_observer,
-            #[cfg(not(target_arch = "wasm32"))]
             executor,
         });
-        #[cfg(not(target_arch = "wasm32"))]
         control.executor.register(&control)?;
-        #[cfg(not(target_arch = "wasm32"))]
         if supervised {
             use crate::executor_pool::Next;
             use std::task::Wake as _;
@@ -896,10 +855,6 @@ impl SharedInstance {
                 .wake
                 .set_supervisor(std::task::Waker::from(job.clone()));
             job.wake_by_ref();
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (supervised, parallelism, task_observer, close_receiver);
         }
         Ok(Self { control })
     }
@@ -1064,7 +1019,6 @@ impl SharedInstance {
         self.control.wake.clone()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn shutdown(&self, wait: &Cancellation) -> Result<(), RuntimeError> {
         self.begin_shutdown();
         loop {
@@ -1131,7 +1085,6 @@ impl Execution {
         self.record.settled.load(Ordering::Acquire)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn wait_scope(&self, cancellation: &Cancellation) -> Result<(), RuntimeError> {
         loop {
             let observed = self.control.wake.epoch();
@@ -1185,7 +1138,6 @@ impl Execution {
             .ok_or_else(|| RuntimeError::new("pending", "result", "execution has not completed"))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn wait(&self, cancellation: &Cancellation) -> Result<Arc<HostSnapshot>, RuntimeError> {
         loop {
             let observed = self.control.wake.epoch();
@@ -1213,7 +1165,7 @@ impl Execution {
     }
 }
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::instance::test_helpers::slot_code;

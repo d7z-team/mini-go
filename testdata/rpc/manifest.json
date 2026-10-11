@@ -44,37 +44,37 @@
       "oracle": "MRPC catalog and generator"
     },
     "generated/typescript/service.ts": {
-      "sha256": "db968733c506ff5b76d1e11c73cd437d3bbde5bfb2fb4835a3477035ea7abfd4",
+      "sha256": "1c46a744613f30f27eae430cfb7d4a7d1c3bd0e7e9a5baac2bbca0fe70c71693",
       "kind": "binding",
       "source": "schema/",
       "oracle": "MRPC catalog and generator"
     },
     "generated/typescript/types.ts": {
-      "sha256": "b8b7d192108fd5693871425a2147979cf10757e71f9a05716c24f7063ac87acb",
+      "sha256": "92d469053fc8ade96fe632f8b759095e400641272c131955112c4facce1c2a5b",
       "kind": "binding",
       "source": "schema/",
       "oracle": "MRPC catalog and generator"
     },
     "images/call.json.gz": {
-      "sha256": "28930e333ac9b8abce1c429514da14cafb0a7d8caffb2541ac03faa641467732",
+      "sha256": "bffbc2dbefcbd41a5e988378ff243c669a49102ade143c6eb39b0d209f8b0f4f",
       "kind": "image",
       "source": "source/call",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "db3a4d473a2eb8034ad3f0b089d376f76a00456e0acd2e58ccd6d4be9ebdf868"
+      "compiler_id": "ba8fcd212c5209a58b9985239f9fbc9e4e89a8c7cdd475deb4fdd0c07e82f275"
     },
     "images/provider-patch.json.gz": {
-      "sha256": "92da01acf75e4d85b5324cd338b81b2625d68e8adffd003b44cf71e6e7214d73",
+      "sha256": "bd4136753deac4a589a2bfb65123ca0a39913ccfabb7467f00d2e1c6d95f002f",
       "kind": "image",
       "source": "source/provider",
       "oracle": "unoptimized revision with the same RPC contract",
-      "compiler_id": "db3a4d473a2eb8034ad3f0b089d376f76a00456e0acd2e58ccd6d4be9ebdf868"
+      "compiler_id": "ba8fcd212c5209a58b9985239f9fbc9e4e89a8c7cdd475deb4fdd0c07e82f275"
     },
     "images/provider.json.gz": {
-      "sha256": "560e5455b1afbc66e8fea15bb690826ad26fe44d19758fb1cf1ddf0c7c7ce0b1",
+      "sha256": "5e0416f7ce1887c305c829eb3f9b54548343c2bafc1c0433e5119e92d56b48e7",
       "kind": "image",
       "source": "source/provider",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "db3a4d473a2eb8034ad3f0b089d376f76a00456e0acd2e58ccd6d4be9ebdf868"
+      "compiler_id": "ba8fcd212c5209a58b9985239f9fbc9e4e89a8c7cdd475deb4fdd0c07e82f275"
     },
     "package.json": {
       "sha256": "609158e6c5fbc237939fa3ddf7faab80ab690bdc0c8d584414a885130103c4e8",

@@ -212,7 +212,7 @@ test("Make consumes prepared artifacts and uses Cargo's target directory for pee
   );
 });
 
-test("Make packs the completed SDK build and preserves shared caches during clean", async (t) => {
+test("Make prepares compiler assets before packing TypeScript and preserves shared caches", async (t) => {
   const context = await fixture(t);
   await copyFile(
     path.join(repository, "Makefile"),
@@ -229,24 +229,43 @@ test("Make packs the completed SDK build and preserves shared caches during clea
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, "fixture");
   }
-  await mkdir(
-    path.join(context.directory, "playground/runtime-rust/runtime-wasm"),
+  await mkdir(path.join(context.directory, "playground/runtime-typescript"));
+  context.env.FAKE_GOROOT = path.join(context.directory, "go-root");
+  await mkdir(path.join(context.env.FAKE_GOROOT, "lib/wasm"), { recursive: true });
+  await writeFile(path.join(context.env.FAKE_GOROOT, "lib/wasm/wasm_exec.js"), "fixture");
+  await tool(
+    context,
+    "go",
+    `if (args[0] === 'env' && args[1] === 'GOROOT') console.log(process.env.FAKE_GOROOT);
+if (args[0] === 'build') {
+  const output = args[args.indexOf('-o') + 1];
+  fs.mkdirSync(require('node:path').dirname(output), {recursive: true});
+  fs.writeFileSync(output, 'fixture');
+}`,
   );
-  await tool(context, "go", "");
   await tool(context, "npm", "");
-  const result = spawnSync("make", ["pack-wasm", "clean"], {
+  const result = spawnSync("make", ["pack-typescript", "clean"], {
     cwd: context.directory,
     env: context.env,
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
-  const commands = (await context.commands()).filter(
+  const allCommands = await context.commands();
+  assert.ok(
+    allCommands.some(
+      ({ tool, args }) =>
+        tool === "go" &&
+        args[0] === "build" &&
+        args.includes("./cmd/mini-go-compiler-wasm"),
+    ),
+  );
+  const commands = allCommands.filter(
     ({ tool }) => tool === "npm",
   );
   assert.deepEqual(
     commands.map(({ args }) => args),
     [
-      ["--prefix", "playground/runtime-rust/runtime-wasm", "run", "build"],
+      ["--prefix", "playground/runtime-typescript", "run", "build"],
       [
         "pack",
         "--ignore-scripts",

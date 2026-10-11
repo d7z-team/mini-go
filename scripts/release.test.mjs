@@ -65,15 +65,18 @@ test("release manifest rewrite keeps Cargo and npm versions aligned", async (t) 
   );
   t.after(() => rm(repository, { recursive: true, force: true }));
   const source = path.resolve(scripts, "../playground/runtime-rust");
+  const sourceTypescript = path.resolve(scripts, "../playground/runtime-typescript");
   const destination = path.join(repository, "playground/runtime-rust");
-  await mkdir(path.join(destination, "runtime-wasm"), { recursive: true });
+  const typescript = path.join(repository, "playground/runtime-typescript");
+  await mkdir(destination, { recursive: true });
+  await mkdir(typescript, { recursive: true });
   for (const file of ["Cargo.toml", "Cargo.lock"]) {
     await cp(path.join(source, file), path.join(destination, file));
   }
   for (const file of ["package.json", "package-lock.json"]) {
     await cp(
-      path.join(source, "runtime-wasm", file),
-      path.join(destination, "runtime-wasm", file),
+      path.join(sourceTypescript, file),
+      path.join(typescript, file),
     );
   }
   const version = "0.0.42-git.g123abcd";
@@ -100,7 +103,7 @@ test("release manifest rewrite keeps Cargo and npm versions aligned", async (t) 
     await readFile(
       path.join(
         repository,
-        "playground/runtime-rust/runtime-wasm/package.json",
+        "playground/runtime-typescript/package.json",
       ),
       "utf8",
     ),
@@ -109,7 +112,7 @@ test("release manifest rewrite keeps Cargo and npm versions aligned", async (t) 
     await readFile(
       path.join(
         repository,
-        "playground/runtime-rust/runtime-wasm/package-lock.json",
+        "playground/runtime-typescript/package-lock.json",
       ),
       "utf8",
     ),
@@ -122,7 +125,6 @@ test("release manifest rewrite keeps Cargo and npm versions aligned", async (t) 
     "mini-go",
     "mini-go-tools",
     "mini-go-rpc-peer-rust",
-    "mini-go-wasm",
   ]) {
     assert.ok(lock.includes(`name = "${name}"\nversion = "${version}"`));
   }

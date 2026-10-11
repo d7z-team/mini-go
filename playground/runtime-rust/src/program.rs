@@ -235,7 +235,6 @@ impl Program {
     pub fn types(&self) -> &crate::types::TypeRegistry {
         self.decoded.types()
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn instantiate(
         self: &Arc<Self>,
         options: crate::execution::InstanceOptions,

@@ -9,8 +9,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
-use web_time::Instant;
 
 pub trait UnaryInvoker: Send + Sync {
     fn invoke(&self, context: CallContext, call: Call) -> BoxFuture<'_, Result<PendingResult>>;
@@ -677,16 +677,6 @@ impl ffi::Session for Session {
     }
     fn shutdown(&self, wait: ffi::Cancellation) -> std::result::Result<(), RuntimeError> {
         self.0.closing.cancel();
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = wait;
-            Err(RuntimeError::new(
-                "async_required",
-                "$rpc",
-                "RPC cleanup must be awaited",
-            ))
-        }
-        #[cfg(not(target_arch = "wasm32"))]
         {
             let context = CallContext {
                 cancellation: wait,
@@ -708,7 +698,6 @@ impl ffi::Session for Session {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn blocking_wait<F: std::future::Future>(future: F) -> F::Output {
     struct ThreadWake(std::thread::Thread);
     impl std::task::Wake for ThreadWake {
@@ -731,12 +720,10 @@ fn blocking_wait<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// Bounds VM work hosted by an asynchronous application. Running work owns its permit.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct VmExecutor {
     runtime: Handle,
     slots: Arc<Semaphore>,
 }
-#[cfg(not(target_arch = "wasm32"))]
 impl VmExecutor {
     pub fn new(runtime: Handle, capacity: usize) -> Result<Self> {
         if capacity == 0 {

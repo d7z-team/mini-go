@@ -3,7 +3,6 @@ use crate::{
     execution::{Execution, ExecutionState, SharedInstance},
     instance::debug::{EventKind, FrameRef, StepMode, VariableRef},
 };
-#[cfg(not(target_arch = "wasm32"))]
 use crate::{
     ffi::Cancellation,
     instance::{ExecutionLimits, Instance},
@@ -88,7 +87,6 @@ impl DebugSession {
     pub fn output(&self) -> OutputSink {
         self.output.clone()
     }
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn launch(
         &mut self,
         image: &[u8],
@@ -400,21 +398,16 @@ impl DebugSession {
         if let Some(target) = self.target.take()
             && self.owned
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                if self.external {
-                    target.begin_shutdown();
-                    while target.shutdown_result().is_none() {
-                        if target.drive(4096).is_err() {
-                            break;
-                        }
+            if self.external {
+                target.begin_shutdown();
+                while target.shutdown_result().is_none() {
+                    if target.drive(4096).is_err() {
+                        break;
                     }
-                } else {
-                    let _ = target.shutdown(&Cancellation::default());
                 }
+            } else {
+                let _ = target.shutdown(&Cancellation::default());
             }
-            #[cfg(target_arch = "wasm32")]
-            target.begin_shutdown();
         }
         self.frames.clear();
         self.variables.clear();

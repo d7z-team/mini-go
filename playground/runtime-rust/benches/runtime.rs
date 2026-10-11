@@ -513,49 +513,63 @@ fn main() {
         1000,
         false,
     );
-    for indirect in [false, true] {
-        let mut artifact = tiny_artifact.clone();
-        if indirect {
-            artifact["type_table"] = json!({"nodes":[{"id":"callable","kind":mini_go::contract_generated::Function,"signature":{"params":[{"type":integer}],"results":[integer]}}]});
-            let code = &mut artifact["functions"][0]["code"];
-            code["types"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"kind":mini_go::contract_generated::Function,"node":"callable"}));
-            code["descriptors"]["closure"] = json!([{"function":"Id"}]);
-            code["operands"][0]["inputs"] = json!([[0, 1], [2, 0]]);
-            code["operands"][2]["release"] = json!([1]);
-            code["operands"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"outputs":[1]}));
-            let body = code["instructions"].as_array_mut().unwrap();
-            for instruction in body.iter_mut().step_by(2).take(1000) {
-                *instruction = operation("call_value", 0, 0);
-            }
-            body.insert(0, operation("make_closure", 0, 3));
-        } else {
-            let mut target = artifact["functions"][1].clone();
-            target["id"] = json!("TailTarget");
-            artifact["functions"].as_array_mut().unwrap().push(target);
-            artifact["functions"][1]["code"] = json!({
-                "types":[integer],
-                "instructions":[operation("load_local",0,0),operation("tail_call_direct",0,1)],
-                "descriptors":{"local":[{"local":"n"}],"call":[{"function":"TailTarget","arg_count":1,"result_count":1}]},
-                "operands":[{"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]
-            });
-        }
-        run(
-            if indirect {
-                "tiny-indirect-call"
-            } else {
-                "tiny-tail-call"
-            },
-            &support::image(artifact),
-            1000,
-            false,
-        );
+    let mut nested_call = tiny_artifact.clone();
+    let mut target = nested_call["functions"][1].clone();
+    target["id"] = json!("CallTarget");
+    nested_call["functions"]
+        .as_array_mut()
+        .unwrap()
+        .push(target);
+    nested_call["functions"][1]["code"] = json!({
+        "types":[integer],
+        "instructions":[operation("call_direct",0,0),operation("return",0,1)],
+        "descriptors":{"call":[{"function":"CallTarget","arg_count":1,"result_count":1}],"return":[{"result_count":1}]},
+        "operands":[{"inputs":[[2,0]],"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]
+    });
+    run(
+        "tiny-nested-call",
+        &support::image(nested_call),
+        1000,
+        false,
+    );
+
+    let mut tail_call = tiny_artifact.clone();
+    let mut target = tail_call["functions"][1].clone();
+    target["id"] = json!("TailTarget");
+    tail_call["functions"].as_array_mut().unwrap().push(target);
+    tail_call["functions"][1]["code"] = json!({
+        "types":[integer],
+        "instructions":[operation("load_local",0,0),operation("tail_call_direct",0,1)],
+        "descriptors":{"local":[{"local":"n"}],"call":[{"function":"TailTarget","arg_count":1,"result_count":1}]},
+        "operands":[{"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]
+    });
+    run("tiny-tail-call", &support::image(tail_call), 1000, false);
+
+    let mut indirect_call = tiny_artifact.clone();
+    indirect_call["type_table"] = json!({"nodes":[{"id":"callable","kind":mini_go::contract_generated::Function,"signature":{"params":[{"type":integer}],"results":[integer]}}]});
+    let code = &mut indirect_call["functions"][0]["code"];
+    code["types"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"kind":mini_go::contract_generated::Function,"node":"callable"}));
+    code["descriptors"]["closure"] = json!([{"function":"Id"}]);
+    code["operands"][0]["inputs"] = json!([[0, 1], [2, 0]]);
+    code["operands"][2]["release"] = json!([1]);
+    code["operands"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"outputs":[1]}));
+    let body = code["instructions"].as_array_mut().unwrap();
+    for instruction in body.iter_mut().step_by(2).take(1000) {
+        *instruction = operation("call_value", 0, 0);
     }
+    body.insert(0, operation("make_closure", 0, 3));
+    run(
+        "tiny-indirect-call",
+        &support::image(indirect_call),
+        1000,
+        false,
+    );
     for fused in [false, true] {
         let mut body = vec![operation("label", 0, 0), operation("binary", 0, 1)];
         if !fused {

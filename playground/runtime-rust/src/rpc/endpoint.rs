@@ -11,8 +11,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
-use web_time::Instant;
 
 /// Read and write transfer complete physical fragments; close wakes both directions.
 pub trait MessageConn: Send + Sync {

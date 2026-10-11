@@ -193,10 +193,7 @@ pub struct Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
         let _ = self.close();
-        #[cfg(target_arch = "wasm32")]
-        self.begin_close();
     }
 }
 
@@ -352,7 +349,6 @@ impl Instance {
     }
 
     /// Complete root initialization before publishing an instance to callers.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn initialize_root(&mut self, cancellation: &Cancellation) -> Result<(), RuntimeError> {
         loop {
             let observed = self.wake.epoch();
@@ -671,7 +667,6 @@ impl Instance {
         self.poll(count, false)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn poll_parallel(
         &mut self,
         count: usize,
@@ -767,7 +762,6 @@ impl Instance {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start_background_task_batch(
         &mut self,
         parallelism: usize,
@@ -797,7 +791,6 @@ impl Instance {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn merge_parallel_runs(&mut self, runs: Vec<task_runner::TaskRun>) -> usize {
         let mut progressed = 0usize;
         for mut run in runs {
@@ -810,7 +803,6 @@ impl Instance {
         progressed
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn take_task_batch(
         &mut self,
         parallelism: usize,
@@ -1381,7 +1373,6 @@ impl Instance {
         self.collect_at_boundary().map(|_| ())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn close(&mut self) -> Result<(), RuntimeError> {
         self.begin_close();
         let waker = std::task::Waker::from(self.wake.clone());

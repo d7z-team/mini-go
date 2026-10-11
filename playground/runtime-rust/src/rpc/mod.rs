@@ -6,7 +6,7 @@ mod contract;
 #[path = "control_generated.rs"]
 pub mod control;
 mod endpoint;
-#[cfg(all(feature = "rpc-gateway", not(target_arch = "wasm32")))]
+#[cfg(feature = "rpc-gateway")]
 pub mod gateway;
 mod guest;
 mod host;

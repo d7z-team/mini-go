@@ -19,7 +19,8 @@ done
 manifest="$output/release.json"
 test -f "$manifest"
 version=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.version)' "$manifest")
-expected_compiler=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.compilerSHA256)' "$manifest")
+expected_runtime_compiler=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.runtimeCompilerSHA256)' "$manifest")
+expected_typescript_compiler=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.typescriptCompilerSHA256)' "$manifest")
 runtime_crate="$output/mini-go-$version.crate"
 npm_tarball="$output/d7z-team-mini-go-$version.tgz"
 source_root="$output/source"
@@ -38,13 +39,13 @@ if ! grep -q '/LICENSE-Go$' "$output/mini-go.files"; then
 	echo "mini-go crate is missing the Go license" >&2
 	exit 1
 fi
-if grep -Eq '/(tests|target|node_modules|sdk)/' "$output/npm.files"; then
+if grep -Eq '/(tests|target|node_modules|src)/' "$output/npm.files"; then
 	echo "npm tarball contains development files" >&2
 	exit 1
 fi
-if [[ $(grep -c '^package/dist/tools/compiler\.json\.gz$' "$output/npm.files") -ne 1 ]] ||
-	[[ $(grep -c '^package/dist/wasm/mini_go_wasm_bg\.wasm$' "$output/npm.files") -ne 1 ]]; then
-	echo "npm tarball is missing its compiler or WASM runtime" >&2
+if [[ $(grep -c '^package/dist/compiler/mini-go-compiler\.wasm$' "$output/npm.files") -ne 1 ]] ||
+	[[ $(grep -c '^package/dist/compiler/wasm_exec\.js$' "$output/npm.files") -ne 1 ]]; then
+	echo "npm tarball is missing its Go compiler assets" >&2
 	exit 1
 fi
 if ! grep -q '^package/LICENSE-Go$' "$output/npm.files"; then
@@ -62,9 +63,9 @@ node -e 'const value=require(process.argv[1]);if(value.version!==process.argv[2]
 	"$temporary/npm/package/package.json" "$version"
 runtime="$temporary/mini-go-$version"
 runtime_compiler=$(sha256sum "$runtime/assets/compiler.json.gz" | cut -d ' ' -f 1)
-npm_compiler=$(sha256sum "$temporary/npm/package/dist/tools/compiler.json.gz" | cut -d ' ' -f 1)
-if [[ "$runtime_compiler" != "$expected_compiler" || "$npm_compiler" != "$expected_compiler" ]]; then
-	echo "distributed compiler images do not match the release image" >&2
+typescript_compiler=$(sha256sum "$temporary/npm/package/dist/compiler/mini-go-compiler.wasm" | cut -d ' ' -f 1)
+if [[ "$runtime_compiler" != "$expected_runtime_compiler" || "$typescript_compiler" != "$expected_typescript_compiler" ]]; then
+	echo "distributed compiler artifacts do not match the release manifest" >&2
 	exit 1
 fi
 
@@ -119,14 +120,8 @@ consumer_target=${CARGO_TARGET_DIR:-"$output/cargo-target"}
 CARGO_TARGET_DIR="$consumer_target" cargo generate-lockfile --manifest-path "$consumer/Cargo.toml"
 CARGO_TARGET_DIR="$consumer_target" cargo run --release --manifest-path "$consumer/Cargo.toml" --locked
 
-fixtures=${MINIGO_WASM_FIXTURES:-"$output/cargo-target/wasm-fixtures"}
-if [[ ! -f "$fixtures/answer.json" ]]; then
-	make -C "$source_root" artifacts
-	MINIGO_WASM_FIXTURES="$fixtures" CARGO_TARGET_DIR="$consumer_target" \
-		cargo test --manifest-path "$source_root/playground/runtime-rust/Cargo.toml" --locked --test wasm_driver
-fi
-MINIGO_PACKAGE_TARBALL="$npm_tarball" MINIGO_WASM_FIXTURES="$fixtures" \
-	node --test "$source_root/playground/runtime-rust/runtime-wasm/tests/package.test.js"
+MINIGO_PACKAGE_TARBALL="$npm_tarball" \
+	node --test "$source_root/playground/runtime-typescript/tests/package.test.js"
 npm publish "$npm_tarball" --dry-run --tag git --access public >/dev/null
 
 echo "Verified Mini-Go $version release artifacts"
