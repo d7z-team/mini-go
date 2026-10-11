@@ -8,7 +8,7 @@
   },
   "files": {
     "images/call.json.gz": {
-      "sha256": "1e5a8e335ee6e16da51b3d2feed1a0de5855ade9fe860da6a660992f016c03f3",
+      "sha256": "7f862d6e93820d489b7a9c4bcb95b829a4b2f613e40c381f6a0e28400af611d0",
       "kind": "image",
       "source": "source/call",
       "oracle": "independent Go and Rust execution",

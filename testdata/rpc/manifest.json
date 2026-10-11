@@ -56,21 +56,21 @@
       "oracle": "MRPC catalog and generator"
     },
     "images/call.json.gz": {
-      "sha256": "bffbc2dbefcbd41a5e988378ff243c669a49102ade143c6eb39b0d209f8b0f4f",
+      "sha256": "f0b5121f780b6a9e6ff3e6558d858d09ecc9091526912ba71d63ac83472a79fa",
       "kind": "image",
       "source": "source/call",
       "oracle": "independent Go and Rust execution",
       "compiler_id": "ba8fcd212c5209a58b9985239f9fbc9e4e89a8c7cdd475deb4fdd0c07e82f275"
     },
     "images/provider-patch.json.gz": {
-      "sha256": "bd4136753deac4a589a2bfb65123ca0a39913ccfabb7467f00d2e1c6d95f002f",
+      "sha256": "b73bbdd3aa81ae35f84235c6e5b05ad1d4e243736db5056a9512a072719a500a",
       "kind": "image",
       "source": "source/provider",
       "oracle": "unoptimized revision with the same RPC contract",
       "compiler_id": "ba8fcd212c5209a58b9985239f9fbc9e4e89a8c7cdd475deb4fdd0c07e82f275"
     },
     "images/provider.json.gz": {
-      "sha256": "5e0416f7ce1887c305c829eb3f9b54548343c2bafc1c0433e5119e92d56b48e7",
+      "sha256": "6db256ef860ee4531463d1f90c9e133e3735bc4f6dc8f524fcc63c7cbf16134b",
       "kind": "image",
       "source": "source/provider",
       "oracle": "independent Go and Rust execution",

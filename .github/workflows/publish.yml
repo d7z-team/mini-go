@@ -102,6 +102,7 @@ jobs:
           cache-dependency-path: playground/runtime-typescript/package-lock.json
       - run: make deps
       - run: npm exec --prefix playground/runtime-typescript -- playwright install --with-deps chromium firefox
+      - run: make artifacts
       - run: make test-typescript
 
   plan:
