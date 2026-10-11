@@ -1,143 +1,89 @@
 //! Canonical serialization for the current Go-produced runtime contract.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufWriter, Write};
 use std::ops::{Deref, DerefMut};
 
-pub(crate) trait GoObject {
-    fn merge<'de, A: serde::de::MapAccess<'de>>(&mut self, map: &mut A) -> Result<(), A::Error>;
-}
+struct UniqueJson;
 
-pub(crate) struct GoObjectSeed<'a, T>(pub &'a mut T);
+impl<'de> Deserialize<'de> for UniqueJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueJson;
 
-impl<'de, T: GoObject> serde::de::DeserializeSeed<'de> for GoObjectSeed<'_, T> {
-    type Value = ();
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-impl<'de, T: GoObject> serde::de::Visitor<'de> for GoObjectSeed<'_, T> {
-    type Value = ();
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("object or null")
-    }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
-        Ok(())
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        self.0.merge(&mut map)
-    }
-}
-
-pub(crate) struct GoPointerSeed<'a, T>(pub &'a mut Option<Box<T>>);
-impl<'de, T: GoObject + Default> serde::de::DeserializeSeed<'de> for GoPointerSeed<'_, T> {
-    type Value = ();
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-impl<'de, T: GoObject + Default> serde::de::Visitor<'de> for GoPointerSeed<'_, T> {
-    type Value = ();
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("object or null")
-    }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
-        *self.0 = None;
-        Ok(())
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        self.0.get_or_insert_with(Default::default).merge(&mut map)
-    }
-}
-
-pub(crate) struct GoMapSeed<'a, T>(pub &'a mut Option<BTreeMap<String, T>>);
-impl<'de, T: Deserialize<'de>> serde::de::DeserializeSeed<'de> for GoMapSeed<'_, T> {
-    type Value = ();
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for GoMapSeed<'_, T> {
-    type Value = ();
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("map or null")
-    }
-    fn visit_unit<E: serde::de::Error>(self) -> Result<(), E> {
-        *self.0 = None;
-        Ok(())
-    }
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        let values = self.0.get_or_insert_with(BTreeMap::new);
-        while let Some((key, value)) = map.next_entry()? {
-            values.insert(key, value);
-        }
-        Ok(())
-    }
-}
-
-macro_rules! go_field {
-    (raw, $field:expr, $map:expr) => {
-        $field = Some($map.next_value()?)
-    };
-    (scalar, $field:expr, $map:expr) => {
-        if let Some(value) = $map.next_value()? {
-            $field = value;
-        }
-    };
-    (object, $field:expr, $map:expr) => {
-        $map.next_value_seed(crate::contract::GoObjectSeed(&mut $field))?
-    };
-    (pointer, $field:expr, $map:expr) => {
-        $map.next_value_seed(crate::contract::GoPointerSeed(&mut $field))?
-    };
-    (map, $field:expr, $map:expr) => {
-        $map.next_value_seed(crate::contract::GoMapSeed(&mut $field))?
-    };
-    (value, $field:expr, $map:expr) => {
-        $field = $map.next_value()?
-    };
-}
-pub(crate) use go_field;
-
-macro_rules! go_object {
-    ($model:ident { $($field:ident: $json:literal => $kind:ident),* $(,)? }) => {
-        impl<'de> serde::Deserialize<'de> for $model {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                let mut value = Self::default();
-                serde::de::DeserializeSeed::deserialize(crate::contract::GoObjectSeed(&mut value), deserializer)?;
-                Ok(value)
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON value without duplicate object keys")
             }
-        }
-        impl crate::contract::GoObject for $model {
-            fn merge<'de, A: serde::de::MapAccess<'de>>(&mut self, map: &mut A) -> Result<(), A::Error> {
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_string<E: serde::de::Error>(self, _: String) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueJson)
+            }
+            fn visit_some<D: serde::Deserializer<'de>>(
+                self,
+                value: D,
+            ) -> Result<Self::Value, D::Error> {
+                UniqueJson::deserialize(value)
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence.next_element::<UniqueJson>()?.is_some() {}
+                Ok(UniqueJson)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut seen = HashSet::new();
                 while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        $(key if crate::contract::go_field_matches(key, $json) => { crate::contract::go_field!($kind, self.$field, map); },)*
-                        _ => return Err(serde::de::Error::unknown_field(&key, &[$($json),*])),
+                    if !seen.insert(key.clone()) {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate object key {key:?}"
+                        )));
                     }
+                    map.next_value::<UniqueJson>()?;
                 }
-                Ok(())
+                Ok(UniqueJson)
             }
         }
-    };
-}
-pub(crate) use go_object;
-
-pub(crate) fn go_field_matches(key: &str, expected: &str) -> bool {
-    if key.is_ascii() {
-        return key.eq_ignore_ascii_case(expected);
+        deserializer.deserialize_any(Visitor)
     }
-    key.chars()
-        .map(|character| match character {
-            'K' => 'k',
-            'ſ' => 's',
-            character => character.to_ascii_lowercase(),
-        })
-        .eq(expected
-            .chars()
-            .map(|character| character.to_ascii_lowercase()))
+}
+
+/// Decodes the current wire schema with exact field names and globally unique
+/// object keys. Generated models additionally reject unknown and duplicate fields.
+pub fn strict_json_from_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
+    serde_json::from_slice::<UniqueJson>(bytes)?;
+    serde_json::from_slice(bytes)
+}
+
+pub fn strict_json_from_str<T: DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
+    strict_json_from_slice(text.as_bytes())
 }
 
 /// Go's wire contract distinguishes nil slices from allocated empty slices.

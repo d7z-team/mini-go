@@ -119,7 +119,7 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 ```
 
 准备失败保持原状态；提交遇到 `busy` 或 stale plan 时重新准备。已有帧、defer 和闭包继续引用旧 revision，
-新命名调用进入新 revision，兼容 globals 保持状态。改变状态契约时创建新实例并迁移数据。
+新命名调用进入新 revision；identity 与 layout 均匹配的 globals 保持状态。改变状态结构时创建新实例并显式转移数据。
 服务替换见 [RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#服务替换与关闭)。
 
 ## 本地源码与编译器工具

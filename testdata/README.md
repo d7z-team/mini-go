@@ -17,13 +17,18 @@
 
 ## 运行时一致性数据
 
-Go、Rust 和 TypeScript 独立验证 `runtime/` 中的执行结果与生命周期：
+`runtime/` 按事实 owner 与消费方分工，避免用不同宿主的分配实现互相套用：
 
-| 输入 | 用途 |
-| --- | --- |
-| `source/`、`execution_expected.json` | 源程序与手写预期，生成各优化级别的执行镜像 |
-| `memory_*.json`、`state.json`、`step_limits.json` | 最小字节码、状态与资源限制 |
-| `wire.json`、`stdlib.json.gz` | 编码契约与标准库宿主镜像 |
+| 输入 | 用途 | 消费方 |
+| --- | --- | --- |
+| `source/`、`execution_expected.json`、`execution.json.gz` | 手写结果与各优化级别执行镜像 | Go、Rust、TypeScript |
+| `memory_*.json`、`state.json` | Go owner 产生的精确内存与状态观察 | Go 生成，Rust 对照 |
+| `step_limits.json` | 确定性步数边界 | Go、Rust、TypeScript |
+| `wire.json` | 当前严格 bytecode schema 的有效与无效输入 | Go 生成，Rust 独立解码；TypeScript 在执行镜像入口验证同一 schema |
+| `stdlib.json.gz` | 标准库宿主行为镜像 | Go、Rust |
+
+TypeScript 使用共享 contract 成本验证 live、peak、total、since-census 与释放语义，不把 JavaScript
+对象大小当作 Go/Rust 的精确 byte accounting。
 
 ## RPC 一致性数据
 

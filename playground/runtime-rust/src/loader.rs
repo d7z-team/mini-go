@@ -2,7 +2,10 @@
 //! control-flow verification is a separate step from this wire boundary.
 
 use crate::{
-    contract::canonical_hash, contract_generated as wire, error::RuntimeError, types::TypeRegistry,
+    contract::{canonical_hash, strict_json_from_slice},
+    contract_generated as wire,
+    error::RuntimeError,
+    types::TypeRegistry,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
@@ -100,7 +103,7 @@ impl DecodedImage {
                 "image byte limit exceeded",
             ));
         }
-        let mut image: wire::ExecutionImage = serde_json::from_slice(bytes)?;
+        let mut image: wire::ExecutionImage = strict_json_from_slice(bytes)?;
         let contract = contract();
         if image.format != contract.execution_format
             || image.version != contract.execution_version

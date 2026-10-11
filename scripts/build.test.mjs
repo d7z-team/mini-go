@@ -164,7 +164,15 @@ test("Make consumes prepared artifacts and uses Cargo's target directory for pee
   if (process.env.FAIL_METADATA) process.exit(23);
 }`,
   );
-  await tool(context, "go", "");
+  context.env.FAKE_GOROOT = path.join(context.directory, "go-root");
+  await mkdir(path.join(context.env.FAKE_GOROOT, "lib/wasm"), { recursive: true });
+  await writeFile(path.join(context.env.FAKE_GOROOT, "lib/wasm/wasm_exec.js"), "fixture");
+  await tool(
+    context,
+    "go",
+    `if (args[0] === 'env' && args[1] === 'GOROOT') console.log(process.env.FAKE_GOROOT);`,
+  );
+  await tool(context, "npm", "");
   const result = spawnSync("make", ["test-interop"], {
     cwd: context.directory,
     env: context.env,
@@ -216,11 +224,7 @@ test("Make consumes prepared artifacts and uses Cargo's target directory for pee
     env: context.env,
     encoding: "utf8",
   });
-  assert.notEqual(missingTypeScript.status, 0);
-  assert.match(
-    missingTypeScript.stderr,
-    /Missing testdata\/runtime\/stdlib.json.gz; run make runtime-images/,
-  );
+  assert.equal(missingTypeScript.status, 0, missingTypeScript.stderr);
 });
 
 test("Make packs TypeScript without runtime test images and preserves shared caches", async (t) => {

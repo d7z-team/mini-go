@@ -20,8 +20,8 @@ func plainPayloadString(raw []byte) (string, bool) {
 	return string(raw[1 : len(raw)-1]), true
 }
 
-// payloadObject visits fields in source order, retaining duplicate-key merge
-// semantics. Its input is a complete object already accepted by json.Valid.
+// payloadObject visits fields in source order. Its input has already passed
+// the strict schema validator, including duplicate-key rejection.
 type payloadObject struct {
 	raw   []byte
 	pos   int

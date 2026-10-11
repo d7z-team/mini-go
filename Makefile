@@ -29,13 +29,15 @@ typescript_dir := playground/runtime-typescript
 npm := npm --prefix $(typescript_dir)
 typescript_compiler_dir := $(typescript_dir)/.build/compiler
 typescript_compiler_wasm := $(typescript_compiler_dir)/mini-go-compiler.wasm
-runtime_images := testdata/runtime/execution.json.gz testdata/runtime/stdlib.json.gz
+runtime_execution_image := testdata/runtime/execution.json.gz
+runtime_stdlib_image := testdata/runtime/stdlib.json.gz
+runtime_images := $(runtime_execution_image) $(runtime_stdlib_image)
 compiler_image := $(rust_dir)/assets/compiler.json.gz
-.PHONY: help check generate doc artifacts runtime-images compiler-image _check-identity _check-runtime-images _check-artifacts
+.PHONY: help check generate doc artifacts runtime-images runtime-execution-image runtime-stdlib-image compiler-image _check-identity _check-runtime-images _check-execution-image _check-artifacts
 help: ## 显示常用目标与说明
 	@awk 'BEGIN { print "用法：make <目标> [变量=值]\n" } /^[a-zA-Z][a-zA-Z0-9_-]*:.*## / { split($$0, parts, ":"); sub(/^.*## /, ""); printf "  %-24s %s\n", parts[1], $$0 }' $(MAKEFILE_LIST)
 
-check: lint test build lint-rust test-rust test-interop test-typescript test-scripts ## 完整验证；先准备工具、deps 和生成产物
+check: lint test build lint-rust test-rust test-interop test-typescript test-vscode test-scripts ## 完整验证；先准备工具、deps 和生成产物
 
 # generate 更新全部事实；artifacts 只在身份匹配时补齐未随 Git 分发的镜像。
 generate: ## 更新全部绑定、契约、镜像与 manifest
@@ -47,6 +49,10 @@ doc: ## 从源码注释生成 API 文档
 artifacts: runtime-images $(compiler_image) ## 显式补齐缺失的全部测试与 compiler 镜像
 
 runtime-images: _check-identity $(runtime_images) ## 显式补齐缺失的 runtime 与 stdlib 测试镜像
+
+runtime-execution-image: _check-identity $(runtime_execution_image) ## 补齐跨 VM execution 测试镜像
+
+runtime-stdlib-image: _check-identity $(runtime_stdlib_image) ## 补齐 Rust 标准库测试镜像
 
 compiler-image: _check-identity $(compiler_image) ## 显式补齐缺失的 compiler 镜像
 
@@ -64,6 +70,9 @@ _check-identity:
 
 _check-runtime-images: _check-identity
 	@for image in $(runtime_images); do test -f "$$image" || { echo "Missing $$image; run make runtime-images (or make generate after source changes)" >&2; exit 1; }; done
+
+_check-execution-image: _check-identity
+	@test -f "$(runtime_execution_image)" || { echo "Missing $(runtime_execution_image); run make runtime-execution-image" >&2; exit 1; }
 
 _check-artifacts: _check-runtime-images
 	@test -f "$(compiler_image)" || { echo "Missing $(compiler_image); run make compiler-image" >&2; exit 1; }
@@ -128,7 +137,7 @@ test-interop: _check-artifacts _rpc-go-peer ## Go/Rust RPC 互操作与 Go provi
 	@MINIGO_HOST_BROKER="$(CURDIR)/bin/mini-go-dev" cargo test $(cargo_flags) --profile $(rust_test_profile) -p mini-go --features host-conformance --test stdlib -- --nocapture
 
 # 依赖安装显式执行，npm build 不回调根生成流程。
-.PHONY: deps _typescript-compiler-assets build-typescript lint-typescript test-typescript pack-typescript
+.PHONY: deps _typescript-compiler-assets build-typescript lint-typescript test-typescript bench-typescript pack-typescript test-vscode
 deps: ## 按 lockfile 安装 SDK 开发依赖
 	@$(npm) ci
 
@@ -147,8 +156,16 @@ build-typescript: _typescript-compiler-assets ## 构建 TypeScript runtime、Wor
 lint-typescript: build-typescript ## SDK strict 类型、生成绑定与格式检查
 	@$(npm) run lint
 
-test-typescript: _check-runtime-images lint-typescript _rpc-go-peer ## Node、浏览器、RPC、Go compiler、debug 与安装包测试
+test-typescript: _check-execution-image lint-typescript _rpc-go-peer ## Node、浏览器、RPC、Go compiler、debug 与安装包测试
 	@MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" $(npm) test
+
+bench-typescript: _check-execution-image build-typescript ## TypeScript VM 与 Worker SDK 诊断基准（不设性能门槛）
+	@$(npm) run benchmark
+
+test-vscode: ## 验证并打包 VS Code 扩展
+	@npm --prefix vscode-ext ci
+	@npm --prefix vscode-ext test
+	@npm --prefix vscode-ext run package
 
 pack-typescript: build-typescript ## 将当前构建打包到 TYPESCRIPT_PACK_OUTPUT
 	@mkdir -p "$(TYPESCRIPT_PACK_OUTPUT)"

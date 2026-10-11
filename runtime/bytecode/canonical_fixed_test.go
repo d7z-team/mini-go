@@ -117,6 +117,12 @@ func TestFixedCanonicalEncodingMatchesJSON(t *testing.T) {
 					t.Fatalf("%T filled=%v: error=%v supported=%v\nactual: %s\nexpected: %s", candidate, filled, err, ok, actual, expected.Bytes())
 				}
 				decoded, reference := reflect.New(reflect.TypeOf(value)), reflect.New(reflect.TypeOf(value))
+				if bytes.Equal(actual, []byte("null")) {
+					if err := DecodeInstructionPayload(actual, decoded.Interface()); err == nil {
+						t.Fatalf("%T accepted null object", candidate)
+					}
+					continue
+				}
 				if err := DecodeInstructionPayload(actual, decoded.Interface()); err != nil {
 					t.Fatal(err)
 				}
@@ -131,7 +137,7 @@ func TestFixedCanonicalEncodingMatchesJSON(t *testing.T) {
 	}
 }
 
-func TestFixedPayloadDecodingPreservesFieldMatchingAndMerging(t *testing.T) {
+func TestFixedPayloadDecodingMatchesStrictSchema(t *testing.T) {
 	for _, raw := range []string{
 		`{}`, `null`, `{"local":"one","LOCAL":null,"rebind":true}`,
 		`{"\u006cocal":"quoted","rebind":false}`, `{"local":"one","local":"two"}`,

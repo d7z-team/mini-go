@@ -26,7 +26,7 @@
 - [`encoding/xml`](packages/encoding/xml.md) - Package xml implements a simple XML 1.0 parser that understands XML name spaces.
 - [`errors`](packages/errors.md) - Package errors implements functions to manipulate errors.
 - [`ffi`](packages/ffi.md) - Package ffi provides the low-level host call boundary used by optional capability libraries.
-- [`fmt`](packages/fmt.md) - Package fmt implements Go-compatible string formatting and wrapped-error construction for Mini-Go values.
+- [`fmt`](packages/fmt.md) - Package fmt implements Mini-Go string formatting and wrapped-error construction.
 - [`hash`](packages/hash.md) - Package hash provides interfaces for hash functions.
 - [`hash/crc32`](packages/hash/crc32.md) - Package crc32 implements the 32-bit cyclic redundancy check.
 - [`hash/fnv`](packages/hash/fnv.md) - Package fnv implements FNV-1 and FNV-1a non-cryptographic hash functions.

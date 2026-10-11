@@ -265,6 +265,18 @@ export function object(value: JsonValue, path: string): Record<string, JsonValue
   return value as Record<string, JsonValue>;
 }
 
+export function schemaObject(
+  value: JsonValue,
+  path: string,
+  fields: readonly string[],
+): Record<string, JsonValue> {
+  const result = object(value, path);
+  const allowed = new Set(fields);
+  for (const key of Object.keys(result))
+    if (!allowed.has(key)) fail(`unknown field ${key}`, `${path}.${key}`);
+  return result;
+}
+
 export function array(value: JsonValue | undefined, path: string): JsonValue[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) fail("expected array", path);

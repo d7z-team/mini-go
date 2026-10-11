@@ -17,15 +17,27 @@ jobs:
   fuzz:
     needs: changes
     if: needs.changes.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
           cache: true
-      - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
-      - run: rustup default 1.98.1
       - run: make runtime-images
       - run: FUZZTIME=3m FUZZ_PARALLEL=1 make fuzz
+
+  race:
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache: true
+      - run: make runtime-images
+      - run: make race TEST_PACKAGES='./runtime/... ./rpc/... ./ffi/... ./compiler ./compiler/cache/... ./compiler/service/...'

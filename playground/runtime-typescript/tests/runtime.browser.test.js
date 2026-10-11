@@ -41,7 +41,7 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
             before: before.toString(),
             after: after.toString(),
             generation: stats.generation.toString(),
-            memory: stats.memoryAllocatedBytes.toString(),
+            memory: stats.totalGuestAllocatedBytes.toString(),
           };
         } finally {
           await vm.close();

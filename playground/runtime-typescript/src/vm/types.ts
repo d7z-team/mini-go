@@ -62,7 +62,7 @@ export interface ExecutionLimits {
   maxDynamicTypeBytes?: number | bigint;
   maxObjects?: number;
   maxHeapBytes?: number | bigint;
-  /** Logical live guest data budget, independent of cumulative allocations and RSS. */
+  /** Live guest bytes plus allocations observed since the previous census. */
   maxAllocatedBytes?: number | bigint;
   maxStringBytes?: number;
   maxValueDepth?: number;
@@ -88,6 +88,8 @@ export interface ResourceOptions {
 export interface VMOptions extends ResourceOptions {
   capabilities?: string[];
   symbols?: Uint8Array;
+  /** Enables opcode and function timing diagnostics. */
+  profile?: boolean;
 }
 
 export interface FrameRef {
@@ -116,25 +118,31 @@ export interface Frame {
 export interface Stats {
   state: string;
   steps: bigint;
-  heapBytes: bigint;
-  heapObjects: bigint;
-  heapPeakBytes: bigint;
-  heapAllocatedBytes: bigint;
+  liveHeapBytes: bigint;
+  liveHeapObjects: bigint;
+  peakHeapBytes: bigint;
+  totalHeapAllocatedBytes: bigint;
   gcCollections: bigint;
   gcScannedObjects: bigint;
   gcTracedObjects: bigint;
   gcScannedEdges: bigint;
   gcReclaimedBytes: bigint;
   gcNanos: bigint;
-  memoryBytes: bigint;
-  memoryPeakBytes: bigint;
-  memoryAllocatedBytes: bigint;
+  liveGuestBytes: bigint;
+  peakGuestBytes: bigint;
+  totalGuestAllocatedBytes: bigint;
+  guestAllocatedSinceCensusBytes: bigint;
+  guestAllocations: bigint;
   activeScopes: bigint;
   tasks: bigint;
   timers: bigint;
   ffiCalls: bigint;
   ffiBytes: bigint;
   generation: bigint;
+  profile?: {
+    opcodes: Record<string, bigint>;
+    functions: Record<string, { calls: bigint; steps: bigint; nanos: bigint }>;
+  };
 }
 
 export type Bindings = Snapshot & { names: string[] };

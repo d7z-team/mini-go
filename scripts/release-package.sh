@@ -78,13 +78,14 @@ typescript_compiler_sha256=$(sha256sum "$typescript/dist/compiler/mini-go-compil
 (cd "$typescript" && npm pack --ignore-scripts --json --pack-destination "$output") >"$output/npm-pack.json"
 npm_tarball="$output/d7z-team-mini-go-$version.tgz"
 test -f "$npm_tarball"
+npm_integrity=$(node -e 'const {createHash}=require("node:crypto");const {readFileSync}=require("node:fs");process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`)' "$npm_tarball")
 
 tar -tf "$output/mini-go-$version.crate" >"$output/mini-go.files"
 tar -tf "$npm_tarball" >"$output/npm.files"
 
-node - "$output/release.json" "$version" "$commit" "$commit_count" "$short_commit" "$runtime_compiler_sha256" "$typescript_compiler_sha256" <<'NODE'
+node - "$output/release.json" "$version" "$commit" "$commit_count" "$short_commit" "$runtime_compiler_sha256" "$typescript_compiler_sha256" "$npm_integrity" <<'NODE'
 const { writeFileSync } = require("node:fs");
-const [filename, version, commit, count, shortCommit, runtimeCompilerSHA256, typescriptCompilerSHA256] = process.argv.slice(2);
+const [filename, version, commit, count, shortCommit, runtimeCompilerSHA256, typescriptCompilerSHA256, npmIntegrity] = process.argv.slice(2);
 writeFileSync(filename, `${JSON.stringify({
   version,
   commit,
@@ -92,6 +93,7 @@ writeFileSync(filename, `${JSON.stringify({
   shortCommit,
   runtimeCompilerSHA256,
   typescriptCompilerSHA256,
+  npmIntegrity,
   crates: [`mini-go-${version}.crate`],
   npm: `d7z-team-mini-go-${version}.tgz`,
 }, null, 2)}\n`);

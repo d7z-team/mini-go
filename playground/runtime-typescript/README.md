@@ -3,6 +3,8 @@
 该包在 Browser 和 Node.js 中执行 Mini-Go bytecode，并提供源码工具、调试和 MRPC。VM 与生命周期管理
 使用 TypeScript；源码编译在独立 Worker 中运行 Go compiler WASM。
 
+开发与 Node.js 部署使用 Node.js 24 或更高版本；浏览器入口不依赖 Node.js 内置模块。
+
 ```bash
 npm install @d7z-team/mini-go
 ```
@@ -79,7 +81,9 @@ const runtime = await createRuntime(image, {
 再在安全点原子发布；失败保持当前程序。旧帧、闭包和 defer 继续使用原 revision，新命名调用进入新版本。
 
 `limits` 控制步数、帧、task、FFI、序列和 guest 逻辑内存。`UNLIMITED_STEPS` 只放开累计步数。
-`stats()` 返回 guest 统计，不代表 JavaScript heap 或进程 RSS。
+`stats()` 区分 live、peak、total 和 since-census 指标，并报告逻辑 allocation count；这些值使用共享
+bytecode contract 的确定性成本，不代表 JavaScript heap 或进程 RSS。诊断时可用 `profile: true` 创建
+runtime，取得 opcode 次数以及函数的 calls、steps 和执行时间；profile 会增加单步开销。
 
 ## 编译器与调试
 
@@ -138,9 +142,9 @@ try {
 
 resource 属于创建它的 binding，应显式关闭。连接 `close()` 等待本地资源和 publication 清理；
 `timeoutMs` 与 `AbortSignal` 只约束所属操作。生成和跨语言语义见
-[RPC 指南](../../RPC.md#typescript--javascript-api)。
+[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#typescript--javascript-api)。
 
-## 项目结构与开发
+## 源码与维护
 
 | 路径 | 职责 |
 | --- | --- |
@@ -150,15 +154,8 @@ resource 属于创建它的 binding，应显式关闭。连接 `close()` 等待�
 | `src/rpc/` | 独立 RPC Endpoint |
 | `src/platform/`、`src/workers/` | Browser/Node 适配和 Worker 入口 |
 
-完整构建从仓库根执行：
-
-```bash
-make deps artifacts build-typescript
-npm exec --prefix playground/runtime-typescript -- playwright install chromium firefox
-make lint-typescript test-typescript pack-typescript
-```
-
-维护流程见[开发指南](../../DEVELOPMENT.md#typescript-runtime-与-go-compiler-wasm)。
+构建、测试、打包和性能诊断统一从仓库根执行，见
+[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#typescript-runtime-与-go-compiler-wasm)。
 
 ## 许可证
 

@@ -21,11 +21,17 @@ test -f "$manifest"
 version=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.version)' "$manifest")
 expected_runtime_compiler=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.runtimeCompilerSHA256)' "$manifest")
 expected_typescript_compiler=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.typescriptCompilerSHA256)' "$manifest")
+expected_npm_integrity=$(node -e 'const value=require(process.argv[1]);process.stdout.write(value.npmIntegrity)' "$manifest")
 runtime_crate="$output/mini-go-$version.crate"
 npm_tarball="$output/d7z-team-mini-go-$version.tgz"
 source_root="$output/source"
 for file in "$runtime_crate" "$npm_tarball"; do test -f "$file"; done
 (cd "$output" && sha256sum --check SHA256SUMS)
+actual_npm_integrity=$(node -e 'const {createHash}=require("node:crypto");const {readFileSync}=require("node:fs");process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`)' "$npm_tarball")
+if [[ "$actual_npm_integrity" != "$expected_npm_integrity" ]]; then
+	echo "npm tarball integrity does not match the release manifest" >&2
+	exit 1
+fi
 
 if grep -Eq '^[^/]+/(tests|target|cmd)/|/go\.mod$|/\.gitignore$' "$output/mini-go.files"; then
 	echo "mini-go crate contains repository-only files" >&2

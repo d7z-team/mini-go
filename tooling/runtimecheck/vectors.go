@@ -65,23 +65,21 @@ func GenerateWireVectors() ([]byte, error) {
 		name, model, input string
 		value              any
 	}{
-		{"duplicate_scalar", "TypeRef", `{"kind":3,"primitive":3,"primitive":5}`, &types.TypeRef{}},
-		{"null_scalar_preserves_value", "TypeRef", `{"kind":3,"primitive":3,"primitive":null,"node":null}`, &types.TypeRef{}},
-		{"duplicate_struct_merges_fields", "TypeRef", `{"named":{"module_path":"example"},"named":{"decl_id":"T"}}`, &types.TypeRef{}},
-		{"field_case_folding", "TypeRef", `{"KIND":3,"Primitive":12}`, &types.TypeRef{}},
-		{"unicode_field_case_folding", "TypeRef", `{"Kind":3,"primitive":3}`, &types.TypeRef{}},
-		{"null_struct", "TypeRef", `null`, &types.TypeRef{}},
-		{"duplicate_map_merges_keys", "ExecutionImage", `{"packages":{"a":{}},"packages":{"b":{}}}`, &bytecode.ExecutionImage{}},
-		{"null_map_clears_keys", "ExecutionImage", `{"packages":{"a":{}},"packages":null}`, &bytecode.ExecutionImage{}},
-		{"duplicate_pointer_merges_fields", "TypeNode", `{"signature":{"params":[{"type":{"kind":3,"primitive":3}}]},"signature":{"results":[{"kind":3,"primitive":2}]}}`, &types.TypeNode{}},
-		{"raw_null_retains_presence", "Constant", `{"value":null}`, &bytecode.Constant{}},
+		{"duplicate_field", "TypeRef", `{"kind":3,"primitive":3,"primitive":5}`, &types.TypeRef{}},
+		{"null_scalar", "TypeRef", `{"kind":3,"primitive":null}`, &types.TypeRef{}},
+		{"duplicate_nested_field", "TypeRef", `{"named":{"module_path":"example"},"named":{"decl_id":"T"}}`, &types.TypeRef{}},
+		{"wrong_field_case", "TypeRef", `{"KIND":3,"Primitive":12}`, &types.TypeRef{}},
+		{"unicode_wrong_field_case", "TypeRef", `{"Kind":3,"primitive":3}`, &types.TypeRef{}},
+		{"null_object", "TypeRef", `null`, &types.TypeRef{}},
+		{"duplicate_map_field", "ExecutionImage", `{"packages":{"a":{}},"packages":{"b":{}}}`, &bytecode.ExecutionImage{}},
+		{"nullable_map", "ExecutionImage", `{"packages":null}`, &bytecode.ExecutionImage{}},
+		{"duplicate_pointer_field", "TypeNode", `{"signature":{"params":[{"type":{"kind":3,"primitive":3}}]},"signature":{"results":[{"kind":3,"primitive":2}]}}`, &types.TypeNode{}},
+		{"nullable_raw_value", "Constant", `{"value":null}`, &bytecode.Constant{}},
 		{"unknown_field", "TypeRef", `{"unknown":1}`, &types.TypeRef{}},
 		{"invalid_numeric_type", "TypeRef", `{"primitive":true}`, &types.TypeRef{}},
 	} {
 		vector := WireVector{Name: sample.name, Model: sample.model, Input: json.RawMessage(sample.input)}
-		decoder := json.NewDecoder(bytes.NewBufferString(sample.input))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(sample.value); err != nil {
+		if err := bytecode.DecodeWireJSON([]byte(sample.input), sample.value); err != nil {
 			vector.Error = err.Error()
 		} else {
 			canonical, err := encodeJSON(sample.value)

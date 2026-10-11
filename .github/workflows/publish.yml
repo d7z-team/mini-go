@@ -19,17 +19,17 @@ jobs:
   go:
     needs: changes
     if: needs.changes.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
           cache: true
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
       - run: rustup default 1.98.1
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: /tmp/mini-go/cache
           key: mini-go-oracle-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'compiler/**/*.go', 'runtime/**/*.go', 'ffi/**/*.go', 'stdlib/**/*.go', 'stdlib/**/*.mgo', 'tooling/runtimecheck/*.go') }}
@@ -48,7 +48,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: go-coverage
           path: |
@@ -61,20 +61,20 @@ jobs:
   rust:
     needs: changes
     if: needs.changes.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
           cache: true
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
       - run: rustup default 1.98.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '22.22.2'
-      - uses: actions/cache@v4
+          node-version: '24'
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -87,23 +87,25 @@ jobs:
   typescript:
     needs: changes
     if: needs.changes.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26.6'
           cache: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '22.22.2'
+          node-version: '24'
           cache: npm
-          cache-dependency-path: playground/runtime-typescript/package-lock.json
+          cache-dependency-path: |
+            playground/runtime-typescript/package-lock.json
+            vscode-ext/package-lock.json
       - run: make deps
       - run: npm exec --prefix playground/runtime-typescript -- playwright install --with-deps chromium firefox
-      - run: make runtime-images
-      - run: make test-typescript
+      - run: make runtime-execution-image
+      - run: make test-typescript test-vscode
 
   plan:
     needs: [changes, go, rust, typescript]
@@ -115,19 +117,19 @@ jobs:
         needs.typescript.result == 'success')) &&
       github.repository == 'd7z-team/mini-go' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       sha: ${{ steps.plan.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: "22.22.2"
+          node-version: "24"
       - name: Decide whether to publish
         id: plan
         run: |
@@ -137,7 +139,7 @@ jobs:
   publish:
     needs: plan
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.publish == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     environment: release
     concurrency:
@@ -151,7 +153,7 @@ jobs:
       MINIGO_CACHE: /tmp/mini-go/cache
       RELEASE_SHA: ${{ needs.plan.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0
@@ -169,15 +171,15 @@ jobs:
             echo "::error::Publish requires a clean working tree"
             exit 1
           fi
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.26.6"
           cache: true
       - run: rustup toolchain install 1.98.1 --profile minimal
       - run: rustup default 1.98.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: "22.22.2"
+          node-version: "24"
           cache: npm
           cache-dependency-path: playground/runtime-typescript/package-lock.json
       - name: Install publishing npm
@@ -185,14 +187,14 @@ jobs:
           npm install --global --prefix "$RUNNER_TEMP/publishing-npm" npm@12.0.2
           "$RUNNER_TEMP/publishing-npm/bin/npm" --version
           echo "$RUNNER_TEMP/publishing-npm/bin" >> "$GITHUB_PATH"
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             build/release-target
           key: publish-${{ runner.os }}-rust-1.98.1-${{ hashFiles('playground/runtime-rust/Cargo.lock') }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: /tmp/mini-go/cache
           key: mini-go-oracle-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'compiler/**/*.go', 'runtime/**/*.go', 'ffi/**/*.go', 'stdlib/**/*.go', 'stdlib/**/*.mgo', 'tooling/runtimecheck/*.go') }}
@@ -258,23 +260,41 @@ jobs:
           runtime_checksum=$(crate_checksum mini-go)
 
           npm_tarball="build/release/d7z-team-mini-go-$version.tgz"
-          if npm view "@d7z-team/mini-go@$version" version --json \
-            --prefer-online --fetch-retries=0 --fetch-timeout=10000 >/dev/null 2>&1; then
-            echo "@d7z-team/mini-go $version already published"
+          local_npm_integrity=$(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.npmIntegrity)')
+          npm_integrity() {
+            npm view "@d7z-team/mini-go@$version" dist.integrity --json \
+              --prefer-online --fetch-retries=0 --fetch-timeout=10000 2>/dev/null |
+              node -e 'let text="";process.stdin.on("data",value=>text+=value).on("end",()=>{const value=JSON.parse(text);if(typeof value!=="string")process.exit(2);process.stdout.write(value)})'
+          }
+          if remote_npm_integrity=$(npm_integrity); then
+            test "$remote_npm_integrity" = "$local_npm_integrity"
+            echo "@d7z-team/mini-go $version already published with matching integrity"
           else
             npm publish "$npm_tarball" --tag git --access public --provenance
+            remote_npm_integrity=
+            for attempt in $(seq 1 30); do
+              if remote_npm_integrity=$(npm_integrity); then
+                test "$remote_npm_integrity" = "$local_npm_integrity"
+                break
+              fi
+              sleep 2
+            done
+            if [[ "$remote_npm_integrity" != "$local_npm_integrity" ]]; then
+              echo "@d7z-team/mini-go $version did not appear with matching integrity" >&2
+              exit 1
+            fi
           fi
 
           {
             echo "### Published packages"
             echo
             echo "- [mini-go $version](https://crates.io/crates/mini-go/$version): \`$runtime_checksum\`"
-            echo "- [@d7z-team/mini-go@$version](https://www.npmjs.com/package/@d7z-team/mini-go/v/$version) (git tag)"
+            echo "- [@d7z-team/mini-go@$version](https://www.npmjs.com/package/@d7z-team/mini-go/v/$version) (git tag): \`$remote_npm_integrity\`"
             echo "- compiler SHA-256: $(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.compilerSHA256)')"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload published artifacts
         if: steps.candidate.outputs.current == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: registry-packages
           path: |

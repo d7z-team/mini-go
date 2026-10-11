@@ -196,8 +196,8 @@ fmt.Printf("revision %d: %s\n", patch.Current.Generation, patch.Current.Hash)
 ```
 
 准备失败保持当前状态。提交要求安全点和未变化的基准 revision；失败后重新准备。
-已有帧、defer 和闭包继续运行旧 revision，新命名调用进入新 revision，兼容 globals 保持状态。
-需要改变状态契约时创建新实例并由应用迁移数据。
+已有帧、defer 和闭包继续运行旧 revision，新命名调用进入新 revision；identity 与 layout 均匹配的
+global 保留原存储。改变状态结构时创建新实例并由应用显式转移数据。
 
 `runtime.ComparePrograms` 和 `plan.Inspect` 展示候选差异；`RevisionRetention` 与 `RevisionRoots` 用于定位
 旧代码引用。FFI Session 和连接跨 revision 保持，RPC 服务替换另见

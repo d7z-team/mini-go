@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22.18.0"
+    "node": ">=24.0.0"
   },
   "files": [
     "dist",
@@ -35,12 +35,13 @@
     "build": "node scripts/build.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json && tsc -p tsconfig.bindings.json --noEmit",
     "format": "prettier --write src scripts tests *.json",
-    "lint": "npm run typecheck && prettier --check src scripts tests *.json && prettier --debug-check ../../testdata/rpc/generated/typescript/*.ts",
+    "lint": "npm run typecheck && node scripts/check-boundaries.ts && prettier --check src scripts tests *.json && prettier --debug-check ../../testdata/rpc/generated/typescript/*.ts",
     "pretest": "tsc -p tsconfig.bindings.json",
     "test": "node --test --test-concurrency=1 tests/*.test.js",
     "test:node": "node --test tests/runtime.node.test.js",
     "test:browser": "node --test tests/runtime.browser.test.js",
-    "test:package": "node --test tests/package.test.js"
+    "test:package": "node --test tests/package.test.js",
+    "benchmark": "node scripts/benchmark.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

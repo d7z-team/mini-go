@@ -6,7 +6,7 @@
 package fmt
 ```
 
-Package fmt implements Go-compatible string formatting and wrapped-error construction for Mini-Go values.
+Package fmt implements Mini-Go string formatting and wrapped-error construction.
 
 ## Index
 

@@ -83,6 +83,9 @@ task 私有帧由唯一执行者持有，共享状态以短事务提交。GC、�
 可寻址值保持稳定身份；复制、切片、指针和反射共用值语义与别名规则。传给宿主的快照独立拥有数据，
 并保留循环和别名。
 
+TypeScript VM 由单一 memory owner 维护 guest 逻辑内存，并使用共享 bytecode contract 计费；这些统计
+用于跨 runtime 检查资源语义，不代表 JavaScript heap 或进程 RSS。
+
 ## 生命周期与宿主边界
 
 入口结果和 scope 结束是两个事件：入口返回后，其派生 task 仍可能运行。main 返回会终止实例的其余
@@ -109,7 +112,7 @@ Go LSP 直接使用 compiler 语言核心。Rust `compiler` feature 在 Rust VM 
 
 热更新先完整准备候选 Program，再在 Instance 安全点原子提交。准备检查类型、globals、导出、入口、
 能力和基准 revision；失败不改变当前状态。已有帧、defer 和闭包继续引用旧 revision，后续命名调用
-使用新 revision，兼容的 global 存储保持稳定。
+使用新 revision；identity 与 layout 均匹配的 global 存储保持稳定。
 
 旧 revision 由真实引用保留，引用解除后回收。FFI Session 与 RPC 资源跨代码 revision 存续；代码补丁
 和服务 publication 替换是两个独立事务。公开操作见[运行时热更新](USAGE.md#运行时热更新)。

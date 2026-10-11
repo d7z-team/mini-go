@@ -284,30 +284,30 @@
     "hash": "1dc9081323749710f717209afde42ce6aff31b9d1f69c548410172c1a1d88ac7"
   },
   {
-    "name": "duplicate_scalar",
+    "name": "duplicate_field",
     "model": "TypeRef",
     "input": {
       "kind": 3,
       "primitive": 3,
       "primitive": 5
     },
-    "canonical": "{\"kind\":3,\"primitive\":5,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}",
-    "hash": "d278aa11f01c6ef7ee7d0f0a0dbf66523cb4f086ac0e8a4c9f663766c12b7f56"
+    "canonical": "",
+    "hash": "",
+    "error": "json: duplicate field \"primitive\" at $"
   },
   {
-    "name": "null_scalar_preserves_value",
+    "name": "null_scalar",
     "model": "TypeRef",
     "input": {
       "kind": 3,
-      "primitive": 3,
-      "primitive": null,
-      "node": null
+      "primitive": null
     },
-    "canonical": "{\"kind\":3,\"primitive\":3,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}",
-    "hash": "f1666429a0c7bcf025305ef3b03a3c2435a5f07d99818c327eaa45b1463587f0"
+    "canonical": "",
+    "hash": "",
+    "error": "json: null is not valid for types.PrimitiveKind at $.primitive"
   },
   {
-    "name": "duplicate_struct_merges_fields",
+    "name": "duplicate_nested_field",
     "model": "TypeRef",
     "input": {
       "named": {
@@ -317,38 +317,42 @@
         "decl_id": "T"
       }
     },
-    "canonical": "{\"kind\":0,\"named\":{\"module_path\":\"example\",\"decl_id\":\"T\"}}",
-    "hash": "2d6d2a4844431bacc9d2d449f9219b4fdd42af94ee1a0ca94db8f80837c77035"
+    "canonical": "",
+    "hash": "",
+    "error": "json: duplicate field \"named\" at $"
   },
   {
-    "name": "field_case_folding",
+    "name": "wrong_field_case",
     "model": "TypeRef",
     "input": {
       "KIND": 3,
       "Primitive": 12
     },
-    "canonical": "{\"kind\":3,\"primitive\":12,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}",
-    "hash": "4bf40427c1ca1ae10806696350f80e5c88fa62b9406b5a10c1fce504a99ba8e6"
+    "canonical": "",
+    "hash": "",
+    "error": "json: unknown field \"KIND\" at $"
   },
   {
-    "name": "unicode_field_case_folding",
+    "name": "unicode_wrong_field_case",
     "model": "TypeRef",
     "input": {
       "Kind": 3,
       "primitive": 3
     },
-    "canonical": "{\"kind\":3,\"primitive\":3,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}",
-    "hash": "f1666429a0c7bcf025305ef3b03a3c2435a5f07d99818c327eaa45b1463587f0"
+    "canonical": "",
+    "hash": "",
+    "error": "json: unknown field \"Kind\" at $"
   },
   {
-    "name": "null_struct",
+    "name": "null_object",
     "model": "TypeRef",
     "input": null,
-    "canonical": "{\"kind\":0,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}",
-    "hash": "b4a6331ece44d4afe0d9f4d4a8ae1382afe00e6b4cc0e3264c8518efecb41097"
+    "canonical": "",
+    "hash": "",
+    "error": "json: null is not valid for types.TypeRef at $"
   },
   {
-    "name": "duplicate_map_merges_keys",
+    "name": "duplicate_map_field",
     "model": "ExecutionImage",
     "input": {
       "packages": {
@@ -358,23 +362,21 @@
         "b": {}
       }
     },
-    "canonical": "{\"format\":\"\",\"version\":0,\"compiler_id\":\"\",\"contract_id\":\"\",\"target\":{\"tags\":null},\"root\":\"\",\"entries\":null,\"packages\":{\"a\":{\"artifact\":null,\"artifact_hash\":\"\"},\"b\":{\"artifact\":null,\"artifact_hash\":\"\"}},\"hash\":\"\"}",
-    "hash": "0b935a8f813ad54ad690603cf744a3ee06275f06e6493806f96a0eaac481a434"
+    "canonical": "",
+    "hash": "",
+    "error": "json: duplicate field \"packages\" at $"
   },
   {
-    "name": "null_map_clears_keys",
+    "name": "nullable_map",
     "model": "ExecutionImage",
     "input": {
-      "packages": {
-        "a": {}
-      },
       "packages": null
     },
     "canonical": "{\"format\":\"\",\"version\":0,\"compiler_id\":\"\",\"contract_id\":\"\",\"target\":{\"tags\":null},\"root\":\"\",\"entries\":null,\"packages\":null,\"hash\":\"\"}",
     "hash": "8a4f6f09117933d5f63a1917d15a277eefa79f6161a4f770fbdad3d4b39b1d8b"
   },
   {
-    "name": "duplicate_pointer_merges_fields",
+    "name": "duplicate_pointer_field",
     "model": "TypeNode",
     "input": {
       "signature": {
@@ -396,11 +398,12 @@
         ]
       }
     },
-    "canonical": "{\"id\":\"\",\"kind\":0,\"identity\":{\"module_path\":\"\",\"decl_id\":\"\"},\"alias_target\":{\"kind\":0,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}},\"underlying\":{\"kind\":0,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}},\"elem\":{\"kind\":0,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}},\"key\":{\"kind\":0,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}},\"signature\":{\"params\":[{\"type\":{\"kind\":3,\"primitive\":3,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}}],\"results\":[{\"kind\":3,\"primitive\":2,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}]},\"constraint\":{\"kind\":0,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}},\"base\":{\"kind\":0,\"named\":{\"module_path\":\"\",\"decl_id\":\"\"}}}",
-    "hash": "5d16fe61ac5d313bb2b26c1193ee85af73e7fba682d751f5d27da13c4e5bd881"
+    "canonical": "",
+    "hash": "",
+    "error": "json: duplicate field \"signature\" at $"
   },
   {
-    "name": "raw_null_retains_presence",
+    "name": "nullable_raw_value",
     "model": "Constant",
     "input": {
       "value": null
@@ -416,7 +419,7 @@
     },
     "canonical": "",
     "hash": "",
-    "error": "json: unknown field \"unknown\""
+    "error": "json: unknown field \"unknown\" at $"
   },
   {
     "name": "invalid_numeric_type",
@@ -426,6 +429,6 @@
     },
     "canonical": "",
     "hash": "",
-    "error": "json: cannot unmarshal bool into Go struct field TypeRef.primitive of type types.PrimitiveKind"
+    "error": "json: invalid value for types.PrimitiveKind at $.primitive"
   }
 ]

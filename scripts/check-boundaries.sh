@@ -6,10 +6,12 @@ cd "$root"
 
 rust_core=playground/runtime-rust/src
 core_paths=()
-for owner in contract contract_generated environment error execution executor_pool ffi heap instance loader operators operators_complex program snapshot symbols types value; do
-	[[ ! -f "$rust_core/$owner.rs" ]] || core_paths+=("$rust_core/$owner.rs")
-	[[ ! -d "$rust_core/$owner" ]] || core_paths+=("$rust_core/$owner")
-done
+while IFS= read -r path; do
+	case "$path" in
+	*/compiler.rs | */compiler/* | */dap.rs | */language.rs | */language/* | */lsp.rs | */rpc/* | */server.rs | */server/* | */stdlib_host/* | */transport.rs | */transport/* | */lib.rs) continue ;;
+	esac
+	core_paths+=("$path")
+done < <(find "$rust_core" -type f -name '*.rs' -print | sort)
 if rg -n '(crate|super)::(rpc|stdlib_host|compiler|language|lsp|dap|server|transport)\b|\b(tokio|futures_util|tokio_rustls|tokio_tungstenite)::' "${core_paths[@]}" --glob '*.rs'; then
 	printf 'the Rust VM core imports compiler, debug, RPC or asynchronous transport code\n' >&2
 	exit 1

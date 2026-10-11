@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { gunzipSync } from "node:zlib";
 
@@ -43,7 +44,7 @@ for (let match; (match = header.exec(source)); ) {
   header.lastIndex = end;
 }
 
-export const runtimeVectors = vectors.filter((vector) => vector.optimization === 2);
+export const allRuntimeVectors = vectors;
 
 export function runtimeVector(name, optimization = 2) {
   const vector = vectors.find(
@@ -51,4 +52,14 @@ export function runtimeVector(name, optimization = 2) {
   );
   if (!vector) throw new Error(`missing runtime vector ${name} O${optimization}`);
   return vector;
+}
+
+export function sealImage(image) {
+  for (const archive of Object.values(image.packages))
+    archive.artifact_hash = createHash("sha256")
+      .update(JSON.stringify(archive.artifact))
+      .digest("hex");
+  image.hash = "";
+  image.hash = createHash("sha256").update(JSON.stringify(image)).digest("hex");
+  return new TextEncoder().encode(JSON.stringify(image));
 }

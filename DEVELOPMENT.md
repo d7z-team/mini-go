@@ -6,7 +6,7 @@
 ## 开发环境
 
 Go 版本由 [Makefile](Makefile) 的 `GOTOOLCHAIN` 固定；Rust 最低版本见
-[Cargo.toml](playground/runtime-rust/Cargo.toml)，Node.js 版本见
+[Cargo.toml](playground/runtime-rust/Cargo.toml)，TypeScript 工具使用 Node.js 24，具体约束见
 [package.json](playground/runtime-typescript/package.json)。各语言依赖由 lockfile 固定。
 
 准备 Go、make、Cargo、rustfmt 和 Node.js 后，在仓库根安装依赖并补齐未随 Git 分发的镜像：
@@ -28,6 +28,7 @@ make lint test build
 
 `TEST_FLAGS` 替换默认 Go 测试参数；`-count=1` 只跳过 Go 测试结果缓存。`make check` 聚合 Go、Rust、
 TypeScript、互操作和脚本验证。修改生成输入后先执行 `make generate`，生成或构建完成后再测试消费方。
+只需补齐未随 Git 分发且 identity 已匹配的镜像时运行 `make artifacts`；细分目标见 `make help`。
 
 | 改动范围 | 最低验证 |
 | --- | --- |
@@ -64,6 +65,8 @@ make doc
 `docs/reference/`。不要直接修改派生文件。改变 schema、envelope 或缓存格式时同步更新所属版本或
 identity，并核对完整 Git 差异。
 
+### 外部参考
+
 Unicode 与标准库参考使用仓库固定的工具链和 SHA-256。只有更新参考源时才运行：
 
 ```bash
@@ -74,17 +77,6 @@ GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev core-api verify
 
 普通生成不会刷新这些外部参考。新增 opcode 时更新
 [opcode_contract.go](runtime/bytecode/opcode_contract.go)，重新生成各 runtime 描述，并覆盖有效与无效输入。
-
-只需补齐缺失镜像时使用：
-
-```bash
-make artifacts
-make runtime-images
-make compiler-image
-```
-
-`artifacts` 补齐全部镜像；另外两个目标分别只补齐共享 runtime 测试镜像或 Rust bundled compiler。
-这些目标要求当前 identity 已匹配；修改事实源后仍应运行 `make generate`。
 
 ### 生成预编译示例
 
@@ -122,19 +114,19 @@ Mini-Go 缓存，缓存契约和故障注入使用隔离 backend。完整测试�
 
 ### TypeScript runtime 与 Go compiler WASM
 
-TypeScript VM 执行 bytecode，源码工具在独立 Worker 中运行 Go compiler WASM。完整验证流程为：
+TypeScript VM 执行 bytecode，源码工具在独立 Worker 中运行 Go compiler WASM。首次运行浏览器测试前安装
+Playwright 浏览器，此后使用根 Makefile 完成构建与验证：
 
 ```bash
-make deps artifacts
+make deps runtime-execution-image
 npm exec --prefix playground/runtime-typescript -- playwright install chromium firefox
 make lint-typescript test-typescript
-make pack-typescript
 ```
 
 `make build-typescript` 生成 compiler WASM 和分发产物；组件内的 npm 命令只消费准备好的 `.build/compiler/`。
 测试覆盖 Node、浏览器、Worker 生命周期、共享 VM 语料、compiler、RPC 和安装包。
-`MINIGO_BROWSERS` 可筛选浏览器，打包输出可通过 `TYPESCRIPT_PACK_OUTPUT` 指定。接入方式见
-[TypeScript README](playground/runtime-typescript/README.md)。
+`MINIGO_BROWSERS` 可筛选浏览器。打包使用 `make pack-typescript`，VS Code 扩展独立使用
+`make test-vscode`。接入方式见 [TypeScript README](playground/runtime-typescript/README.md)。
 
 ### Fuzz 与自举
 
@@ -170,20 +162,10 @@ MINIGO_DEBUG=cachehash=1,cacheverify=1 go run ./cmd/mini-go check main.mgo
 
 ### 性能测量
 
-使用 Go benchmark/pprof 或 `make bench-rust`。固定输入、结果、构建参数、镜像 identity 和并行度，
-串行保留多轮原始采样。消融一次只改变一个机制，正确性、计费和性能分别验收。
-
-Rust benchmark 报告 elapsed、steps、steps/s、宿主分配和 guest heap。opcode mix 改变时，删除低成本
-指令可能同时降低 elapsed 与 steps/s，因此必须联合比较总 steps、elapsed、分配和 exact opcode。
-
-```bash
-MINIGO_BENCH_COMPILER=1 cargo bench \
-  --manifest-path playground/runtime-rust/Cargo.toml \
-  --bench runtime --features compiler
-```
-
-比较加载、初始化、首次编译、缓存命中和编辑后编译时分别报告；VM 核心和公开 Instance 分开测量，
-浏览器另计 Worker 往返。原始结果与临时 profile 放在 `/tmp`。
+使用 Go benchmark/pprof、`make bench-rust` 或 `make bench-typescript`。固定输入、结果、构建参数、镜像
+identity 和并行度，串行保留多轮原始采样；消融一次只改变一个机制。VM 核心与公开 API、冷启动与缓存
+命中应分别测量。联合比较 elapsed、总 steps、steps/s、opcode 和分配，因为 opcode mix 变化后 steps/s
+不能单独表示改进。profile 只用于诊断，不作为性能门槛；原始结果与临时 profile 放在 `/tmp`。
 
 ### 观测口径
 
@@ -222,7 +204,7 @@ MINIGO_BENCH_COMPILER=1 cargo bench \
 决定改动范围。修改 CI、打包或发布脚本后运行 `make test-scripts`。
 
 Rust crate 与 npm 包使用同一提交快照版本。发布脚本在隔离 staging 中替换源码 manifest 的
-`0.0.0-dev`，并要求完整 Git 历史和干净工作区。
+`0.0.0-dev`，并要求完整 Git 历史和干净工作区；生成的 metadata 用于验证发布产物与 registry 一致。
 
 ```bash
 make test-scripts
@@ -235,5 +217,5 @@ make release-verify
 
 ## 编辑器扩展
 
-在 `vscode-ext/` 运行 `npm ci`、`npm test` 和 `npm run package`，生成 `/tmp/mini-go.vsix`。
+运行 `make test-vscode` 会在 `vscode-ext/` 执行 `npm ci`、测试和打包，生成 `/tmp/mini-go.vsix`。
 grammar 由根生成流程维护，用户配置见[扩展 README](vscode-ext/README.md)。

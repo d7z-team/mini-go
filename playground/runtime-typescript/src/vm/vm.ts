@@ -47,6 +47,7 @@ import {
   type TypeNode,
   type Value,
 } from "./value.js";
+import { GUEST_COST, GuestMemory } from "./guest-memory.js";
 
 const LOCAL_OUTPUT = 0x80000000;
 const DEFAULT_MAX_IMAGE_BYTES = 64 * 1024 * 1024;
@@ -190,9 +191,9 @@ interface DebugEvent {
 }
 
 interface MemoryCensus {
-  heapBytes: bigint;
-  heapObjects: bigint;
-  memoryBytes: bigint;
+  liveHeapBytes: bigint;
+  liveHeapObjects: bigint;
+  liveGuestBytes: bigint;
   strings: number;
   maxSequence: number;
   scannedEdges: bigint;
@@ -228,19 +229,13 @@ export class VirtualMachine {
   private ffiCalls = 0n;
   private ffiBytes = 0n;
   private epoch = 1n;
-  private heapBytes = 0n;
-  private heapObjects = 0n;
-  private heapPeakBytes = 0n;
-  private heapAllocatedBytes = 0n;
+  private readonly guestMemory: GuestMemory;
   private gcCollections = 0n;
   private gcScannedObjects = 0n;
   private gcTracedObjects = 0n;
   private gcScannedEdges = 0n;
   private gcReclaimedBytes = 0n;
   private gcNanos = 0n;
-  private memoryBytes = 0n;
-  private memoryPeakBytes = 0n;
-  private memoryAllocatedBytes = 0n;
   private referencedRevisions = new Set<number>();
   private readonly dynamicTypes = new Map<string, RuntimeType>();
   private dynamicTypeBytes = 0;
@@ -257,6 +252,11 @@ export class VirtualMachine {
   private nextDebugHandle = 1;
   private debugIgnoreBreakpoint = "";
   private debugStepTask: number | undefined;
+  private readonly opcodeProfile = new Map<string, bigint>();
+  private readonly functionProfile = new Map<
+    string,
+    { calls: bigint; steps: bigint; nanos: bigint }
+  >();
 
   readonly maxInputBytes: number;
   readonly maxHostResultBytes: number;
@@ -264,6 +264,7 @@ export class VirtualMachine {
 
   private constructor(program: Program, options: VMOptions) {
     this.options = options;
+    this.guestMemory = new GuestMemory(options.limits);
     const limits = options.limits;
     this.enforceMemoryLimitsEveryStep = Boolean(
       limits &&
@@ -490,6 +491,12 @@ export class VirtualMachine {
       throw new VMError("call argument count mismatch", "invalid_call", fn.id);
     if (captures.length !== fn.upvalueTypes.length)
       throw new VMError("closure capture count mismatch", "invalid_call", fn.id);
+    if (this.options.profile) {
+      const key = `${fn.module.path}.${fn.id}`;
+      const profile = this.functionProfile.get(key) ?? { calls: 0n, steps: 0n, nanos: 0n };
+      profile.calls++;
+      this.functionProfile.set(key, profile);
+    }
     const locals = fn.localTypes.map((type) => cell(zero(type)));
     for (let index = 0; index < arguments_.length; index++)
       locals[index]!.value = this.coerce(arguments_[index]!, fn.localTypes[index]!);
@@ -532,7 +539,27 @@ export class VirtualMachine {
         break;
       }
       try {
-        this.step(task);
+        const frame = task.frames[task.frames.length - 1];
+        const instruction = frame?.fn.instructions[frame.pc];
+        const profileKey =
+          this.options.profile && frame ? `${frame.fn.module.path}.${frame.fn.id}` : "";
+        const profileStarted = profileKey ? performance.now() : 0;
+        if (instruction && profileKey)
+          this.opcodeProfile.set(
+            instruction.name,
+            (this.opcodeProfile.get(instruction.name) ?? 0n) + 1n,
+          );
+        try {
+          this.step(task);
+        } finally {
+          if (profileKey) {
+            const profile = this.functionProfile.get(profileKey)!;
+            profile.steps++;
+            profile.nanos += BigInt(
+              Math.max(0, Math.floor((performance.now() - profileStarted) * 1_000_000)),
+            );
+          }
+        }
         if (this.enforceMemoryLimitsEveryStep || (this.steps & 63n) === 0n)
           this.updateMemoryCensus(true);
       } catch (error) {
@@ -561,6 +588,7 @@ export class VirtualMachine {
     }
     if (this.closing && this.tasks.size === 0 && this.pendingHost.size === 0) {
       this.closed = true;
+      this.guestMemory.release();
       this.pendingActions.push({ kind: "close" });
     }
     return this.pumpState(this.runnable.length > 0);
@@ -2971,6 +2999,7 @@ export class VirtualMachine {
       Number(this.options.limits?.maxDynamicTypeBytes ?? 16 * 1024 * 1024)
     )
       fail("dynamic type bytes exceed limit", "type", "allocation_limit");
+    this.guestMemory.reserve(BigInt(bytes) * GUEST_COST.byte);
     this.dynamicTypes.set(canonical, candidate);
     this.dynamicTypeBytes += bytes;
     return candidate;
@@ -3811,9 +3840,9 @@ export class VirtualMachine {
   private updateMemoryCensus(enforce: boolean): void {
     const started = performance.now();
     const census: MemoryCensus = {
-      heapBytes: 0n,
-      heapObjects: 0n,
-      memoryBytes: 0n,
+      liveHeapBytes: 0n,
+      liveHeapObjects: 0n,
+      liveGuestBytes: 0n,
       strings: 0,
       maxSequence: 0,
       scannedEdges: 0n,
@@ -3873,22 +3902,23 @@ export class VirtualMachine {
       if (item.cell) {
         if (seenCells.has(item.cell)) continue;
         seenCells.add(item.cell);
-        census.heapObjects++;
-        census.heapBytes += 32n;
+        census.liveHeapObjects++;
+        census.liveHeapBytes += GUEST_COST.node;
         const stored = item.cell.value;
         if (stored.kind === "bytes")
-          census.heapBytes += BigInt((stored.value as Uint8Array).byteLength);
+          census.liveHeapBytes += BigInt((stored.value as Uint8Array).byteLength) * GUEST_COST.byte;
         else if (stored.kind === "array")
-          census.heapBytes += BigInt((stored.value as Value[]).length * 8);
+          census.liveHeapBytes += BigInt((stored.value as Value[]).length) * GUEST_COST.slot;
         else if (stored.kind === "struct")
-          census.heapBytes += BigInt((stored.value as Map<string, Value>).size * 16);
+          census.liveHeapBytes +=
+            BigInt((stored.value as Map<string, Value>).size) * GUEST_COST.mapEntry;
         pushValue(stored, item.depth + 1);
         continue;
       }
       if (item.channel) {
         if (seenObjects.has(item.channel)) continue;
         seenObjects.add(item.channel);
-        census.memoryBytes += BigInt(64 + item.channel.capacity * 8);
+        census.liveGuestBytes += GUEST_COST.node + BigInt(item.channel.capacity) * GUEST_COST.slot;
         census.maxSequence = Math.max(census.maxSequence, item.channel.capacity);
         census.scannedEdges += BigInt(item.channel.queue.length + item.channel.senders.length);
         for (const value of item.channel.queue) pushValue(value, item.depth + 1);
@@ -3896,12 +3926,12 @@ export class VirtualMachine {
         continue;
       }
       const value = item.value!;
-      census.memoryBytes += 32n;
+      census.liveGuestBytes += GUEST_COST.node;
       switch (value.kind) {
         case "string":
         case "bytes": {
           const length = (value.value as Uint8Array).byteLength;
-          census.memoryBytes += BigInt(length);
+          census.liveGuestBytes += BigInt(length) * GUEST_COST.byte;
           census.maxSequence = Math.max(census.maxSequence, length);
           if (value.kind === "string") census.strings += length;
           break;
@@ -3910,7 +3940,7 @@ export class VirtualMachine {
           const values = value.value as Value[];
           if (seenObjects.has(values)) break;
           seenObjects.add(values);
-          census.memoryBytes += BigInt(values.length * 8);
+          census.liveGuestBytes += BigInt(values.length) * GUEST_COST.slot;
           census.maxSequence = Math.max(census.maxSequence, values.length);
           census.scannedEdges += BigInt(values.length);
           for (const nested of values) pushValue(nested, item.depth + 1);
@@ -3920,7 +3950,7 @@ export class VirtualMachine {
           const fields = value.value as Map<string, Value>;
           if (seenObjects.has(fields)) break;
           seenObjects.add(fields);
-          census.memoryBytes += BigInt(fields.size * 16);
+          census.liveGuestBytes += BigInt(fields.size) * GUEST_COST.mapEntry;
           census.scannedEdges += BigInt(fields.size);
           for (const nested of fields.values()) pushValue(nested, item.depth + 1);
           break;
@@ -3944,7 +3974,7 @@ export class VirtualMachine {
           const map = value.value as GuestMap;
           if (seenObjects.has(map)) break;
           seenObjects.add(map);
-          census.memoryBytes += BigInt(map.entries.length * 32);
+          census.liveGuestBytes += BigInt(map.entries.length) * GUEST_COST.mapEntry;
           census.maxSequence = Math.max(census.maxSequence, map.entries.length);
           census.scannedEdges += BigInt(map.entries.length * 2);
           for (const entry of map.entries) {
@@ -3976,40 +4006,19 @@ export class VirtualMachine {
       }
     }
 
-    census.memoryBytes += census.heapBytes + BigInt(this.dynamicTypeBytes);
-    const previousHeap = this.heapBytes;
-    const previousMemory = this.memoryBytes;
-    this.heapBytes = census.heapBytes;
-    this.heapObjects = census.heapObjects;
-    this.heapPeakBytes =
-      this.heapPeakBytes > census.heapBytes ? this.heapPeakBytes : census.heapBytes;
-    if (census.heapBytes > previousHeap) this.heapAllocatedBytes += census.heapBytes - previousHeap;
-    this.memoryBytes = census.memoryBytes;
+    census.liveGuestBytes += census.liveHeapBytes + BigInt(this.dynamicTypeBytes) * GUEST_COST.byte;
+    if (enforce) {
+      if (census.strings > (this.options.limits?.maxStringBytes ?? 64 * 1024 * 1024))
+        throw new VMError("string byte limit exceeded", "string_limit", "string");
+      this.checkSequence(census.maxSequence, "value");
+    }
+    this.gcReclaimedBytes += this.guestMemory.publish(census, enforce);
     this.referencedRevisions = census.revisions;
-    this.memoryPeakBytes =
-      this.memoryPeakBytes > census.memoryBytes ? this.memoryPeakBytes : census.memoryBytes;
-    if (census.memoryBytes > previousMemory)
-      this.memoryAllocatedBytes += census.memoryBytes - previousMemory;
-    if (previousHeap > census.heapBytes) this.gcReclaimedBytes += previousHeap - census.heapBytes;
     this.gcCollections++;
-    this.gcScannedObjects += census.heapObjects;
-    this.gcTracedObjects += census.heapObjects;
+    this.gcScannedObjects += census.liveHeapObjects;
+    this.gcTracedObjects += census.liveHeapObjects;
     this.gcScannedEdges += census.scannedEdges;
     this.gcNanos += BigInt(Math.max(0, Math.floor((performance.now() - started) * 1_000_000)));
-
-    if (!enforce) return;
-    if (census.heapObjects > BigInt(this.options.limits?.maxObjects ?? 100_000))
-      throw new VMError("heap object limit exceeded", "allocation_limit", "heap");
-    if (census.heapBytes > BigInt(this.options.limits?.maxHeapBytes ?? 64 * 1024 * 1024))
-      throw new VMError("heap byte limit exceeded", "allocation_limit", "heap");
-    if (
-      this.memoryAllocatedBytes >
-      BigInt(this.options.limits?.maxAllocatedBytes ?? 8 * 1024 * 1024 * 1024)
-    )
-      throw new VMError("logical allocation limit exceeded", "allocation_limit", "memory");
-    if (census.strings > (this.options.limits?.maxStringBytes ?? 64 * 1024 * 1024))
-      throw new VMError("string byte limit exceeded", "string_limit", "string");
-    this.checkSequence(census.maxSequence, "value");
   }
 
   private reflectFailure(frame: Frame, instruction: PreparedInstruction, message: string): void {
@@ -4258,8 +4267,8 @@ export class VirtualMachine {
       throw new VMError("revision generation exhausted", "revision_limit", "patch");
     this.generation++;
     const revision = { generation: this.generation, program };
-    // Preserve stable global cells for compatible identities. New code binds
-    // directly to these cells while active frames keep their old revision.
+    // Preserve global cells whose identity and layout match. New code binds to
+    // these cells while active frames keep their old revision.
     for (const [modulePath, module] of program.modules) {
       const old = this.revision.program.modules.get(modulePath);
       if (!old) continue;
@@ -4488,23 +4497,27 @@ export class VirtualMachine {
   }
 
   stats(): Stats {
-    this.updateMemoryCensus(false);
-    return {
+    if (this.closed) this.guestMemory.release();
+    else this.updateMemoryCensus(false);
+    const memory = this.guestMemory.stats();
+    const stats: Stats = {
       state: this.closed ? "Closed" : this.closing ? "Closing" : this.paused ? "Paused" : "Running",
       steps: this.steps,
-      heapBytes: this.heapBytes,
-      heapObjects: this.heapObjects,
-      heapPeakBytes: this.heapPeakBytes,
-      heapAllocatedBytes: this.heapAllocatedBytes,
+      liveHeapBytes: memory.liveHeapBytes,
+      liveHeapObjects: memory.liveHeapObjects,
+      peakHeapBytes: memory.peakHeapBytes,
+      totalHeapAllocatedBytes: memory.totalHeapAllocatedBytes,
       gcCollections: this.gcCollections,
       gcScannedObjects: this.gcScannedObjects,
       gcTracedObjects: this.gcTracedObjects,
       gcScannedEdges: this.gcScannedEdges,
       gcReclaimedBytes: this.gcReclaimedBytes,
       gcNanos: this.gcNanos,
-      memoryBytes: this.memoryBytes,
-      memoryPeakBytes: this.memoryPeakBytes,
-      memoryAllocatedBytes: this.memoryAllocatedBytes,
+      liveGuestBytes: memory.liveGuestBytes,
+      peakGuestBytes: memory.peakGuestBytes,
+      totalGuestAllocatedBytes: memory.totalGuestAllocatedBytes,
+      guestAllocatedSinceCensusBytes: memory.guestAllocatedSinceCensusBytes,
+      guestAllocations: memory.guestAllocations,
       activeScopes: BigInt(this.scopes.size),
       tasks: BigInt(this.tasks.size),
       timers: BigInt([...this.timers.values()].filter((timer) => !timer.canceled).length),
@@ -4512,6 +4525,12 @@ export class VirtualMachine {
       ffiBytes: this.ffiBytes,
       generation: BigInt(this.generation),
     };
+    if (this.options.profile)
+      stats.profile = {
+        opcodes: Object.fromEntries(this.opcodeProfile),
+        functions: Object.fromEntries(this.functionProfile),
+      };
+    return stats;
   }
 
   close(): void {
@@ -4521,6 +4540,7 @@ export class VirtualMachine {
     for (const id of this.pendingHost.keys()) this.pendingActions.push({ kind: "cancel", id });
     if (!this.tasks.size && !this.pendingHost.size) {
       this.closed = true;
+      this.guestMemory.release();
       this.pendingActions.push({ kind: "close" });
     }
   }

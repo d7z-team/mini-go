@@ -15,7 +15,7 @@ TypeScript 运行时支持浏览器和 Node.js；`mini-go` CLI 也可以脱离�
 - 共用字节码契约的 Go、Rust 和 TypeScript 运行时。
 - 格式化、LSP、DAP、缓存和 VS Code 扩展。
 
-标准库是经过选择的 Go 兼容子集，实际 API 以[生成参考](./docs/reference/README.md)为准。
+Mini-Go 实现的标准库表面以[生成参考](./docs/reference/README.md)为准。
 
 ## 安装与运行
 

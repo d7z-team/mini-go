@@ -5,6 +5,8 @@ import {
   OPCODE_ARITIES,
   OPCODE_DESCRIPTOR_TABLES,
   OPCODE_NAMES,
+  DESCRIPTOR_FIELDS,
+  WIRE_FIELDS,
 } from "./contract.generated.js";
 import {
   JsonNumber,
@@ -15,6 +17,7 @@ import {
   fail,
   integer,
   object,
+  schemaObject,
   sha256Hex,
   string,
   type JsonValue,
@@ -103,7 +106,7 @@ export class Program {
 
   static async load(bytes: Uint8Array, limits: LoadOptions): Promise<Program> {
     const document = await decodeJson(bytes, limits.maxImageBytes);
-    const image = object(document.value, "image");
+    const image = schemaObject(document.value, "image", WIRE_FIELDS.ExecutionImage);
     if (string(image.format, "image.format") !== CONTRACT.execution_format)
       fail("unsupported execution image format", "image.format");
     if (integer(image.version, "image.version") !== CONTRACT.execution_version)
@@ -114,7 +117,7 @@ export class Program {
     if (compilerID !== CONTRACT.compiler_id)
       fail("compiler identity mismatch", "image.compiler_id");
     const root = string(image.root, "image.root");
-    const target = object(image.target!, "image.target");
+    const target = schemaObject(image.target!, "image.target", WIRE_FIELDS.Target);
     const targetTags = array(target.tags, "image.target.tags").map((tag, index) =>
       string(tag, `image.target.tags[${index}]`),
     );
@@ -146,8 +149,12 @@ export class Program {
     let artifactBytes = 0;
     for (const modulePath of packageNames) {
       const archivePath = `image.packages.${modulePath}`;
-      const archive = object(packages[modulePath]!, archivePath);
-      const artifact = object(archive.artifact!, `${archivePath}.artifact`);
+      const archive = schemaObject(packages[modulePath]!, archivePath, WIRE_FIELDS.PackageArchive);
+      const artifact = schemaObject(
+        archive.artifact!,
+        `${archivePath}.artifact`,
+        WIRE_FIELDS.Artifact,
+      );
       const artifactHash = string(archive.artifact_hash, `${archivePath}.artifact_hash`);
       const encodedArtifact = document.bytes(artifact);
       artifactBytes += encodedArtifact.byteLength;
@@ -164,7 +171,11 @@ export class Program {
         CONTRACT.spec.opcode_set
       )
         fail("unsupported opcode set", `${archivePath}.artifact.opcode_set`);
-      const module = object(artifact.module!, `${archivePath}.artifact.module`);
+      const module = schemaObject(
+        artifact.module!,
+        `${archivePath}.artifact.module`,
+        WIRE_FIELDS.Module,
+      );
       if (string(module.path, `${archivePath}.artifact.module.path`) !== modulePath)
         fail("package key does not match module path", `${archivePath}.artifact.module.path`);
       const packageName = string(module.package, `${archivePath}.artifact.module.package`);
@@ -172,7 +183,9 @@ export class Program {
         fail("module path and package name must be non-empty", `${archivePath}.artifact.module`);
       const table = artifact.type_table;
       const tableObject =
-        table === undefined ? undefined : object(table, `${archivePath}.artifact.type_table`);
+        table === undefined
+          ? undefined
+          : schemaObject(table, `${archivePath}.artifact.type_table`, WIRE_FIELDS.TypeTable);
       if (
         tableObject &&
         array(tableObject.nodes, `${archivePath}.artifact.type_table.nodes`).length >
@@ -213,7 +226,7 @@ export class Program {
     const entries = new Map<string, ProgramEntry>();
     for (const [index, item] of array(image.entries, "image.entries").entries()) {
       const path = `image.entries[${index}]`;
-      const entry = object(item, path);
+      const entry = schemaObject(item, path, WIRE_FIELDS.Entry);
       const prepared: ProgramEntry = {
         name: string(entry.name, `${path}.name`),
         module: string(entry.module_path, `${path}.module_path`),
@@ -244,7 +257,7 @@ export class Program {
 function prepareModule(module: PreparedModule, artifact: Record<string, JsonValue>): void {
   for (const [index, item] of array(artifact.constants, `${module.path}.constants`).entries()) {
     const path = `${module.path}.constants[${index}]`;
-    const constant = object(item, path);
+    const constant = schemaObject(item, path, WIRE_FIELDS.Constant);
     const id = string(constant.id, `${path}.id`);
     if (module.constantIndexes.has(id)) fail("duplicate constant", `${path}.id`);
     if (!constant.type || constant.value === undefined) fail("invalid constant", path);
@@ -255,7 +268,7 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
   }
   for (const [index, item] of array(artifact.globals, `${module.path}.globals`).entries()) {
     const path = `${module.path}.globals[${index}]`;
-    const global = object(item, path);
+    const global = schemaObject(item, path, WIRE_FIELDS.Global);
     const id = string(global.id, `${path}.id`);
     if (module.globalIndexes.has(id)) fail("duplicate global", `${path}.id`);
     if (!global.type) fail("global is missing type", `${path}.type`);
@@ -265,7 +278,7 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
   }
   for (const [index, item] of array(artifact.exports, `${module.path}.exports`).entries()) {
     const path = `${module.path}.exports[${index}]`;
-    const exported = object(item, path);
+    const exported = schemaObject(item, path, WIRE_FIELDS.Export);
     const name = string(exported.name, `${path}.name`);
     if (module.exports.has(name)) fail("duplicate export", `${path}.name`);
     const declaration: { kind: string; id: string; type?: RuntimeType; untyped: boolean } = {
@@ -281,16 +294,16 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
   const functions = array(artifact.functions, `${module.path}.functions`);
   for (const [index, item] of functions.entries()) {
     const path = `${module.path}.functions[${index}]`;
-    const raw = object(item, path);
+    const raw = schemaObject(item, path, WIRE_FIELDS.Function);
     const id = string(raw.id, `${path}.id`);
     if (module.functions.has(id)) fail("duplicate function", `${path}.id`);
     if (!raw.signature || !raw.code) fail("function is incomplete", path);
-    const code = object(raw.code, `${path}.code`);
+    const code = schemaObject(raw.code, `${path}.code`, WIRE_FIELDS.SlotCode);
     const localTypes: RuntimeType[] = [];
     const localIndexes = new Map<string, number>();
     for (const [localIndex, localValue] of array(raw.locals, `${path}.locals`).entries()) {
       const localPath = `${path}.locals[${localIndex}]`;
-      const local = object(localValue, localPath);
+      const local = schemaObject(localValue, localPath, WIRE_FIELDS.Local);
       const localID = string(local.id, `${localPath}.id`);
       if (localIndexes.has(localID)) fail("duplicate local", `${localPath}.id`);
       if (!local.type) fail("local is missing type", `${localPath}.type`);
@@ -301,7 +314,7 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     const upvalueIndexes = new Map<string, number>();
     for (const [upvalueIndex, upvalueValue] of array(raw.upvalues, `${path}.upvalues`).entries()) {
       const upvaluePath = `${path}.upvalues[${upvalueIndex}]`;
-      const upvalue = object(upvalueValue, upvaluePath);
+      const upvalue = schemaObject(upvalueValue, upvaluePath, WIRE_FIELDS.Upvalue);
       const upvalueID = string(upvalue.id, `${upvaluePath}.id`);
       if (upvalueIndexes.has(upvalueID)) fail("duplicate upvalue", `${upvaluePath}.id`);
       if (!upvalue.type) fail("upvalue is missing type", `${upvaluePath}.type`);
@@ -314,7 +327,11 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     const operandRecords = array(code.operands, `${path}.code.operands`).map(
       (record, recordIndex) => prepareOperands(record, `${path}.code.operands[${recordIndex}]`),
     );
-    const descriptors = object(code.descriptors!, `${path}.code.descriptors`);
+    const descriptors = schemaObject(
+      code.descriptors!,
+      `${path}.code.descriptors`,
+      WIRE_FIELDS.DescriptorTables,
+    );
     const instructions: PreparedInstruction[] = [];
     const labels = new Map<string, number>();
     for (const [pc, item] of array(code.instructions, `${path}.code.instructions`).entries()) {
@@ -335,6 +352,7 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
         descriptor = plainObject(
           table[descriptorIndex]!,
           `${path}.code.descriptors.${tableName}[${descriptorIndex}]`,
+          DESCRIPTOR_FIELDS[tableName as keyof typeof DESCRIPTOR_FIELDS],
         );
       } else if (descriptorIndex !== 0) {
         fail("descriptor-free opcode requires descriptor zero", `${instructionPath}[1]`);
@@ -397,7 +415,7 @@ function validateRequirements(
     const requirements = array(source.artifact.requirements, `${modulePath}.requirements`);
     for (const [index, item] of requirements.entries()) {
       const path = `${modulePath}.requirements[${index}]`;
-      const requirement = object(item, path);
+      const requirement = schemaObject(item, path, WIRE_FIELDS.Requirement);
       if (string(requirement.kind, `${path}.kind`) !== "source")
         fail("unknown requirement kind", `${path}.kind`, "link_error");
       const dependencyPath = string(requirement.module_path, `${path}.module_path`);
@@ -631,6 +649,7 @@ function validateDescriptor(
   };
   const validateAddress = (value: unknown, addressPath: string, allowExport: boolean): void => {
     const address = descriptorRecord(value, addressPath);
+    assertAllowedFields(address, WIRE_FIELDS.AddressPayload, addressPath);
     const kind = descriptorString(address, "kind", addressPath);
     if (kind === "local")
       address.$index = localFrom(address, "local", fn.localIndexes, addressPath);
@@ -651,6 +670,7 @@ function validateDescriptor(
     for (const [index, raw] of descriptorList(address, "path", addressPath).entries()) {
       const segmentPath = `${addressPath}.path[${index}]`;
       const segment = descriptorRecord(raw, segmentPath);
+      assertAllowedFields(segment, WIRE_FIELDS.AddressPathSegment, segmentPath);
       const segmentKind = descriptorString(segment, "kind", segmentPath);
       if (segmentKind === "field") descriptorString(segment, "field", segmentPath);
       else if (segmentKind === "index")
@@ -710,6 +730,7 @@ function validateDescriptor(
       for (const [index, value] of descriptorList(descriptor, "cases", path).entries()) {
         const casePath = `${path}.cases[${index}]`;
         const candidate = descriptorRecord(value, casePath);
+        assertAllowedFields(candidate, WIRE_FIELDS.TypeCase, casePath);
         candidate.$binding = localFrom(candidate, "binding", fn.localIndexes, casePath, true);
         candidate.$target = label(candidate.label, `${casePath}.label`);
         if (candidate.type !== undefined)
@@ -726,6 +747,7 @@ function validateDescriptor(
       for (const [index, value] of descriptorList(descriptor, "cases", path).entries()) {
         const casePath = `${path}.cases[${index}]`;
         const selected = descriptorRecord(value, casePath);
+        assertAllowedFields(selected, WIRE_FIELDS.SelectCase, casePath);
         selected.$channel = localFrom(selected, "channel", fn.localIndexes, casePath);
         const send = localFrom(selected, "send", fn.localIndexes, casePath, true);
         selected.$send = send;
@@ -944,12 +966,14 @@ function validateTypeDescriptor(
   allowInvalid = false,
 ): RuntimeType | undefined {
   const type = descriptorRecord(value, path);
+  assertAllowedFields(type, WIRE_FIELDS.TypeRef, path);
   const kind = descriptorInteger(type, "kind", path);
   if (kind === Kind.Invalid && allowInvalid) return undefined;
   if (kind < Kind.Void || kind > Kind.Interface)
     fail("runtime type kind is invalid", `${path}.kind`, "invalid_type");
   const primitive = descriptorInteger(type, "primitive", path, true);
   const namedValue = type.named === undefined ? {} : descriptorRecord(type.named, `${path}.named`);
+  assertAllowedFields(namedValue, WIRE_FIELDS.TypeKey, `${path}.named`);
   const ref: TypeRef = {
     kind,
     primitive,
@@ -982,6 +1006,16 @@ function localFrom(
 function descriptorRecord(value: unknown, path: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("expected object", path);
   return value as Record<string, unknown>;
+}
+
+function assertAllowedFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  path: string,
+): void {
+  const allowed = new Set(fields);
+  for (const key of Object.keys(value))
+    if (!key.startsWith("$") && !allowed.has(key)) fail(`unknown field ${key}`, `${path}.${key}`);
 }
 
 function descriptorString(
@@ -1050,7 +1084,7 @@ function nonNegativeCounts(descriptor: Record<string, unknown>, path: string): v
 }
 
 function prepareOperands(value: JsonValue, path: string): PreparedOperands {
-  const raw = object(value, path);
+  const raw = schemaObject(value, path, WIRE_FIELDS.SlotOperands);
   return {
     inputs: array(raw.inputs, `${path}.inputs`).map((input, index) => {
       const inputPath = `${path}.inputs[${index}]`;
@@ -1069,8 +1103,12 @@ function prepareOperands(value: JsonValue, path: string): PreparedOperands {
   };
 }
 
-function plainObject(value: JsonValue, path: string): Record<string, unknown> {
-  const raw = object(value, path);
+function plainObject(
+  value: JsonValue,
+  path: string,
+  fields: readonly string[],
+): Record<string, unknown> {
+  const raw = schemaObject(value, path, fields);
   return plain(raw, path) as Record<string, unknown>;
 }
 

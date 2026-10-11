@@ -9,7 +9,6 @@ import (
 	"github.com/d7z-team/mini-go/compiler/types"
 	"sort"
 	"strconv"
-	"strings"
 )
 
 func encodeFixedJSON(value any) ([]byte, error, bool) {
@@ -3379,7 +3378,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "constant" || strings.EqualFold(r.name, "constant"):
+			case r.name == "constant":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Constant = string(text)
 				} else {
@@ -3401,13 +3400,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "local" || strings.EqualFold(r.name, "local"):
+			case r.name == "local":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Local = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Local)
 				}
-			case r.name == "rebind" || strings.EqualFold(r.name, "rebind"):
+			case r.name == "rebind":
 				switch string(bytes.TrimSpace(r.value)) {
 				case "true":
 					v.Rebind = true
@@ -3433,7 +3432,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "upvalue" || strings.EqualFold(r.name, "upvalue"):
+			case r.name == "upvalue":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Upvalue = string(text)
 				} else {
@@ -3455,7 +3454,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "global" || strings.EqualFold(r.name, "global"):
+			case r.name == "global":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Global = string(text)
 				} else {
@@ -3477,43 +3476,43 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "module_path" || strings.EqualFold(r.name, "module_path"):
+			case r.name == "module_path":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ModulePath = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ModulePath)
 				}
-			case r.name == "export" || strings.EqualFold(r.name, "export"):
+			case r.name == "export":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Export = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Export)
 				}
-			case r.name == "kind" || strings.EqualFold(r.name, "kind"):
+			case r.name == "kind":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Kind = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Kind)
 				}
-			case r.name == "local" || strings.EqualFold(r.name, "local"):
+			case r.name == "local":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Local = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Local)
 				}
-			case r.name == "upvalue" || strings.EqualFold(r.name, "upvalue"):
+			case r.name == "upvalue":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Upvalue = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Upvalue)
 				}
-			case r.name == "global" || strings.EqualFold(r.name, "global"):
+			case r.name == "global":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Global = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Global)
 				}
-			case r.name == "path" || strings.EqualFold(r.name, "path"):
+			case r.name == "path":
 				err = strictUnmarshal(r.value, &v.Path)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -3531,7 +3530,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -3549,7 +3548,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "operator" || strings.EqualFold(r.name, "operator"):
+			case r.name == "operator":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Operator = string(text)
 				} else {
@@ -3571,9 +3570,9 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
-			case r.name == "element_count" || strings.EqualFold(r.name, "element_count"):
+			case r.name == "element_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -3598,9 +3597,9 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
-			case r.name == "entry_count" || strings.EqualFold(r.name, "entry_count"):
+			case r.name == "entry_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -3609,7 +3608,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.EntryCount)
 					}
 				}
-			case r.name == "has_capacity" || strings.EqualFold(r.name, "has_capacity"):
+			case r.name == "has_capacity":
 				switch string(bytes.TrimSpace(r.value)) {
 				case "true":
 					v.HasCapacity = true
@@ -3635,9 +3634,9 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
-			case r.name == "fields" || strings.EqualFold(r.name, "fields"):
+			case r.name == "fields":
 				err = strictUnmarshal(r.value, &v.Fields)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -3655,9 +3654,9 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
-			case r.name == "has_capacity" || strings.EqualFold(r.name, "has_capacity"):
+			case r.name == "has_capacity":
 				switch string(bytes.TrimSpace(r.value)) {
 				case "true":
 					v.HasCapacity = true
@@ -3683,7 +3682,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -3701,13 +3700,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "index" || strings.EqualFold(r.name, "index"):
+			case r.name == "index":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Index = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Index)
 				}
-			case r.name == "default" || strings.EqualFold(r.name, "default"):
+			case r.name == "default":
 				switch string(bytes.TrimSpace(r.value)) {
 				case "true":
 					v.Default = true
@@ -3717,7 +3716,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 				default:
 					err = json.Unmarshal(r.value, &v.Default)
 				}
-			case r.name == "cases" || strings.EqualFold(r.name, "cases"):
+			case r.name == "cases":
 				err = strictUnmarshal(r.value, &v.Cases)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -3735,7 +3734,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "count" || strings.EqualFold(r.name, "count"):
+			case r.name == "count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -3744,7 +3743,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.Count)
 					}
 				}
-			case r.name == "expand" || strings.EqualFold(r.name, "expand"):
+			case r.name == "expand":
 				switch string(bytes.TrimSpace(r.value)) {
 				case "true":
 					v.Expand = true
@@ -3770,7 +3769,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "field" || strings.EqualFold(r.name, "field"):
+			case r.name == "field":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Field = string(text)
 				} else {
@@ -3792,13 +3791,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "module_path" || strings.EqualFold(r.name, "module_path"):
+			case r.name == "module_path":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ModulePath = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ModulePath)
 				}
-			case r.name == "export" || strings.EqualFold(r.name, "export"):
+			case r.name == "export":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Export = string(text)
 				} else {
@@ -3820,7 +3819,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "module_path" || strings.EqualFold(r.name, "module_path"):
+			case r.name == "module_path":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ModulePath = string(text)
 				} else {
@@ -3842,7 +3841,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "label" || strings.EqualFold(r.name, "label"):
+			case r.name == "label":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Label = string(text)
 				} else {
@@ -3864,13 +3863,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "label" || strings.EqualFold(r.name, "label"):
+			case r.name == "label":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Label = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Label)
 				}
-			case r.name == "negate" || strings.EqualFold(r.name, "negate"):
+			case r.name == "negate":
 				switch string(bytes.TrimSpace(r.value)) {
 				case "true":
 					v.Negate = true
@@ -3896,19 +3895,19 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "module_path" || strings.EqualFold(r.name, "module_path"):
+			case r.name == "module_path":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ModulePath = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ModulePath)
 				}
-			case r.name == "function" || strings.EqualFold(r.name, "function"):
+			case r.name == "function":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Function = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Function)
 				}
-			case r.name == "arg_count" || strings.EqualFold(r.name, "arg_count"):
+			case r.name == "arg_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -3917,7 +3916,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.ArgCount)
 					}
 				}
-			case r.name == "result_count" || strings.EqualFold(r.name, "result_count"):
+			case r.name == "result_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -3942,15 +3941,15 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "interface_type" || strings.EqualFold(r.name, "interface_type"):
+			case r.name == "interface_type":
 				err = DecodeInstructionPayload(r.value, &v.InterfaceType)
-			case r.name == "method" || strings.EqualFold(r.name, "method"):
+			case r.name == "method":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Method = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Method)
 				}
-			case r.name == "arg_count" || strings.EqualFold(r.name, "arg_count"):
+			case r.name == "arg_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -3959,7 +3958,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.ArgCount)
 					}
 				}
-			case r.name == "result_count" || strings.EqualFold(r.name, "result_count"):
+			case r.name == "result_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -3984,19 +3983,19 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "module_path" || strings.EqualFold(r.name, "module_path"):
+			case r.name == "module_path":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ModulePath = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ModulePath)
 				}
-			case r.name == "function" || strings.EqualFold(r.name, "function"):
+			case r.name == "function":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Function = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Function)
 				}
-			case r.name == "captures" || strings.EqualFold(r.name, "captures"):
+			case r.name == "captures":
 				err = strictUnmarshal(r.value, &v.Captures)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -4014,7 +4013,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "result_count" || strings.EqualFold(r.name, "result_count"):
+			case r.name == "result_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4039,7 +4038,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "owner_depth" || strings.EqualFold(r.name, "owner_depth"):
+			case r.name == "owner_depth":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4064,7 +4063,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "arg_count" || strings.EqualFold(r.name, "arg_count"):
+			case r.name == "arg_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4073,7 +4072,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.ArgCount)
 					}
 				}
-			case r.name == "result_count" || strings.EqualFold(r.name, "result_count"):
+			case r.name == "result_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4098,13 +4097,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "id" || strings.EqualFold(r.name, "id"):
+			case r.name == "id":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ID = IntrinsicID(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ID)
 				}
-			case r.name == "arg_count" || strings.EqualFold(r.name, "arg_count"):
+			case r.name == "arg_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4113,7 +4112,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.ArgCount)
 					}
 				}
-			case r.name == "result_count" || strings.EqualFold(r.name, "result_count"):
+			case r.name == "result_count":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4138,7 +4137,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "kind" || strings.EqualFold(r.name, "kind"):
+			case r.name == "kind":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseUint(text, 10, 8)
 					if parseErr == nil {
@@ -4147,7 +4146,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.Kind)
 					}
 				}
-			case r.name == "primitive" || strings.EqualFold(r.name, "primitive"):
+			case r.name == "primitive":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseUint(text, 10, 8)
 					if parseErr == nil {
@@ -4156,9 +4155,9 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.Primitive)
 					}
 				}
-			case r.name == "named" || strings.EqualFold(r.name, "named"):
+			case r.name == "named":
 				err = DecodeInstructionPayload(r.value, &v.Named)
-			case r.name == "node" || strings.EqualFold(r.name, "node"):
+			case r.name == "node":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Node = types.TypeID(text)
 				} else {
@@ -4180,7 +4179,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "op" || strings.EqualFold(r.name, "op"):
+			case r.name == "op":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseUint(text, 10, 16)
 					if parseErr == nil {
@@ -4189,7 +4188,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.Op)
 					}
 				}
-			case r.name == "payload" || strings.EqualFold(r.name, "payload"):
+			case r.name == "payload":
 				err = strictUnmarshal(r.value, &v.Payload)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -4207,25 +4206,25 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "subject" || strings.EqualFold(r.name, "subject"):
+			case r.name == "subject":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Subject = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Subject)
 				}
-			case r.name == "default" || strings.EqualFold(r.name, "default"):
+			case r.name == "default":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Default = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Default)
 				}
-			case r.name == "default_local" || strings.EqualFold(r.name, "default_local"):
+			case r.name == "default_local":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.DefaultLocal = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.DefaultLocal)
 				}
-			case r.name == "cases" || strings.EqualFold(r.name, "cases"):
+			case r.name == "cases":
 				err = strictUnmarshal(r.value, &v.Cases)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -4243,21 +4242,21 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "operator" || strings.EqualFold(r.name, "operator"):
+			case r.name == "operator":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Operator = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Operator)
 				}
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
-			case r.name == "label" || strings.EqualFold(r.name, "label"):
+			case r.name == "label":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Label = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Label)
 				}
-			case r.name == "when" || strings.EqualFold(r.name, "when"):
+			case r.name == "when":
 				switch string(bytes.TrimSpace(r.value)) {
 				case "true":
 					v.When = true
@@ -4283,9 +4282,9 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "type" || strings.EqualFold(r.name, "type"):
+			case r.name == "type":
 				err = DecodeInstructionPayload(r.value, &v.Type)
-			case r.name == "fields" || strings.EqualFold(r.name, "fields"):
+			case r.name == "fields":
 				err = strictUnmarshal(r.value, &v.Fields)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -4303,13 +4302,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "types" || strings.EqualFold(r.name, "types"):
+			case r.name == "types":
 				err = strictUnmarshal(r.value, &v.Types)
-			case r.name == "instructions" || strings.EqualFold(r.name, "instructions"):
+			case r.name == "instructions":
 				err = strictUnmarshal(r.value, &v.Instructions)
-			case r.name == "operands" || strings.EqualFold(r.name, "operands"):
+			case r.name == "operands":
 				err = strictUnmarshal(r.value, &v.Operands)
-			case r.name == "descriptors" || strings.EqualFold(r.name, "descriptors"):
+			case r.name == "descriptors":
 				err = DecodeInstructionPayload(r.value, &v.Descriptors)
 			default:
 				return true, fmt.Errorf("json: unknown field %q", r.name)
@@ -4327,13 +4326,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "format" || strings.EqualFold(r.name, "format"):
+			case r.name == "format":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Format = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Format)
 				}
-			case r.name == "version" || strings.EqualFold(r.name, "version"):
+			case r.name == "version":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4342,33 +4341,33 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.Version)
 					}
 				}
-			case r.name == "compiler_id" || strings.EqualFold(r.name, "compiler_id"):
+			case r.name == "compiler_id":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.CompilerID = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.CompilerID)
 				}
-			case r.name == "contract_id" || strings.EqualFold(r.name, "contract_id"):
+			case r.name == "contract_id":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ContractID = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ContractID)
 				}
-			case r.name == "target" || strings.EqualFold(r.name, "target"):
+			case r.name == "target":
 				err = DecodeInstructionPayload(r.value, &v.Target)
-			case r.name == "root" || strings.EqualFold(r.name, "root"):
+			case r.name == "root":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Root = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Root)
 				}
-			case r.name == "entries" || strings.EqualFold(r.name, "entries"):
+			case r.name == "entries":
 				err = strictUnmarshal(r.value, &v.Entries)
-			case r.name == "capabilities" || strings.EqualFold(r.name, "capabilities"):
+			case r.name == "capabilities":
 				err = strictUnmarshal(r.value, &v.Capabilities)
-			case r.name == "packages" || strings.EqualFold(r.name, "packages"):
+			case r.name == "packages":
 				err = strictUnmarshal(r.value, &v.Packages)
-			case r.name == "hash" || strings.EqualFold(r.name, "hash"):
+			case r.name == "hash":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Hash = string(text)
 				} else {
@@ -4390,13 +4389,13 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		for r.next() {
 			var err error
 			switch {
-			case r.name == "format" || strings.EqualFold(r.name, "format"):
+			case r.name == "format":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Format = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.Format)
 				}
-			case r.name == "version" || strings.EqualFold(r.name, "version"):
+			case r.name == "version":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseInt(text, 10, 0)
 					if parseErr == nil {
@@ -4405,25 +4404,25 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.Version)
 					}
 				}
-			case r.name == "compiler_id" || strings.EqualFold(r.name, "compiler_id"):
+			case r.name == "compiler_id":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.CompilerID = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.CompilerID)
 				}
-			case r.name == "contract_id" || strings.EqualFold(r.name, "contract_id"):
+			case r.name == "contract_id":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ContractID = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ContractID)
 				}
-			case r.name == "program_hash" || strings.EqualFold(r.name, "program_hash"):
+			case r.name == "program_hash":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.ProgramHash = string(text)
 				} else {
 					err = json.Unmarshal(r.value, &v.ProgramHash)
 				}
-			case r.name == "optimization" || strings.EqualFold(r.name, "optimization"):
+			case r.name == "optimization":
 				if text := string(bytes.TrimSpace(r.value)); text != "null" {
 					parsed, parseErr := strconv.ParseUint(text, 10, 8)
 					if parseErr == nil {
@@ -4432,9 +4431,9 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 						err = json.Unmarshal(r.value, &v.Optimization)
 					}
 				}
-			case r.name == "packages" || strings.EqualFold(r.name, "packages"):
+			case r.name == "packages":
 				err = strictUnmarshal(r.value, &v.Packages)
-			case r.name == "hash" || strings.EqualFold(r.name, "hash"):
+			case r.name == "hash":
 				if text, plain := plainPayloadString(r.value); plain {
 					v.Hash = string(text)
 				} else {

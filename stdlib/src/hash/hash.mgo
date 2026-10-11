@@ -12,13 +12,6 @@ import "io"
 // later, without having to re-write the data previously written to the hash.
 // The hash state may contain portions of the input in its original form,
 // which users are expected to handle for any possible security implications.
-//
-// Compatibility: Any future changes to hash or crypto packages will endeavor
-// to maintain compatibility with state encoded using previous versions.
-// That is, any released versions of the packages should be able to
-// decode data written with any previously released version,
-// subject to issues such as security fixes.
-// See the Go compatibility document for background: https://golang.org/doc/go1compat
 type Hash interface {
 	io.Writer
 	// Sum appends the current hash to b and returns the resulting slice.

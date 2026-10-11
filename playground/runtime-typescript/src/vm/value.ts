@@ -6,8 +6,16 @@ import type {
   Snapshot,
   TypeIdentity,
 } from "./types.js";
-import { Kind, PrimitiveKind } from "./contract.generated.js";
-import { JsonNumber, type JsonValue, boolean, fail, integer, object, string } from "./json.js";
+import { Kind, PrimitiveKind, WIRE_FIELDS } from "./contract.generated.js";
+import {
+  JsonNumber,
+  type JsonValue,
+  boolean,
+  fail,
+  integer,
+  schemaObject,
+  string,
+} from "./json.js";
 
 const textEncoder = new TextEncoder();
 
@@ -82,13 +90,15 @@ export class TypeRegistry {
     table: JsonValue | undefined,
   ) {
     const source =
-      table === undefined ? Object.create(null) : object(table, `${module}.type_table`);
+      table === undefined
+        ? Object.create(null)
+        : schemaObject(table, `${module}.type_table`, WIRE_FIELDS.TypeTable);
     const nodes = source.nodes;
     if (nodes === undefined) return;
     if (!Array.isArray(nodes)) fail("expected type node array", `${module}.type_table.nodes`);
     for (let index = 0; index < nodes.length; index++) {
       const path = `${module}.type_table.nodes[${index}]`;
-      const raw = object(nodes[index]!, path);
+      const raw = schemaObject(nodes[index]!, path, WIRE_FIELDS.TypeNode);
       const identity = parseTypeKey(raw.identity, `${path}.identity`);
       const node: TypeNode = {
         id: string(raw.id, `${path}.id`),
@@ -460,7 +470,7 @@ export function cloneValue(value: Value): Value {
 }
 
 export function parseTypeRef(value: JsonValue, path: string): TypeRef {
-  const raw = object(value, path);
+  const raw = schemaObject(value, path, WIRE_FIELDS.TypeRef);
   return {
     kind: integer(raw.kind, `${path}.kind`),
     primitive: integer(raw.primitive, `${path}.primitive`, true),
@@ -477,7 +487,7 @@ function optionalTypeRef(value: JsonValue | undefined, path: string): TypeRef | 
 
 function parseTypeKey(value: JsonValue | undefined, path: string): TypeKey {
   if (value === undefined) return { module_path: "", decl_id: "" };
-  const raw = object(value, path);
+  const raw = schemaObject(value, path, WIRE_FIELDS.TypeKey);
   return {
     module_path: string(raw.module_path, `${path}.module_path`, true),
     decl_id: string(raw.decl_id, `${path}.decl_id`, true),
@@ -491,7 +501,7 @@ function parseTypeRefs(value: JsonValue | undefined, path: string): TypeRef[] {
 }
 
 export function parseSignature(value: JsonValue, path: string): FunctionSignature {
-  const raw = object(value, path);
+  const raw = schemaObject(value, path, WIRE_FIELDS.FunctionSignature);
   const params = raw.params;
   return {
     params:
@@ -500,7 +510,11 @@ export function parseSignature(value: JsonValue, path: string): FunctionSignatur
         : (() => {
             if (!Array.isArray(params)) fail("expected parameter array", `${path}.params`);
             return params.map((item, index) => {
-              const parameter = object(item, `${path}.params[${index}]`);
+              const parameter = schemaObject(
+                item,
+                `${path}.params[${index}]`,
+                WIRE_FIELDS.TypeParam,
+              );
               if (!parameter.type) fail("missing parameter type", `${path}.params[${index}].type`);
               return { type: parseTypeRef(parameter.type, `${path}.params[${index}].type`) };
             });
@@ -515,7 +529,7 @@ function parseFields(value: JsonValue | undefined, path: string): TypeNode["fiel
   if (!Array.isArray(value)) fail("expected field array", path);
   return value.map((item, index) => {
     const fieldPath = `${path}[${index}]`;
-    const field = object(item, fieldPath);
+    const field = schemaObject(item, fieldPath, WIRE_FIELDS.Field);
     if (!field.type) fail("missing field type", `${fieldPath}.type`);
     return {
       name: string(field.name, `${fieldPath}.name`),
@@ -531,7 +545,7 @@ function parseMethods(value: JsonValue | undefined, path: string): TypeNode["met
   if (!Array.isArray(value)) fail("expected method array", path);
   return value.map((item, index) => {
     const methodPath = `${path}[${index}]`;
-    const method = object(item, methodPath);
+    const method = schemaObject(item, methodPath, WIRE_FIELDS.Method);
     if (!method.receiver || !method.signature) fail("invalid method", methodPath);
     return {
       name: string(method.name, `${methodPath}.name`),
@@ -555,7 +569,7 @@ export function decodeConstant(type: RuntimeType, source: JsonValue): Value {
     if (primitiveKind === PrimitiveKind.PrimitiveString) {
       if (typeof source === "string")
         return { type, kind: "string", value: textEncoder.encode(source) };
-      const raw = object(source, "constant");
+      const raw = schemaObject(source, "constant", ["bytes"]);
       const encoded = string(raw.bytes, "constant.bytes");
       return { type, kind: "string", value: decodeBase64(encoded) };
     }
@@ -583,7 +597,7 @@ export function decodeConstant(type: RuntimeType, source: JsonValue): Value {
       primitiveKind === PrimitiveKind.PrimitiveComplex64 ||
       primitiveKind === PrimitiveKind.PrimitiveComplex128
     ) {
-      const raw = object(source, "constant");
+      const raw = schemaObject(source, "constant", ["real", "imag"]);
       return normalize({
         type,
         kind: "complex",

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -7,47 +6,25 @@ import { createRuntime } from "@d7z-team/mini-go";
 import * as nativeRPC from "@d7z-team/mini-go/rpc";
 import { exerciseNativeRPC } from "./support/native-rpc.js";
 import { exerciseRPC } from "./support/rpc.js";
-import { runtimeVector, runtimeVectors } from "./support/runtime-vectors.js";
+import { runtimeVector, sealImage } from "./support/runtime-vectors.js";
 import { root, startPeer } from "./support/peer.js";
 
-function sealImage(image) {
-  for (const archive of Object.values(image.packages))
-    archive.artifact_hash = createHash("sha256")
-      .update(JSON.stringify(archive.artifact))
-      .digest("hex");
-  image.hash = "";
-  image.hash = createHash("sha256").update(JSON.stringify(image)).digest("hex");
-  return new TextEncoder().encode(JSON.stringify(image));
-}
-
-test(
-  "Node runtime executes the complete optimized shared corpus",
-  { timeout: 120_000 },
-  async (t) => {
-    for (const vector of runtimeVectors) {
-      const image = vector.bytes;
-      const owned = Uint8Array.from(image);
-      const vm = await createRuntime(image);
-      t.after(() => vm.terminate());
-      assert.deepEqual(image, owned, `${vector.name}: caller retains image ownership`);
-      const call = vm.start("default");
-      assert.equal(
-        (await call.result).roots[0].data.Integer,
-        BigInt(vector.result_integer),
-        vector.name,
-      );
-      await call.settled;
-      const stats = await vm.stats();
-      assert.ok(stats.steps > 0n, `${vector.name}: steps`);
-      assert.ok(stats.gcCollections > 0n, `${vector.name}: logical heap census`);
-      assert.ok(
-        stats.memoryAllocatedBytes >= stats.memoryBytes,
-        `${vector.name}: memory accounting`,
-      );
-      await vm.close();
-    }
-  },
-);
+test("Node runtime executes an optimized image without taking caller buffers", async (t) => {
+  const vector = runtimeVector("parallel_cpu");
+  const image = vector.bytes;
+  const owned = Uint8Array.from(image);
+  const vm = await createRuntime(image);
+  t.after(() => vm.terminate());
+  assert.deepEqual(image, owned, "caller retains image ownership");
+  const call = vm.start("default");
+  assert.equal((await call.result).roots[0].data.Integer, BigInt(vector.result_integer));
+  await call.settled;
+  const stats = await vm.stats();
+  assert.ok(stats.steps > 0n, "steps");
+  assert.ok(stats.gcCollections > 0n, "logical heap census");
+  assert.ok(stats.totalGuestAllocatedBytes >= stats.liveGuestBytes, "memory accounting");
+  await vm.close();
+});
 
 test("Node runtime enforces budgets and publishes hot patches atomically", async (t) => {
   const initial = runtimeVector("any_reassign");

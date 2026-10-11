@@ -16,7 +16,7 @@ browsers and Node.js. The `mini-go` CLI can also run `.mgo` files without a host
 - Go, Rust, and TypeScript runtimes backed by the same bytecode contract.
 - Formatting, LSP, DAP, caching, and a VS Code extension.
 
-The standard library is a curated Go-compatible subset. Its supported surface is listed in the
+The standard library surface implemented by Mini-Go is listed in the
 [generated reference](./docs/reference/README.md).
 
 ## Install and run

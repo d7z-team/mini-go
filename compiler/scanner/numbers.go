@@ -83,7 +83,7 @@ func (s *scanner) scanNumber(start int) {
 	if !hexadecimal && !floating && len(text) > 1 && text[0] == '0' && (len(text) < 2 || text[1] != 'b' && text[1] != 'B' && text[1] != 'o' && text[1] != 'O') {
 		for _, digit := range text[1:] {
 			if digit != '_' && (digit < '0' || digit > '7') {
-				s.addDiagnostic("scanner.number.octal_digit", "legacy octal literal contains a non-octal digit", start, textEnd)
+				s.addDiagnostic("scanner.number.octal_digit", "leading-zero octal literal contains a non-octal digit", start, textEnd)
 				break
 			}
 		}
