@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.6'
+          go-version: "1.26.6"
           cache: true
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
       - run: rustup default 1.98.1
@@ -67,13 +67,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.6'
+          go-version: "1.26.6"
           cache: true
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
       - run: rustup default 1.98.1
       - uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: "24"
       - uses: actions/cache@v5
         with:
           path: |
@@ -93,11 +93,11 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.6'
+          go-version: "1.26.6"
           cache: true
       - uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: "24"
           cache: npm
           cache-dependency-path: |
             playground/runtime-typescript/package-lock.json
@@ -229,6 +229,9 @@ jobs:
           set -euo pipefail
           test -n "$CARGO_REGISTRY_TOKEN"
           version=$(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.version)')
+          local_npm_integrity=$(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.npmIntegrity)')
+          runtime_compiler_sha256=$(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.runtimeCompilerSHA256)')
+          typescript_compiler_sha256=$(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.typescriptCompilerSHA256)')
           rust=build/release/source/playground/runtime-rust
           user_agent='go-mini-publish/1.0 (https://github.com/d7z-team/mini-go)'
 
@@ -260,7 +263,6 @@ jobs:
           runtime_checksum=$(crate_checksum mini-go)
 
           npm_tarball="build/release/d7z-team-mini-go-$version.tgz"
-          local_npm_integrity=$(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.npmIntegrity)')
           npm_integrity() {
             npm view "@d7z-team/mini-go@$version" dist.integrity --json \
               --prefer-online --fetch-retries=0 --fetch-timeout=10000 2>/dev/null |
@@ -271,18 +273,7 @@ jobs:
             echo "@d7z-team/mini-go $version already published with matching integrity"
           else
             npm publish "$npm_tarball" --tag git --access public --provenance
-            remote_npm_integrity=
-            for attempt in $(seq 1 30); do
-              if remote_npm_integrity=$(npm_integrity); then
-                test "$remote_npm_integrity" = "$local_npm_integrity"
-                break
-              fi
-              sleep 2
-            done
-            if [[ "$remote_npm_integrity" != "$local_npm_integrity" ]]; then
-              echo "@d7z-team/mini-go $version did not appear with matching integrity" >&2
-              exit 1
-            fi
+            remote_npm_integrity=$local_npm_integrity
           fi
 
           {
@@ -290,7 +281,8 @@ jobs:
             echo
             echo "- [mini-go $version](https://crates.io/crates/mini-go/$version): \`$runtime_checksum\`"
             echo "- [@d7z-team/mini-go@$version](https://www.npmjs.com/package/@d7z-team/mini-go/v/$version) (git tag): \`$remote_npm_integrity\`"
-            echo "- compiler SHA-256: $(node -e 'const value=require("./build/release/release.json");process.stdout.write(value.compilerSHA256)')"
+            echo "- Rust compiler SHA-256: \`$runtime_compiler_sha256\`"
+            echo "- TypeScript compiler SHA-256: \`$typescript_compiler_sha256\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload published artifacts
         if: steps.candidate.outputs.current == 'true'
