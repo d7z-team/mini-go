@@ -24,13 +24,14 @@ minigo_dev := go run ./cmd/mini-go-dev
 minigo_sources = $(shell find stdlib/src stdlib/host -type f \( -name '*.mgo' -o -name '*.mrpc' \) -print | sort) rpc/gateway/control.mrpc
 rust_dir := playground/runtime-rust
 cargo_flags := --locked --manifest-path $(rust_dir)/Cargo.toml
+rust_test_profile := test-release
 typescript_dir := playground/runtime-typescript
 npm := npm --prefix $(typescript_dir)
 typescript_compiler_dir := $(typescript_dir)/.build/compiler
 typescript_compiler_wasm := $(typescript_compiler_dir)/mini-go-compiler.wasm
 runtime_images := testdata/runtime/execution.json.gz testdata/runtime/stdlib.json.gz
 compiler_image := $(rust_dir)/assets/compiler.json.gz
-.PHONY: help check generate doc artifacts compiler-image _check-identity _check-runtime-images _check-artifacts
+.PHONY: help check generate doc artifacts runtime-images compiler-image _check-identity _check-runtime-images _check-artifacts
 help: ## 显示常用目标与说明
 	@awk 'BEGIN { print "用法：make <目标> [变量=值]\n" } /^[a-zA-Z][a-zA-Z0-9_-]*:.*## / { split($$0, parts, ":"); sub(/^.*## /, ""); printf "  %-24s %s\n", parts[1], $$0 }' $(MAKEFILE_LIST)
 
@@ -43,7 +44,9 @@ generate: ## 更新全部绑定、契约、镜像与 manifest
 doc: ## 从源码注释生成 API 文档
 	@$(minigo) doc -out docs/reference std
 
-artifacts: _check-identity $(runtime_images) $(compiler_image) ## 显式补齐缺失的 runtime、stdlib 和 compiler 镜像
+artifacts: runtime-images $(compiler_image) ## 显式补齐缺失的全部测试与 compiler 镜像
+
+runtime-images: _check-identity $(runtime_images) ## 显式补齐缺失的 runtime 与 stdlib 测试镜像
 
 compiler-image: _check-identity $(compiler_image) ## 显式补齐缺失的 compiler 镜像
 
@@ -60,7 +63,7 @@ _check-identity:
 	@$(minigo_dev) compiler-identity -out runtime/bytecode/identity.go -check
 
 _check-runtime-images: _check-identity
-	@for image in $(runtime_images); do test -f "$$image" || { echo "Missing $$image; run make artifacts (or make generate after source changes)" >&2; exit 1; }; done
+	@for image in $(runtime_images); do test -f "$$image" || { echo "Missing $$image; run make runtime-images (or make generate after source changes)" >&2; exit 1; }; done
 
 _check-artifacts: _check-runtime-images
 	@test -f "$(compiler_image)" || { echo "Missing $(compiler_image); run make compiler-image" >&2; exit 1; }
@@ -106,8 +109,8 @@ lint-rust: _check-artifacts ## Rust 格式、最小 feature 编译与完整 Clip
 	@for feature in compiler dap language-server rpc rpc-gateway stdlib-host; do cargo check $(cargo_flags) -p mini-go --no-default-features --features "$$feature" || exit; done
 	@cargo clippy $(cargo_flags) --workspace --all-features --all-targets -- -D warnings
 
-test-rust: _check-artifacts ## release 原生 VM、compiler、RPC、Host 与标准库测试
-	@cargo test $(cargo_flags) --release -p mini-go --features language-server,rpc-gateway,stdlib-host --no-fail-fast $(RUST_TEST_FLAGS)
+test-rust: _check-artifacts ## 优化构建的原生 VM、compiler、RPC、Host 与标准库测试
+	@cargo test $(cargo_flags) --profile $(rust_test_profile) -p mini-go --features language-server,rpc-gateway,stdlib-host --no-fail-fast $(RUST_TEST_FLAGS)
 
 bench-rust: _check-runtime-images ## Rust 执行、分配与 GC 基准
 	@cargo bench $(cargo_flags) --bench runtime
@@ -122,7 +125,7 @@ test-interop: _check-artifacts _rpc-go-peer ## Go/Rust RPC 互操作与 Go provi
 		target="$$(printf '%s' "$$metadata" | node -pe 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).target_directory')" && \
 		MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" MINIGO_RPC_RUST_PEER="$$target/debug/mini-go-rpc-peer-rust" \
 		go test ./integrations -run '^TestRPC.*Conformance$$' -count=1 -timeout=3m
-	@MINIGO_HOST_BROKER="$(CURDIR)/bin/mini-go-dev" cargo test $(cargo_flags) --release -p mini-go --features host-conformance --test stdlib -- --nocapture
+	@MINIGO_HOST_BROKER="$(CURDIR)/bin/mini-go-dev" cargo test $(cargo_flags) --profile $(rust_test_profile) -p mini-go --features host-conformance --test stdlib -- --nocapture
 
 # 依赖安装显式执行，npm build 不回调根生成流程。
 .PHONY: deps _typescript-compiler-assets build-typescript lint-typescript test-typescript pack-typescript
@@ -138,13 +141,13 @@ _typescript-compiler-assets:
 		test -f "$$wasm_exec" || { echo "Go wasm_exec.js was not found below $$go_root" >&2; exit 1; }; \
 		install -m 0644 "$$wasm_exec" "$(typescript_compiler_dir)/wasm_exec.js"
 
-build-typescript: _check-runtime-images _typescript-compiler-assets ## 构建 TypeScript runtime、Worker 与 Go compiler WASM 分发
+build-typescript: _typescript-compiler-assets ## 构建 TypeScript runtime、Worker 与 Go compiler WASM 分发
 	@$(npm) run build
 
 lint-typescript: build-typescript ## SDK strict 类型、生成绑定与格式检查
 	@$(npm) run lint
 
-test-typescript: lint-typescript _rpc-go-peer ## Node、浏览器、RPC、Go compiler、debug 与安装包测试
+test-typescript: _check-runtime-images lint-typescript _rpc-go-peer ## Node、浏览器、RPC、Go compiler、debug 与安装包测试
 	@MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" $(npm) test
 
 pack-typescript: build-typescript ## 将当前构建打包到 TYPESCRIPT_PACK_OUTPUT
@@ -155,7 +158,7 @@ pack-typescript: build-typescript ## 将当前构建打包到 TYPESCRIPT_PACK_OU
 test-scripts: ## 验证构建编排、CI 与发布脚本
 	@node --test scripts/*.test.mjs .github/scripts/*.test.mjs
 
-release-package: test-scripts ## 在 RELEASE_OUTPUT 生成 crate 与 npm tarball
+release-package: ## 在 RELEASE_OUTPUT 生成 crate 与 npm tarball
 	@bash scripts/release-package.sh --output "$(RELEASE_OUTPUT)" $(RELEASE_FLAGS)
 
 release-verify: ## 解包并验证 RELEASE_OUTPUT 中的分发产物

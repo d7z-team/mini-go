@@ -208,20 +208,28 @@ test("Make consumes prepared artifacts and uses Cargo's target directory for pee
   assert.notEqual(missing.status, 0);
   assert.match(
     missing.stderr,
-    /Missing testdata\/runtime\/stdlib.json.gz; run make artifacts/,
+    /Missing testdata\/runtime\/stdlib.json.gz; run make runtime-images/,
+  );
+
+  const missingTypeScript = spawnSync("make", ["test-typescript"], {
+    cwd: context.directory,
+    env: context.env,
+    encoding: "utf8",
+  });
+  assert.notEqual(missingTypeScript.status, 0);
+  assert.match(
+    missingTypeScript.stderr,
+    /Missing testdata\/runtime\/stdlib.json.gz; run make runtime-images/,
   );
 });
 
-test("Make prepares compiler assets before packing TypeScript and preserves shared caches", async (t) => {
+test("Make packs TypeScript without runtime test images and preserves shared caches", async (t) => {
   const context = await fixture(t);
   await copyFile(
     path.join(repository, "Makefile"),
     path.join(context.directory, "Makefile"),
   );
   for (const name of [
-    "testdata/runtime/execution.json.gz",
-    "testdata/runtime/stdlib.json.gz",
-    "playground/runtime-rust/assets/compiler.json.gz",
     "build/result",
     ".cache/retained",
   ]) {
@@ -229,7 +237,9 @@ test("Make prepares compiler assets before packing TypeScript and preserves shar
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, "fixture");
   }
-  await mkdir(path.join(context.directory, "playground/runtime-typescript"));
+  await mkdir(path.join(context.directory, "playground/runtime-typescript"), {
+    recursive: true,
+  });
   context.env.FAKE_GOROOT = path.join(context.directory, "go-root");
   await mkdir(path.join(context.env.FAKE_GOROOT, "lib/wasm"), { recursive: true });
   await writeFile(path.join(context.env.FAKE_GOROOT, "lib/wasm/wasm_exec.js"), "fixture");
@@ -244,6 +254,18 @@ if (args[0] === 'build') {
 }`,
   );
   await tool(context, "npm", "");
+  const runtimeImages = spawnSync("make", ["runtime-images"], {
+    cwd: context.directory,
+    env: context.env,
+    encoding: "utf8",
+  });
+  assert.equal(runtimeImages.status, 0, runtimeImages.stderr);
+  assert.deepEqual(
+    (await context.commands())
+      .filter(({ tool, args }) => tool === "go" && args[0] === "generate")
+      .map(({ args }) => args[2]),
+    ["runtime-vectors ", "runtime-stdlib-vectors "],
+  );
   const result = spawnSync("make", ["pack-typescript", "clean"], {
     cwd: context.directory,
     env: context.env,

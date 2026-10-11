@@ -80,7 +80,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             playground/runtime-rust/target
-          key: rust-runtime-${{ runner.os }}-1.98.1-${{ hashFiles('playground/runtime-rust/Cargo.lock') }}
+          key: rust-runtime-${{ runner.os }}-1.98.1-test-release-v1-${{ hashFiles('playground/runtime-rust/Cargo.lock') }}
       - run: make artifacts
       - run: make lint-rust test-rust test-interop
 
@@ -102,7 +102,7 @@ jobs:
           cache-dependency-path: playground/runtime-typescript/package-lock.json
       - run: make deps
       - run: npm exec --prefix playground/runtime-typescript -- playwright install --with-deps chromium firefox
-      - run: make artifacts
+      - run: make runtime-images
       - run: make test-typescript
 
   plan:
@@ -173,7 +173,7 @@ jobs:
         with:
           go-version: "1.26.6"
           cache: true
-      - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+      - run: rustup toolchain install 1.98.1 --profile minimal
       - run: rustup default 1.98.1
       - uses: actions/setup-node@v4
         with:
@@ -197,18 +197,14 @@ jobs:
           path: /tmp/mini-go/cache
           key: mini-go-oracle-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'compiler/**/*.go', 'runtime/**/*.go', 'ffi/**/*.go', 'stdlib/**/*.go', 'stdlib/**/*.mgo', 'tooling/runtimecheck/*.go') }}
           restore-keys: mini-go-oracle-${{ runner.os }}-
-      - name: Install TypeScript and browser tools
-        run: |
-          make deps
-          npm exec --prefix playground/runtime-typescript -- playwright install --with-deps chromium firefox
-      - name: Verify TypeScript runtime and Go compiler tooling
-        run: |
-          make artifacts
-          make test-typescript
-      - name: Build and verify release artifacts
+      - name: Build release artifacts
         run: |
           export GOCACHE="$(go env GOCACHE)"
-          make release-package release-verify
+          make release-package
+      - name: Verify release artifacts
+        run: |
+          npm exec --prefix build/release/source/playground/runtime-typescript -- playwright install --with-deps chromium
+          make release-verify
       - name: Check candidate before publishing
         id: candidate
         run: |

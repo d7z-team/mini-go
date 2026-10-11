@@ -79,10 +79,12 @@ GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev core-api verify
 
 ```bash
 make artifacts
+make runtime-images
 make compiler-image
 ```
 
-这两个目标要求当前 identity 已匹配；修改事实源后仍应运行 `make generate`。
+`artifacts` 补齐全部镜像；另外两个目标分别只补齐共享 runtime 测试镜像或 Rust bundled compiler。
+这些目标要求当前 identity 已匹配；修改事实源后仍应运行 `make generate`。
 
 ### 生成预编译示例
 
@@ -110,12 +112,13 @@ Mini-Go 缓存，缓存契约和故障注入使用隔离 backend。完整测试�
 | 命令 | 范围 |
 | --- | --- |
 | `make lint-rust` | rustfmt、最小/单 feature 编译和完整 Clippy |
-| `make test-rust` | release VM、compiler、LSP/DAP、RPC、Host 和 stdlib |
+| `make test-rust` | 优化模式的 VM、compiler、LSP/DAP、RPC、Host 和 stdlib |
 | `make test-interop` | Go/Rust RPC 互操作与 Go provider 标准库 |
 | `make bench-rust` | runtime、分配和 GC 诊断 |
 
-局部测试可传 `RUST_TEST_FLAGS` 或直接运行 Cargo。编译会话测试使用 release 模式。安装、feature 和 API
-见 [Rust README](playground/runtime-rust/README.md)与[使用指南](playground/runtime-rust/USAGE.md)。
+局部测试可传 `RUST_TEST_FLAGS` 或直接运行 Cargo。编译会话测试使用继承 release 优化级别的
+`test-release` profile；正式发布和 benchmark 使用 `release` profile。安装、feature 和 API 见
+[Rust README](playground/runtime-rust/README.md)与[使用指南](playground/runtime-rust/USAGE.md)。
 
 ### TypeScript runtime 与 Go compiler WASM
 

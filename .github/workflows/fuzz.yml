@@ -27,5 +27,5 @@ jobs:
           cache: true
       - run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt
       - run: rustup default 1.98.1
-      - run: make artifacts
+      - run: make runtime-images
       - run: FUZZTIME=3m FUZZ_PARALLEL=1 make fuzz
