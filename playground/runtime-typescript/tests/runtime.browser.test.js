@@ -14,10 +14,14 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
     async (t) => {
       const initial = runtimeVector("any_reassign");
       const replacement = runtimeVector("arithmetic");
-      const page = await createBrowserPage(t, {
-        "/initial": initial.bytes,
-        "/replacement": replacement.bytes,
-      });
+      const page = await createBrowserPage(
+        t,
+        {
+          "/initial": initial.bytes,
+          "/replacement": replacement.bytes,
+        },
+        browserType,
+      );
       page.on("console", (message) => t.diagnostic(`${browserName}: ${message.text()}`));
       page.on("pageerror", (error) => t.diagnostic(`${browserName}: ${error.stack ?? error}`));
       const observed = await page.evaluate(async () => {
@@ -58,6 +62,7 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
       const page = await openBrowserPage(
         t,
         `${address}/playground/runtime-typescript/tests/support/index.html`,
+        browserType,
       );
       await page.evaluate(async () => {
         const { createRuntime } = await import(

@@ -3,13 +3,13 @@ import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
 // Register cleanup before launch so cancellation also covers initialization.
-export async function openBrowserPage(t, url) {
+export async function openBrowserPage(t, url, browserType = chromium) {
   let browser;
   t.after(async () => {
     await browser?.close();
   });
   t.signal.addEventListener("abort", () => void browser?.close(), { once: true });
-  browser = await chromium.launch({ headless: true, timeout: 300_000 });
+  browser = await browserType.launch({ headless: true, timeout: 300_000 });
   if (t.signal.aborted) {
     await browser.close();
     t.signal.throwIfAborted();
@@ -21,7 +21,7 @@ export async function openBrowserPage(t, url) {
 }
 
 // The local asset server remains test-owned even when browser launch fails.
-export async function createBrowserPage(t, routes = {}) {
+export async function createBrowserPage(t, routes = {}, browserType = chromium) {
   const assets = new URL("../../dist/", import.meta.url);
   const server = http.createServer(async (request, response) => {
     try {
@@ -63,5 +63,5 @@ export async function createBrowserPage(t, routes = {}) {
     { once: true },
   );
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return openBrowserPage(t, `http://127.0.0.1:${server.address().port}`);
+  return openBrowserPage(t, `http://127.0.0.1:${server.address().port}`, browserType);
 }

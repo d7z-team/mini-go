@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { RPCClient } from "../dist/rpc/client.js";
+import { RPCEndpoint } from "../dist/rpc/endpoint.js";
 import { RPCStatus, providedResource, rpcCodecs } from "@d7z-team/mini-go/rpc";
 
 const contract = {
@@ -100,6 +101,29 @@ test("RPC connection options reject durations outside the wire range", async () 
     );
   }
   assert.equal(workers, 0);
+});
+
+test("renewal rejects missing active owners and permits concurrent retirement", async () => {
+  const endpoint = new RPCEndpoint(
+    { leaseTtlMs: 60_000 },
+    () => {},
+    (reason) => assert.fail(reason),
+  );
+  endpoint.readyState.resolve();
+  const binding = { wire: 7, epoch: 1, contract, draining: false };
+  const result = { binding: 1, call: 9, resources: [] };
+  endpoint.outboundBindings.set(1, binding);
+  endpoint.clientResults.set(1, result);
+  endpoint.request = async () => ({ id: 1, reply: { values: new Uint8Array([0]) } });
+  await assert.rejects(endpoint.renew([binding.wire], [result.call]), /did not renew/);
+
+  endpoint.request = async () => {
+    endpoint.outboundBindings.delete(1);
+    endpoint.clientResults.delete(1);
+    return { id: 2, reply: { values: new Uint8Array([0]) } };
+  };
+  await endpoint.renew([binding.wire], [result.call]);
+  await endpoint.shutdown();
 });
 
 test("RPC result decoding decides provisional ownership exactly once", async (t) => {

@@ -1404,9 +1404,22 @@ export class RPCEndpoint {
     request.values = encodeLeaseTargets(bindings, operations);
     const { reply } = await this.request(request, undefined, this.admissionTimeoutMs);
     const confirmed = decodeLeaseTargets(reply.values);
+    const requestedBindings = new Set(bindings);
+    const requestedOperations = new Set(operations);
     if (
-      bindings.some((id) => !confirmed.bindings.includes(id)) ||
-      operations.some((id) => !confirmed.operations.includes(id))
+      confirmed.bindings.some((id) => !requestedBindings.has(id)) ||
+      confirmed.operations.some((id) => !requestedOperations.has(id))
+    )
+      throw new RPCError("protocol", "RPC peer renewed unexpected ownership");
+    const activeBindings = new Set(
+      [...this.outboundBindings.values()].map((binding) => binding.wire),
+    );
+    const activeOperations = new Set([...this.clientResults.values()].map((result) => result.call));
+    const confirmedBindings = new Set(confirmed.bindings);
+    const confirmedOperations = new Set(confirmed.operations);
+    if (
+      bindings.some((id) => activeBindings.has(id) && !confirmedBindings.has(id)) ||
+      operations.some((id) => activeOperations.has(id) && !confirmedOperations.has(id))
     )
       throw new RPCError("unavailable", "RPC peer did not renew active ownership");
   }
