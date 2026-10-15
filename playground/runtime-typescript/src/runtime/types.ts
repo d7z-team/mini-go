@@ -1,6 +1,6 @@
-import type { Snapshot, VMOptions } from "../vm/types.js";
+import type { Snapshot, VMOptions } from "../vm/types";
 
-export type * from "../vm/types.js";
+export type * from "../vm/types";
 
 export interface Execution {
   result: Promise<Snapshot>;

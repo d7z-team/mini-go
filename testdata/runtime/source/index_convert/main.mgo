@@ -1,0 +1,16 @@
+package main
+
+type Byte byte
+
+func Main() int {
+	text := "abc"
+	bytes := []byte{4, 5, 6}
+	array := [3]byte{7, 8, 9}
+	if int(text[1]) != 98 || int(bytes[2]) != 6 || int(array[0]) != 7 {
+		return -1
+	}
+	if Byte(text[0]) != Byte('a') {
+		return -2
+	}
+	return int(text[0]) + int(bytes[0]) + int(array[1])
+}

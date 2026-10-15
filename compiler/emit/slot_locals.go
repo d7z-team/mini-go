@@ -71,7 +71,7 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 			if lastUse[output] <= boundary && lastUse[output] <= nextWrite[local] {
 				forwarded[output], removed[pc] = ir.Operand{Kind: ir.OperandLocal, Index: uint32(local)}, true
 			}
-		case ir.OpLabel, ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpReturn, ir.OpPanic,
+		case ir.OpLabel, ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpReturn, ir.OpPanic,
 			ir.OpTypeDispatch, ir.OpSelect, ir.OpMapIterInit, ir.OpMapIterNext, ir.OpMapIterClose,
 			ir.OpCallDirect, ir.OpCallValue, ir.OpCallInterface, ir.OpTailCallDirect, ir.OpCallFFI,
 			ir.OpDeferPush, ir.OpSpawn, ir.OpInitModule:
@@ -259,7 +259,7 @@ func promoteTemporaries(code *ir.SlotCode, function *hir.Function, table *types.
 		case ir.OpLoadLocal:
 			local := locals[code.Descriptors.Local[instruction.Descriptor].Local]
 			reads[local] = append(reads[local], pc)
-		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpReturn, ir.OpPanic, ir.OpTypeDispatch:
+		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpReturn, ir.OpPanic, ir.OpTypeDispatch:
 			block++
 		}
 	}
@@ -349,7 +349,11 @@ func directLocalResults(code *ir.SlotCode, function *hir.Function, table *types.
 		if store.Op != ir.OpStoreLocal || !ir.HasDirectOutput(producer.Op) || boundaries[pc] {
 			continue
 		}
-		local := locals[code.Descriptors.Local[store.Descriptor].Local]
+		localPayload := code.Descriptors.Local[store.Descriptor]
+		if localPayload.Rebind {
+			continue
+		}
+		local := locals[localPayload.Local]
 		input, output := code.Operands[store.Operands].Inputs, code.Operands[producer.Operands].Outputs
 		if !private[local] || len(input) != 1 || input[0].Kind != ir.OperandSlot || len(output) != 1 ||
 			input[0].Index != output[0] || uses[output[0]] != 1 || code.Types[output[0]] != function.Locals[local].Type {
@@ -365,6 +369,10 @@ func directLocalResults(code *ir.SlotCode, function *hir.Function, table *types.
 }
 
 func rewriteSlotLocals(code *ir.SlotCode, removed []bool, replacements map[uint32]ir.Operand, symbols *ir.FunctionSymbols) error {
+	return rewriteSlotCode(code, removed, replacements, nil, symbols)
+}
+
+func rewriteSlotCode(code *ir.SlotCode, removed []bool, replacements map[uint32]ir.Operand, overrides map[int]ir.Instruction, symbols *ir.FunctionSymbols) error {
 	pcs := make([]int, len(code.Instructions)+1)
 	instructions := code.Instructions[:0]
 	operands := make([]ir.SlotOperands, 0, len(code.Instructions))
@@ -373,6 +381,10 @@ func rewriteSlotLocals(code *ir.SlotCode, removed []bool, replacements map[uint3
 		pcs[pc] = len(instructions)
 		if removed[pc] {
 			continue
+		}
+		override, overridden := overrides[pc]
+		if overridden {
+			instruction.Op = override.Op
 		}
 		arguments := code.Operands[instruction.Operands]
 		for i, input := range arguments.Inputs {
@@ -385,9 +397,15 @@ func rewriteSlotLocals(code *ir.SlotCode, removed []bool, replacements map[uint3
 			}
 			arguments.Inputs[i] = input
 		}
-		payload, err := code.Descriptors.Payload(instruction.Op, instruction.Descriptor)
-		if err != nil {
-			return err
+		var payload ir.Payload
+		var err error
+		if overridden {
+			payload = override.Payload
+		} else {
+			payload, err = code.Descriptors.Payload(instruction.Op, instruction.Descriptor)
+			if err != nil {
+				return err
+			}
 		}
 		instruction.Descriptor, err = descriptors.Append(payload)
 		if err != nil {

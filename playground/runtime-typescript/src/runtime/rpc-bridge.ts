@@ -1,4 +1,4 @@
-import type { HostReply, RPCOptions } from "./types.js";
+import type { HostReply, RPCOptions } from "./types";
 import {
   RPCEndpoint,
   decodeRPCFfiRequest,
@@ -9,9 +9,9 @@ import {
   type RPCFfiResponse,
   type RPCResourceReference,
   type RPCWireValue,
-} from "../rpc/endpoint.js";
-import { attachRPCSocket, connectRPCSocket, flushRPCSocket } from "../rpc/transport.js";
-import type { RPCMethod, RPCValue } from "../rpc/types.js";
+} from "../rpc/endpoint";
+import { attachRPCSocket, connectRPCSocket, flushRPCSocket } from "../rpc/transport";
+import type { RPCMethod, RPCValue } from "../rpc/types";
 
 const FFI_PROTOCOL = "minigo.mrpc.ffi/v3";
 

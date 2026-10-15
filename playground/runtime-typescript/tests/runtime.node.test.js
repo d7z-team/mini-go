@@ -1,20 +1,21 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { createRuntime } from "@d7z-team/mini-go";
 import * as nativeRPC from "@d7z-team/mini-go/rpc";
 import { exerciseNativeRPC } from "./support/native-rpc.js";
 import { exerciseRPC } from "./support/rpc.js";
 import { runtimeVector, sealImage } from "./support/runtime-vectors.js";
 import { root, startPeer } from "./support/peer.js";
+import * as nativeBindings from "../../../testdata/rpc/generated/typescript/service";
 
 test("Node runtime executes an optimized image without taking caller buffers", async (t) => {
   const vector = runtimeVector("parallel_cpu");
   const image = vector.bytes;
   const owned = Uint8Array.from(image);
   const vm = await createRuntime(image);
-  t.after(() => vm.terminate());
+  t.onTestFinished(() => vm.terminate());
   assert.deepEqual(image, owned, "caller retains image ownership");
   const call = vm.start("default");
   assert.equal((await call.result).roots[0].data.Integer, BigInt(vector.result_integer));
@@ -50,12 +51,12 @@ test("Node runtime enforces budgets and publishes hot patches atomically", async
   }
 
   const limited = await createRuntime(replacement.bytes, { limits: { maxSteps: 1 } });
-  t.after(() => limited.terminate());
+  t.onTestFinished(() => limited.terminate());
   await assert.rejects(limited.start("default").result, { code: "step_limit" });
   await limited.close();
 
   const vm = await createRuntime(initial.bytes, { limits: { maxSteps: 0 } });
-  t.after(() => vm.terminate());
+  t.onTestFinished(() => vm.terminate());
   await assert.rejects(vm.patch(Uint8Array.of(1, 2, 3)), { code: "invalid_image" });
   await assert.rejects(vm.patch(initial.bytes), { code: "unchanged" });
   assert.equal((await vm.stats()).generation, 1n);
@@ -70,7 +71,7 @@ test("Node runtime enforces budgets and publishes hot patches atomically", async
   const retained = await createRuntime(initial.bytes, {
     limits: { maxRetainedRevisions: 1 },
   });
-  t.after(() => retained.terminate());
+  t.onTestFinished(() => retained.terminate());
   await assert.rejects(retained.patch(replacement.bytes), { code: "resource_limit" });
   assert.equal((await retained.stats()).generation, 1n);
   await retained.close();
@@ -94,6 +95,6 @@ test(
   { timeout: 30_000 },
   async (t) => {
     const address = await startPeer(t);
-    await exerciseNativeRPC(nativeRPC, address);
+    await exerciseNativeRPC(nativeRPC, address, nativeBindings);
   },
 );

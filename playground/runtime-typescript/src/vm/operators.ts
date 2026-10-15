@@ -1,9 +1,10 @@
-import { Kind, PrimitiveKind } from "./contract.generated.js";
-import { fail } from "./json.js";
+import { Kind, PrimitiveKind } from "./contract.generated";
+import { fail } from "./json";
 import {
   boolValue,
   cell,
   cloneValue,
+  decodeRune,
   dereference,
   guestEqual,
   normalize,
@@ -11,18 +12,140 @@ import {
   type RuntimeType,
   type SliceValue,
   type Value,
-} from "./value.js";
+} from "./value";
 
 const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
 
-export function unary(operator: string, operand: Value): Value {
-  const value = cloneValue(operand);
+// Prepared instructions keep the operator discriminator as a small integer.  The
+// numeric values are private to the runtime image and deliberately do not form a
+// wire contract; the compiler still supplies the source spelling at the image
+// boundary.  Keeping this table here also makes compare_branch share exactly the
+// same operator validation as binary.
+export const enum OperatorCode {
+  Add = 1,
+  Subtract,
+  Multiply,
+  Divide,
+  Remainder,
+  BitAnd,
+  BitOr,
+  BitXor,
+  BitClear,
+  ShiftLeft,
+  ShiftRight,
+  Equal,
+  NotEqual,
+  Less,
+  LessEqual,
+  Greater,
+  GreaterEqual,
+  LogicalAnd,
+  LogicalOr,
+  Complex,
+}
+
+export const enum UnaryOperatorCode {
+  Plus = 1,
+  Minus,
+  Not,
+  Complement,
+  Real,
+  Imag,
+}
+
+const OPERATOR_CODES: Readonly<Record<string, OperatorCode>> = {
+  "+": OperatorCode.Add,
+  "-": OperatorCode.Subtract,
+  "*": OperatorCode.Multiply,
+  "/": OperatorCode.Divide,
+  "%": OperatorCode.Remainder,
+  "&": OperatorCode.BitAnd,
+  "|": OperatorCode.BitOr,
+  "^": OperatorCode.BitXor,
+  "&^": OperatorCode.BitClear,
+  "<<": OperatorCode.ShiftLeft,
+  ">>": OperatorCode.ShiftRight,
+  "==": OperatorCode.Equal,
+  "!=": OperatorCode.NotEqual,
+  "<": OperatorCode.Less,
+  "<=": OperatorCode.LessEqual,
+  ">": OperatorCode.Greater,
+  ">=": OperatorCode.GreaterEqual,
+  "&&": OperatorCode.LogicalAnd,
+  "||": OperatorCode.LogicalOr,
+  complex: OperatorCode.Complex,
+};
+
+export function operatorCode(operator: string): OperatorCode {
+  const code = OPERATOR_CODES[operator];
+  if (!code) fail("unknown operator", operator, "invalid_operation");
+  return code;
+}
+
+export function unaryOperatorCode(operator: string): UnaryOperatorCode {
   switch (operator) {
     case "+":
+      return UnaryOperatorCode.Plus;
+    case "-":
+      return UnaryOperatorCode.Minus;
+    case "!":
+      return UnaryOperatorCode.Not;
+    case "^":
+      return UnaryOperatorCode.Complement;
+    case "real":
+      return UnaryOperatorCode.Real;
+    case "imag":
+      return UnaryOperatorCode.Imag;
+    default:
+      fail("unknown unary operator", operator, "invalid_operation");
+  }
+}
+
+const OPERATOR_NAMES: readonly string[] = [
+  "",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "&",
+  "|",
+  "^",
+  "&^",
+  "<<",
+  ">>",
+  "==",
+  "!=",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "&&",
+  "||",
+  "complex",
+];
+
+const UNARY_OPERATOR_NAMES: readonly string[] = ["", "+", "-", "!", "^", "real", "imag"];
+
+export function operatorName(code: number): string {
+  const name = OPERATOR_NAMES[code];
+  if (!name) fail("unknown operator code", String(code), "invalid_operation");
+  return name;
+}
+
+function unaryOperatorName(code: number): string {
+  const name = UNARY_OPERATOR_NAMES[code];
+  if (!name) fail("unknown unary operator code", String(code), "invalid_operation");
+  return name;
+}
+
+export function unaryCode(code: number, operand: Value): Value {
+  const value = cloneValue(operand);
+  switch (code) {
+    case UnaryOperatorCode.Plus:
       if (["int", "uint", "float", "complex"].includes(value.kind)) return value;
       break;
-    case "-":
+    case UnaryOperatorCode.Minus:
       if (value.kind === "int") value.value = -(value.value as bigint);
       else if (value.kind === "uint") value.value = -(value.value as bigint);
       else if (value.kind === "float") value.value = -(value.value as number);
@@ -31,17 +154,17 @@ export function unary(operator: string, operand: Value): Value {
         value.value = { real: -complex.real, imag: -complex.imag };
       } else break;
       return normalize(value);
-    case "!":
+    case UnaryOperatorCode.Not:
       if (value.kind === "bool") return { ...value, value: !(value.value as boolean) };
       break;
-    case "^":
+    case UnaryOperatorCode.Complement:
       if (value.kind === "int" || value.kind === "uint") {
         value.value = ~(value.value as bigint);
         return normalize(value);
       }
       break;
-    case "real":
-    case "imag":
+    case UnaryOperatorCode.Real:
+    case UnaryOperatorCode.Imag:
       if (value.kind === "complex") {
         const complex = value.value as { real: number; imag: number };
         const underlying = value.type.registry.underlying(value.type);
@@ -53,18 +176,28 @@ export function unary(operator: string, operand: Value): Value {
               : PrimitiveKind.PrimitiveFloat64,
           ),
           kind: "float",
-          value: operator === "real" ? complex.real : complex.imag,
+          value: code === UnaryOperatorCode.Real ? complex.real : complex.imag,
         });
       }
+      break;
   }
-  fail("operand type does not support operator", operator, "invalid_operation");
+  fail("operand type does not support operator", unaryOperatorName(code), "invalid_operation");
+}
+
+export function unary(operator: string, operand: Value): Value {
+  return unaryCode(unaryOperatorCode(operator), operand);
 }
 
 export function binary(operator: string, left: Value, right: Value): Value {
+  return binaryCode(operatorCode(operator), left, right);
+}
+
+/** Execute the prepared binary operator directly on its numeric discriminator. */
+export function binaryCode(code: number, left: Value, right: Value): Value {
   const registry = left.type.registry;
-  if (operator === "==" || operator === "!=")
-    return boolValue(registry, guestEqual(left, right) === (operator === "=="));
-  if (operator === "complex" && left.kind === "float" && right.kind === "float") {
+  if (code === OperatorCode.Equal || code === OperatorCode.NotEqual)
+    return boolValue(registry, guestEqual(left, right) === (code === OperatorCode.Equal));
+  if (code === OperatorCode.Complex && left.kind === "float" && right.kind === "float") {
     const underlying = registry.underlying(left.type);
     return normalize({
       type: primitive(
@@ -77,112 +210,150 @@ export function binary(operator: string, left: Value, right: Value): Value {
       value: { real: left.value as number, imag: right.value as number },
     });
   }
-  if (operator === "<<" || operator === ">>") {
+  if (code === OperatorCode.ShiftLeft || code === OperatorCode.ShiftRight) {
     if (!(["int", "uint"].includes(left.kind) && ["int", "uint"].includes(right.kind)))
-      invalid(operator);
+      invalid(operatorName(code));
     const shift = right.value as bigint;
-    if (shift < 0n) fail("negative shift count", operator, "panic");
+    if (shift < 0n) fail("negative shift count", operatorName(code), "panic");
     let result: bigint;
     if (shift >= 64n)
-      result = operator === ">>" && left.kind === "int" && (left.value as bigint) < 0n ? -1n : 0n;
+      result =
+        code === OperatorCode.ShiftRight && left.kind === "int" && (left.value as bigint) < 0n
+          ? -1n
+          : 0n;
     else
       result =
-        operator === "<<" ? (left.value as bigint) << shift : (left.value as bigint) >> shift;
+        code === OperatorCode.ShiftLeft
+          ? (left.value as bigint) << shift
+          : (left.value as bigint) >> shift;
     return normalize({ ...left, value: result });
   }
   if (left.kind === "bool" && right.kind === "bool") {
-    if (operator === "&&")
+    if (code === OperatorCode.LogicalAnd)
       return boolValue(registry, (left.value as boolean) && (right.value as boolean));
-    if (operator === "||")
+    if (code === OperatorCode.LogicalOr)
       return boolValue(registry, (left.value as boolean) || (right.value as boolean));
-    invalid(operator);
+    invalid(operatorName(code));
   }
   if (left.kind === "string" && right.kind === "string") {
     const a = left.value as Uint8Array;
     const b = right.value as Uint8Array;
-    if (operator === "+") {
+    if (code === OperatorCode.Add) {
       const joined = new Uint8Array(a.length + b.length);
       joined.set(a);
       joined.set(b, a.length);
       return { ...left, value: joined };
     }
-    const comparison = compareBytes(a, b);
-    return boolValue(registry, comparisonResult(operator, comparison));
+    return boolValue(registry, compareCode(code, left, right));
   }
   if (left.kind === "complex" && right.kind === "complex") {
     const a = left.value as { real: number; imag: number };
     const b = right.value as { real: number; imag: number };
     let real: number, imag: number;
-    if (operator === "+") [real, imag] = [a.real + b.real, a.imag + b.imag];
-    else if (operator === "-") [real, imag] = [a.real - b.real, a.imag - b.imag];
-    else if (operator === "*")
+    if (code === OperatorCode.Add) [real, imag] = [a.real + b.real, a.imag + b.imag];
+    else if (code === OperatorCode.Subtract) [real, imag] = [a.real - b.real, a.imag - b.imag];
+    else if (code === OperatorCode.Multiply)
       [real, imag] = [a.real * b.real - a.imag * b.imag, a.real * b.imag + a.imag * b.real];
-    else if (operator === "/") [real, imag] = complexDivide(a.real, a.imag, b.real, b.imag);
-    else invalid(operator);
+    else if (code === OperatorCode.Divide)
+      [real, imag] = complexDivide(a.real, a.imag, b.real, b.imag);
+    else invalid(operatorName(code));
     return normalize({ ...left, value: { real: real!, imag: imag! } });
   }
   if (left.kind === "float" && right.kind === "float") {
     const a = left.value as number;
     const b = right.value as number;
-    if (operator === "<") return boolValue(registry, a < b);
-    if (operator === "<=") return boolValue(registry, a <= b);
-    if (operator === ">") return boolValue(registry, a > b);
-    if (operator === ">=") return boolValue(registry, a >= b);
+    if (code >= OperatorCode.Less && code <= OperatorCode.GreaterEqual)
+      return boolValue(registry, compareCode(code, left, right));
     const result =
-      operator === "+"
+      code === OperatorCode.Add
         ? a + b
-        : operator === "-"
+        : code === OperatorCode.Subtract
           ? a - b
-          : operator === "*"
+          : code === OperatorCode.Multiply
             ? a * b
-            : operator === "/"
+            : code === OperatorCode.Divide
               ? a / b
               : undefined;
-    if (result === undefined) invalid(operator);
+    if (result === undefined) invalid(operatorName(code));
     return normalize({ ...left, value: result });
   }
   if ((left.kind === "int" || left.kind === "uint") && left.kind === right.kind) {
     const a = left.value as bigint;
     const b = right.value as bigint;
-    if (["<", "<=", ">", ">="].includes(operator))
-      return boolValue(registry, comparisonResult(operator, a < b ? -1 : a > b ? 1 : 0));
-    if ((operator === "/" || operator === "%") && b === 0n)
-      fail("integer divide by zero", operator, "panic");
+    if (code >= OperatorCode.Less && code <= OperatorCode.GreaterEqual)
+      return boolValue(registry, compareCode(code, left, right));
+    if ((code === OperatorCode.Divide || code === OperatorCode.Remainder) && b === 0n)
+      fail("integer divide by zero", operatorName(code), "panic");
     let result: bigint;
-    switch (operator) {
-      case "+":
+    switch (code) {
+      case OperatorCode.Add:
         result = a + b;
         break;
-      case "-":
+      case OperatorCode.Subtract:
         result = a - b;
         break;
-      case "*":
+      case OperatorCode.Multiply:
         result = a * b;
         break;
-      case "/":
+      case OperatorCode.Divide:
         result = a / b;
         break;
-      case "%":
+      case OperatorCode.Remainder:
         result = a % b;
         break;
-      case "&":
+      case OperatorCode.BitAnd:
         result = a & b;
         break;
-      case "|":
+      case OperatorCode.BitOr:
         result = a | b;
         break;
-      case "^":
+      case OperatorCode.BitXor:
         result = a ^ b;
         break;
-      case "&^":
+      case OperatorCode.BitClear:
         result = a & ~b;
         break;
       default:
-        invalid(operator);
+        invalid(operatorName(code));
     }
     return normalize({ ...left, value: result! });
   }
-  invalid(operator);
+  invalid(operatorName(code));
+}
+
+/** Evaluate a prepared binary operator without allocating a bool Value. */
+export function compareCode(code: number, left: Value, right: Value): boolean {
+  if (code === OperatorCode.Equal || code === OperatorCode.NotEqual) {
+    const equal = guestEqual(left, right);
+    return code === OperatorCode.Equal ? equal : !equal;
+  }
+  let comparison: number;
+  if (left.kind === "string" && right.kind === "string")
+    comparison = compareBytes(left.value as Uint8Array, right.value as Uint8Array);
+  else if (left.kind === "float" && right.kind === "float") {
+    const a = left.value as number;
+    const b = right.value as number;
+    if (Number.isNaN(a) || Number.isNaN(b)) return false;
+    comparison = a < b ? -1 : a > b ? 1 : 0;
+  } else if ((left.kind === "int" || left.kind === "uint") && left.kind === right.kind) {
+    const a = left.value as bigint;
+    const b = right.value as bigint;
+    comparison = a < b ? -1 : a > b ? 1 : 0;
+  } else {
+    invalid(operatorName(code));
+  }
+  switch (code) {
+    case OperatorCode.Less:
+      return comparison! < 0;
+    case OperatorCode.LessEqual:
+      return comparison! <= 0;
+    case OperatorCode.Greater:
+      return comparison! > 0;
+    case OperatorCode.GreaterEqual:
+      return comparison! >= 0;
+    default:
+      invalid(operatorName(code));
+  }
 }
 
 export function convert(value: Value, type: RuntimeType): Value {
@@ -205,12 +376,13 @@ export function convert(value: Value, type: RuntimeType): Value {
       element.ref.kind === Kind.Primitive &&
       element.ref.primitive === PrimitiveKind.PrimitiveInt32
     ) {
-      const text = textDecoder.decode(value.value as Uint8Array);
-      const runes = [...text].map((rune) => ({
-        type: targetElement,
-        kind: "int" as const,
-        value: BigInt(rune.codePointAt(0)!),
-      }));
+      const bytes = value.value as Uint8Array;
+      const runes: Value[] = [];
+      for (let offset = 0; offset < bytes.length; ) {
+        const [rune, width] = decodeRune(bytes, offset);
+        runes.push({ type: targetElement, kind: "int", value: BigInt(rune) });
+        offset += width;
+      }
       backing = { type, kind: "array", value: runes };
       length = runes.length;
     } else invalid("convert");
@@ -271,8 +443,17 @@ export function convert(value: Value, type: RuntimeType): Value {
         value: textEncoder.encode(String.fromCodePoint(Number(rune))),
       };
     }
-    if (primitiveKind === PrimitiveKind.PrimitiveString && value.kind === "slice") {
+    if (
+      primitiveKind === PrimitiveKind.PrimitiveString &&
+      (value.kind === "slice" || value.kind === "nil")
+    ) {
       const sourceElement = value.type.registry.element(value.type.registry.underlying(value.type));
+      if (value.kind === "nil" && sourceElement) {
+        const element = sourceElement.registry.underlying(sourceElement).ref.primitive;
+        if (element === PrimitiveKind.PrimitiveUint8 || element === PrimitiveKind.PrimitiveInt32)
+          return { type, kind: "string", value: new Uint8Array() };
+      }
+      if (value.kind !== "slice") invalid("convert");
       const slice = value.value as SliceValue;
       const backing = dereference(slice.storage);
       if (
@@ -315,14 +496,6 @@ export function convert(value: Value, type: RuntimeType): Value {
 
 function invalid(operator: string): never {
   fail("operand types do not support operator", operator, "invalid_operation");
-}
-
-function comparisonResult(operator: string, order: number): boolean {
-  if (operator === "<") return order < 0;
-  if (operator === "<=") return order <= 0;
-  if (operator === ">") return order > 0;
-  if (operator === ">=") return order >= 0;
-  invalid(operator);
 }
 
 function compareBytes(left: Uint8Array, right: Uint8Array): number {

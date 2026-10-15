@@ -193,6 +193,27 @@ func compareNumericValues(operator preparedOperator, left, right vmValue) (bool,
 	return compareFloat(operator, l, r), nil
 }
 
+func compareLengthValue(operator preparedOperator, length int64, right vmValue) (bool, error) {
+	var ordering int
+	switch integerKind(right) {
+	case signedIntegerKind:
+		value, err := numericAsInt64(right)
+		if err != nil {
+			return false, err
+		}
+		ordering = compareInt64(length, value)
+	case unsignedIntegerKind:
+		value, err := numericAsUint64(right)
+		if err != nil {
+			return false, err
+		}
+		ordering = compareUint64(uint64(length), value)
+	default:
+		return false, fmt.Errorf("invalid integer operands Int and %s", right.Type)
+	}
+	return compareOrdering(operator, ordering), nil
+}
+
 func compareOrdering(operator preparedOperator, comparison int) bool {
 	switch operator {
 	case operatorLess:

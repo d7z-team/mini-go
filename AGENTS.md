@@ -33,7 +33,8 @@
   同步 VM 工作交给有界执行器，异步任务明确传递取消并等待清理；库错误沿用现有 Result/error 类型。
 - TypeScript 共用 runtime 包管理 VM、RPC Endpoint、Worker 通信与生命周期，browser/node 入口只适配平台；
   Compiler Worker 运行 Go compiler WASM，会话队列、恢复和升级语义归 TypeScript。
-  对外二进制输入保持调用方所有权，保留 BigInt 和图快照语义；修改源码后重新构建分发产物。
+  对外二进制输入保持调用方所有权，保留 BigInt 和图快照语义。公开 ESM 入口、Worker 和 compiler
+  WASM 由 Vite 构建，修改源码后重新构建分发产物。
 
 ## 架构与派生物
 

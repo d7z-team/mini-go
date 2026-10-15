@@ -20,7 +20,7 @@ import {
   type RPCProvider,
   type RPCServerContext,
 } from "@d7z-team/mini-go/rpc";
-import * as types from "./types.js";
+import * as types from "./types";
 
 export const MRPC_CONTRACT_ID = "14d44d37912f9a304a57fcd63a09a4203cdb72ccbc278ed718de937510883312";
 

@@ -1,5 +1,5 @@
-import { serializeError, type WorkerPort } from "../worker-channel.js";
-import type { CompilerCommand, CompilerResponse } from "./protocol.js";
+import { serializeError, type WorkerPort } from "../worker-channel";
+import type { CompilerCommand, CompilerResponse } from "./protocol";
 
 export interface GoCompiler {
   call(input: Uint8Array): Uint8Array;

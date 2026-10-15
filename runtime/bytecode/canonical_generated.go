@@ -5395,6 +5395,18 @@ func decodePayload(op string, raw json.RawMessage) (Payload, error) {
 			return nil, err
 		}
 		return v, nil
+	case "index_convert":
+		var v TypePayload
+		if err := DecodeInstructionPayload(raw, &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "len_compare_branch":
+		var v CompareBranchPayload
+		if err := DecodeInstructionPayload(raw, &v); err != nil {
+			return nil, err
+		}
+		return v, nil
 	default:
 		if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "{}" {
 			return nil, nil

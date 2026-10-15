@@ -6,7 +6,7 @@
 
 Mini-Go is an embeddable scripting engine with Go-like syntax. Go applications compile and run
 scripts directly, Rust applications execute the same bytecode, and the TypeScript runtime supports
-browsers and Node.js. The `mini-go` CLI can also run `.mgo` files without a host application.
+browsers and Node.js. The `mini-go` CLI runs `.mgo` files without a host application.
 
 ## Highlights
 
@@ -19,7 +19,7 @@ browsers and Node.js. The `mini-go` CLI can also run `.mgo` files without a host
 The standard library surface implemented by Mini-Go is listed in the
 [generated reference](./docs/reference/README.md).
 
-## Install and run
+## Quick start
 
 The Go host toolchain requires Go 1.26 or later:
 
@@ -37,15 +37,15 @@ func main() {
 }
 ```
 
-Then check and run it:
+Check and run it:
 
 ```bash
 mini-go check hello.mgo
 mini-go run hello.mgo
 ```
 
-Mini-Go source files use `.mgo`; tests use `_test.mgo`. The [Go and CLI guide](./USAGE.md) covers
-multi-file projects, local modules, host capabilities, execution control, and hot patching.
+Mini-Go source files use `.mgo`; tests use `_test.mgo`. See the [Go and CLI guide](./USAGE.md) for
+project layout, host capabilities, execution control, and hot patching.
 
 ## Embed in Go
 
@@ -63,8 +63,7 @@ instantiates isolated runtime state. Start with the [complete Go example](./USAG
 | Native Rust | [`mini-go` crate][crate-runtime] · [Rust runtime][rust-runtime] |
 | Browser and Node.js | `npm install @d7z-team/mini-go` · [TypeScript runtime][typescript-runtime] |
 
-Compiler resources and runtime artifacts must come from the same toolchain version. Packaging and
-deployment details live in the component guides.
+Use the component guide for packaging, deployment, and toolchain details.
 
 ## Documentation
 
@@ -80,7 +79,8 @@ The detailed guides below are written in Chinese.
 | Understand component boundaries | [Architecture](./ARCHITECTURE.md) |
 | Build, test, diagnose, or release | [Development guide](./DEVELOPMENT.md) |
 
-Run `make help` for repository commands. Contribution rules are in [AGENTS.md](./AGENTS.md).
+Maintainer workflows and contribution rules are in the [development guide](./DEVELOPMENT.md) and
+[AGENTS.md](./AGENTS.md).
 
 ## License
 

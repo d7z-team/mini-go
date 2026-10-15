@@ -1,9 +1,9 @@
-import { deferred, type Deferred } from "../deferred.js";
-import { serializeError, type WorkerFailure } from "../worker-channel.js";
-import type { RuntimeControlResult, RuntimeStart, RuntimeWorkerPort } from "./protocol.js";
-import type { HostReply, WorkerProvider } from "./types.js";
-import { VirtualMachine, type VMAction } from "../vm/vm.js";
-import { RuntimeRPCBridge } from "./rpc-bridge.js";
+import { deferred, type Deferred } from "../deferred";
+import { serializeError, type WorkerFailure } from "../worker-channel";
+import type { RuntimeControlResult, RuntimeStart, RuntimeWorkerPort } from "./protocol";
+import type { HostReply, WorkerProvider } from "./types";
+import { VirtualMachine, type VMAction } from "../vm/vm";
+import { RuntimeRPCBridge } from "./rpc-bridge";
 
 /** Own one pure TypeScript VM inside a browser or Node worker. */
 export function runRuntimeWorker(
@@ -242,7 +242,8 @@ export function runRuntimeWorker(
       if (data.kind === "create") {
         if (vm) throw new Error("worker already owns an instance");
         const { providerModule, rpcUrl, rpcOptions, ...configuration } = data.options;
-        if (providerModule) provider = (await import(providerModule)) as WorkerProvider;
+        if (providerModule)
+          provider = (await import(/* @vite-ignore */ providerModule)) as WorkerProvider;
         if (rpcUrl)
           rpc = await RuntimeRPCBridge.connect(rpcUrl, rpcOptions ?? {}, schedule, failWorker);
         vm = await VirtualMachine.create(data.image, configuration);

@@ -1,7 +1,7 @@
 {
   "format": "mini-go-ir",
-  "version": 30,
-  "opcode_set": "minigo.ir.v15",
+  "version": 31,
+  "opcode_set": "minigo.ir.v16",
   "symbols_format": "mini-go-program-symbols",
   "symbols_version": 1,
   "symbols_contract": "minigo.symbols.v1",
@@ -22,7 +22,7 @@
       "name": "opcode_set",
       "type": "string",
       "required": true,
-      "rule": "must be \"minigo.ir.v15\""
+      "rule": "must be \"minigo.ir.v16\""
     },
     {
       "name": "module",
@@ -363,7 +363,7 @@
     {
       "name": "outputs",
       "type": "[]uint32",
-      "rule": "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len or cap"
+      "rule": "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len, cap, string-next-rune-index, index-convert, get-path, or a single-result direct call"
     },
     {
       "name": "release",
@@ -1417,7 +1417,7 @@
       "op": "call_direct",
       "category": "call",
       "payload": "call",
-      "operands": "read args, write results",
+      "operands": "read args, write results; a single fixed scalar result may target a private local",
       "arity": {
         "kind": "payload",
         "inputs": 0,
@@ -1933,6 +1933,30 @@
         "outputs": 1
       },
       "notes": "read a bounded sequence of declared fields"
+    },
+    {
+      "op": "index_convert",
+      "category": "composite",
+      "payload": "type",
+      "operands": "read indexable object/index, write converted integer",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 1
+      },
+      "notes": "fused load_index followed by a scalar integer conversion"
+    },
+    {
+      "op": "len_compare_branch",
+      "category": "control",
+      "payload": "compare_branch",
+      "operands": "read indexable object/integer, branch without materializing len",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 2,
+        "outputs": 0
+      },
+      "notes": "length is the left comparison operand; compiler normalizes the operator when source length was on the right"
     }
   ],
   "type_rules": [

@@ -146,7 +146,6 @@ _typescript-compiler-assets:
 	@GOOS=js GOARCH=wasm go build -trimpath -o "$(typescript_compiler_wasm)" ./cmd/mini-go-compiler-wasm
 	@go_root="$$(go env GOROOT)"; \
 		wasm_exec="$$go_root/lib/wasm/wasm_exec.js"; \
-		if test ! -f "$$wasm_exec"; then wasm_exec="$$go_root/misc/wasm/wasm_exec.js"; fi; \
 		test -f "$$wasm_exec" || { echo "Go wasm_exec.js was not found below $$go_root" >&2; exit 1; }; \
 		install -m 0644 "$$wasm_exec" "$(typescript_compiler_dir)/wasm_exec.js"
 

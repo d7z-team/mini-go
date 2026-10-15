@@ -101,6 +101,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 			return taskYield{}, true, err
 		}
 		if target.state != callFrame.module.state && target.state.initState != moduleReady && target.state.initTask != task {
+			functionForInitialization := function
 			return taskYield{}, true, machine.initializeModule(task, current, target, func(task *executionTask, caller *executionFrame) error {
 				args, err := caller.frame.popN(payload.ArgCount)
 				if err != nil {
@@ -110,7 +111,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 				if qualify {
 					args = caller.frame.module.qualifyValuesForArgumentBoundary(args)
 				}
-				callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, payload.ResultCount, qualify)
+				callee, err := machine.vm.newPreparedExecutionFrame(target, functionForInitialization, args, nil, task.id, payload.ResultCount, qualify)
 				if _, census := findGuestCensusRequest(err); !census {
 					caller.frame.releasePopValues()
 				}
@@ -328,7 +329,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 			return taskYield{}, true, err
 		}
 		values = callFrame.retainReturnValues(values)
-		current.completion = &frameCompletion{returnValues: values}
+		current.setCompletion(frameCompletion{returnValues: values})
 		return taskYield{}, true, nil
 	default:
 		return taskYield{}, false, nil
@@ -376,7 +377,7 @@ func (machine *executionMachine) enterDirectTailCall(task *executionTask, curren
 		}
 		// The callee is recycled immediately after resume returns. Preserve
 		// values that still occupy the callee stack backing array.
-		caller.completion = &frameCompletion{returnValues: append([]vmValue(nil), normalized...)}
+		caller.setCompletion(frameCompletion{returnValues: append([]vmValue(nil), normalized...)})
 		return nil
 	}
 	task.frames = append(task.frames, callee)

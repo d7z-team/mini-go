@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { RPCClient } from "../dist/rpc/client.js";
-import { RPCEndpoint } from "../dist/rpc/endpoint.js";
-import { RPCStatus, providedResource, rpcCodecs } from "@d7z-team/mini-go/rpc";
+import { test } from "vitest";
+import { RPCClient } from "../src/rpc/client";
+import { RPCEndpoint } from "../src/rpc/endpoint";
+import { RPCStatus, providedResource, rpcCodecs } from "../src/rpc/types";
 
 const contract = {
   protocol: "minigo.rpc.contract.v2",
@@ -79,7 +79,7 @@ async function harness(t) {
     },
   };
   const connection = await RPCClient.connect("ws://example.test/rpc", {}, () => worker);
-  t.after(() => connection.terminate());
+  t.onTestFinished(() => connection.terminate());
   return {
     connection,
     sent,

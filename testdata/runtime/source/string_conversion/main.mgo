@@ -5,6 +5,11 @@ import "runtime/oracle/helper"
 type Tag string
 
 func Main() int {
+	var nilBytes []byte
+	var nilRunes []rune
+	if string(nilBytes) != "" || string(nilRunes) != "" {
+		return -6
+	}
 	s := Tag(string([]byte{255, 0, 128}))
 	b := []byte(string(s))
 	var c byte = 42

@@ -91,7 +91,7 @@ func IsDirectOutputType(table *types.TypeTable, typ types.TypeRef) bool {
 }
 
 func HasDirectOutput(op Opcode) bool {
-	return op == OpUnary || op == OpBinary || op == OpZero || op == OpLen || op == OpCap || op == OpGetPath || op == OpConvert || op == OpLoadIndex
+	return op == OpUnary || op == OpBinary || op == OpZero || op == OpLen || op == OpCap || op == OpGetPath || op == OpConvert || op == OpLoadIndex || op == OpStringNextRuneIndex || op == OpIndexConvert || op == OpCallDirect
 }
 
 type SlotCode struct {

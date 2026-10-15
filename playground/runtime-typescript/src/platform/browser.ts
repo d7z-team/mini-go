@@ -1,6 +1,14 @@
-import type { WorkerConnection, WorkerPort } from "../worker-channel.js";
+import runtimeWorkerURL from "../runtime/worker.browser?worker&url";
+import compilerWorkerURL from "../compiler/worker.browser?worker&url";
+import rpcWorkerURL from "../rpc/worker.browser?worker&url";
+import compilerWasmURL from "../../.build/compiler/mini-go-compiler.wasm?url&no-inline";
+import type { CompilerWorkerFactory } from "../compiler/language-service";
+import type { RuntimeWorkerFactory } from "../runtime/protocol";
+import type { RPCConnectOptions } from "../rpc/types";
+import type { RPCWorkerFactory } from "../rpc/protocol";
+import type { WorkerConnection } from "../worker-channel";
 
-/** Adapt browser events without owning the caller's protocol. */
+/** Adapt browser Worker objects to the shared connection protocol. */
 export function createBrowserWorker<Input, Output>(
   url: string | URL,
   name: string,
@@ -17,11 +25,13 @@ export function createBrowserWorker<Input, Output>(
   };
 }
 
-export function browserWorkerPort<Input, Output>(): WorkerPort<Input, Output> {
-  return {
-    send: (message) => globalThis.postMessage(message),
-    listen: (handler) => {
-      globalThis.onmessage = (event: MessageEvent<Input>) => handler(event.data);
-    },
-  };
-}
+export const defaultCompilerURL = compilerWasmURL;
+
+export const createRuntimeWorker: RuntimeWorkerFactory = (options) =>
+  createBrowserWorker(options.workerUrl || runtimeWorkerURL, "runtime worker");
+
+export const createCompilerWorker: CompilerWorkerFactory = (options) =>
+  createBrowserWorker(options.workerUrl || compilerWorkerURL, "compiler worker");
+
+export const createRPCWorker: RPCWorkerFactory = (configuration: RPCConnectOptions) =>
+  createBrowserWorker(configuration.workerUrl || rpcWorkerURL, "RPC worker");

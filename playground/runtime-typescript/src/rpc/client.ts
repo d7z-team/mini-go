@@ -14,8 +14,8 @@ import type {
   RPCServerContext,
   RPCStats,
   RPCValue,
-} from "./types.js";
-import { RPCStatus } from "./types.js";
+} from "./types";
+import { RPCStatus } from "./types";
 import type {
   RPCFailure,
   RPCConfiguration,
@@ -24,8 +24,8 @@ import type {
   RPCWorkerConnection,
   RPCWorkerFactory,
   RPCWorkerStats,
-} from "./protocol.js";
-import { deferred, type Deferred } from "../deferred.js";
+} from "./protocol";
+import { deferred, type Deferred } from "../deferred";
 
 const maximumIdentity = 0xffff_ffff;
 const maximumDurationMs = 9_223_372_036_854;

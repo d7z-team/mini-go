@@ -324,6 +324,29 @@ async fn assert_warm_analysis(name: &str) {
         first["Analysis"]["Snapshot"],
         second["Analysis"]["Snapshot"]
     );
+    let built = session
+        .call_with_timeout(
+            json!({"Operation":"build/prepare","Build":{
+                "Revision":session.revision(),"Symbols":true,
+                "EntryPoints":[{"Name":"default","ModulePath":"sample","Function":workload["Entry"]}]
+            }}),
+            &Cancellation::default(),
+            REQUEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert!(built["Error"].is_null(), "{name}: {built}");
+    assert!(
+        built["Diagnostics"].as_array().is_none_or(Vec::is_empty),
+        "{built}"
+    );
+    let image = built["ImageJSON"].as_str().unwrap();
+    let symbols = built["SymbolsJSON"].as_str().unwrap();
+    let program = mini_go::program::Program::load(image.as_bytes(), Default::default())
+        .unwrap()
+        .with_symbols(serde_json::from_str(symbols).unwrap())
+        .unwrap();
+    assert!(!program.image().hash.is_empty());
     if name == "generic-methods" {
         let (line, text) = workload["Source"]
             .as_str()

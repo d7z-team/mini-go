@@ -123,6 +123,22 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		} else {
 			frame.push(out)
 		}
+	case preparedLenCompareBranch:
+		object, other, err := frame.pop2()
+		if err != nil {
+			return err
+		}
+		length, err := lengthValue(frame.module, object)
+		if err != nil {
+			return err
+		}
+		matched, err := compareLengthValue(inst.operator, length, other)
+		if err != nil {
+			return err
+		}
+		if matched == inst.comparison.When {
+			frame.pc = inst.jumpPC
+		}
 	case preparedTypeAssert:
 		payload := inst.typeOperand
 		value, err := frame.pop()
@@ -154,15 +170,34 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		}
 		frame.push(out)
 		frame.push(ok)
-	case preparedConvert:
+	case preparedConvert, preparedIndexConvert:
 		payload := inst.typeOperand
-		value, err := frame.pop()
+		var value vmValue
+		var err error
+		if inst.op == preparedIndexConvert {
+			object, index, popErr := frame.pop2()
+			if popErr != nil {
+				return popErr
+			}
+			value, err = indexValue(frame.module, object, index)
+		} else {
+			value, err = frame.pop()
+		}
 		if err != nil {
 			return err
 		}
 		typ := inst.runtimeType
 		if !typ.Valid() {
 			typ = frame.module.runtimeType(payload.Type)
+		}
+		if inst.conversion.scalarTarget() {
+			if out, handled, fastErr := convertPrimitiveValue(value, typ, inst.conversion); handled || fastErr != nil {
+				if fastErr != nil {
+					return fastErr
+				}
+				frame.push(out)
+				return nil
+			}
 		}
 		out, err := frame.module.convertValueWithVariadic(value, typ, inst.typeVariadic)
 		if err != nil {

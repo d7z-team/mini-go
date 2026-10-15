@@ -1,24 +1,24 @@
 # RPC 使用指南
 
-MRPC 从一份 `.mrpc` 声明生成 Go、Mini-Go、Rust 和 TypeScript 的类型、客户端与 provider 适配代码。
-同一契约可用于进程内绑定，也可通过 Endpoint 和 Gateway 跨进程连接。
+MRPC 从 `.mrpc` 契约生成 Go、Mini-Go、Rust 和 TypeScript 的类型、客户端与 provider 适配代码。
+同一契约既可以在进程内绑定，也可以通过 WebSocket Endpoint 和 Gateway 跨进程连接。
 
-| 场景 | 入口 |
+| 任务 | 入口 |
 | --- | --- |
-| Mini-Go 调用 Go | [生成 provider 并注入 Host](#从脚本调用-go) |
-| Go 客户端或 Mini-Go 服务端 | [本地绑定与发布](#go-客户端与-mini-go-服务端) |
+| Mini-Go 调用 Go | [从脚本调用 Go](#从脚本调用-go) |
+| Go 客户端或 Mini-Go 服务端 | [Go 客户端与 Mini-Go 服务端](#go-客户端与-mini-go-服务端) |
 | Browser / Node.js | [TypeScript / JavaScript API](#typescript--javascript-api) |
 | Rust | [Rust API](#rust-api) |
-| 动态路由或远程调用 | [Router 与 Gateway](#远程连接与路由) |
+| 远程连接和动态路由 | [远程连接与路由](#远程连接与路由) |
 
-Go 侧导入 `github.com/d7z-team/mini-go/rpc`，Mini-Go 侧导入标准包 `"rpc"`。基础 Engine 与
-Instance 用法见[使用指南](USAGE.md)，协议维护见[开发指南](DEVELOPMENT.md#rpc-实现维护)。
+Go 侧导入 `github.com/d7z-team/mini-go/rpc`，Mini-Go 侧导入标准包 `"rpc"`。Engine、Instance
+和能力装配见 [使用指南](USAGE.md)；协议、生成器和验证流程见 [开发指南](DEVELOPMENT.md#rpc-实现维护)。
 
 ## 从脚本调用 Go
 
-下面的示例定义问候服务，由 Mini-Go 调用 Go handler。
+下面的流程生成一个问候服务，由 Mini-Go 脚本调用 Go handler。
 
-### 1. 声明接口
+### 声明与生成
 
 创建 `api/greeter.mrpc`：
 
@@ -28,7 +28,7 @@ namespace example.greeter.v1;
 
 option mgo_package = "example.com/app/api";
 option go_package = "example.com/app/api;greeter";
-option ts_module = "./greeter.js";
+option ts_module = "./greeter";
 
 message Request { Name string = 1; }
 message Response { Message string = 1; }
@@ -38,9 +38,7 @@ service Greeter {
 }
 ```
 
-`namespace` 标识契约；各语言 package/module 选项只决定生成源码的位置和导入方式。
-
-### 2. 生成代码
+生成需要的语言输出；声明变化后重新生成所有受影响的 binding：
 
 ```bash
 mini-go rpc generate \
@@ -49,11 +47,10 @@ mini-go rpc generate \
   api/greeter.mrpc
 ```
 
-声明变化后重新生成并分发各端 binding。契约 identity 不匹配会在绑定时失败。
+`namespace` 标识契约；各语言的 package/module 选项决定生成代码的位置和导入方式。绑定时会
+校验契约 identity，契约不一致会失败。
 
-### 3. 编写脚本
-
-创建同属 `greeter` 包的 `api/call.mgo`：
+### 编写脚本
 
 ```go
 package greeter
@@ -61,137 +58,81 @@ package greeter
 import "rpc"
 
 func Greeting() string {
-    client := NewGreeterClient(rpc.ClientOptions{
-        TimeoutNanoseconds: 5_000_000_000,
-    })
+    client := NewGreeterClient(rpc.ClientOptions{TimeoutNanoseconds: 5_000_000_000})
     defer client.Close()
-
     response, err := client.Hello(Request{Name: "Mini-Go"})
-    if err != nil {
-        panic(err)
-    }
+    if err != nil { panic(err) }
     return response.Message
 }
 ```
 
-### 4. 装配宿主
+### 装配宿主
 
-宿主发现脚本源码，注册生成的 provider，并把 RPC Host 注入 Instance：
+按 [Go 嵌入示例](USAGE.md#完整嵌入示例)编译脚本，将 `Greeting` 注册为 `greeting` 命名入口。
+宿主注册生成的 provider，并把 RPC Host 注入 Instance：
 
 ```go
-package main
+provider, err := greeter.NewGreeterProvider(greeterHandler{})
+if err != nil { return err }
+host, err := rpc.NewHost(rpc.HostOptions{Providers: []rpc.Provider{provider}})
+if err != nil { return err }
+defer host.Close()
 
-import (
-    "context"
-    "fmt"
-    "log"
-    "os"
+instance, err := program.Instantiate(ctx, runtime.InstanceOptions{FFI: host})
+if err != nil { return err }
+defer instance.Close()
+result, err := instance.Call(ctx, "greeting")
+if err != nil { return err }
+message, _ := result.Values[0].StringValue()
+fmt.Println(message)
+```
 
-    greeter "example.com/app/api"
-    minigo "github.com/d7z-team/mini-go"
-    "github.com/d7z-team/mini-go/compiler/workspace"
-    "github.com/d7z-team/mini-go/rpc"
-    "github.com/d7z-team/mini-go/runtime"
-)
+handler 应检查调用 context：
 
+```go
 type greeterHandler struct{}
 
 func (greeterHandler) Hello(ctx context.Context, request greeter.Request) (greeter.Response, error) {
-    if err := ctx.Err(); err != nil {
-        return greeter.Response{}, err
-    }
+    if err := ctx.Err(); err != nil { return greeter.Response{}, err }
     return greeter.Response{Message: "Hello, " + request.Name + "!"}, nil
-}
-
-func main() {
-    if err := run(); err != nil {
-        log.Fatal(err)
-    }
-}
-
-func run() error {
-    sources, err := workspace.DiscoverIndexedSourceTree(os.DirFS("api"), ".", "example.com/app/api")
-    if err != nil {
-        return err
-    }
-    engine, err := minigo.New(minigo.Config{Sources: sources})
-    if err != nil {
-        return err
-    }
-    defer engine.Close()
-
-    program, checked, err := engine.Compile("example.com/app/api",
-        minigo.EntryPoint{Name: "greeting", Function: "Greeting"})
-    if err != nil || !checked.OK() {
-        return fmt.Errorf("compile: %v; diagnostics: %v", err, checked.Diagnostics)
-    }
-
-    provider, err := greeter.NewGreeterProvider(greeterHandler{})
-    if err != nil {
-        return err
-    }
-    host, err := rpc.NewHost(rpc.HostOptions{Providers: []rpc.Provider{provider}})
-    if err != nil {
-        return err
-    }
-    defer host.Close()
-
-    ctx := context.Background()
-    instance, err := program.Instantiate(ctx, runtime.InstanceOptions{FFI: host})
-    if err != nil {
-        return err
-    }
-    defer instance.Close()
-
-    result, err := instance.Call(ctx, "greeting")
-    if err != nil {
-        return err
-    }
-    message, _ := result.Values[0].StringValue()
-    fmt.Println(message)
-    return nil
 }
 ```
 
-宿主 module path 需与 schema 和生成文件一致。console、文件系统等标准库能力按
-[系统能力](USAGE.md#系统能力)另行装配。
+宿主 module path 必须与 schema 和生成文件一致。console、文件系统等标准库能力按
+[系统能力](USAGE.md#系统能力)装配。
 
 ## 接口与数据类型
 
-schema 可声明 message、enum、service 和 resource。值支持固定宽度整数、浮点、复数、bool、string、
+契约可以声明 message、enum、service 和 resource。值支持固定宽度整数、浮点、复数、bool、string、
 slice、map、optional 和 bytes；方法自动携带错误结果。
 
-| 数据 | 约定 |
+| 类型 | 规则 |
 | --- | --- |
-| message / enum | 类型属于声明它的 schema；enum 允许 int32 范围内的未知值 |
+| message / enum | 类型属于声明它的 schema；enum 接受 int32 范围内的未知值 |
 | slice / map / optional | 保留 nil、空集合和 optional 缺省的区别 |
 | resource | 属于创建它的 binding；复制句柄共享关闭状态 |
 | 浮点与复数 | 保留宽度、负零和可表示的特殊值 |
 
-schema 使用 `int8/16/32/64`、`uint8/16/32/64` 等固定宽度类型，不使用平台相关的 `int`、`uint` 或
-`uintptr`。共享声明通过 `import model "example/model.mrpc";` 引用，并为每种目标语言生成对应代码。
+schema 使用 `int8/16/32/64`、`uint8/16/32/64` 等固定宽度类型，不使用平台相关的 `int`、`uint`
+或 `uintptr`。共享声明使用 `import model "example/model.mrpc";`，每种目标语言都会生成相应代码。
 
 ## Go 客户端与 Mini-Go 服务端
 
 ### 在 Go 中调用
 
-本地 provider 可直接绑定，无需 VM 或网络：
+本地 provider 可以直接绑定，不需要 VM 或网络：
 
 ```go
 binder, err := rpc.NewLocalBinder(rpc.LocalBinderOptions{}, provider)
-if err != nil {
-    return err
-}
+if err != nil { return err }
 client, err := greeter.BindGreeterClient(ctx, binder, rpc.BindOptions{})
-if err != nil {
-    return err
-}
+if err != nil { return err }
 defer client.Close()
-
 response, err := client.Hello(ctx, greeter.Request{Name: "Go"})
 ```
 
-Go 客户端通过每次调用的 `context.Context` 控制取消和期限。多实例选择使用 Router。
+每次 Go 调用都用 `context.Context` 控制取消和期限。需要按 labels、affinity 或权重选择多个
+实例时使用 Router。
 
 ### 在 Mini-Go 中提供服务
 
@@ -201,9 +142,7 @@ Go 客户端通过每次调用的 `context.Context` 控制取消和期限。多�
 type greeterHandler struct{}
 
 func (greeterHandler) Hello(ctx *rpc.Context, request Request) (Response, error) {
-    if err := ctx.Err(); err != nil {
-        return Response{}, err
-    }
+    if err := ctx.Err(); err != nil { return Response{}, err }
     return Response{Message: "Hello, " + request.Name + "!"}, nil
 }
 
@@ -212,42 +151,37 @@ func Serve() error {
 }
 ```
 
-宿主通过 `rpc.HostOptions.PublishProvider` 决定发布方式。将 `Serve` 注册为命名入口并用
-`Instance.Start` 保持运行；取消入口或关闭 Instance 会结束服务。
+宿主通过 `rpc.HostOptions.PublishProvider` 配置发布方式。将 `Serve` 注册为命名入口并用
+`Instance.Start` 保持服务运行；取消入口或关闭 Instance 会结束服务。
 
-## 错误与超时
+## 错误、超时与资源
 
-Go handler 返回 `rpc.StatusError`，Mini-Go handler 使用 `rpc.NewError`；调用方通过 `rpc.CodeOf`
-判断状态。常用状态含义如下：
+Go handler 返回 `rpc.StatusError`，Mini-Go handler 使用 `rpc.NewError`；调用方使用 `rpc.CodeOf`
+判断状态。常见状态如下：
 
 | 状态 | 含义 |
 | --- | --- |
-| `invalid_argument`、`not_found` | 业务输入或对象错误 |
-| `canceled`、`deadline_exceeded` | 调用方已停止等待，handler 应响应 context |
+| `invalid_argument`、`not_found` | 输入或对象错误 |
+| `canceled`、`deadline_exceeded` | 调用方停止等待 |
 | `unimplemented` | 没有匹配的服务或方法 |
 | `failed_precondition` | 契约不一致 |
 | `unavailable` | provider、路由、连接或关闭状态不可用 |
 | `resource_exhausted` | 并发、消息或资源额度不足 |
 | `protocol` | 两端 wire 契约不匹配 |
 
-Mini-Go 的 `ClientOptions.TimeoutNanoseconds` 约束绑定和调用；Go 使用 context；TypeScript 使用
-`timeoutMs` 或 `AbortSignal`。网络 Endpoint 另外配置租期、接纳期限和服务端最长调用时间。
-超时或断线不表示服务端一定没有执行，框架不会自动重试有副作用的调用。
+Mini-Go 的 `ClientOptions.TimeoutNanoseconds` 约束绑定和调用，Go 使用 context，TypeScript 使用
+`timeoutMs` 或 `AbortSignal`。超时或断线不表示服务端一定没有执行；框架不会自动重试有副作用的调用。
 
-## 资源与大对象
+resource 客户端应显式关闭。资源属于创建它的 binding 和服务实例；路由改变不会迁移已有资源，
+连接终止后应重新绑定并创建资源。关闭开始后不再接收新调用，并等待已经进入 handler 的调用退出。
+直接使用低层 `RouteSet.Call` 时，调用方必须对返回结果执行一次 `Accept` 或 `Discard`。
 
-文件、游标和会话适合声明为 resource。生成的资源客户端应显式关闭；资源固定属于创建它的 binding
-和服务实例，路由改变不会迁移已有资源。连接终止后需重新绑定并创建资源。
-
-关闭开始后资源不能再接收新调用。关闭会等待已进入 handler 的调用退出；未交付结果由生成客户端确认
-或丢弃。直接使用低层 `RouteSet.Call` 时，调用方必须对结果执行一次 `Accept` 或 `Discard`。
-
-较大的 bytes、字符串和复合值由 Endpoint 自动分片。连接、VM boundary、Host 和 Gateway 各自拥有容量
-限制；调大网络消息上限不会自动调大 VM 限制。持续流使用 resource 的分块 `Read`/`Write` 方法。
+较大的 bytes、字符串和复合值由 Endpoint 分片，连接、VM boundary、Host 和 Gateway 都有容量限制。
+调大网络消息上限不会自动调大 VM 限制；持续流应使用 resource 的分块 `Read`/`Write` 方法。
 
 ## 远程连接与路由
 
-`rpc/router.Router` 按 labels、affinity 和权重选择 provider；绑定完成后保持所选实例，重新选择需要
+`rpc/router.Router` 按 labels、affinity 和权重选择 provider；绑定完成后固定所选实例，重新选择需要
 建立新客户端。Endpoint 支持 `ws://`、`wss://` 和 `ws+unix:///绝对路径`。
 
 启动 Gateway：
@@ -262,43 +196,33 @@ mini-go gateway -listen ws://127.0.0.1:8080/rpc
 mini-go -C ./consumer run -rpc ws://127.0.0.1:8080/rpc .
 ```
 
-library 使用 `gateway.Dial` 得到 Endpoint，并将它作为 Go 客户端的 Binder 或 Mini-Go Host 的
-Fallback。Endpoint 由创建者关闭；`wss://` 监听还需配置证书和私钥。
+library 使用 `gateway.Dial` 创建 Endpoint，并把它作为 Go 客户端的 Binder 或 Mini-Go Host 的
+Fallback。Endpoint 由创建者关闭；`wss://` 监听还需要证书和私钥。
 
 ## TypeScript / JavaScript API
 
-`@d7z-team/mini-go/rpc` 通过独立 Worker 连接 WebSocket，无需 Mini-Go 镜像。生成 TypeScript ESM：
+`@d7z-team/mini-go/rpc` 在独立 Worker 中连接 WebSocket。生成 TypeScript ESM：
 
 ```bash
 mini-go rpc generate -ts-out src/greeter.ts api/greeter.mrpc
 ```
 
-`-ts-runtime` 覆盖生成代码导入的 RPC 模块；被导入 schema 的 `ts_module` 应使用最终 JavaScript ESM 路径。
-
 ```ts
 import { connectRPC } from "@d7z-team/mini-go/rpc";
-import { GreeterClient } from "./greeter.js";
+import { GreeterClient } from "./greeter";
 
 const connection = await connectRPC("wss://example.test/rpc");
 try {
-  const client = await GreeterClient.bind(connection, {
-    labels: { zone: "local" },
-    affinityKey: "account-42",
-  });
+  const client = await GreeterClient.bind(connection, { labels: { zone: "local" } });
   try {
     console.log(await client.hello({ name: "TypeScript" }, { timeoutMs: 5_000 }));
-  } finally {
-    await client.close();
-  }
-} finally {
-  await connection.close();
-}
+  } finally { await client.close(); }
+} finally { await connection.close(); }
 ```
 
-生成的 `createGreeterProvider` 可通过 `connection.publish` 发布 TypeScript handler。
-64 位整数映射为 `bigint`，bytes 为 `Uint8Array | null`，optional 为 `undefined`，map 为 `Map`。
-资源属于原 binding 并应显式关闭。`close()` 等待清理；`terminate()` 只用于宿主无法继续等待的场景。
-部署与 Worker URL 配置见 [TypeScript README](playground/runtime-typescript/README.md#独立-rpc)。
+生成的 `createGreeterProvider` 可通过 `connection.publish` 发布 TypeScript handler。64 位整数映射
+为 `bigint`，bytes 为 `Uint8Array | null`，optional 为 `undefined`，map 为 `Map`。
+部署方式见 [TypeScript README](playground/runtime-typescript/README.md#浏览器部署)。
 
 ## Rust API
 
@@ -306,29 +230,29 @@ try {
 
 ```bash
 mini-go rpc generate \
-  -rust-out src/greeter.rs \
-  -rust-module crate::greeter \
-  api/greeter.mrpc
+  -rust-out src/greeter.rs -rust-module crate::greeter api/greeter.mrpc
 ```
 
 | 操作 | API |
 | --- | --- |
-| 实现服务 | generated handler trait 返回 `rpc::BoxFuture` |
+| 实现服务 | generated handler trait，返回 `rpc::BoxFuture` |
 | 创建 provider | `greeter_provider(Arc<dyn GreeterHandler>)` |
-| 本地装配 | `LocalBinder::new(runtime_handle, limits, providers)` |
+| 本地绑定 | `LocalBinder::new(runtime_handle, limits, providers)` |
 | 绑定客户端 | `GreeterClient::bind(context, &binder, options).await` |
-| 接入 VM | `HostOptions::new(tokio_handle)` 配置 provider |
+| 接入 VM | `HostOptions::new(tokio_handle)` |
 | 远程连接 | `gateway::dial(handle, address, options)` |
 
-应用提供 Tokio runtime，并在关闭它之前等待 Host、Endpoint 和 Router 完成 shutdown。VM 与 Tokio
-接入见 [Rust 使用指南](playground/runtime-rust/USAGE.md)，完整 RPC 例见
-[gateway 测试](playground/runtime-rust/tests/rpc_gateway.rs)。
+应用应在关闭 Tokio runtime 前等待 Host、Endpoint 和 Router 完成 shutdown。VM 接入见
+[Rust 使用指南](playground/runtime-rust/USAGE.md)。
 
 ## 服务替换与关闭
 
-代码热更新不会自动替换 provider 或迁移 resource。更新服务时先准备新 provider，通过 Router
-原子替换 publication，再让新 binding 选择新实现；旧 binding 和 resource 继续由原 owner 清理。
+代码热更新不会自动替换 provider 或迁移 resource。更新服务时准备新 provider，通过 Router 原子替换
+publication；新 binding 使用新实现，旧 binding 和 resource 继续由原 owner 清理。
 
-`Drain` 停止新 binding，`ForceClose` / `ForceShutdown` 撤销现有 binding。代码提交、路由替换和旧服务
-清理是三个独立事件。通常按以下顺序关闭：停止新请求，关闭 Instance，再关闭 Host、客户端、连接和
-Router，最后释放业务 backend。等待 context 取消只停止本次等待，不撤销已经开始的清理。
+`Drain` 停止新 binding，`ForceClose` / `ForceShutdown` 撤销现有 binding。代码提交、路由替换和旧
+服务清理是独立事件。通常按以下顺序关闭：停止新请求，关闭 Instance，再关闭 Host、客户端、连接
+和 Router，最后释放业务 backend。等待 context 取消只停止本次等待，不撤销已经开始的清理。
+
+RPC 的跨语言 wire、生成器维护和验证矩阵见 [开发指南](DEVELOPMENT.md#rpc-实现维护)；组件边界和
+状态所有权见 [架构说明](ARCHITECTURE.md)。

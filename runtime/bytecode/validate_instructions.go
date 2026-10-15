@@ -39,13 +39,17 @@ func validateInstructionPayload(path string, inst *Instruction) error {
 		if !payload.Type.Valid() || len(payload.Fields) == 0 || len(payload.Fields) > 16 {
 			return newValidationError(path, errors.New("field path requires a root type and 1 to 16 fields"))
 		}
-	case OpCompareBranch:
+	case OpCompareBranch, OpLenCompareBranch:
 		payload, err := validationPayload[CompareBranchPayload](path, inst)
 		if err != nil {
 			return err
 		}
+		comparisonName := "comparison"
+		if inst.Op == OpLenCompareBranch {
+			comparisonName = "length comparison"
+		}
 		if payload.Label == "" || !payload.Type.Valid() {
-			return missingValidationError(path, errors.New("comparison requires a type and target"))
+			return missingValidationError(path, errors.New(comparisonName+" requires a type and target"))
 		}
 		switch payload.Operator {
 		case "==", "!=", "<", "<=", ">", ">=":
@@ -89,7 +93,7 @@ func validateInstructionPayload(path string, inst *Instruction) error {
 		if strings.TrimSpace(payload.Constant) == "" {
 			return missingValidationError(path+".payload.constant", errors.New("missing constant id"))
 		}
-	case OpZero, OpTypeAssert, OpTypeAssertOK, OpConvert:
+	case OpZero, OpTypeAssert, OpTypeAssertOK, OpConvert, OpIndexConvert:
 		payload, err := validationPayload[TypePayload](path, inst)
 		if err != nil {
 			return err

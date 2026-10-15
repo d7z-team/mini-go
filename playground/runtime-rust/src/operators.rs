@@ -100,6 +100,28 @@ impl Operator {
     }
 }
 
+pub(crate) fn compare_length(
+    operator: Operator,
+    length: i64,
+    right: &Value,
+) -> Result<bool, RuntimeError> {
+    let length = i128::from(length);
+    let right = match right.data() {
+        Data::Integer(value) => i128::from(*value),
+        Data::Unsigned(value) => i128::from(*value),
+        _ => return Err(invalid(operator.as_str())),
+    };
+    Ok(match operator {
+        Operator::Equal => length == right,
+        Operator::NotEqual => length != right,
+        Operator::Less => length < right,
+        Operator::LessEqual => length <= right,
+        Operator::Greater => length > right,
+        Operator::GreaterEqual => length >= right,
+        _ => return Err(invalid(operator.as_str())),
+    })
+}
+
 fn invalid(operator: &str) -> RuntimeError {
     RuntimeError::new(
         "invalid_operation",

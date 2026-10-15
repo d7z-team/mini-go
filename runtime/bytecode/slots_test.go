@@ -192,6 +192,89 @@ func TestSlotTypesRejectMismatchedStorageAndReturn(t *testing.T) {
 	}
 }
 
+func TestSlotTypesRejectsIndexConvertWrongOutputType(t *testing.T) {
+	integer := types.Builtin(types.PrimitiveInt)
+	boolean := types.Builtin(types.PrimitiveBool)
+	text := types.Builtin(types.PrimitiveString)
+	artifact := NewArtifact("index-convert", "index-convert")
+	artifact.Constants = []Constant{
+		{ID: "text", Type: text, Value: json.RawMessage(`"abc"`)},
+		{ID: "index", Type: integer, Value: json.RawMessage(`1`)},
+	}
+	code := SlotCode{
+		Types: []types.TypeRef{boolean},
+		Operands: []SlotOperands{
+			{Inputs: []Operand{{Kind: OperandConstant, Index: 0}, {Kind: OperandConstant, Index: 1}}, Outputs: []uint32{0}},
+			{Inputs: []Operand{{Kind: OperandSlot, Index: 0}}},
+		},
+	}
+	indexConvert, err := code.Descriptors.Append(TypePayload{Type: integer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned, err := code.Descriptors.Append(ReturnPayload{ResultCount: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code.Instructions = []SlotInstruction{
+		{Op: OpIndexConvert, Descriptor: indexConvert, Operands: 0},
+		{Op: OpReturn, Descriptor: returned, Operands: 1},
+	}
+	artifact.Functions = []Function{{ID: "main", Signature: types.FunctionSignature{Results: []types.TypeRef{boolean}}, Code: &code}}
+	if err := ValidateArtifact(&artifact); err == nil {
+		t.Fatal("accepted index-convert output with a mismatched slot type")
+	}
+}
+
+func TestSlotTypesLengthBranchAcceptsIntegerThresholds(t *testing.T) {
+	integer := types.Builtin(types.PrimitiveInt)
+	text := types.Builtin(types.PrimitiveString)
+	var thresholds []types.TypeRef
+	for kind := types.PrimitiveInt; kind <= types.PrimitiveUintptr; kind++ {
+		thresholds = append(thresholds, types.Builtin(kind))
+	}
+	thresholds = append(thresholds, types.TypeRef{
+		Kind: types.Named, Node: "decl.length-branch.Count",
+		Named: types.TypeKey{ModulePath: "length-branch", DeclID: "Count"},
+	})
+	for _, threshold := range thresholds {
+		artifact := NewArtifact("length-branch", "length-branch")
+		setTestNamedTypes(&artifact, []testNamedType{{Name: "Count", Underlying: types.Builtin(types.PrimitiveUint64)}})
+		artifact.Constants = []Constant{
+			{ID: "text", Type: text, Value: json.RawMessage(`"abc"`)},
+			{ID: "limit", Type: threshold, Value: json.RawMessage(`4`)},
+		}
+		code := SlotCode{Operands: []SlotOperands{
+			{Inputs: []Operand{{Kind: OperandConstant, Index: 0}, {Kind: OperandConstant, Index: 1}}}, {}, {},
+		}}
+		comparison, err := code.Descriptors.Append(CompareBranchPayload{Type: integer, Operator: "<", Label: "done", When: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		label, err := code.Descriptors.Append(LabelPayload{Label: "done"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		returned, err := code.Descriptors.Append(ReturnPayload{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		code.Instructions = []SlotInstruction{
+			{Op: OpLenCompareBranch, Descriptor: comparison, Operands: 0},
+			{Op: OpLabel, Descriptor: label, Operands: 1},
+			{Op: OpReturn, Descriptor: returned, Operands: 2},
+		}
+		artifact.Functions = []Function{{ID: "main", Code: &code}}
+		if err := ValidateArtifact(&artifact); err != nil {
+			t.Fatalf("threshold %v: %v", threshold, err)
+		}
+		artifact.Constants[1].Type, artifact.Constants[1].Value = types.Builtin(types.PrimitiveBool), json.RawMessage(`true`)
+		if err := ValidateArtifact(&artifact); err == nil {
+			t.Fatal("accepted non-integer length threshold")
+		}
+	}
+}
+
 func TestDirectLocalOperandsRequirePrivateValueStorage(t *testing.T) {
 	integer := types.Builtin(types.PrimitiveInt)
 	for _, kind := range []string{"scalar", "pointer"} {

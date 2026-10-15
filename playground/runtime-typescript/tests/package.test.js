@@ -1,31 +1,46 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import http from "node:http";
 import { chromium } from "playwright";
+import { build, createServer, preview } from "vite";
+import { startPeer } from "./support/peer";
 
 const exec = promisify(execFile);
-const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+const packageRoot = path.resolve(import.meta.dirname, "..");
 
 test(
-  "packed package runs outside the repository in Node and browser",
+  "installed package runs in Node, browsers and Vite consumers",
   { timeout: 600_000 },
   async (t) => {
     const directory = await mkdtemp(path.join(tmpdir(), "mini-go-consumer-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    // The test consumes the completed build without racing other tests' assets.
-    let filename;
-    let packageName;
-    if (process.env.MINIGO_PACKAGE_TARBALL) {
-      filename = path.basename(process.env.MINIGO_PACKAGE_TARBALL);
-      await cp(process.env.MINIGO_PACKAGE_TARBALL, path.join(directory, filename));
-      packageName = "@d7z-team/mini-go";
-    } else {
+    let browser;
+    let dev;
+    let production;
+    let server;
+    // Register ownership before initialization; failure and cancellation clean up the same resources.
+    const closeServers = async () => {
+      await browser?.close();
+      await dev?.close();
+      await production?.close();
+      if (server?.listening) {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    };
+    t.signal.addEventListener("abort", () => void closeServers(), { once: true });
+    t.onTestFinished(async () => {
+      await closeServers();
+      await rm(directory, { recursive: true, force: true });
+    });
+
+    let tarball = process.env.MINIGO_PACKAGE_TARBALL;
+    if (!tarball) {
       const packed = await exec(
         "npm",
         [
@@ -39,8 +54,9 @@ test(
         ],
         { cwd: packageRoot, signal: t.signal },
       );
-      [{ filename, name: packageName }] = Object.values(JSON.parse(packed.stdout));
+      tarball = path.join(directory, Object.values(JSON.parse(packed.stdout))[0].filename);
     }
+    await cp(new URL("./fixtures/package/", import.meta.url), directory, { recursive: true });
     await writeFile(
       path.join(directory, "package.json"),
       JSON.stringify({ private: true, type: "module" }),
@@ -54,123 +70,94 @@ test(
         "--no-fund",
         "--cache",
         path.join(directory, ".npm-cache"),
-        path.join(directory, filename),
+        tarball,
       ],
       { cwd: directory, signal: t.signal },
     );
-    const installed = path.join(directory, "node_modules", packageName);
-    await writeFile(
-      path.join(directory, "consumer.mjs"),
-      `
-    import { readFile, writeFile } from 'node:fs/promises';
-    import { createRuntime } from '${packageName}';
-    import { connectRPC } from '${packageName}/rpc';
-    import { createLanguageService } from '${packageName}/tools';
-    if (typeof connectRPC !== 'function') throw new Error('RPC entry point mismatch');
-    const language = await createLanguageService({ timeoutMs: 300_000 });
-    let image;
-    try {
-      await language.open({
-        Root: 'sample',
-        Packages: [{
-          Namespace: 'module:sample',
-          ModulePath: 'sample',
-          Files: [{Path: 'main.mgo', Text: 'package main\\nfunc Main() int { return 42 }\\n'}],
-        }],
-      });
-      const built = await language.prepare({
-        EntryPoints: [{Name: 'default', ModulePath: 'sample', Function: 'Main'}],
-      });
-      image = built.Image;
-      if (!(image instanceof Uint8Array)) throw new Error('compiler returned no image');
-      await writeFile(new URL('./image.json', import.meta.url), image);
-    } finally { await language.dispose(); }
-    const vm = await createRuntime(await readFile(new URL('./image.json', import.meta.url)));
-    try {
-      const call = vm.start('default');
-      if ((await call.result).roots[0].data.Integer !== 42n) throw new Error('package execution mismatch');
-      await call.settled;
-    } finally { await vm.close(); }
-  `,
+    const installed = path.join(directory, "node_modules/@d7z-team/mini-go");
+    const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+    assert.equal(
+      hash(await readFile(path.join(installed, "dist/assets/mini-go-compiler.wasm"))),
+      hash(await readFile(path.join(packageRoot, ".build/compiler/mini-go-compiler.wasm"))),
+      "bundling must preserve compiler WASM bytes",
     );
-    // A successful process exit also verifies worker/timer cleanup.
-    await exec(process.execPath, ["consumer.mjs"], {
+    await mkdir(path.join(directory, "public"));
+    // This external process must terminate with no live Worker or timer after compiling and running.
+    await exec(process.execPath, ["node.mjs"], {
       cwd: directory,
       timeout: 300_000,
       signal: t.signal,
     });
-    const image = await readFile(path.join(directory, "image.json"));
-    await mkdir(path.join(directory, "generated"));
     await cp(
-      path.resolve(packageRoot, "../../testdata/rpc/generated/typescript/types.ts"),
-      path.join(directory, "generated/types.ts"),
+      path.resolve(packageRoot, "../../testdata/rpc/generated/typescript"),
+      path.join(directory, "generated"),
+      { recursive: true },
     );
-    await cp(
-      path.resolve(packageRoot, "../../testdata/rpc/generated/typescript/service.ts"),
-      path.join(directory, "generated/service.ts"),
-    );
-    await writeFile(
-      path.join(directory, "consumer.mts"),
-      `
-    import { createRuntime, values, type Runtime, type Snapshot, type WorkerProvider } from '${packageName}';
-    import { connectRPC, type RPCConnection } from '${packageName}/rpc';
-    import { LaboratoryClient, createLaboratoryProvider } from './generated/service.js';
-    import { createLanguageService, createDebugSession, attachDebugSession, type WorkspaceInput, type SourceTree, type SourcePackages } from '${packageName}/tools';
-    const provider: WorkerProvider = { call: ({payload}) => ({payload, consumed: async () => {}}) };
-    async function run(image: Uint8Array): Promise<Snapshot> {
-      const vm: Runtime = await createRuntime(image);
-      try { return await vm.start('default', [values.int(42n)]).result; } finally { await vm.close(); }
+    const tsc = path.join(packageRoot, "node_modules/typescript/bin/tsc");
+    for (const [resolution, files] of [
+      ["NodeNext", ["types.ts"]],
+      ["Bundler", ["types.ts", "bindings.ts", "main.ts"]],
+    ]) {
+      await exec(
+        process.execPath,
+        [
+          tsc,
+          "--noEmit",
+          "--strict",
+          "--target",
+          "ES2022",
+          "--module",
+          resolution === "Bundler" ? "ESNext" : "NodeNext",
+          "--moduleResolution",
+          resolution,
+          ...files,
+        ],
+        { cwd: directory, signal: t.signal },
+      );
     }
-    const workspace: WorkspaceInput={Root:'sample',Packages:[]};
-    async function sources() {
-      const service = await createLanguageService({ timeoutMs: 300_000 });
-      const trees: SourceTree[] = [{ModulePath:'app', Files:[]}];
-      try { const result: SourcePackages = await service.sources(trees); return result.Packages; }
-      finally { await service.dispose(); }
-    }
-    async function bind(connection: RPCConnection) { return LaboratoryClient.bind(connection); }
-    const generatedProvider = createLaboratoryProvider({
-      echo: (_context, value) => value,
-      tree: (_context, value) => value,
-      open: () => [null, {label: 'none', mode: 0}],
-      read: () => 0n,
-      wait: () => 0n,
-    });
-    void [provider, run, connectRPC, bind, generatedProvider, createLanguageService, createDebugSession, attachDebugSession, workspace, sources];
-  `,
-    );
-    await exec(
-      process.execPath,
-      [
-        path.join(packageRoot, "node_modules/typescript/bin/tsc"),
-        "--noEmit",
-        "--strict",
-        "--module",
-        "NodeNext",
-        "--target",
-        "ES2022",
-        "consumer.mts",
-      ],
-      { cwd: directory, signal: t.signal },
-    );
-    let browser;
-    const server = http.createServer(async (request, response) => {
+
+    const address = await startPeer(t);
+    browser = await chromium.launch({ headless: true, timeout: 300_000 });
+    t.signal.throwIfAborted();
+    const visit = async (url) => {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(300_000);
+      const failures = [];
+      page.on("pageerror", (error) => failures.push(error.message));
       try {
-        const pathname = new URL(request.url, "http://localhost").pathname;
-        if (pathname === "/") {
-          response.setHeader("Content-Type", "text/html");
-          response.end("<!doctype html><title>External package consumer</title>");
-          return;
-        }
-        if (pathname === "/image") {
-          response.end(image);
-          return;
-        }
-        const filename = path.resolve(installed, "." + decodeURIComponent(pathname));
-        if (!filename.startsWith(installed + path.sep)) throw new Error("invalid path");
+        await page.goto(url);
+        await page.waitForFunction(
+          () =>
+            document.body.dataset.result !== undefined || document.body.dataset.error !== undefined,
+        );
+        const outcome = await page.evaluate(() => ({
+          result: document.body.dataset.result,
+          error: document.body.dataset.error,
+        }));
+        assert.deepEqual(failures, []);
+        assert.equal(outcome.error, undefined);
+        return JSON.parse(outcome.result);
+      } finally {
+        await page.close();
+      }
+    };
+
+    // Direct browser consumption also resolves assets below a non-root path.
+    server = http.createServer(async (request, response) => {
+      try {
+        const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
+        if (!pathname.startsWith("/nested/")) throw new Error("unknown route");
+        const filename = path.resolve(directory, pathname.slice("/nested/".length));
+        if (!filename.startsWith(directory + path.sep)) throw new Error("invalid path");
         response.setHeader(
           "Content-Type",
-          filename.endsWith(".wasm") ? "application/wasm" : "text/javascript",
+          filename.endsWith(".wasm")
+            ? "application/wasm"
+            : filename.endsWith(".js") || filename.endsWith(".mjs")
+              ? "text/javascript"
+              : filename.endsWith(".html")
+                ? "text/html"
+                : "application/octet-stream",
         );
         response.end(await readFile(filename));
       } catch (error) {
@@ -178,40 +165,35 @@ test(
         response.end(String(error));
       }
     });
-    t.signal.addEventListener("abort", () => {
-      void browser?.close();
-      server.closeAllConnections();
-      server.close();
-    });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    try {
-      browser = await chromium.launch({ headless: true, timeout: 300_000 });
-      t.signal.throwIfAborted();
-      const page = await browser.newPage();
-      page.setDefaultTimeout(300_000);
-      await page.goto(`http://127.0.0.1:${server.address().port}`);
-      assert.equal(
-        await page.evaluate(async () => {
-          const { createRuntime } = await import("/dist/index.browser.js");
-          const { connectRPC } = await import("/dist/rpc.browser.js");
-          if (typeof connectRPC !== "function") throw new Error("browser RPC entry point mismatch");
-          const vm = await createRuntime(await (await fetch("/image")).arrayBuffer(), {
-            workerUrl: new URL("/dist/workers/runtime.browser.js", location.href),
-          });
-          try {
-            const call = vm.start("default");
-            const value = await call.result;
-            await call.settled;
-            return String(value.roots[0].data.Integer);
-          } finally {
-            await vm.close();
-          }
-        }),
-        "42",
-      );
-    } finally {
-      await browser?.close();
-      await new Promise((resolve) => server.close(resolve));
-    }
+    const base = `http://127.0.0.1:${server.address().port}/nested/`;
+    assert.equal(await visit(`${base}plain.html`), "41");
+
+    dev = await createServer({
+      configFile: false,
+      root: directory,
+      logLevel: "error",
+      server: { host: "127.0.0.1", port: 0, proxy: { "/rpc": { target: address, ws: true } } },
+    });
+    await dev.listen();
+    const expected = { before: "41", after: "43", generation: "2", rpc: "42" };
+    assert.deepEqual(await visit(dev.resolvedUrls.local[0]), expected);
+    await dev.close();
+    dev = undefined;
+    await build({
+      configFile: false,
+      root: directory,
+      base: "./",
+      logLevel: "error",
+      build: { target: "es2022" },
+    });
+    production = await preview({
+      configFile: false,
+      root: directory,
+      base: "/nested/",
+      logLevel: "error",
+      preview: { host: "127.0.0.1", port: 0, proxy: { "/rpc": { target: address, ws: true } } },
+    });
+    assert.deepEqual(await visit(production.resolvedUrls.local[0]), expected);
   },
 );

@@ -159,7 +159,7 @@ func TestReturningFrameKeepsValuesRootedUntilContinuationAcceptsThem(t *testing.
 	}()
 	const bytes = 65536
 	current := task.frames[0]
-	current.completion = &frameCompletion{returnValues: []vmValue{newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes)}}
+	current.setCompletion(frameCompletion{returnValues: []vmValue{newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes)}})
 	var retained int64
 	current.resume = func(*executionTask, *executionFrame, []vmValue) error {
 		retained = instance.vm.refreshLiveGuestBytes()
@@ -171,6 +171,9 @@ func TestReturningFrameKeepsValuesRootedUntilContinuationAcceptsThem(t *testing.
 	}
 	if retained < bytes {
 		t.Fatalf("return continuation lost guest roots before accepting values: %d", retained)
+	}
+	if current.completionActive {
+		t.Fatal("completed frame retained completion state after recycle")
 	}
 }
 

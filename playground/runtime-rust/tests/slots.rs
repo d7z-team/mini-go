@@ -310,6 +310,153 @@ fn scalar_destinations_and_operands_match_the_operator_contract() {
 }
 
 #[test]
+fn fused_index_and_length_operations_validate_and_execute() {
+    use mini_go::contract_generated as wire;
+    let string = json!({"kind": wire::Primitive, "primitive": wire::PrimitiveString});
+    let integer = json!({"kind": wire::Primitive, "primitive": wire::PrimitiveInt});
+    let boolean = json!({"kind": wire::Primitive, "primitive": wire::PrimitiveBool});
+
+    let bytes = support::image(json!({
+        "constants": [
+            {"id":"text", "type":string, "value":"abc"},
+            {"id":"index", "type":integer, "value":1}
+        ],
+        "functions": [{"id":"fn.Main", "signature":{"results":[integer]}, "code":{
+            "types":[integer],
+            "descriptors":{
+                "type":[{"type":integer}],
+                "return":[{"result_count":1}]
+            },
+            "instructions":[operation("index_convert",0,0), operation("return",0,1)],
+            "operands":[
+                {"inputs":[[1,0],[1,1]],"outputs":[0]},
+                {"inputs":[[0,0]]}
+            ]
+        }}]
+    }));
+    let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
+    let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+    vm.start("default", vec![]).unwrap();
+    while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
+    assert_eq!(vm.results()[0].integer().unwrap(), 98);
+    vm.close().unwrap();
+
+    let length_bytes = support::image(json!({
+        "constants": [
+            {"id":"text", "type":string, "value":"abc"},
+            {"id":"limit", "type":integer, "value":2}
+        ],
+        "functions": [{"id":"fn.Main", "signature":{}, "code":{
+            "descriptors":{
+                "comparebranch":[{"operator":">", "type":integer, "label":"done", "when":true}],
+                "label":[{"label":"done"}],
+                "return":[{"result_count":0}]
+            },
+            "instructions":[operation("len_compare_branch",0,0), operation("label",0,1), operation("return",0,2)],
+            "operands":[
+                {"inputs":[[1,0],[1,1]]}, {}, {}
+            ]
+        }}]
+    }));
+    let program = Arc::new(Program::load(&length_bytes, LoadLimits::default()).unwrap());
+    let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+    vm.start("default", vec![]).unwrap();
+    while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
+    assert_eq!(vm.steps(), 2);
+    vm.close().unwrap();
+
+    let invalid_cases = [
+        // The fused operation only accepts strings and byte sequences.
+        (integer.clone(), integer.clone(), integer.clone(), false),
+        // The target must be an integer primitive.
+        (string.clone(), integer.clone(), boolean.clone(), false),
+        // The source index remains an integer input.
+        (string.clone(), boolean.clone(), integer.clone(), false),
+        // The output slot has to match the conversion target.
+        (string.clone(), integer.clone(), integer.clone(), true),
+    ];
+    for (object_type, index_type, target_type, output_is_bool) in invalid_cases {
+        let output_type = if output_is_bool {
+            boolean.clone()
+        } else {
+            target_type.clone()
+        };
+        let object_value = if object_type == integer {
+            json!(1)
+        } else {
+            json!("abc")
+        };
+        let index_value = if index_type == boolean {
+            json!(true)
+        } else {
+            json!(1)
+        };
+        let bytes = support::image(json!({
+            "constants": [
+                {"id":"object", "type":object_type, "value": object_value},
+                {"id":"index", "type":index_type, "value":index_value}
+            ],
+            "functions": [{"id":"fn.Main", "signature":{"results":[output_type.clone()]}, "code":{
+                "types":[output_type],
+                "descriptors":{"type":[{"type":target_type}], "return":[{"result_count":1}]},
+                "instructions":[operation("index_convert",0,0), operation("return",0,1)],
+                "operands":[{"inputs":[[1,0],[1,1]],"outputs":[0]}, {"inputs":[[0,0]]}]
+            }}]
+        }));
+        assert!(Program::load(&bytes, LoadLimits::default()).is_err());
+    }
+
+    let missing_label = support::slot_code(
+        json!([]),
+        &[(
+            "len_compare_branch",
+            json!({"operator":"<","type":integer,"label":"missing","when":true}),
+            json!({"inputs":[[1,0],[1,0]]}),
+        )],
+    );
+    let bytes = support::image(
+        json!({"constants":[{"id":"text","type":string,"value":"x"},{"id":"n","type":integer,"value":0}],"functions":[{"id":"fn.Main","signature":{},"code":missing_label}]}),
+    );
+    assert_eq!(
+        Program::load(&bytes, LoadLimits::default())
+            .unwrap_err()
+            .code,
+        "invalid_jump"
+    );
+}
+
+#[test]
+fn fused_length_branch_compares_signed_and_unsigned_thresholds_exactly() {
+    use mini_go::contract_generated as wire;
+    let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+    let string = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveString});
+    let boolean = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveBool});
+    for (primitive, threshold, taken) in [
+        (wire::PrimitiveInt8, json!(-1), false),
+        (wire::PrimitiveInt32, json!(3), false),
+        (wire::PrimitiveUint8, json!(4), true),
+        (wire::PrimitiveUint64, json!(u64::MAX), true),
+    ] {
+        let threshold_type = json!({"kind":wire::Primitive,"primitive":primitive});
+        let bytes = support::image(json!({
+            "constants":[{"id":"text","type":string,"value":"abc"},{"id":"limit","type":threshold_type,"value":threshold},{"id":"false","type":boolean,"value":false},{"id":"true","type":boolean,"value":true}],
+            "functions":[{"id":"fn.Main","signature":{"results":[boolean]},"code":{
+                "descriptors":{"comparebranch":[{"operator":"<","type":integer,"label":"done","when":true}],"label":[{"label":"done"}],"return":[{"result_count":1}]},
+                "instructions":[operation("len_compare_branch",0,0),operation("return",0,1),operation("label",0,2),operation("return",0,3)],
+                "operands":[{"inputs":[[1,0],[1,1]]},{"inputs":[[1,2]]},{},{"inputs":[[1,3]]}]
+            }}]
+        }));
+        let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", vec![]).unwrap();
+        while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
+        assert!(matches!(vm.results()[0].data(), Data::Bool(value) if *value == taken));
+        assert_eq!(vm.steps(), 2);
+        vm.close().unwrap();
+    }
+}
+
+#[test]
 fn aggregate_inputs_match_the_declared_field_types() {
     use mini_go::contract_generated as wire;
     let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});

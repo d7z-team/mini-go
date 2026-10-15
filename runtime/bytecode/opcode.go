@@ -74,6 +74,8 @@ const (
 	OpCallIntrinsic
 	OpCompareBranch
 	OpGetPath
+	OpIndexConvert
+	OpLenCompareBranch
 )
 
 func IsKnownOpcode(op Opcode) bool { return op > OpInvalid && int(op) <= len(opcodeSpecs) }

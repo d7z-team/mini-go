@@ -126,13 +126,13 @@ func validateFunctionBody(path string, fn Function, refs artifactRefs, table *ty
 	for j := range instructions {
 		inst := &instructions[j]
 		switch inst.Op {
-		case OpCompareBranch, OpTypeDispatch, OpJump, OpJumpIf:
+		case OpCompareBranch, OpLenCompareBranch, OpTypeDispatch, OpJump, OpJumpIf:
 		default:
 			continue
 		}
 		instPath := path + ".instructions[" + strconv.Itoa(j) + "]"
 		switch inst.Op {
-		case OpCompareBranch:
+		case OpCompareBranch, OpLenCompareBranch:
 			payload := inst.Payload.(CompareBranchPayload)
 			if _, ok := labels[payload.Label]; !ok {
 				return newCodedValidationError(ValidationLabelUnknown, instPath, fmt.Errorf("unknown label %q", payload.Label))
@@ -211,7 +211,7 @@ func validateInstructionRefs(path string, inst *Instruction, refs artifactRefs, 
 		}
 		_, err := fieldPathResult(table, payload)
 		return err
-	case OpCompareBranch:
+	case OpCompareBranch, OpLenCompareBranch:
 		return validateTypeRef(path+".type", inst.Payload.(CompareBranchPayload).Type, table)
 	case OpTypeDispatch:
 		payload, err := validationPayload[TypeDispatchPayload](path, inst)

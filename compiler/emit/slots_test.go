@@ -15,7 +15,7 @@ import (
 
 func TestDirectLocalResultsPreserveAddressableStorageAndBoundaries(t *testing.T) {
 	integer := types.Builtin(types.PrimitiveInt)
-	for _, protected := range []string{"", "address", "capture", "source boundary", "second use"} {
+	for _, protected := range []string{"", "address", "capture", "rebind", "source boundary", "second use"} {
 		t.Run(protected, func(t *testing.T) {
 			function := hir.Function{Locals: []hir.Local{{ID: "sum", Type: integer}}}
 			code := ir.SlotCode{Types: []types.TypeRef{integer}, Operands: []ir.SlotOperands{
@@ -31,6 +31,8 @@ func TestDirectLocalResultsPreserveAddressableStorageAndBoundaries(t *testing.T)
 				code.Descriptors.Address = []ir.AddressPayload{{Kind: "local", Local: "sum"}}
 			case "capture":
 				code.Descriptors.Closure = []ir.ClosurePayload{{Captures: []ir.AddressPayload{{Kind: "local", Local: "sum"}}}}
+			case "rebind":
+				code.Descriptors.Local[0].Rebind = true
 			case "source boundary":
 				symbols.Locations = []ir.InstructionSymbol{{PC: 1, Points: []ir.Location{{File: "main.mgo", Line: 2}}}}
 			case "second use":
@@ -55,6 +57,70 @@ func TestDirectLocalResultsPreserveAddressableStorageAndBoundaries(t *testing.T)
 				t.Fatal("direct result retained its temporary")
 			}
 		})
+	}
+}
+
+func TestDirectLocalResultsForwardsSingleDirectCall(t *testing.T) {
+	integer := types.Builtin(types.PrimitiveInt)
+	function := hir.Function{
+		Locals: []hir.Local{{ID: "sum", Type: integer}},
+	}
+	code := ir.SlotCode{
+		Types: []types.TypeRef{integer},
+		Operands: []ir.SlotOperands{
+			{Outputs: []uint32{0}},
+			{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}},
+		},
+	}
+	callDescriptor, err := code.Descriptors.Append(ir.CallPayload{Function: "fn.update", ResultCount: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	localDescriptor, err := code.Descriptors.Append(ir.LocalPayload{Local: "sum"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code.Instructions = []ir.SlotInstruction{
+		{Op: ir.OpCallDirect, Descriptor: callDescriptor},
+		{Op: ir.OpStoreLocal, Descriptor: localDescriptor, Operands: 1},
+	}
+	if err := directLocalResults(&code, &function, &types.TypeTable{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := code.Operands[0].Outputs; len(got) != 1 || got[0] != ir.LocalOutput {
+		t.Fatalf("direct call result was not forwarded to local: %v", got)
+	}
+	if len(code.Instructions) != 1 || code.Instructions[0].Op != ir.OpCallDirect {
+		t.Fatalf("store_local was not removed: %#v", code.Instructions)
+	}
+	if err := ir.ValidateSlotCode(&code, nil, ir.Local{ID: "sum", Type: integer}); err != nil {
+		t.Fatalf("forwarded call failed slot validation: %v", err)
+	}
+}
+
+func TestInterfaceCallResultKeepsMapIndexType(t *testing.T) {
+	parsed := parser.ParseSource("typed-view", "typed-view.mgo", `package typedview
+type View interface { Label() String }
+type Item struct { Text String; Values []Int }
+func (i Item) Label() String { return i.Text }
+func Render(items []Item) map[String]Int {
+	result := make(map[String]Int)
+	for _, item := range items {
+		var view View = item
+		result[view.Label()] = len(item.Values)
+	}
+	return result
+}
+`)
+	if source.HasErrors(parsed.Diagnostics) {
+		t.Fatal(parsed.Diagnostics)
+	}
+	program, diagnostics := lower.Lower(semantic.Check(parsed.Program), lower.Options{})
+	if source.HasErrors(diagnostics) {
+		t.Fatal(diagnostics)
+	}
+	if _, err := Lower(program); err != nil {
+		t.Fatalf("interface call result rejected as map key: %v", err)
 	}
 }
 

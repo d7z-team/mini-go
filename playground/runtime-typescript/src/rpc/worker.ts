@@ -1,11 +1,11 @@
-import { RPCEndpoint } from "./endpoint.js";
+import { RPCEndpoint } from "./endpoint";
 import {
   attachRPCSocket,
   connectRPCSocket,
   flushRPCSocket,
   type RPCTransportOwner,
-} from "./transport.js";
-import type { RPCFailure, RPCRequest, RPCWorkerPort } from "./protocol.js";
+} from "./transport";
+import type { RPCFailure, RPCRequest, RPCWorkerPort } from "./protocol";
 
 function failure(reason: unknown): RPCFailure {
   if (reason && typeof reason === "object") {

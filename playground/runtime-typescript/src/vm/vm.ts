@@ -6,16 +6,17 @@ import type {
   Snapshot,
   Stats,
   VMOptions,
-} from "./types.js";
-import { Kind, PrimitiveKind } from "./contract.generated.js";
-import { VMError, fail } from "./json.js";
-import { binary, convert, unary } from "./operators.js";
+} from "./types";
+import { Kind, PrimitiveKind } from "./contract.generated";
+import { VMError, fail } from "./json";
+import { binaryCode, compareCode, convert, unaryCode, OperatorCode } from "./operators";
 import {
   Program,
   type LoadOptions,
   type PreparedFunction,
   type PreparedInstruction,
-} from "./program.js";
+  type PreparedSelectCase,
+} from "./program";
 import {
   asIndex,
   assign,
@@ -23,13 +24,20 @@ import {
   boolValue,
   cell,
   cloneValue,
+  decodeRune,
   dereference,
   fieldValue,
   guestEqual,
+  guestMapClear,
+  guestMapDelete,
+  guestMapGet,
+  guestMapSet,
+  createGuestMap,
   importHostValue,
   indexValue,
   intValue,
   nilValue,
+  normalize,
   primitive,
   setIndex,
   snapshot,
@@ -46,14 +54,112 @@ import {
   type SliceValue,
   type TypeNode,
   type Value,
-} from "./value.js";
-import { GUEST_COST, GuestMemory } from "./guest-memory.js";
+} from "./value";
+import { GUEST_COST, GuestMemory } from "./guest-memory";
 
 const LOCAL_OUTPUT = 0x80000000;
 const DEFAULT_MAX_IMAGE_BYTES = 64 * 1024 * 1024;
+const FRAME_CACHE_ENTRY_BYTES = 64;
+const FRAME_CACHE_VALUE_BYTES = 16;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const strictTextDecoder = new TextDecoder("utf-8", { fatal: true });
+const MEMORY_EFFECT_OPCODES = new Set([
+  "make_closure",
+  "make_sequence",
+  "make_map",
+  "make_slice",
+  "make_waitable",
+  "delete",
+  "clear",
+  "waitable_close",
+  "init_module",
+  "spawn",
+  "call_ffi",
+  "call_intrinsic",
+  "select",
+]);
+
+const REFERENCE_VALUE_KINDS = new Set<Value["kind"]>([
+  "string",
+  "bytes",
+  "array",
+  "struct",
+  "slice",
+  "map",
+  "interface",
+  "function",
+  "dynamicFunction",
+  "method",
+  "channel",
+  "mutex",
+  "opaque",
+]);
+
+// cloneValue keeps these backing objects immutable or borrowed. A new root
+// Value is charged, but walking an already-owned map/slice/pointer is not
+// needed unless the operation also changes a graph edge.
+const BORROWED_VALUE_KINDS = new Set<Value["kind"]>([
+  "map",
+  "slice",
+  "pointer",
+  "string",
+  "channel",
+]);
+
+function requiresGuestCensus(value: Value): boolean {
+  return REFERENCE_VALUE_KINDS.has(value.kind) && !BORROWED_VALUE_KINDS.has(value.kind);
+}
+
+function hasGuestReference(value: Value): boolean {
+  return REFERENCE_VALUE_KINDS.has(value.kind) || value.kind === "pointer";
+}
+
+function isFreshScalar(value: Value): boolean {
+  return (
+    value.kind === "bool" ||
+    value.kind === "int" ||
+    value.kind === "uint" ||
+    value.kind === "float" ||
+    value.kind === "complex"
+  );
+}
+
+function isFreshScalarProducer(opcode: number): boolean {
+  return (
+    opcode === 4 ||
+    opcode === 6 ||
+    opcode === 7 ||
+    opcode === 33 ||
+    opcode === 34 ||
+    opcode === 36 ||
+    opcode === 37 ||
+    opcode === 41
+  );
+}
+
+function compareLength(code: number, length: number, other: Value): boolean {
+  if (other.kind !== "int" && other.kind !== "uint")
+    invalid("length comparison requires an integer", "len_compare_branch");
+  const right = other.value as bigint;
+  const left = BigInt(length);
+  switch (code) {
+    case OperatorCode.Less:
+      return left < right;
+    case OperatorCode.LessEqual:
+      return left <= right;
+    case OperatorCode.Greater:
+      return left > right;
+    case OperatorCode.GreaterEqual:
+      return left >= right;
+    case OperatorCode.Equal:
+      return left === right;
+    case OperatorCode.NotEqual:
+      return left !== right;
+    default:
+      invalid("invalid length comparison operator", String(code));
+  }
+}
 
 export type VMAction =
   | { kind: "call"; id: number; route: string; payload: number[] }
@@ -73,20 +179,28 @@ export interface VMPumpState {
 interface Frame {
   readonly fn: PreparedFunction;
   readonly revision: Revision;
-  readonly locals: Cell[];
+  readonly profileKey: string;
+  readonly locals: LocalSlot[];
   readonly upvalues: Address[];
   readonly slots: (Value | undefined)[];
-  readonly mapIterators: Map<
+  /** Reused only for the synchronous duration of one instruction. */
+  readonly inputScratch: Value[];
+  mapIterators?: Map<
     string,
     { map: GuestMap; entries: { key: Value; value: Value }[]; offset: number }
   >;
   readonly returnOutputs: readonly number[];
   pc: number;
-  defers: FunctionValue[];
+  defers?: FunctionValue[];
   returning?: Value[];
   panic?: Value;
   recovered: boolean;
   deferred: boolean;
+  guestFrameBytes: bigint;
+  guestStorageUnknown: boolean;
+  /** One byte per slot tracks a still-reserved scalar/borrowed root. */
+  guestSlotRoots: Uint8Array;
+  scratchCapacity: number;
   initializing?: string;
   tailReturn?: boolean;
   completion?:
@@ -97,6 +211,62 @@ interface Frame {
         resultTypes: RuntimeType[];
         reflectResults?: boolean;
       };
+}
+
+interface ReusableFrameStorage {
+  locals: Value[];
+  slots: (Value | undefined)[];
+  inputScratch: Value[];
+  guestSlotRoots: Uint8Array;
+  scratchCapacity: number;
+  localCount: number;
+  slotCount: number;
+  bytes: number;
+}
+
+type LocalSlot = Value | Cell;
+
+type MapIterators = NonNullable<Frame["mapIterators"]>;
+
+function isLocalCell(slot: LocalSlot): slot is Cell {
+  return "id" in slot;
+}
+
+function localValue(slot: LocalSlot): Value {
+  return isLocalCell(slot) ? slot.value : slot;
+}
+
+function borrowInput(value: Value): Value {
+  switch (value.kind) {
+    case "bool":
+    case "int":
+    case "uint":
+    case "float":
+    case "complex":
+    case "string":
+      return value;
+    default:
+      return cloneValue(value);
+  }
+}
+
+function isKnownFrameValue(value: Value): boolean {
+  switch (value.kind) {
+    case "uninitialized":
+    case "nil":
+    case "bool":
+    case "int":
+    case "uint":
+    case "float":
+    case "complex":
+    case "pointer":
+    case "string":
+    case "map":
+    case "slice":
+      return true;
+    default:
+      return false;
+  }
 }
 
 interface Task {
@@ -200,6 +370,13 @@ interface MemoryCensus {
   revisions: Set<number>;
 }
 
+interface CensusWork {
+  value?: Value;
+  cell?: Cell;
+  channel?: Channel;
+  depth: number;
+}
+
 export class VirtualMachine {
   private revision: Revision;
   private readonly revisions = new Map<number, Revision>();
@@ -216,16 +393,21 @@ export class VirtualMachine {
   private readonly pendingHost = new Map<number, PendingHostCall>();
   private readonly pendingActions: VMAction[] = [];
   private readonly timers = new Map<number, TimerRecord>();
+  private readonly frameCache: ReusableFrameStorage[] = [];
+  private frameCacheBytes = 0;
   private readonly initialized = new Set<string>();
   private readonly initializing = new Set<string>();
   private readonly options: VMOptions;
-  private readonly enforceMemoryLimitsEveryStep: boolean;
   private paused = false;
   private closing = false;
   private closed = false;
   private ready = false;
   private initializationError?: VMError;
-  private steps = 0n;
+  // Keep the overwhelmingly common range as a machine Number.  Promotion is
+  // one-way and happens only after the exact integer range is exhausted; all
+  // public counters continue to expose BigInt.
+  private steps = 0;
+  private stepsOverflow?: bigint;
   private ffiCalls = 0n;
   private ffiBytes = 0n;
   private epoch = 1n;
@@ -236,10 +418,16 @@ export class VirtualMachine {
   private gcScannedEdges = 0n;
   private gcReclaimedBytes = 0n;
   private gcNanos = 0n;
+  private guestDepthUpper = 0;
+  private censusStorage = new WeakSet<object>();
+  private readonly censusCells = new Set<Cell>();
+  private readonly censusObjects = new Set<object>();
+  private readonly censusPending: CensusWork[] = [];
   private referencedRevisions = new Set<number>();
   private readonly dynamicTypes = new Map<string, RuntimeType>();
   private dynamicTypeBytes = 0;
   private readonly debugFunctions = new Map<string, FunctionDebugInfo>();
+  private symbolProgramHash = "";
   private readonly debugBreakpoints = new Set<string>();
   private readonly debugEventsQueue: Record<string, unknown>[] = [];
   private readonly debugFrames = new Map<number, FrameRef>();
@@ -257,6 +445,9 @@ export class VirtualMachine {
     string,
     { calls: bigint; steps: bigint; nanos: bigint }
   >();
+  private readonly profileTiming: boolean;
+  private readonly maxSteps: bigint | undefined;
+  private readonly maxStepsNumber: number | undefined;
 
   readonly maxInputBytes: number;
   readonly maxHostResultBytes: number;
@@ -264,17 +455,23 @@ export class VirtualMachine {
 
   private constructor(program: Program, options: VMOptions) {
     this.options = options;
+    this.profileTiming = options.profile === true && options.profileTiming === true;
     this.guestMemory = new GuestMemory(options.limits);
     const limits = options.limits;
-    this.enforceMemoryLimitsEveryStep = Boolean(
-      limits &&
-        (limits.maxObjects !== undefined ||
-          limits.maxHeapBytes !== undefined ||
-          limits.maxAllocatedBytes !== undefined ||
-          limits.maxStringBytes !== undefined ||
-          limits.maxValueDepth !== undefined ||
-          limits.maxSequenceElements !== undefined),
-    );
+    const configuredMaxSteps = limits?.maxSteps;
+    this.maxSteps =
+      configuredMaxSteps === undefined
+        ? 100_000_000n
+        : configuredMaxSteps === 0 ||
+            configuredMaxSteps === 0n ||
+            configuredMaxSteps === -1 ||
+            configuredMaxSteps === -1n
+          ? undefined
+          : BigInt(configuredMaxSteps);
+    this.maxStepsNumber =
+      this.maxSteps !== undefined && this.maxSteps <= BigInt(Number.MAX_SAFE_INTEGER)
+        ? Number(this.maxSteps)
+        : undefined;
     this.revision = { generation: this.generation, program };
     this.revisions.set(this.generation, this.revision);
     this.maxInputBytes = options.limits?.maxFfiBytes ?? 8 * 1024 * 1024;
@@ -370,6 +567,7 @@ export class VirtualMachine {
       typeof document.packages !== "object"
     )
       throw new VMError("program symbols do not match the image", "invalid_symbols", "symbols");
+    this.symbolProgramHash = this.revision.program.hash;
     for (const [modulePath, unknownPackage] of Object.entries(document.packages)) {
       if (!unknownPackage || typeof unknownPackage !== "object") continue;
       const packageSymbols = unknownPackage as { files?: unknown; functions?: unknown };
@@ -423,7 +621,12 @@ export class VirtualMachine {
                   column: point.column as number,
                 });
             }
-            if (points.length) info.locations.set(location.pc as number, points);
+            const prepared = this.revision.program.modules
+              .get(modulePath)
+              ?.functions.get(fn.id ?? "");
+            const pc = prepared?.wireToExecutablePC[location.pc as number];
+            if (points.length && pc !== undefined)
+              info.locations.set(pc, [...(info.locations.get(pc) ?? []), ...points]);
           }
         this.debugFunctions.set(`${modulePath}\0${fn.id}`, info);
       }
@@ -448,7 +651,15 @@ export class VirtualMachine {
       state: "Running",
       settled: false,
     });
-    const task = this.createTask(scopeID, fn, values, []);
+    let task: Task;
+    try {
+      task = this.createTask(scopeID, fn, values, []);
+    } catch (error) {
+      this.scopes.delete(scopeID);
+      this.executions.delete(executionID);
+      this.updateMemoryCensus(false);
+      throw error;
+    }
     this.scopes.get(scopeID)!.rootTask = task.id;
     try {
       this.updateMemoryCensus(true);
@@ -470,13 +681,197 @@ export class VirtualMachine {
     const task: Task = {
       id: this.nextTask++,
       scope,
-      frames: [this.createFrame(fn, this.revision, arguments_, captures, [], false)],
+      frames: [],
       state: "runnable",
     };
+    this.pushFrame(task, this.createFrame(fn, this.revision, arguments_, captures, [], false));
     this.tasks.set(task.id, task);
     this.scopes.get(scope)!.tasks.add(task.id);
     this.runnable.push(task.id);
     return task;
+  }
+
+  private localCell(frame: Frame, index: number): Cell {
+    const slot = frame.locals[index];
+    if (!slot) invalid("local index is invalid", frame.fn.id);
+    if (isLocalCell(slot)) return slot;
+    const root = cell(slot);
+    frame.locals[index] = root;
+    frame.guestStorageUnknown = true;
+    this.guestMemory.markDirty();
+    return root;
+  }
+
+  private setLocal(frame: Frame, index: number, value: Value): void {
+    const slot = frame.locals[index];
+    if (!slot) invalid("local index is invalid", frame.fn.id);
+    this.checkBorrowedStorage(value);
+    if (value.kind === "string") this.reserveStringRoot(value);
+    const flatStorage =
+      (value.kind === "struct" || value.kind === "interface") &&
+      this.reserveFlatStorage(value, false, isLocalCell(slot));
+    if (!isKnownFrameValue(value)) {
+      frame.guestStorageUnknown = true;
+      if (!flatStorage) this.guestMemory.markDirty();
+    }
+    if (isLocalCell(slot)) {
+      if (hasGuestReference(value) && !flatStorage) {
+        if (
+          value.kind === "slice" &&
+          (value.value as SliceValue).storage.root.value.kind === "bytes"
+        ) {
+          // A cell may also be reached through a deeper alias. Bound the new
+          // cell -> slice -> backing -> bytes path until the next exact trace.
+          this.guestDepthUpper += 3;
+          if (this.guestDepthUpper > (this.options.limits?.maxValueDepth ?? 128))
+            this.guestMemory.markDirty();
+        } else this.guestMemory.markDirty();
+      }
+      slot.value = value;
+    } else frame.locals[index] = value;
+  }
+
+  private reserveStringRoot(value: Value): void {
+    const length = (value.value as Uint8Array).byteLength;
+    this.checkSequence(length, "string");
+    const bytes = BigInt(length) * GUEST_COST.byte;
+    if (this.guestMemory.reservationNeedsCensus(bytes, BigInt(length)))
+      this.updateMemoryCensus(true);
+    this.guestMemory.reserve(bytes, BigInt(length));
+  }
+
+  private checkBorrowedStorage(value: Value): void {
+    const storage =
+      value.kind === "map" || value.kind === "channel"
+        ? (value.value as GuestMap | Channel)
+        : value.kind === "pointer"
+          ? (value.value as Address).root
+          : value.kind === "slice"
+            ? (value.value as SliceValue).storage.root
+            : undefined;
+    if (storage && !this.censusStorage.has(storage)) this.guestMemory.markDirty();
+  }
+
+  /** Exact cost for scalar storage, flat structs and their interface wrapper.
+   * Reference-bearing values retain the graph census path. */
+  private reserveFlatStorage(value: Value, newCell: boolean, nested = false, copies = 1): boolean {
+    let bytes = GUEST_COST.node;
+    let strings = 0n;
+    let fields = 0;
+    const stored = value.kind === "interface" ? (value.value as Value) : value;
+    if (stored.kind === "struct") {
+      const facts = stored.type.registry.facts(stored.type);
+      if (!facts.flat || facts.containsReferences) return false;
+    }
+    if (value.kind === "interface") bytes += GUEST_COST.node;
+    const values =
+      stored.kind === "struct" ? (stored.value as Map<string, Value>).values() : [stored];
+    for (const item of values) {
+      if (
+        !isKnownFrameValue(item) ||
+        item.kind === "pointer" ||
+        item.kind === "map" ||
+        item.kind === "slice"
+      )
+        return false;
+      if (stored.kind === "struct") {
+        fields++;
+        bytes += GUEST_COST.mapEntry + GUEST_COST.node;
+      }
+      if (item.kind === "string") {
+        const length = (item.value as Uint8Array).byteLength;
+        this.checkSequence(length, "string");
+        strings += BigInt(length);
+        bytes += BigInt(length) * GUEST_COST.byte;
+      }
+    }
+    const heap = newCell
+      ? GUEST_COST.node + (value.kind === "struct" ? BigInt(fields) * GUEST_COST.mapEntry : 0n)
+      : 0n;
+    bytes = (bytes + heap) * BigInt(copies);
+    strings *= BigInt(copies);
+    const depth =
+      (value.kind === "interface" ? 1 : 0) + (stored.kind === "struct" ? 1 : 0) + (newCell ? 1 : 0);
+    const maxDepth = this.options.limits?.maxValueDepth ?? 128;
+    if (this.guestMemory.reservationNeedsCensus(bytes, strings, heap, newCell ? 1n : 0n))
+      this.updateMemoryCensus(true);
+    this.guestMemory.reserve(bytes, strings, heap, newCell ? 1n : 0n);
+    // Insertion into an existing container can deepen a path. Accumulate a
+    // conservative bound until a trace determines the exact depth again.
+    this.guestDepthUpper = nested
+      ? this.guestDepthUpper + depth + 1
+      : Math.max(this.guestDepthUpper, depth);
+    if (this.guestDepthUpper > maxDepth) this.guestMemory.markDirty();
+    return true;
+  }
+
+  private reserveKnownGuest(bytes: bigint): void {
+    if (bytes <= 0n) return;
+    if (this.guestMemory.reservationNeedsCensus(bytes)) this.updateMemoryCensus(true);
+    this.guestMemory.reserve(bytes);
+  }
+
+  private reserveKnownFrame(bytes: bigint, strings = 0n): void {
+    const total = bytes + strings * GUEST_COST.byte;
+    if (total <= 0n) return;
+    if (this.guestMemory.reservationNeedsCensus(total, strings)) this.updateMemoryCensus(true);
+    this.guestMemory.reserveFrame(bytes, strings);
+  }
+
+  private clearFrameSlot(frame: Frame, slot: number): void {
+    // Dropping a root cannot increase a limit. Keep its backing in the
+    // conservative census until allocation pressure or a public boundary.
+    if (frame.guestSlotRoots[slot]) {
+      frame.guestSlotRoots[slot] = 0;
+      frame.guestFrameBytes -= GUEST_COST.node;
+      this.guestMemory.releaseFrame(GUEST_COST.node);
+    }
+    frame.slots[slot] = undefined;
+  }
+
+  private mapIterators(frame: Frame): MapIterators {
+    return (frame.mapIterators ??= new Map());
+  }
+
+  private acquireFrameStorage(fn: PreparedFunction): ReusableFrameStorage | undefined {
+    if (fn.cellLocals.size) return undefined;
+    const index = this.frameCache.findIndex(
+      (entry) =>
+        entry.localCount === fn.localTypes.length && entry.slotCount === fn.slotTypes.length,
+    );
+    if (index < 0) return undefined;
+    const [storage] = this.frameCache.splice(index, 1);
+    this.frameCacheBytes -= storage!.bytes;
+    return storage;
+  }
+
+  private recycleFrame(frame: Frame): void {
+    if (this.closing || this.closed) return;
+    if (frame.fn.cellLocals.size || frame.locals.some(isLocalCell)) return;
+    const limit = this.options.limits?.maxFrameCacheBytes ?? 0;
+    if (limit <= 0) return;
+    frame.slots.fill(undefined);
+    frame.inputScratch.length = 0;
+    frame.guestSlotRoots.fill(0);
+    frame.locals.length = 0;
+    frame.upvalues.length = 0;
+    const bytes =
+      FRAME_CACHE_ENTRY_BYTES +
+      (frame.fn.localTypes.length + frame.fn.slotTypes.length + frame.scratchCapacity) *
+        FRAME_CACHE_VALUE_BYTES +
+      frame.guestSlotRoots.byteLength;
+    if (bytes > limit || this.frameCacheBytes + bytes > limit) return;
+    this.frameCache.push({
+      locals: frame.locals as Value[],
+      slots: frame.slots,
+      inputScratch: frame.inputScratch,
+      guestSlotRoots: frame.guestSlotRoots,
+      scratchCapacity: frame.scratchCapacity,
+      localCount: frame.fn.localTypes.length,
+      slotCount: frame.fn.slotTypes.length,
+      bytes,
+    });
+    this.frameCacheBytes += bytes;
   }
 
   private createFrame(
@@ -491,38 +886,104 @@ export class VirtualMachine {
       throw new VMError("call argument count mismatch", "invalid_call", fn.id);
     if (captures.length !== fn.upvalueTypes.length)
       throw new VMError("closure capture count mismatch", "invalid_call", fn.id);
-    if (this.options.profile) {
-      const key = `${fn.module.path}.${fn.id}`;
-      const profile = this.functionProfile.get(key) ?? { calls: 0n, steps: 0n, nanos: 0n };
-      profile.calls++;
-      this.functionProfile.set(key, profile);
+    const profileKey = this.options.profile ? `${fn.module.path}.${fn.id}` : "";
+    const storage = this.acquireFrameStorage(fn);
+    const locals: LocalSlot[] = storage
+      ? storage.locals
+      : fn.localTypes.map((type, index) =>
+          fn.cellLocals.has(index) ? cell(zero(type)) : zero(type),
+        );
+    if (storage) for (const type of fn.localTypes) locals.push(zero(type));
+    for (let index = 0; index < arguments_.length; index++) {
+      const value = this.coerce(arguments_[index]!, fn.localTypes[index]!);
+      const slot = locals[index]!;
+      if (isLocalCell(slot)) slot.value = value;
+      else locals[index] = value;
     }
-    const locals = fn.localTypes.map((type) => cell(zero(type)));
-    for (let index = 0; index < arguments_.length; index++)
-      locals[index]!.value = this.coerce(arguments_[index]!, fn.localTypes[index]!);
-    return {
+    let guestStorageUnknown = fn.cellLocals.size > 0;
+    let guestFrameBytes = BigInt(fn.localTypes.length) * GUEST_COST.node;
+    let stringBytes = 0n;
+    for (const slot of locals) {
+      const value = localValue(slot);
+      this.checkBorrowedStorage(value);
+      if (value.kind === "struct") {
+        const facts = value.type.registry.facts(value.type);
+        if (!facts.flat || facts.containsReferences) guestStorageUnknown = true;
+        const fields = value.value as Map<string, Value>;
+        for (const field of fields.values()) {
+          if (
+            !isKnownFrameValue(field) ||
+            field.kind === "pointer" ||
+            field.kind === "map" ||
+            field.kind === "slice"
+          )
+            guestStorageUnknown = true;
+          if (field.kind === "string") {
+            const length = (field.value as Uint8Array).byteLength;
+            this.checkSequence(length, "string");
+            stringBytes += BigInt(length);
+          }
+        }
+        guestFrameBytes += BigInt(fields.size) * (GUEST_COST.mapEntry + GUEST_COST.node);
+        this.guestDepthUpper = Math.max(this.guestDepthUpper, 1);
+        if ((this.options.limits?.maxValueDepth ?? 128) < 1) this.guestMemory.markDirty();
+      } else if (!isKnownFrameValue(value)) guestStorageUnknown = true;
+      if (value.kind === "string") {
+        const length = (value.value as Uint8Array).byteLength;
+        this.checkSequence(length, "string");
+        stringBytes += BigInt(length);
+      }
+    }
+    if (guestStorageUnknown) {
+      guestFrameBytes = 0n;
+      this.guestMemory.markDirty();
+    }
+    // Reserve the complete shallow frame atomically. A pressure census must
+    // not observe a partially reserved frame before pushFrame publishes it.
+    this.reserveKnownFrame(guestFrameBytes, stringBytes);
+    const frame: Frame = {
       fn,
       revision,
+      profileKey,
       locals,
-      upvalues: captures,
-      slots: new Array(fn.slotTypes.length),
-      mapIterators: new Map(),
+      upvalues: captures.slice(),
+      slots: storage?.slots ?? new Array(fn.slotTypes.length),
+      inputScratch: storage?.inputScratch ?? [],
       returnOutputs,
       pc: 0,
-      defers: [],
       recovered: false,
       deferred,
+      guestFrameBytes,
+      guestStorageUnknown,
+      guestSlotRoots: storage?.guestSlotRoots ?? new Uint8Array(fn.slotTypes.length),
+      scratchCapacity: Math.max(storage?.scratchCapacity ?? 0, fn.maxInputArity),
     };
+    return frame;
   }
 
   private pushFrame(task: Task, frame: Frame): void {
-    if (task.frames.length >= (this.options.limits?.maxFrames ?? 1024))
+    if (task.frames.length >= (this.options.limits?.maxFrames ?? 1024)) {
+      this.guestMemory.releaseFrame(frame.guestFrameBytes);
       throw new VMError("frame limit exceeded", "frame_limit", frame.fn.id);
+    }
     task.frames.push(frame);
+    if (frame.profileKey) {
+      const profile = this.functionProfile.get(frame.profileKey) ?? {
+        calls: 0n,
+        steps: 0n,
+        nanos: 0n,
+      };
+      profile.calls++;
+      this.functionProfile.set(frame.profileKey, profile);
+    }
   }
 
   private checkSequence(length: number, path: string): void {
-    if (length > (this.options.limits?.maxSequenceElements ?? 1_000_000))
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > (this.options.limits?.maxSequenceElements ?? 1_000_000)
+    )
       throw new VMError("sequence element limit exceeded", "allocation_limit", path);
   }
 
@@ -541,27 +1002,21 @@ export class VirtualMachine {
       try {
         const frame = task.frames[task.frames.length - 1];
         const instruction = frame?.fn.instructions[frame.pc];
-        const profileKey =
-          this.options.profile && frame ? `${frame.fn.module.path}.${frame.fn.id}` : "";
-        const profileStarted = profileKey ? performance.now() : 0;
-        if (instruction && profileKey)
-          this.opcodeProfile.set(
-            instruction.name,
-            (this.opcodeProfile.get(instruction.name) ?? 0n) + 1n,
-          );
+        const profileKey = frame?.profileKey ?? "";
+        const profileStarted = this.profileTiming && profileKey ? performance.now() : 0;
         try {
           this.step(task);
         } finally {
-          if (profileKey) {
+          if (this.profileTiming && profileKey) {
             const profile = this.functionProfile.get(profileKey)!;
-            profile.steps++;
             profile.nanos += BigInt(
               Math.max(0, Math.floor((performance.now() - profileStarted) * 1_000_000)),
             );
           }
         }
-        if (this.enforceMemoryLimitsEveryStep || (this.steps & 63n) === 0n)
-          this.updateMemoryCensus(true);
+        if (instruction && MEMORY_EFFECT_OPCODES.has(instruction.name))
+          this.guestMemory.markDirty();
+        if (this.guestMemory.needsCensus()) this.updateMemoryCensus(true);
       } catch (error) {
         const runtimeError = toVMError(error);
         if (runtimeError.code === "panic" && task.frames.length) {
@@ -597,6 +1052,7 @@ export class VirtualMachine {
   private shouldStopBeforeInstruction(task: Task): boolean {
     if (!this.debugConfigured || !task.frames.length) return false;
     const current = task.frames[task.frames.length - 1]!;
+    if (current.revision.program.hash !== this.symbolProgramHash) return false;
     const key = `${task.id}:${current.fn.module.path}:${current.fn.id}:${current.pc}`;
     if (this.debugIgnoreBreakpoint === key) {
       this.debugIgnoreBreakpoint = "";
@@ -657,12 +1113,13 @@ export class VirtualMachine {
       this.completeTask(task, []);
       return;
     }
-    const configuredSteps = this.options.limits?.maxSteps;
-    const maxSteps = configuredSteps === 0 || configuredSteps === 0n ? undefined : configuredSteps;
-    if (maxSteps !== -1 && maxSteps !== -1n) {
-      const limit = BigInt(maxSteps ?? 100_000_000);
-      if (this.steps >= limit) throw new VMError("step limit exceeded", "step_limit", "execution");
-    }
+    if (
+      this.maxSteps !== undefined &&
+      (this.maxStepsNumber !== undefined
+        ? this.steps >= this.maxStepsNumber
+        : (this.stepsOverflow ?? BigInt(this.steps)) >= this.maxSteps)
+    )
+      throw new VMError("step limit exceeded", "step_limit", "execution");
     const frame = task.frames[task.frames.length - 1]!;
     if (frame.returning) {
       this.finishFrame(task, frame);
@@ -674,305 +1131,479 @@ export class VirtualMachine {
       return;
     }
     const instruction = frame.fn.instructions[frame.pc++]!;
-    this.steps++;
-    for (const slot of instruction.operands.releaseBefore) frame.slots[slot] = undefined;
-    this.execute(task, frame, instruction);
-    for (const slot of instruction.operands.release) frame.slots[slot] = undefined;
+    if (this.stepsOverflow !== undefined) this.stepsOverflow++;
+    else if (this.steps === Number.MAX_SAFE_INTEGER) this.stepsOverflow = BigInt(this.steps) + 1n;
+    else this.steps++;
+    if (frame.profileKey) {
+      this.opcodeProfile.set(
+        instruction.name,
+        (this.opcodeProfile.get(instruction.name) ?? 0n) + 1n,
+      );
+      const profile = this.functionProfile.get(frame.profileKey);
+      if (profile) profile.steps++;
+    }
+    for (const slot of instruction.operands.releaseBefore) this.clearFrameSlot(frame, slot);
+    try {
+      this.execute(task, frame, instruction);
+    } finally {
+      frame.inputScratch.length = 0;
+    }
+    for (const slot of instruction.operands.release) this.clearFrameSlot(frame, slot);
+  }
+
+  private stepCount(): bigint {
+    return this.stepsOverflow ?? BigInt(this.steps);
   }
 
   private execute(task: Task, frame: Frame, instruction: PreparedInstruction): void {
-    const inputs = this.inputs(frame, instruction);
+    const input0 = instruction.input0 ? this.readOperand(frame, instruction.input0) : undefined;
+    const input1 = instruction.input1 ? this.readOperand(frame, instruction.input1) : undefined;
+    // Variable-arity operations retain the frame scratch buffer. Fixed arity
+    // operations below consume input0/input1 directly and do not populate it.
+    const inputs = instruction.arity[0] > 2 ? this.inputs(frame, instruction) : undefined;
     const descriptor = instruction.descriptor ?? {};
-    const output = (...values: Value[]) =>
-      this.outputs(frame, instruction.operands.outputs, values);
     switch (instruction.opcode) {
       case 1:
         this.typeDispatch(frame, descriptor);
         return;
       case 2:
-        this.select(task, frame, descriptor);
+        this.select(task, frame, instruction, descriptor);
         return;
       case 3: {
-        const constant = descriptorInteger(descriptor.$constant);
-        output(cloneValue(frame.fn.module.constants[constant]!));
+        const constant = instruction.constant!;
+        this.outputOne(frame, instruction, cloneValue(frame.fn.module.constants[constant]!));
         return;
       }
       case 4:
-        output(zero(this.outputType(frame, instruction.operands.outputs[0]!)));
+        this.outputOne(
+          frame,
+          instruction,
+          zero(this.outputType(frame, instruction.operands.outputs[0]!)),
+        );
         return;
       case 5:
         return;
       case 6:
-        output(unary(descriptorText(descriptor.operator), inputs[0]!));
+        this.outputOne(frame, instruction, unaryCode(instruction.operatorCode!, input0!));
         return;
       case 7:
-        output(binary(descriptorText(descriptor.operator), inputs[0]!, inputs[1]!));
+        this.outputOne(frame, instruction, binaryCode(instruction.operatorCode!, input0!, input1!));
         return;
       case 8:
       case 9: {
-        const index = descriptorInteger(descriptor.$local);
-        if (instruction.opcode === 8) output(cloneValue(frame.locals[index]!.value));
-        else if (Boolean(descriptor.rebind))
-          frame.locals[index] = cell(this.coerce(inputs[0]!, frame.fn.localTypes[index]!));
-        else frame.locals[index]!.value = this.coerce(inputs[0]!, frame.fn.localTypes[index]!);
+        const index = instruction.local!;
+        if (instruction.opcode === 8)
+          this.outputOne(frame, instruction, cloneValue(localValue(frame.locals[index]!)));
+        else if (descriptor.rebind === true && frame.fn.cellLocals.has(index)) {
+          const value = this.coerce(input0!, frame.fn.localTypes[index]!);
+          if (!this.reserveFlatStorage(value, true)) this.guestMemory.markDirty();
+          frame.locals[index] = cell(value);
+        } else {
+          this.setLocal(frame, index, this.coerce(input0!, frame.fn.localTypes[index]!));
+        }
         return;
       }
       case 10:
       case 11: {
-        const index = descriptorInteger(descriptor.$upvalue);
+        const index = instruction.upvalue!;
         const address = frame.upvalues[index]!;
-        if (instruction.opcode === 10) output(cloneValue(dereference(address)));
-        else assign(address, this.coerce(inputs[0]!, frame.fn.upvalueTypes[index]!));
+        if (instruction.opcode === 10)
+          this.outputOne(frame, instruction, cloneValue(dereference(address)));
+        else {
+          assign(address, this.coerce(input0!, frame.fn.upvalueTypes[index]!));
+          if (REFERENCE_VALUE_KINDS.has(input0!.kind) || input0!.kind === "pointer")
+            this.guestMemory.markDirty();
+        }
         return;
       }
       case 12:
       case 13: {
-        const index = descriptorInteger(descriptor.$global);
-        if (instruction.opcode === 12) output(cloneValue(frame.fn.module.globals[index]!.value));
-        else
+        const index = instruction.global!;
+        if (instruction.opcode === 12)
+          this.outputOne(frame, instruction, cloneValue(frame.fn.module.globals[index]!.value));
+        else {
           frame.fn.module.globals[index]!.value = this.coerce(
-            inputs[0]!,
+            input0!,
             frame.fn.module.globals[index]!.value.type,
           );
+          if (REFERENCE_VALUE_KINDS.has(input0!.kind) || input0!.kind === "pointer")
+            this.guestMemory.markDirty();
+        }
         return;
       }
       case 14:
         return;
       case 15:
-        frame.pc = descriptorInteger(descriptor.$target);
+        frame.pc = instruction.target!;
         return;
       case 16: {
-        const condition = inputs[0];
+        const condition = input0;
         if (condition?.kind !== "bool") invalid("jump condition is not bool", "jump_if");
         if ((condition.value as boolean) !== Boolean(descriptor.negate))
-          frame.pc = descriptorInteger(descriptor.$target);
+          frame.pc = instruction.target!;
         return;
       }
       case 17:
-        frame.returning = inputs.map(cloneValue);
+        frame.returning = this.inputs(frame, instruction).map(cloneValue);
         return;
       case 18:
         frame.panic =
-          inputs[0]!.kind === "nil"
+          input0!.kind === "nil"
             ? stringValue(
                 frame.fn.module.registry,
                 textEncoder.encode("panic called with nil argument"),
               )
-            : cloneValue(inputs[0]!);
+            : cloneValue(input0!);
         frame.returning = [];
         return;
       case 19:
-        output(this.recover(task, frame));
+        this.outputOne(frame, instruction, this.recover(task, frame));
         return;
       case 20: {
-        const value = inputs[0];
+        const value = input0;
         if (value?.kind !== "function") invalid("deferred value is not callable", "defer");
         const ownerDepth = descriptorInteger(descriptor.owner_depth, 0);
         const owner = task.frames[task.frames.length - ownerDepth - 1];
         if (!owner) invalid("defer owner depth exceeds stack", "defer");
-        owner.defers.push(value.value as FunctionValue);
+        (owner.defers ??= []).push(value.value as FunctionValue);
         return;
       }
       case 21:
       case 22:
       case 23:
-        this.call(task, frame, instruction, inputs, descriptor);
+        this.call(task, frame, instruction, this.inputs(frame, instruction), descriptor);
         return;
       case 24:
-        this.callInterface(task, frame, instruction, inputs, descriptor);
+        this.callInterface(task, frame, instruction, this.inputs(frame, instruction), descriptor);
         return;
       case 25:
-        output(this.makeClosure(frame, descriptor));
+        this.outputOne(frame, instruction, this.makeClosure(frame, instruction, descriptor));
         return;
       case 26:
-        output(this.makeSequence(frame, descriptor, inputs));
+        this.outputOne(
+          frame,
+          instruction,
+          this.makeSequence(frame, descriptor, this.inputs(frame, instruction)),
+        );
         return;
       case 27:
-        output(this.makeMap(frame, descriptor, inputs));
+        this.outputOne(
+          frame,
+          instruction,
+          this.makeMap(frame, descriptor, this.inputs(frame, instruction)),
+        );
         return;
       case 28:
-        output(this.makeStruct(frame, descriptor, inputs));
+        this.outputOne(
+          frame,
+          instruction,
+          this.makeStruct(frame, descriptor, this.inputs(frame, instruction)),
+        );
         return;
       case 29:
-        output(this.makeSlice(frame, descriptor, inputs));
+        this.outputOne(
+          frame,
+          instruction,
+          this.makeSlice(frame, descriptor, this.inputs(frame, instruction)),
+        );
         return;
       case 30:
-        output(this.makeChannel(frame, descriptor, inputs[0]!));
+        this.outputOne(frame, instruction, this.makeChannel(frame, descriptor, input0!));
         return;
       case 31: {
-        const [value] = this.loadIndex(inputs[0]!, inputs[1]!);
-        output(value);
+        const [value] = this.loadIndex(input0!, input1!);
+        this.outputOne(frame, instruction, value);
         return;
       }
       case 32: {
-        const [value, ok] = this.loadIndex(inputs[0]!, inputs[1]!);
-        output(value, boolValue(frame.fn.module.registry, ok));
+        const [value, ok] = this.loadIndex(input0!, input1!);
+        this.outputTwo(frame, instruction, value, boolValue(frame.fn.module.registry, ok));
         return;
       }
       case 33: {
-        const bytes = expectBytes(inputs[0]!, "string_rune_at");
-        const index = asIndex(inputs[1]!);
+        const bytes = expectBytes(input0!, "string_rune_at");
+        const index = asIndex(input1!);
         const [rune] = decodeRune(bytes, index);
-        output(intValue(frame.fn.module.registry, BigInt(rune)));
+        this.outputOne(frame, instruction, {
+          type: this.outputType(frame, instruction.operands.outputs[0]!),
+          kind: "int",
+          value: BigInt.asIntN(32, BigInt(rune)),
+        });
         return;
       }
       case 34: {
-        const bytes = expectBytes(inputs[0]!, "string_next_rune_index");
-        const index = asIndex(inputs[1]!);
+        const bytes = expectBytes(input0!, "string_next_rune_index");
+        const index = asIndex(input1!);
         const [, width] = decodeRune(bytes, index);
-        output(intValue(frame.fn.module.registry, BigInt(index + width)));
+        this.outputOne(
+          frame,
+          instruction,
+          intValue(frame.fn.module.registry, BigInt(index + width)),
+        );
         return;
       }
       case 35:
-        output(this.slice(frame, inputs));
+        this.outputOne(frame, instruction, this.slice(frame, this.inputs(frame, instruction)));
         return;
       case 36:
       case 37:
-        output(
+        this.outputOne(
+          frame,
+          instruction,
           intValue(
             frame.fn.module.registry,
-            BigInt(this.length(inputs[0]!, instruction.opcode === 37)),
+            BigInt(this.measureLength(input0!, instruction.opcode === 37)),
           ),
         );
         return;
-      case 38:
-        output(this.append(descriptor, inputs));
+      case 38: {
+        const values = this.inputs(frame, instruction);
+        const target = instruction.output0!;
+        if (frame.slots[target] === undefined) {
+          // Publish the existing slice as the temporary output root before an
+          // append can mutate shared backing. A pressure trace then sees both
+          // the reserved root and the source throughout backing allocation.
+          this.reserveKnownFrame(GUEST_COST.node);
+          frame.guestFrameBytes += GUEST_COST.node;
+          frame.guestSlotRoots[target] = 1;
+          frame.slots[target] = values[0]!;
+        }
+        this.outputOne(frame, instruction, this.append(descriptor, values));
         return;
+      }
       case 39:
-        this.deleteMap(inputs[0]!, inputs[1]!);
+        this.deleteMap(input0!, input1!);
         return;
       case 40:
-        this.clear(inputs[0]!);
+        this.clear(input0!);
         return;
       case 41:
-        output(intValue(frame.fn.module.registry, BigInt(this.copy(inputs[0]!, inputs[1]!))));
+        this.outputOne(
+          frame,
+          instruction,
+          intValue(frame.fn.module.registry, BigInt(this.copy(input0!, input1!))),
+        );
         return;
       case 42:
-        output(this.mapKeys(frame, inputs[0]!));
+        this.outputOne(frame, instruction, this.mapKeys(frame, input0!));
         return;
       case 43:
-        this.mapIterInit(frame, descriptor, inputs[0]!);
+        this.mapIterInit(frame, descriptor, input0!);
         return;
       case 44:
-        output(...this.mapIterNext(frame, descriptor));
+        this.outputs(frame, instruction.operands.outputs, this.mapIterNext(frame, descriptor));
         return;
       case 45:
-        frame.mapIterators.delete(descriptorText(descriptor.local));
+        frame.mapIterators?.delete(descriptorText(descriptor.local));
         return;
       case 46:
-        output(cloneValue(fieldValue(inputs[0]!, descriptorText(descriptor.field))));
+        this.outputOne(
+          frame,
+          instruction,
+          cloneValue(fieldValue(input0!, instruction.field ?? descriptorText(descriptor.field))),
+        );
         return;
       case 47:
-        this.storeIndex(inputs[0]!, inputs[1]!, inputs[2]!);
+        if (
+          input0!.kind === "map" ||
+          ((REFERENCE_VALUE_KINDS.has(inputs![2]!.kind) || inputs![2]!.kind === "pointer") &&
+            !this.reserveFlatStorage(inputs![2]!, false, true))
+        )
+          this.guestMemory.markDirty();
+        this.storeIndex(input0!, input1!, inputs![2]!);
         return;
       case 48:
-        this.storeField(inputs[0]!, descriptorText(descriptor.field), inputs[1]!);
+        if (
+          (REFERENCE_VALUE_KINDS.has(input1!.kind) || input1!.kind === "pointer") &&
+          !this.reserveFlatStorage(input1!, false, true)
+        )
+          this.guestMemory.markDirty();
+        this.storeField(input0!, instruction.field ?? descriptorText(descriptor.field), input1!);
         return;
       case 49:
       case 50: {
         const type = this.descriptorType(frame, descriptor);
-        const asserted = this.assertType(inputs[0]!, type);
+        const asserted = this.assertType(input0!, type);
         if (instruction.opcode === 49) {
           if (!asserted) fail("interface conversion failed", "type_assert", "panic");
-          output(asserted);
+          this.outputOne(frame, instruction, asserted);
         } else
-          output(asserted ?? zero(type), boolValue(frame.fn.module.registry, Boolean(asserted)));
+          this.outputTwo(
+            frame,
+            instruction,
+            asserted ?? zero(type),
+            boolValue(frame.fn.module.registry, Boolean(asserted)),
+          );
         return;
       }
       case 51:
-        output(this.convertValue(inputs[0]!, this.descriptorType(frame, descriptor)));
+        this.outputOne(
+          frame,
+          instruction,
+          this.convertValue(input0!, this.descriptorType(frame, descriptor)),
+        );
         return;
       case 52:
-        output(this.addressOf(frame, descriptor));
+        this.outputOne(frame, instruction, this.addressOf(frame, descriptor));
         return;
       case 53: {
-        if (inputs[0]!.kind !== "pointer")
-          fail("nil pointer dereference", "load_indirect", "panic");
-        output(cloneValue(dereference(inputs[0]!.value as Address)));
+        if (input0!.kind !== "pointer") fail("nil pointer dereference", "load_indirect", "panic");
+        this.outputOne(frame, instruction, cloneValue(dereference(input0!.value as Address)));
         return;
       }
-      case 54:
-        if (inputs[0]!.kind !== "pointer")
-          fail("nil pointer dereference", "store_indirect", "panic");
-        assign(inputs[0]!.value as Address, inputs[1]!);
+      case 54: {
+        if (input0!.kind !== "pointer") fail("nil pointer dereference", "store_indirect", "panic");
+        const address = input0!.value as Address;
+        if (
+          (REFERENCE_VALUE_KINDS.has(input1!.kind) || input1!.kind === "pointer") &&
+          !(
+            address.path.some((part) => part.kind !== "typeView") &&
+            this.reserveFlatStorage(input1!, false, true)
+          )
+        )
+          this.guestMemory.markDirty();
+        assign(address, input1!);
         return;
+      }
       case 55:
-        this.send(task, inputs[0]!, inputs[1]!);
+        this.send(task, input0!, input1!);
         return;
       case 56:
       case 57:
-        this.receive(task, frame, instruction, inputs[0]!, instruction.opcode === 57);
+        this.receive(task, frame, instruction, input0!, instruction.opcode === 57);
         return;
       case 58:
-        output(boolValue(frame.fn.module.registry, this.canReceive(inputs[0]!)));
+        this.outputOne(
+          frame,
+          instruction,
+          boolValue(frame.fn.module.registry, this.canReceive(input0!)),
+        );
         return;
       case 59: {
-        const received = this.tryReceive(inputs[0]!);
-        output(
-          received?.[0] ?? zero(this.channelElement(inputs[0]!.type)),
+        const received = this.tryReceive(input0!);
+        this.outputTwo(
+          frame,
+          instruction,
+          received?.[0] ?? zero(this.channelElement(input0!.type)),
           boolValue(frame.fn.module.registry, Boolean(received)),
         );
         return;
       }
       case 60:
-        output(boolValue(frame.fn.module.registry, this.trySend(inputs[0]!, inputs[1]!, task)));
+        this.outputOne(
+          frame,
+          instruction,
+          boolValue(frame.fn.module.registry, this.trySend(input0!, input1!, task)),
+        );
         return;
       case 61:
-        output(boolValue(frame.fn.module.registry, this.canSend(inputs[0]!)));
+        this.outputOne(
+          frame,
+          instruction,
+          boolValue(frame.fn.module.registry, this.canSend(input0!)),
+        );
         return;
       case 62:
-        this.closeChannel(inputs[0]!);
+        this.closeChannel(input0!);
         this.wakeSelects();
         return;
       case 63:
         this.initializeModule(task, frame, descriptorText(descriptor.module_path));
         return;
       case 64:
-        output(this.loadExport(frame, descriptor));
+        this.outputOne(frame, instruction, this.loadExport(frame, descriptor));
         return;
       case 65:
-        this.spawn(task, frame, inputs, descriptor);
+        this.spawn(task, frame, this.inputs(frame, instruction), descriptor);
         return;
       case 66:
-        this.callFFI(task, frame, instruction, inputs);
+        this.callFFI(task, frame, instruction, this.inputs(frame, instruction));
         return;
       case 67:
-        this.intrinsic(task, frame, instruction, descriptorText(descriptor.id), inputs);
+        this.intrinsic(
+          task,
+          frame,
+          instruction,
+          instruction.intrinsic ?? descriptorText(descriptor.id),
+          this.inputs(frame, instruction),
+        );
         return;
       case 68: {
-        const matched = binary(descriptorText(descriptor.operator), inputs[0]!, inputs[1]!);
-        if (matched.kind !== "bool") invalid("comparison did not return bool", "compare_branch");
-        if ((matched.value as boolean) === Boolean(descriptor.when))
-          frame.pc = descriptorInteger(descriptor.$target);
+        if (compareCode(instruction.operatorCode!, input0!, input1!) === Boolean(descriptor.when))
+          frame.pc = instruction.target!;
         return;
       }
       case 69:
-        output(this.getPath(descriptor, inputs[0]!));
+        this.outputOne(
+          frame,
+          instruction,
+          this.getPath(descriptor, input0!, instruction.fieldPath),
+        );
         return;
+      case 70: {
+        const type = this.descriptorType(frame, descriptor);
+        const value = this.indexConvert(input0!, input1!, type);
+        this.outputOne(frame, instruction, value);
+        return;
+      }
+      case 71: {
+        const length = this.measureLength(input0!, false);
+        if (compareLength(instruction.operatorCode!, length, input1!) === Boolean(descriptor.when))
+          frame.pc = instruction.target!;
+        return;
+      }
       default:
         invalid("unknown opcode", String(instruction.opcode));
     }
   }
 
   private inputs(frame: Frame, instruction: PreparedInstruction): Value[] {
-    return instruction.operands.inputs.map(([kind, index]) => {
+    const values = frame.inputScratch;
+    values.length = 0;
+    for (const [kind, index] of instruction.operands.inputs) {
       if (kind === 0) {
         const value = frame.slots[index];
         if (!value) invalid("temporary is not initialized", "operand");
-        return cloneValue(value);
+        values.push(borrowInput(value));
+        continue;
       }
       if (kind === 1) {
         const value = frame.fn.module.constants[index];
         if (!value) invalid("constant index is invalid", "operand");
-        return cloneValue(value);
+        values.push(borrowInput(value));
+        continue;
       }
       if (kind === 2) {
-        const value = frame.locals[index]?.value;
+        const slot = frame.locals[index];
+        const value = slot && localValue(slot);
         if (!value) invalid("local index is invalid", "operand");
-        return cloneValue(value);
+        values.push(borrowInput(value));
+        continue;
       }
       invalid("unknown operand kind", "operand");
-    });
+    }
+    return values;
+  }
+
+  private readOperand(frame: Frame, operand: readonly [number, number]): Value {
+    const [kind, index] = operand;
+    if (kind === 0) {
+      const value = frame.slots[index];
+      if (!value) invalid("temporary is not initialized", "operand");
+      return borrowInput(value);
+    }
+    if (kind === 1) {
+      const value = frame.fn.module.constants[index];
+      if (!value) invalid("constant index is invalid", "operand");
+      return borrowInput(value);
+    }
+    if (kind === 2) {
+      const slot = frame.locals[index];
+      const value = slot && localValue(slot);
+      if (!value) invalid("local index is invalid", "operand");
+      return borrowInput(value);
+    }
+    invalid("unknown operand kind", "operand");
   }
 
   private outputs(frame: Frame, targets: readonly number[], values: Value[]): void {
@@ -981,17 +1612,70 @@ export class VirtualMachine {
         `result count mismatch: expected ${targets.length}, received ${values.length}`,
         frame.fn.id,
       );
-    for (let index = 0; index < targets.length; index++) {
-      const target = targets[index]!;
-      if ((target & LOCAL_OUTPUT) !== 0) {
-        const local = target & ~LOCAL_OUTPUT;
-        if (!frame.locals[local]) invalid("local output index is invalid", frame.fn.id);
-        frame.locals[local]!.value = this.coerce(values[index]!, frame.fn.localTypes[local]!);
-      } else {
-        if (target >= frame.slots.length) invalid("slot output index is invalid", frame.fn.id);
-        frame.slots[target] = this.coerce(values[index]!, frame.fn.slotTypes[target]!);
-      }
+    for (let index = 0; index < targets.length; index++)
+      this.writeOutput(frame, targets[index]!, values[index]!);
+  }
+
+  private outputOne(frame: Frame, instruction: PreparedInstruction, value: Value): void {
+    const target = instruction.output0;
+    if (instruction.operands.outputs.length !== 1 || target === undefined)
+      invalid("result count mismatch", frame.fn.id);
+    this.writeOutput(frame, target, value, isFreshScalarProducer(instruction.opcode));
+  }
+
+  private outputTwo(
+    frame: Frame,
+    instruction: PreparedInstruction,
+    first: Value,
+    second: Value,
+  ): void {
+    const firstTarget = instruction.output0;
+    const secondTarget = instruction.output1;
+    if (
+      instruction.operands.outputs.length !== 2 ||
+      firstTarget === undefined ||
+      secondTarget === undefined
+    )
+      invalid("result count mismatch", frame.fn.id);
+    this.writeOutput(frame, firstTarget, first);
+    this.writeOutput(frame, secondTarget, second);
+  }
+
+  private writeOutput(frame: Frame, target: number, value: Value, fresh = false): void {
+    if ((target & LOCAL_OUTPUT) !== 0) {
+      const local = target & ~LOCAL_OUTPUT;
+      if (!frame.locals[local]) invalid("local output index is invalid", frame.fn.id);
+      const type = frame.fn.localTypes[local]!;
+      this.setLocal(
+        frame,
+        local,
+        fresh && value.type === type && isFreshScalar(value) ? value : this.coerce(value, type),
+      );
+      return;
     }
+    if (target >= frame.slots.length) invalid("slot output index is invalid", frame.fn.id);
+    const previous = frame.slots[target];
+    this.checkBorrowedStorage(value);
+    if (
+      requiresGuestCensus(value) &&
+      !(
+        (value.kind === "struct" || value.kind === "interface") &&
+        this.reserveFlatStorage(value, false)
+      )
+    )
+      this.guestMemory.markDirty();
+    if (value.kind === "string") this.reserveStringRoot(value);
+    if (
+      previous === undefined &&
+      (!REFERENCE_VALUE_KINDS.has(value.kind) || BORROWED_VALUE_KINDS.has(value.kind))
+    ) {
+      this.reserveKnownFrame(GUEST_COST.node);
+      frame.guestFrameBytes += GUEST_COST.node;
+      frame.guestSlotRoots[target] = 1;
+    }
+    const type = frame.fn.slotTypes[target]!;
+    frame.slots[target] =
+      fresh && value.type === type && isFreshScalar(value) ? value : this.coerce(value, type);
   }
 
   private outputType(frame: Frame, target: number): RuntimeType {
@@ -1002,20 +1686,21 @@ export class VirtualMachine {
   }
 
   private namedResults(frame: Frame): Value[] {
-    return frame.fn.resultLocals.map((index) => cloneValue(frame.locals[index]!.value));
+    return frame.fn.resultLocals.map((index) => cloneValue(localValue(frame.locals[index]!)));
   }
 
   private finishFrame(task: Task, frame: Frame): void {
-    if (frame.defers.length) {
+    if (frame.defers?.length) {
       const deferred = frame.defers.pop()!;
-      const fn = this.resolveFunction(deferred, frame.revision);
-      this.pushFrame(
-        task,
-        this.createFrame(fn, this.functionRevision(deferred), [], deferred.captures, [], true),
-      );
+      const revision = this.functionRevision(deferred);
+      const fn = revision.program.function(deferred.module, deferred.function);
+      this.pushFrame(task, this.createFrame(fn, revision, [], deferred.captures, [], true));
       return;
     }
     let results = frame.returning ?? this.namedResults(frame);
+    if (!frame.guestStorageUnknown) {
+      this.guestMemory.releaseFrame(frame.guestFrameBytes);
+    }
     task.frames.pop();
     if (frame.initializing) {
       this.initializing.delete(frame.initializing);
@@ -1024,17 +1709,20 @@ export class VirtualMachine {
     if (frame.panic && !frame.recovered) {
       if (!task.frames.length) {
         this.failTask(task, new VMError(formatPanic(frame.panic), "panic", "panic"));
+        this.recycleFrame(frame);
         return;
       }
       const caller = task.frames[task.frames.length - 1]!;
       caller.panic = frame.panic;
       caller.returning = [];
+      this.recycleFrame(frame);
       return;
     }
     if (frame.recovered || frame.fn.resultLocals.length > 0) results = this.namedResults(frame);
     if (frame.deferred) results = [];
     if (!task.frames.length) {
       this.completeTask(task, results);
+      this.recycleFrame(frame);
       return;
     }
     const caller = task.frames[task.frames.length - 1]!;
@@ -1096,6 +1784,7 @@ export class VirtualMachine {
       } else this.outputs(caller, frame.completion.outputs, values);
     } else if (frame.tailReturn) caller.returning = results;
     else this.outputs(caller, frame.returnOutputs, results);
+    this.recycleFrame(frame);
   }
 
   private recover(task: Task, frame: Frame): Value {
@@ -1164,25 +1853,34 @@ export class VirtualMachine {
         arguments_ = [cloneValue(fnValue.receiver), ...arguments_];
     } else {
       fnValue = {
-        module:
-          descriptorText(descriptor.module_path, frame.fn.module.path) || frame.fn.module.path,
-        function: descriptorText(descriptor.function),
+        module: instruction.callModule || frame.fn.module.path,
+        function: instruction.callFunction ?? descriptorText(descriptor.function),
         captures: [],
         revision: frame.revision.generation,
       };
     }
     const revision = this.functionRevision(fnValue);
-    const fn = this.resolveFunction(fnValue, revision);
+    const fn = revision.program.function(fnValue.module, fnValue.function);
     const child = this.createFrame(
       fn,
       revision,
       arguments_,
       fnValue.captures,
-      tail && frame.defers.length === 0 ? frame.returnOutputs : instruction.operands.outputs,
+      tail && !frame.defers?.length ? frame.returnOutputs : instruction.operands.outputs,
       false,
     );
-    if (tail && frame.defers.length === 0) task.frames[task.frames.length - 1] = child;
-    else {
+    if (tail && !frame.defers?.length) {
+      task.frames[task.frames.length - 1] = child;
+      if (child.profileKey) {
+        const profile = this.functionProfile.get(child.profileKey) ?? {
+          calls: 0n,
+          steps: 0n,
+          nanos: 0n,
+        };
+        profile.calls++;
+        this.functionProfile.set(child.profileKey, profile);
+      }
+    } else {
       child.tailReturn = tail;
       this.pushFrame(task, child);
     }
@@ -1192,7 +1890,8 @@ export class VirtualMachine {
     const revision = this.revisions.get(fn.revision);
     if (!revision)
       throw new VMError("function revision is no longer available", "stale_revision", "call");
-    return revision;
+    const source = revision.program.function(fn.module, fn.function);
+    return source.revisionLocal ? revision : this.revision;
   }
 
   private callDynamicFunction(
@@ -1208,7 +1907,7 @@ export class VirtualMachine {
     if (!signature || signature.params.length !== arguments_.length)
       fail("reflect: dynamic call argument count mismatch", "reflect.make_func", "panic");
     const revision = this.functionRevision(dynamic.callback);
-    const callback = this.resolveFunction(dynamic.callback, revision);
+    const callback = revision.program.function(dynamic.callback.module, dynamic.callback.function);
     if (callback.signature.params.length !== 1)
       fail("reflect: invalid MakeFunc callback", "reflect.make_func", "panic");
     const sliceType = callback.module.registry.runtime(callback.signature.params[0]!.type);
@@ -1233,14 +1932,12 @@ export class VirtualMachine {
     this.pushFrame(task, child);
   }
 
-  private resolveFunction(fn: FunctionValue, revision: Revision): PreparedFunction {
-    const source = revision.program.modules.get(fn.module)?.functions.get(fn.function);
-    if (source?.revisionLocal) return source;
-    return this.revision.program.function(fn.module, fn.function);
-  }
-
-  private makeClosure(frame: Frame, descriptor: Record<string, unknown>): Value {
-    const captures = descriptorList(descriptor.captures).map((capture) =>
+  private makeClosure(
+    frame: Frame,
+    instruction: PreparedInstruction,
+    descriptor: Record<string, unknown>,
+  ): Value {
+    const captures = (instruction.captures ?? descriptorList(descriptor.captures)).map((capture) =>
       this.resolveAddress(frame, descriptorRecord(capture)),
     );
     return {
@@ -1295,18 +1992,16 @@ export class VirtualMachine {
 
   private makeMap(frame: Frame, descriptor: Record<string, unknown>, inputs: Value[]): Value {
     const type = this.descriptorType(frame, descriptor);
-    const entries: GuestMap["entries"] = [];
+    const map = createGuestMap();
     const count = descriptorInteger(descriptor.entry_count);
     this.checkSequence(count, "make_map");
     for (let index = 0; index < count; index++) {
       const key = inputs[index * 2]!;
       const value = inputs[index * 2 + 1]!;
       assertComparable(key);
-      const existing = entries.find((entry) => guestEqual(entry.key, key));
-      if (existing) existing.value = cloneValue(value);
-      else entries.push({ key: cloneValue(key), value: cloneValue(value) });
+      guestMapSet(map, cloneValue(key), cloneValue(value));
     }
-    return { type, kind: "map", value: { entries } satisfies GuestMap };
+    return { type, kind: "map", value: map };
   }
 
   private makeSlice(frame: Frame, descriptor: Record<string, unknown>, inputs: Value[]): Value {
@@ -1365,7 +2060,7 @@ export class VirtualMachine {
   private loadIndex(object: Value, key: Value): [Value, boolean] {
     if (object.kind === "map") {
       assertComparable(key);
-      const entry = (object.value as GuestMap).entries.find((item) => guestEqual(item.key, key));
+      const entry = guestMapGet(object.value as GuestMap, key);
       return [
         entry ? cloneValue(entry.value) : zero(this.elementType(object.type)),
         Boolean(entry),
@@ -1381,13 +2076,33 @@ export class VirtualMachine {
     return [cloneValue(indexValue(object, asIndex(key))), true];
   }
 
+  private indexConvert(object: Value, key: Value, type: RuntimeType): Value {
+    const index = asIndex(key);
+    if (object.kind === "string" || object.kind === "bytes") {
+      const bytes = object.value as Uint8Array;
+      if (index >= bytes.length) fail("index out of range", "index", "panic");
+      const primitiveKind = type.registry.underlying(type).ref.primitive;
+      const raw = BigInt(bytes[index]!);
+      if (
+        primitiveKind >= PrimitiveKind.PrimitiveInt &&
+        primitiveKind <= PrimitiveKind.PrimitiveInt64
+      )
+        return normalize({ type, kind: "int", value: raw });
+      if (
+        primitiveKind >= PrimitiveKind.PrimitiveUint &&
+        primitiveKind <= PrimitiveKind.PrimitiveUintptr
+      )
+        return normalize({ type, kind: "uint", value: raw });
+    }
+    const [value] = this.loadIndex(object, key);
+    return this.convertValue(value, type);
+  }
+
   private storeIndex(object: Value, key: Value, value: Value): void {
     if (object.kind === "map") {
       assertComparable(key);
       const map = object.value as GuestMap;
-      const entry = map.entries.find((item) => guestEqual(item.key, key));
-      if (entry) entry.value = cloneValue(value);
-      else map.entries.push({ key: cloneValue(key), value: cloneValue(value) });
+      guestMapSet(map, cloneValue(key), cloneValue(value));
       return;
     }
     if (
@@ -1475,7 +2190,7 @@ export class VirtualMachine {
     fail("value is not sliceable", "slice", "type_error");
   }
 
-  private length(value: Value, capacity: boolean): number {
+  private measureLength(value: Value, wantCapacity: boolean): number {
     if (value.kind === "pointer") value = dereference(value.value as Address);
     if (value.kind === "nil") {
       const underlying = value.type.registry.underlying(value.type);
@@ -1486,24 +2201,77 @@ export class VirtualMachine {
       }
       return 0;
     }
-    if (value.kind === "string" && !capacity) return (value.value as Uint8Array).length;
+    if (value.kind === "string" && !wantCapacity) return (value.value as Uint8Array).length;
     if (value.kind === "array") return (value.value as Value[]).length;
     if (value.kind === "bytes") return (value.value as Uint8Array).length;
     if (value.kind === "slice")
-      return capacity ? (value.value as SliceValue).capacity : (value.value as SliceValue).length;
-    if (value.kind === "map" && !capacity) return (value.value as GuestMap).entries.length;
+      return wantCapacity
+        ? (value.value as SliceValue).capacity
+        : (value.value as SliceValue).length;
+    if (value.kind === "map" && !wantCapacity) return (value.value as GuestMap).entries.length;
     if (value.kind === "channel")
-      return capacity ? (value.value as Channel).capacity : (value.value as Channel).queue.length;
-    invalid("value has no length", capacity ? "cap" : "len");
+      return wantCapacity
+        ? (value.value as Channel).capacity
+        : (value.value as Channel).queue.length;
+    invalid("value has no length", wantCapacity ? "cap" : "len");
   }
 
   private append(descriptor: Record<string, unknown>, inputs: Value[]): Value {
     const original = inputs[0]!;
     if (original.kind !== "slice" && original.kind !== "nil")
       invalid("append target is not slice", "append");
-    let values = inputs.slice(1);
-    if (Boolean(descriptor.expand)) values = this.sliceValues(values[0]!);
     const element = this.elementType(original.type);
+    const underlyingElement = element.registry.underlying(element);
+    const isByteSlice =
+      underlyingElement.ref.kind === Kind.Primitive &&
+      underlyingElement.ref.primitive === PrimitiveKind.PrimitiveUint8;
+    const originalBytes =
+      isByteSlice && original.kind === "slice" ? this.byteSliceView(original) : undefined;
+    let values: Value[] = [];
+    let appendedBytes: Uint8Array | undefined;
+    let appendedByte: number | undefined;
+    if (Boolean(descriptor.expand)) {
+      const source = inputs[1]!;
+      const sourceBytes = isByteSlice ? this.byteSliceView(source) : undefined;
+      if (sourceBytes)
+        appendedBytes = sourceBytes.bytes.subarray(
+          sourceBytes.offset,
+          sourceBytes.offset + sourceBytes.length,
+        );
+      else values = this.sliceValues(source);
+    } else {
+      values = inputs.slice(1);
+      if (isByteSlice) {
+        if (values.length === 1) {
+          const value = values[0]!;
+          if (value.kind === "uint" || value.kind === "int")
+            appendedByte = Number(value.value as bigint);
+        } else if (values.length > 1) {
+          const bytes = new Uint8Array(values.length);
+          let valid = true;
+          for (let index = 0; index < values.length; index++) {
+            const value = values[index]!;
+            if (value.kind !== "uint" && value.kind !== "int") {
+              valid = false;
+              break;
+            }
+            bytes[index] = Number(value.value as bigint);
+          }
+          if (valid) appendedBytes = bytes;
+        }
+      }
+    }
+    if (
+      (appendedBytes || appendedByte !== undefined) &&
+      original.kind === "slice" &&
+      !originalBytes
+    ) {
+      if (Boolean(descriptor.expand) && values.length === 0) values = this.sliceValues(inputs[1]!);
+      appendedBytes = undefined;
+      appendedByte = undefined;
+    }
+    const appendLength = appendedBytes?.length ?? (appendedByte === undefined ? values.length : 1);
+    if (appendLength === 0) return original;
     let slice: SliceValue;
     if (original.kind === "nil") {
       slice = {
@@ -1513,32 +2281,68 @@ export class VirtualMachine {
         capacity: 0,
       };
     } else slice = original.value as SliceValue;
-    const needed = slice.length + values.length;
+    const needed = slice.length + appendLength;
     this.checkSequence(needed, "append");
     if (needed > slice.capacity) {
       const capacity = Math.max(needed, Math.max(1, slice.capacity * 2));
-      const old = this.sliceValues(original);
-      const byteSlice =
-        element.registry.underlying(element).ref.primitive === PrimitiveKind.PrimitiveUint8;
-      const backing: Value = byteSlice
-        ? { type: original.type, kind: "bytes", value: new Uint8Array(capacity) }
-        : {
-            type: original.type,
-            kind: "array",
-            value: Array.from({ length: capacity }, () => zero(element)),
-          };
+      this.checkSequence(capacity, "append capacity");
+      const oldBytes =
+        (appendedBytes || appendedByte !== undefined) && original.kind === "slice"
+          ? originalBytes
+          : undefined;
+      const old = oldBytes ? undefined : this.sliceValues(original);
+      if (appendedBytes || appendedByte !== undefined) this.reserveByteBacking(capacity);
+      const backing: Value =
+        appendedBytes || appendedByte !== undefined
+          ? { type: original.type, kind: "bytes", value: new Uint8Array(capacity) }
+          : {
+              type: original.type,
+              kind: "array",
+              value: Array.from({ length: capacity }, () => zero(element)),
+            };
       const root = cell(backing);
-      slice = { storage: { root, path: [] }, start: 0, length: old.length, capacity };
-      for (let index = 0; index < old.length; index++) setIndex(backing, index, old[index]!);
+      // A new backing changes reachability. Trace it after the output commits;
+      // content-only appends keep the existing graph and need no trace.
+      this.guestMemory.markDirty();
+      slice = {
+        storage: { root, path: [] },
+        start: 0,
+        length: oldBytes?.length ?? old!.length,
+        capacity,
+      };
+      if (oldBytes)
+        (backing.value as Uint8Array).set(
+          oldBytes.bytes.subarray(oldBytes.offset, oldBytes.offset + oldBytes.length),
+        );
+      else for (let index = 0; index < old!.length; index++) setIndex(backing, index, old![index]!);
     }
     const result: Value = {
       type: original.type,
       kind: "slice",
       value: { ...slice, length: needed },
     };
-    for (let index = 0; index < values.length; index++)
-      setIndex(result, slice.length + index, values[index]!);
+    if (appendedBytes || appendedByte !== undefined) {
+      const target = this.byteSliceView(result);
+      if (!target) invalid("append byte backing is not addressable", "append");
+      if (appendedBytes) target.bytes.set(appendedBytes, target.offset + slice.length);
+      else target.bytes[target.offset + slice.length] = appendedByte!;
+    } else
+      for (let index = 0; index < values.length; index++)
+        setIndex(result, slice.length + index, values[index]!);
+    if (!appendedBytes && appendedByte === undefined) this.guestMemory.markDirty();
     return result;
+  }
+
+  private reserveByteBacking(capacity: number): void {
+    const payloadBytes = BigInt(capacity) * GUEST_COST.byte;
+    const heapBytes = GUEST_COST.node + payloadBytes;
+    // The backing is reachable through both the heap cell and the stored
+    // bytes value. Charge each representation; the slice wrapper is a frame
+    // root and is accounted by writeOutput.
+    const guestBytes = heapBytes + GUEST_COST.node + payloadBytes;
+    if (this.guestMemory.reservationNeedsCensus(guestBytes, 0n, heapBytes, 1n))
+      this.updateMemoryCensus(true);
+    this.guestMemory.reserve(guestBytes, 0n, heapBytes, 1n);
   }
 
   private sliceValues(value: Value): Value[] {
@@ -1555,11 +2359,59 @@ export class VirtualMachine {
     return Array.from({ length: slice.length }, (_, index) => cloneValue(indexValue(value, index)));
   }
 
+  private byteSliceView(
+    value: Value,
+  ): { bytes: Uint8Array; offset: number; length: number } | undefined {
+    if (value.kind === "string" || value.kind === "bytes")
+      return {
+        bytes: value.value as Uint8Array,
+        offset: 0,
+        length: (value.value as Uint8Array).length,
+      };
+    if (value.kind !== "slice") return undefined;
+    const elementType = this.elementType(value.type);
+    const element = elementType.registry.underlying(elementType);
+    if (
+      element.ref.kind !== Kind.Primitive ||
+      element.ref.primitive !== PrimitiveKind.PrimitiveUint8
+    )
+      return undefined;
+    const slice = value.value as SliceValue;
+    let root = slice.storage.root.value;
+    let offset = slice.start;
+    for (const segment of slice.storage.path) {
+      if (segment.kind === "typeView") continue;
+      if (segment.kind === "arrayView") {
+        offset += segment.start;
+        continue;
+      }
+      return undefined;
+    }
+    if (root.kind !== "bytes") return undefined;
+    return { bytes: root.value as Uint8Array, offset, length: slice.length };
+  }
+
   private copy(destination: Value, source: Value): number {
-    const values = this.sliceValues(source);
+    if (destination.kind === "nil") {
+      if (destination.type.registry.underlying(destination.type).ref.kind !== Kind.Slice)
+        invalid("copy destination is not slice", "copy");
+      return 0;
+    }
     if (destination.kind !== "slice") invalid("copy destination is not slice", "copy");
     const slice = destination.value as SliceValue;
+    const destinationBytes = this.byteSliceView(destination);
+    const sourceBytes = this.byteSliceView(source);
+    if (destinationBytes && sourceBytes) {
+      const count = Math.min(destinationBytes.length, sourceBytes.length);
+      destinationBytes.bytes.set(
+        sourceBytes.bytes.subarray(sourceBytes.offset, sourceBytes.offset + count),
+        destinationBytes.offset,
+      );
+      return count;
+    }
+    const values = this.sliceValues(source);
     const count = Math.min(slice.length, values.length);
+    if (count > 0) this.guestMemory.markDirty();
     for (let index = 0; index < count; index++) setIndex(destination, index, values[index]!);
     return count;
   }
@@ -1568,14 +2420,12 @@ export class VirtualMachine {
     assertComparable(key);
     if (value.kind === "nil") return;
     if (value.kind !== "map") invalid("delete target is not map", "delete");
-    const entries = (value.value as GuestMap).entries;
-    const index = entries.findIndex((entry) => guestEqual(entry.key, key));
-    if (index >= 0) entries.splice(index, 1);
+    guestMapDelete(value.value as GuestMap, key);
   }
 
   private clear(value: Value): void {
     if (value.kind === "nil") return;
-    if (value.kind === "map") (value.value as GuestMap).entries.length = 0;
+    if (value.kind === "map") guestMapClear(value.value as GuestMap);
     else if (value.kind === "slice") {
       const slice = value.value as SliceValue;
       const element = this.elementType(value.type);
@@ -1593,8 +2443,8 @@ export class VirtualMachine {
   }
 
   private mapIterInit(frame: Frame, descriptor: Record<string, unknown>, value: Value): void {
-    const map: GuestMap = value.kind === "nil" ? { entries: [] } : (value.value as GuestMap);
-    frame.mapIterators.set(descriptorText(descriptor.local), {
+    const map: GuestMap = value.kind === "nil" ? createGuestMap() : (value.value as GuestMap);
+    this.mapIterators(frame).set(descriptorText(descriptor.local), {
       map,
       entries: [...map.entries],
       offset: 0,
@@ -1602,7 +2452,7 @@ export class VirtualMachine {
   }
 
   private mapIterNext(frame: Frame, descriptor: Record<string, unknown>): Value[] {
-    const iterator = frame.mapIterators.get(descriptorText(descriptor.local));
+    const iterator = frame.mapIterators?.get(descriptorText(descriptor.local));
     if (!iterator) invalid("map iterator is not initialized", "map_iter_next");
     while (iterator.offset < iterator.entries.length) {
       const entry = iterator.entries[iterator.offset++]!;
@@ -1639,7 +2489,7 @@ export class VirtualMachine {
     let address: Address;
     if (kind === "local") {
       const index = descriptorInteger(descriptor.$index);
-      address = { root: frame.locals[index]!, path: [] };
+      address = { root: this.localCell(frame, index), path: [] };
     } else if (kind === "upvalue") {
       const index = descriptorInteger(descriptor.$index);
       address = { root: frame.upvalues[index]!.root, path: [...frame.upvalues[index]!.path] };
@@ -1662,7 +2512,7 @@ export class VirtualMachine {
         path.push({ kind: "field", name: descriptorText(segment.field) });
       else if (segmentKind === "index") {
         const local = descriptorInteger(segment.$index);
-        path.push({ kind: "index", index: asIndex(frame.locals[local]!.value) });
+        path.push({ kind: "index", index: asIndex(localValue(frame.locals[local]!)) });
       } else if (segmentKind === "indirect") {
         const current = dereference({ root: address!.root, path });
         if (current.kind !== "pointer") fail("nil pointer dereference", "address", "panic");
@@ -1787,7 +2637,7 @@ export class VirtualMachine {
 
   private typeDispatch(frame: Frame, descriptor: Record<string, unknown>): void {
     const subject = descriptorInteger(descriptor.$subject);
-    const value = frame.locals[subject]!.value;
+    const value = localValue(frame.locals[subject]!);
     const dynamic = value.kind === "interface" ? (value.value as Value) : value;
     for (const item of descriptorList(descriptor.cases)) {
       const candidate = descriptorRecord(item);
@@ -1798,9 +2648,11 @@ export class VirtualMachine {
       ) {
         if (candidate.$binding !== undefined) {
           const binding = descriptorInteger(candidate.$binding);
-          frame.locals[binding]!.value = Boolean(candidate.original)
-            ? cloneValue(value)
-            : cloneValue(dynamic);
+          this.setLocal(
+            frame,
+            binding,
+            Boolean(candidate.original) ? cloneValue(value) : cloneValue(dynamic),
+          );
         }
         frame.pc = descriptorInteger(candidate.$target);
         return;
@@ -1808,16 +2660,21 @@ export class VirtualMachine {
     }
     if (descriptor.$default_local !== undefined) {
       const binding = descriptorInteger(descriptor.$default_local);
-      frame.locals[binding]!.value = cloneValue(value);
+      this.setLocal(frame, binding, cloneValue(value));
     }
     frame.pc = descriptorInteger(descriptor.$target);
   }
 
-  private getPath(descriptor: Record<string, unknown>, source: Value): Value {
+  private getPath(
+    descriptor: Record<string, unknown>,
+    source: Value,
+    preparedPath?: readonly number[],
+  ): Value {
     let value = source;
     let type = descriptor.$type as RuntimeType;
-    for (const rawIndex of descriptorList(descriptor.fields)) {
-      const index = descriptorInteger(rawIndex);
+    const fields =
+      preparedPath ?? descriptorList(descriptor.fields).map((raw) => descriptorInteger(raw));
+    for (const index of fields) {
       type = type.registry.underlying(type);
       while (type.ref.kind === Kind.Pointer) {
         if (value.kind !== "pointer") fail("nil pointer dereference", "get_path", "panic");
@@ -1909,13 +2766,14 @@ export class VirtualMachine {
       };
     }
     const revision = this.functionRevision(fnValue);
-    const fn = this.resolveFunction(fnValue, revision);
+    const fn = revision.program.function(fnValue.module, fnValue.function);
     const child: Task = {
       id: this.nextTask++,
       scope: task.scope,
-      frames: [this.createFrame(fn, revision, args, fnValue.captures, [], false)],
+      frames: [],
       state: "runnable",
     };
+    this.pushFrame(child, this.createFrame(fn, revision, args, fnValue.captures, [], false));
     this.tasks.set(child.id, child);
     this.scopes.get(task.scope)!.tasks.add(child.id);
     this.runnable.push(child.id);
@@ -1953,10 +2811,14 @@ export class VirtualMachine {
       return;
     }
     if (channel.queue.length < channel.capacity) {
+      if (!this.reserveFlatStorage(value, false, true)) this.guestMemory.markDirty();
       channel.queue.push(cloneValue(value));
       this.wakeSelects();
       return;
     }
+    // A blocked sender is rooted by both the channel and the task. Reserve
+    // both copies atomically before publishing either reference.
+    if (!this.reserveFlatStorage(value, false, true, 2)) this.guestMemory.markDirty();
     channel.senders.push({ task: task.id, value: cloneValue(value) });
     this.block(task, { kind: "send", channel, value: cloneValue(value) });
   }
@@ -2099,39 +2961,55 @@ export class VirtualMachine {
     this.runnable.push(task.id);
   }
 
-  private select(task: Task, frame: Frame, descriptor: Record<string, unknown>): void {
-    const cases = descriptorList(descriptor.cases);
+  private select(
+    task: Task,
+    frame: Frame,
+    instruction: PreparedInstruction,
+    descriptor: Record<string, unknown>,
+  ): void {
+    const cases: readonly PreparedSelectCase[] =
+      instruction.selectCases ??
+      descriptorList(descriptor.cases).map((value) => {
+        const selected = descriptorRecord(value);
+        const result: PreparedSelectCase = { channel: descriptorInteger(selected.$channel) };
+        if (selected.$send !== undefined) result.send = descriptorInteger(selected.$send);
+        if (selected.$value !== undefined) result.value = descriptorInteger(selected.$value);
+        if (selected.$ok !== undefined) result.ok = descriptorInteger(selected.$ok);
+        return result;
+      });
     for (let index = 0; index < cases.length; index++) {
-      const selected = descriptorRecord(cases[index]);
-      const channelIndex = descriptorInteger(selected.$channel);
-      const channelValue = frame.locals[channelIndex]!.value;
-      if (selected.$send !== undefined) {
+      const selected = cases[index]!;
+      const channelIndex = selected.channel;
+      const channelValue = localValue(frame.locals[channelIndex]!);
+      if (selected.send !== undefined) {
         if (!this.canSend(channelValue)) continue;
-        const sendIndex = descriptorInteger(selected.$send);
-        this.send(task, channelValue, frame.locals[sendIndex]!.value);
+        const sendIndex = selected.send;
+        this.send(task, channelValue, localValue(frame.locals[sendIndex]!));
       } else {
         if (!this.canReceive(channelValue)) continue;
         const received = this.tryReceive(channelValue)!;
-        if (selected.$value !== undefined) {
-          const local = descriptorInteger(selected.$value);
-          frame.locals[local]!.value = received[0];
+        if (selected.value !== undefined) {
+          const local = selected.value;
+          this.setLocal(frame, local, received[0]);
         }
-        if (selected.$ok !== undefined) {
-          const local = descriptorInteger(selected.$ok);
-          frame.locals[local]!.value = boolValue(frame.fn.module.registry, received[1]);
+        if (selected.ok !== undefined) {
+          const local = selected.ok;
+          this.setLocal(frame, local, boolValue(frame.fn.module.registry, received[1]));
         }
       }
-      frame.locals[descriptorInteger(descriptor.$index)]!.value = intValue(
-        frame.fn.module.registry,
-        BigInt(index),
+      this.setLocal(
+        frame,
+        instruction.selectIndex ?? descriptorInteger(descriptor.$index),
+        intValue(frame.fn.module.registry, BigInt(index)),
       );
       return;
     }
-    if (this.pairSelect(task, frame, descriptor, cases)) return;
+    if (this.pairSelect(task, frame, instruction, descriptor, cases)) return;
     if (Boolean(descriptor.default)) {
-      frame.locals[descriptorInteger(descriptor.$index)]!.value = intValue(
-        frame.fn.module.registry,
-        -1n,
+      this.setLocal(
+        frame,
+        instruction.selectIndex ?? descriptorInteger(descriptor.$index),
+        intValue(frame.fn.module.registry, -1n),
       );
       return;
     }
@@ -2191,12 +3069,13 @@ export class VirtualMachine {
   private pairSelect(
     task: Task,
     frame: Frame,
+    instruction: PreparedInstruction,
     descriptor: Record<string, unknown>,
-    cases: unknown[],
+    cases: readonly PreparedSelectCase[],
   ): boolean {
     for (let index = 0; index < cases.length; index++) {
-      const selected = descriptorRecord(cases[index]);
-      const channelValue = frame.locals[descriptorInteger(selected.$channel)]!.value;
+      const selected = cases[index]!;
+      const channelValue = localValue(frame.locals[selected.channel]!);
       if (channelValue.kind !== "channel" || (channelValue.value as Channel).capacity !== 0)
         continue;
       for (const other of this.tasks.values()) {
@@ -2206,32 +3085,44 @@ export class VirtualMachine {
         if (!otherInstruction || otherInstruction.opcode !== 2 || !otherInstruction.descriptor)
           continue;
         const otherDescriptor = otherInstruction.descriptor;
-        const otherCases = descriptorList(otherDescriptor.cases);
+        const otherCases: readonly PreparedSelectCase[] =
+          otherInstruction.selectCases ??
+          descriptorList(otherDescriptor.cases).map((value) => {
+            const candidate = descriptorRecord(value);
+            const result: PreparedSelectCase = { channel: descriptorInteger(candidate.$channel) };
+            if (candidate.$send !== undefined) result.send = descriptorInteger(candidate.$send);
+            if (candidate.$value !== undefined) result.value = descriptorInteger(candidate.$value);
+            if (candidate.$ok !== undefined) result.ok = descriptorInteger(candidate.$ok);
+            return result;
+          });
         for (let otherIndex = 0; otherIndex < otherCases.length; otherIndex++) {
-          const candidate = descriptorRecord(otherCases[otherIndex]);
-          if ((selected.$send !== undefined) === (candidate.$send !== undefined)) continue;
-          const otherChannel = otherFrame.locals[descriptorInteger(candidate.$channel)]!.value;
+          const candidate = otherCases[otherIndex]!;
+          if ((selected.send !== undefined) === (candidate.send !== undefined)) continue;
+          const otherChannel = localValue(otherFrame.locals[candidate.channel]!);
           if (otherChannel.kind !== "channel" || otherChannel.value !== channelValue.value)
             continue;
-          const senderFrame = selected.$send !== undefined ? frame : otherFrame;
-          const sender = selected.$send !== undefined ? selected : candidate;
-          const receiverFrame = selected.$send !== undefined ? otherFrame : frame;
-          const receiver = selected.$send !== undefined ? candidate : selected;
-          const sent = senderFrame.locals[descriptorInteger(sender.$send)]!.value;
-          if (receiver.$value !== undefined)
-            receiverFrame.locals[descriptorInteger(receiver.$value)]!.value = cloneValue(sent);
-          if (receiver.$ok !== undefined)
-            receiverFrame.locals[descriptorInteger(receiver.$ok)]!.value = boolValue(
-              receiverFrame.fn.module.registry,
-              true,
+          const senderFrame = selected.send !== undefined ? frame : otherFrame;
+          const sender = selected.send !== undefined ? selected : candidate;
+          const receiverFrame = selected.send !== undefined ? otherFrame : frame;
+          const receiver = selected.send !== undefined ? candidate : selected;
+          const sent = localValue(senderFrame.locals[sender.send!]!);
+          if (receiver.value !== undefined)
+            this.setLocal(receiverFrame, receiver.value, cloneValue(sent));
+          if (receiver.ok !== undefined)
+            this.setLocal(
+              receiverFrame,
+              receiver.ok,
+              boolValue(receiverFrame.fn.module.registry, true),
             );
-          frame.locals[descriptorInteger(descriptor.$index)]!.value = intValue(
-            frame.fn.module.registry,
-            BigInt(index),
+          this.setLocal(
+            frame,
+            instruction.selectIndex ?? descriptorInteger(descriptor.$index),
+            intValue(frame.fn.module.registry, BigInt(index)),
           );
-          otherFrame.locals[descriptorInteger(otherDescriptor.$index)]!.value = intValue(
-            otherFrame.fn.module.registry,
-            BigInt(otherIndex),
+          this.setLocal(
+            otherFrame,
+            otherInstruction.selectIndex ?? descriptorInteger(otherDescriptor.$index),
+            intValue(otherFrame.fn.module.registry, BigInt(otherIndex)),
           );
           otherFrame.pc++;
           this.unblock(other);
@@ -2615,17 +3506,11 @@ export class VirtualMachine {
             value: { root, path: [] } satisfies Address,
           };
         } else if (id === "reflect.make_slice") {
-          const length = asIndex(inputs[1]!);
-          const capacity = asIndex(inputs[2]!);
-          if (length > capacity) fail("reflect.MakeSlice: length exceeds capacity", id, "reflect");
-          const element = this.elementType(type);
-          value = this.sliceFromValues(
-            type,
-            Array.from({ length: capacity }, () => zero(element)),
-            length,
-          );
+          if (asIndex(inputs[1]!) > asIndex(inputs[2]!))
+            fail("reflect.MakeSlice: length exceeds capacity", id, "reflect");
+          value = this.makeSlice(frame, { $type: type, has_capacity: true }, inputs.slice(1));
         } else if (id === "reflect.make_map") {
-          value = { type, kind: "map", value: { entries: [] } satisfies GuestMap };
+          value = { type, kind: "map", value: createGuestMap() };
         } else if (id === "reflect.make_chan") {
           value = {
             type,
@@ -2707,6 +3592,16 @@ export class VirtualMachine {
       if (id === "reflect.value_append" || id === "reflect.value_append_slice") {
         const target = this.reflectedView(inputs[0]!).current;
         if (!target) fail("reflect: append of invalid Value", id, "reflect");
+        const element = this.elementType(target.type);
+        if (id === "reflect.value_append_slice") {
+          const source = this.reflectedView(inputs[1]!).current;
+          if (
+            !source ||
+            source.type.registry.underlying(source.type).ref.kind !== Kind.Slice ||
+            !element.registry.identical(element, this.elementType(source.type))
+          )
+            fail("reflect: AppendSlice requires matching slice element types", id, "reflect");
+        }
         const values =
           id === "reflect.value_append"
             ? this.sliceValues(inputs[1]!).map(
@@ -2718,6 +3613,16 @@ export class VirtualMachine {
                 this.reflectedView(inputs[1]!).current ??
                   fail("reflect: invalid append slice", id, "reflect"),
               );
+        for (let index = 0; index < values.length; index++) {
+          const value = values[index]!;
+          if (
+            value.type.ref.kind === Kind.Named &&
+            element.ref.kind === Kind.Named &&
+            !element.registry.identical(element, value.type)
+          )
+            fail("reflect: append value is not assignable", id, "reflect");
+          values[index] = this.coerce(value, element);
+        }
         const descriptor = { expand: false };
         const appended = this.append(descriptor, [target, ...values]);
         success(
@@ -2733,6 +3638,16 @@ export class VirtualMachine {
         const destination = this.reflectedView(inputs[0]!).current;
         const source = this.reflectedView(inputs[1]!).current;
         if (!destination || !source) fail("reflect: Copy of invalid Value", id, "reflect");
+        const element = this.elementType(destination.type);
+        const sourceType = source.type.registry.underlying(source.type);
+        const validSource =
+          sourceType.ref.kind === Kind.Primitive &&
+          sourceType.ref.primitive === PrimitiveKind.PrimitiveString
+            ? element.ref.kind === Kind.Primitive &&
+              element.ref.primitive === PrimitiveKind.PrimitiveUint8
+            : sourceType.ref.kind === Kind.Slice &&
+              element.registry.identical(element, this.elementType(source.type));
+        if (!validSource) fail("reflect: Copy requires matching element types", id, "reflect");
         success(intValue(frame.fn.module.registry, BigInt(this.copy(destination, source))));
         return;
       }
@@ -2999,7 +3914,8 @@ export class VirtualMachine {
       Number(this.options.limits?.maxDynamicTypeBytes ?? 16 * 1024 * 1024)
     )
       fail("dynamic type bytes exceed limit", "type", "allocation_limit");
-    this.guestMemory.reserve(BigInt(bytes) * GUEST_COST.byte);
+    this.reserveKnownGuest(BigInt(bytes) * GUEST_COST.byte);
+    this.guestMemory.markDirty();
     this.dynamicTypes.set(canonical, candidate);
     this.dynamicTypeBytes += bytes;
     return candidate;
@@ -3696,6 +4612,26 @@ export class VirtualMachine {
   }
 
   private sliceFromValues(type: RuntimeType, values: Value[], length = values.length): Value {
+    const element = this.elementType(type);
+    const underlying = element.registry.underlying(element);
+    if (
+      underlying.ref.kind === Kind.Primitive &&
+      underlying.ref.primitive === PrimitiveKind.PrimitiveUint8
+    ) {
+      const bytes = new Uint8Array(values.length);
+      for (let index = 0; index < values.length; index++)
+        bytes[index] = Number(values[index]!.value as bigint);
+      return {
+        type,
+        kind: "slice",
+        value: {
+          storage: { root: cell({ type, kind: "bytes", value: bytes }), path: [] },
+          start: 0,
+          length,
+          capacity: values.length,
+        } satisfies SliceValue,
+      };
+    }
     return {
       type,
       kind: "slice",
@@ -3781,7 +4717,7 @@ export class VirtualMachine {
         const bv = (b.value as GuestMap).entries;
         if (av.length !== bv.length) return false;
         for (const entry of av) {
-          const other = bv.find((candidate) => guestEqual(entry.key, candidate.key));
+          const other = guestMapGet(b.value as GuestMap, entry.key);
           if (!other) return false;
           pending.push([entry.value, other.value]);
         }
@@ -3831,7 +4767,7 @@ export class VirtualMachine {
     if (callable.kind === "method" && functionValue.receiver)
       arguments_ = [cloneValue(functionValue.receiver), ...arguments_];
     const revision = this.functionRevision(functionValue);
-    const fn = this.resolveFunction(functionValue, revision);
+    const fn = revision.program.function(functionValue.module, functionValue.function);
     const child = this.createFrame(fn, revision, arguments_, functionValue.captures, [], false);
     child.completion = { kind: "reflectCall", outputs: instruction.operands.outputs };
     this.pushFrame(task, child);
@@ -3848,9 +4784,10 @@ export class VirtualMachine {
       scannedEdges: 0n,
       revisions: new Set([this.generation]),
     };
-    const seenCells = new Set<Cell>();
-    const seenObjects = new Set<object>();
-    const pending: Array<{ value?: Value; cell?: Cell; channel?: Channel; depth: number }> = [];
+    const seenCells = this.censusCells;
+    const seenObjects = this.censusObjects;
+    const storage = new WeakSet<object>();
+    const pending = this.censusPending;
     const pushValue = (value: Value | undefined, depth: number): void => {
       if (value) pending.push({ value, depth });
     };
@@ -3861,164 +4798,185 @@ export class VirtualMachine {
       if (channel) pending.push({ channel, depth });
     };
 
-    for (const module of this.revision.program.modules.values())
-      for (const root of module.globals) pushCell(root, 0);
-    for (const task of this.tasks.values()) {
-      for (const frame of task.frames) {
-        census.revisions.add(frame.revision.generation);
-        for (const root of frame.locals) pushCell(root, 0);
-        for (const address of frame.upvalues) pushCell(address.root, 0);
-        for (const value of frame.slots) pushValue(value, 0);
-        for (const deferred of frame.defers) {
-          census.revisions.add(deferred.revision);
-          for (const address of deferred.captures) pushCell(address.root, 0);
-          pushValue(deferred.receiver, 0);
-        }
-        for (const value of frame.returning ?? []) pushValue(value, 0);
-        pushValue(frame.panic, 0);
-        for (const iterator of frame.mapIterators.values())
-          for (const entry of iterator.entries) {
-            pushValue(entry.key, 0);
-            pushValue(entry.value, 0);
+    try {
+      for (const module of this.revision.program.modules.values())
+        for (const root of module.globals) pushCell(root, 0);
+      for (const task of this.tasks.values()) {
+        for (const frame of task.frames) {
+          census.revisions.add(frame.revision.generation);
+          for (const root of frame.locals)
+            if (isLocalCell(root)) pushCell(root, 0);
+            else pushValue(root, 0);
+          for (const address of frame.upvalues) pushCell(address.root, 0);
+          for (const value of frame.slots) pushValue(value, 0);
+          for (const deferred of frame.defers ?? []) {
+            census.revisions.add(deferred.revision);
+            for (const address of deferred.captures) pushCell(address.root, 0);
+            pushValue(deferred.receiver, 0);
           }
-      }
-      if (task.blocked?.kind === "send") pushValue(task.blocked.value, 0);
-      if (task.blocked?.kind === "send" || task.blocked?.kind === "receive")
-        pushChannel(task.blocked.channel, 0);
-      if (task.blocked?.kind === "reflectSelect")
-        for (const selected of task.blocked.cases) {
-          pushValue(selected.channel, 0);
-          pushValue(selected.send, 0);
+          for (const value of frame.returning ?? []) pushValue(value, 0);
+          pushValue(frame.panic, 0);
+          for (const iterator of frame.mapIterators?.values() ?? [])
+            for (const entry of iterator.entries) {
+              pushValue(entry.key, 0);
+              pushValue(entry.value, 0);
+            }
         }
-      for (const value of task.result ?? []) pushValue(value, 0);
-    }
-    for (const timer of this.timers.values()) if (!timer.canceled) pushChannel(timer.channel, 0);
-
-    const maxDepth = this.options.limits?.maxValueDepth ?? 128;
-    while (pending.length) {
-      const item = pending.pop()!;
-      if (item.depth > maxDepth)
-        throw new VMError("value depth exceeds limit", "allocation_limit", "value");
-      if (item.cell) {
-        if (seenCells.has(item.cell)) continue;
-        seenCells.add(item.cell);
-        census.liveHeapObjects++;
-        census.liveHeapBytes += GUEST_COST.node;
-        const stored = item.cell.value;
-        if (stored.kind === "bytes")
-          census.liveHeapBytes += BigInt((stored.value as Uint8Array).byteLength) * GUEST_COST.byte;
-        else if (stored.kind === "array")
-          census.liveHeapBytes += BigInt((stored.value as Value[]).length) * GUEST_COST.slot;
-        else if (stored.kind === "struct")
-          census.liveHeapBytes +=
-            BigInt((stored.value as Map<string, Value>).size) * GUEST_COST.mapEntry;
-        pushValue(stored, item.depth + 1);
-        continue;
-      }
-      if (item.channel) {
-        if (seenObjects.has(item.channel)) continue;
-        seenObjects.add(item.channel);
-        census.liveGuestBytes += GUEST_COST.node + BigInt(item.channel.capacity) * GUEST_COST.slot;
-        census.maxSequence = Math.max(census.maxSequence, item.channel.capacity);
-        census.scannedEdges += BigInt(item.channel.queue.length + item.channel.senders.length);
-        for (const value of item.channel.queue) pushValue(value, item.depth + 1);
-        for (const sender of item.channel.senders) pushValue(sender.value, item.depth + 1);
-        continue;
-      }
-      const value = item.value!;
-      census.liveGuestBytes += GUEST_COST.node;
-      switch (value.kind) {
-        case "string":
-        case "bytes": {
-          const length = (value.value as Uint8Array).byteLength;
-          census.liveGuestBytes += BigInt(length) * GUEST_COST.byte;
-          census.maxSequence = Math.max(census.maxSequence, length);
-          if (value.kind === "string") census.strings += length;
-          break;
-        }
-        case "array": {
-          const values = value.value as Value[];
-          if (seenObjects.has(values)) break;
-          seenObjects.add(values);
-          census.liveGuestBytes += BigInt(values.length) * GUEST_COST.slot;
-          census.maxSequence = Math.max(census.maxSequence, values.length);
-          census.scannedEdges += BigInt(values.length);
-          for (const nested of values) pushValue(nested, item.depth + 1);
-          break;
-        }
-        case "struct": {
-          const fields = value.value as Map<string, Value>;
-          if (seenObjects.has(fields)) break;
-          seenObjects.add(fields);
-          census.liveGuestBytes += BigInt(fields.size) * GUEST_COST.mapEntry;
-          census.scannedEdges += BigInt(fields.size);
-          for (const nested of fields.values()) pushValue(nested, item.depth + 1);
-          break;
-        }
-        case "interface":
-          census.scannedEdges++;
-          pushValue(value.value as Value, item.depth + 1);
-          break;
-        case "pointer":
-          census.scannedEdges++;
-          pushCell((value.value as Address).root, item.depth + 1);
-          break;
-        case "slice": {
-          const slice = value.value as SliceValue;
-          census.maxSequence = Math.max(census.maxSequence, slice.capacity);
-          census.scannedEdges++;
-          pushCell(slice.storage.root, item.depth + 1);
-          break;
-        }
-        case "map": {
-          const map = value.value as GuestMap;
-          if (seenObjects.has(map)) break;
-          seenObjects.add(map);
-          census.liveGuestBytes += BigInt(map.entries.length) * GUEST_COST.mapEntry;
-          census.maxSequence = Math.max(census.maxSequence, map.entries.length);
-          census.scannedEdges += BigInt(map.entries.length * 2);
-          for (const entry of map.entries) {
-            pushValue(entry.key, item.depth + 1);
-            pushValue(entry.value, item.depth + 1);
+        if (task.blocked?.kind === "send") pushValue(task.blocked.value, 0);
+        if (task.blocked?.kind === "send" || task.blocked?.kind === "receive")
+          pushChannel(task.blocked.channel, 0);
+        if (task.blocked?.kind === "reflectSelect")
+          for (const selected of task.blocked.cases) {
+            pushValue(selected.channel, 0);
+            pushValue(selected.send, 0);
           }
-          break;
+        for (const value of task.result ?? []) pushValue(value, 0);
+      }
+      for (const timer of this.timers.values()) if (!timer.canceled) pushChannel(timer.channel, 0);
+
+      const maxDepth = this.options.limits?.maxValueDepth ?? 128;
+      let observedDepth = 0;
+      while (pending.length) {
+        const item = pending.pop()!;
+        observedDepth = Math.max(observedDepth, item.depth);
+        if (item.depth > maxDepth)
+          throw new VMError("value depth exceeds limit", "allocation_limit", "value");
+        if (item.cell) {
+          if (seenCells.has(item.cell)) continue;
+          seenCells.add(item.cell);
+          storage.add(item.cell);
+          census.liveHeapObjects++;
+          census.liveHeapBytes += GUEST_COST.node;
+          const stored = item.cell.value;
+          if (stored.kind === "bytes")
+            census.liveHeapBytes +=
+              BigInt((stored.value as Uint8Array).byteLength) * GUEST_COST.byte;
+          else if (stored.kind === "array")
+            census.liveHeapBytes += BigInt((stored.value as Value[]).length) * GUEST_COST.slot;
+          else if (stored.kind === "struct")
+            census.liveHeapBytes +=
+              BigInt((stored.value as Map<string, Value>).size) * GUEST_COST.mapEntry;
+          pushValue(stored, item.depth + 1);
+          continue;
         }
-        case "channel":
-          census.scannedEdges++;
-          pushChannel(value.value as Channel, item.depth + 1);
-          break;
-        case "function":
-        case "method": {
-          const fn = value.value as FunctionValue;
-          census.revisions.add(fn.revision);
-          census.scannedEdges += BigInt(fn.captures.length + (fn.receiver ? 1 : 0));
-          for (const address of fn.captures) pushCell(address.root, item.depth + 1);
-          pushValue(fn.receiver, item.depth + 1);
-          break;
+        if (item.channel) {
+          if (seenObjects.has(item.channel)) continue;
+          seenObjects.add(item.channel);
+          storage.add(item.channel);
+          census.liveGuestBytes +=
+            GUEST_COST.node + BigInt(item.channel.capacity) * GUEST_COST.slot;
+          census.maxSequence = Math.max(census.maxSequence, item.channel.capacity);
+          census.scannedEdges += BigInt(item.channel.queue.length + item.channel.senders.length);
+          for (const value of item.channel.queue) pushValue(value, item.depth + 1);
+          for (const sender of item.channel.senders) pushValue(sender.value, item.depth + 1);
+          continue;
         }
-        case "dynamicFunction": {
-          const callback = (value.value as { callback: FunctionValue }).callback;
-          census.revisions.add(callback.revision);
-          census.scannedEdges += BigInt(callback.captures.length);
-          for (const address of callback.captures) pushCell(address.root, item.depth + 1);
-          break;
+        const value = item.value!;
+        census.liveGuestBytes += GUEST_COST.node;
+        switch (value.kind) {
+          case "string":
+          case "bytes": {
+            const length = (value.value as Uint8Array).byteLength;
+            census.liveGuestBytes += BigInt(length) * GUEST_COST.byte;
+            census.maxSequence = Math.max(census.maxSequence, length);
+            if (value.kind === "string") census.strings += length;
+            break;
+          }
+          case "array": {
+            const values = value.value as Value[];
+            if (seenObjects.has(values)) break;
+            seenObjects.add(values);
+            census.liveGuestBytes += BigInt(values.length) * GUEST_COST.slot;
+            census.maxSequence = Math.max(census.maxSequence, values.length);
+            census.scannedEdges += BigInt(values.length);
+            for (const nested of values) pushValue(nested, item.depth + 1);
+            break;
+          }
+          case "struct": {
+            const fields = value.value as Map<string, Value>;
+            if (seenObjects.has(fields)) break;
+            seenObjects.add(fields);
+            census.liveGuestBytes += BigInt(fields.size) * GUEST_COST.mapEntry;
+            census.scannedEdges += BigInt(fields.size);
+            for (const nested of fields.values()) pushValue(nested, item.depth + 1);
+            break;
+          }
+          case "interface":
+            census.scannedEdges++;
+            pushValue(value.value as Value, item.depth + 1);
+            break;
+          case "pointer":
+            census.scannedEdges++;
+            pushCell((value.value as Address).root, item.depth + 1);
+            break;
+          case "slice": {
+            const slice = value.value as SliceValue;
+            census.maxSequence = Math.max(census.maxSequence, slice.capacity);
+            census.scannedEdges++;
+            pushCell(slice.storage.root, item.depth + 1);
+            break;
+          }
+          case "map": {
+            const map = value.value as GuestMap;
+            storage.add(map);
+            if (seenObjects.has(map)) break;
+            seenObjects.add(map);
+            census.liveGuestBytes += BigInt(map.entries.length) * GUEST_COST.mapEntry;
+            census.maxSequence = Math.max(census.maxSequence, map.entries.length);
+            census.scannedEdges += BigInt(map.entries.length * 2);
+            for (const entry of map.entries) {
+              pushValue(entry.key, item.depth + 1);
+              pushValue(entry.value, item.depth + 1);
+            }
+            break;
+          }
+          case "channel":
+            census.scannedEdges++;
+            pushChannel(value.value as Channel, item.depth + 1);
+            break;
+          case "function":
+          case "method": {
+            const fn = value.value as FunctionValue;
+            census.revisions.add(fn.revision);
+            census.scannedEdges += BigInt(fn.captures.length + (fn.receiver ? 1 : 0));
+            for (const address of fn.captures) pushCell(address.root, item.depth + 1);
+            pushValue(fn.receiver, item.depth + 1);
+            break;
+          }
+          case "dynamicFunction": {
+            const callback = (value.value as { callback: FunctionValue }).callback;
+            census.revisions.add(callback.revision);
+            census.scannedEdges += BigInt(callback.captures.length);
+            for (const address of callback.captures) pushCell(address.root, item.depth + 1);
+            break;
+          }
         }
       }
-    }
 
-    census.liveGuestBytes += census.liveHeapBytes + BigInt(this.dynamicTypeBytes) * GUEST_COST.byte;
-    if (enforce) {
-      if (census.strings > (this.options.limits?.maxStringBytes ?? 64 * 1024 * 1024))
-        throw new VMError("string byte limit exceeded", "string_limit", "string");
-      this.checkSequence(census.maxSequence, "value");
+      census.liveGuestBytes +=
+        census.liveHeapBytes + BigInt(this.dynamicTypeBytes) * GUEST_COST.byte;
+      if (enforce) {
+        if (census.strings > (this.options.limits?.maxStringBytes ?? 64 * 1024 * 1024))
+          throw new VMError("string byte limit exceeded", "string_limit", "string");
+        this.checkSequence(census.maxSequence, "value");
+      }
+      this.gcReclaimedBytes += this.guestMemory.publish(
+        { ...census, stringBytes: BigInt(census.strings) },
+        enforce,
+      );
+      this.referencedRevisions = census.revisions;
+      this.censusStorage = storage;
+      this.guestDepthUpper = observedDepth;
+      this.gcCollections++;
+      this.gcScannedObjects += census.liveHeapObjects;
+      this.gcTracedObjects += census.liveHeapObjects;
+      this.gcScannedEdges += census.scannedEdges;
+      this.gcNanos += BigInt(Math.max(0, Math.floor((performance.now() - started) * 1_000_000)));
+    } finally {
+      seenCells.clear();
+      seenObjects.clear();
+      pending.length = 0;
     }
-    this.gcReclaimedBytes += this.guestMemory.publish(census, enforce);
-    this.referencedRevisions = census.revisions;
-    this.gcCollections++;
-    this.gcScannedObjects += census.liveHeapObjects;
-    this.gcTracedObjects += census.liveHeapObjects;
-    this.gcScannedEdges += census.scannedEdges;
-    this.gcNanos += BigInt(Math.max(0, Math.floor((performance.now() - started) * 1_000_000)));
   }
 
   private reflectFailure(frame: Frame, instruction: PreparedInstruction, message: string): void {
@@ -4043,7 +5001,9 @@ export class VirtualMachine {
     const wrapped = inputs[0]!;
     const receiver = wrapped.kind === "interface" ? (wrapped.value as Value) : wrapped;
     const node = this.methodNode(receiver.type);
-    const method = node?.methods.find((item) => item.name === descriptorText(descriptor.method));
+    const method = node?.methods.find(
+      (item) => item.name === (instruction.method ?? descriptorText(descriptor.method)),
+    );
     if (!method?.function_id)
       fail("dynamic type has no matching method", "call_interface", "panic");
     const module = method.module_path || receiver.type.module;
@@ -4054,7 +5014,7 @@ export class VirtualMachine {
       revision: frame.revision.generation,
     };
     const revision = this.functionRevision(fnValue);
-    const fn = this.resolveFunction(fnValue, revision);
+    const fn = revision.program.function(fnValue.module, fnValue.function);
     this.pushFrame(
       task,
       this.createFrame(
@@ -4082,6 +5042,7 @@ export class VirtualMachine {
   }
 
   private completeTask(task: Task, values: Value[]): void {
+    this.guestMemory.markDirty();
     task.state = "done";
     task.result = values;
     const scope = this.scopes.get(task.scope)!;
@@ -4106,6 +5067,7 @@ export class VirtualMachine {
   }
 
   private failTask(task: Task, error: VMError): void {
+    this.guestMemory.markDirty();
     task.state = error.code === "canceled" ? "canceled" : "failed";
     task.error = error;
     const initialization = task.frames.find((frame) => frame.initializing)?.initializing;
@@ -4292,7 +5254,11 @@ export class VirtualMachine {
     if (!task) return [];
     return [...task.frames].reverse().map((frame, depth) => {
       const pc = this.paused ? frame.pc : Math.max(0, frame.pc - 1);
-      const info = this.debugFunctions.get(`${frame.fn.module.path}\0${frame.fn.id}`);
+      const info =
+        frame.revision.program.hash === this.symbolProgramHash
+          ? this.debugFunctions.get(`${frame.fn.module.path}\0${frame.fn.id}`)
+          : undefined;
+      const lastWirePC = frame.fn.executableToWirePC[frame.fn.executableToWirePC.length - 1] ?? 0;
       return {
         reference: { epoch: this.epoch, task: BigInt(task.id), depth: BigInt(depth) },
         generation: BigInt(frame.revision.generation),
@@ -4300,7 +5266,7 @@ export class VirtualMachine {
         program_hash: frame.revision.program.hash,
         module: frame.fn.module.path,
         function: info?.name ?? frame.fn.id,
-        pc: BigInt(pc),
+        pc: BigInt(frame.fn.executableToWirePC[pc] ?? lastWirePC),
         locations: (info?.locations.get(pc) ?? []).map((location) => ({
           file: location.file,
           line: BigInt(location.line),
@@ -4316,11 +5282,14 @@ export class VirtualMachine {
     const task = this.tasks.get(Number(reference.task));
     const frame = task?.frames[task.frames.length - 1 - Number(reference.depth)];
     if (!frame) throw new VMError("frame is unavailable", "stale", "debug");
-    const symbols = this.debugFunctions.get(`${frame.fn.module.path}\0${frame.fn.id}`);
+    const symbols =
+      frame.revision.program.hash === this.symbolProgramHash
+        ? this.debugFunctions.get(`${frame.fn.module.path}\0${frame.fn.id}`)
+        : undefined;
     const names = [...frame.fn.localIndexes.keys()].map(
       (name) => symbols?.localNames.get(name) ?? name,
     );
-    return { ...snapshot(frame.locals.map((local) => cloneValue(local.value))), names };
+    return { ...snapshot(frame.locals.map((local) => cloneValue(localValue(local)))), names };
   }
 
   breakpoints(module: string, file: string, lines: (number | bigint)[]): bigint[] {
@@ -4423,7 +5392,10 @@ export class VirtualMachine {
         const handle = this.nextDebugHandle++;
         this.debugFrames.set(handle, reference);
         const pc = frame.pc;
-        const info = this.debugFunctions.get(`${frame.fn.module.path}\0${frame.fn.id}`);
+        const info =
+          frame.revision.program.hash === this.symbolProgramHash
+            ? this.debugFunctions.get(`${frame.fn.module.path}\0${frame.fn.id}`)
+            : undefined;
         const location = info?.locations.get(pc)?.[0];
         const source = location
           ? ([...this.debugSources.entries()].find(
@@ -4502,7 +5474,7 @@ export class VirtualMachine {
     const memory = this.guestMemory.stats();
     const stats: Stats = {
       state: this.closed ? "Closed" : this.closing ? "Closing" : this.paused ? "Paused" : "Running",
-      steps: this.steps,
+      steps: this.stepCount(),
       liveHeapBytes: memory.liveHeapBytes,
       liveHeapObjects: memory.liveHeapObjects,
       peakHeapBytes: memory.peakHeapBytes,
@@ -4536,6 +5508,8 @@ export class VirtualMachine {
   close(): void {
     if (this.closing) return;
     this.closing = true;
+    this.frameCache.length = 0;
+    this.frameCacheBytes = 0;
     for (const execution of this.executions.values()) this.cancel(execution.id);
     for (const id of this.pendingHost.keys()) this.pendingActions.push({ kind: "cancel", id });
     if (!this.tasks.size && !this.pendingHost.size) {
@@ -4632,29 +5606,6 @@ function addressKey(address: Address): string {
 function expectBytes(value: Value, path: string): Uint8Array {
   if (value.kind !== "string" && value.kind !== "bytes") invalid("expected bytes", path);
   return value.value as Uint8Array;
-}
-
-function decodeRune(bytes: Uint8Array, offset: number): [number, number] {
-  if (offset < 0 || offset >= bytes.length) fail("string index out of range", "string", "panic");
-  const first = bytes[offset]!;
-  if (first < 0x80) return [first, 1];
-  let width = first >= 0xf0 ? 4 : first >= 0xe0 ? 3 : first >= 0xc2 ? 2 : 1;
-  if (offset + width > bytes.length) return [0xfffd, 1];
-  let rune = first & (0x7f >> width);
-  for (let index = 1; index < width; index++) {
-    const next = bytes[offset + index]!;
-    if ((next & 0xc0) !== 0x80) return [0xfffd, 1];
-    rune = (rune << 6) | (next & 0x3f);
-  }
-  if (
-    (width === 2 && rune < 0x80) ||
-    (width === 3 && rune < 0x800) ||
-    (width === 4 && rune < 0x10000) ||
-    rune > 0x10ffff ||
-    (rune >= 0xd800 && rune <= 0xdfff)
-  )
-    return [0xfffd, 1];
-  return [rune, width];
 }
 
 function formatPanic(value: Value): string {

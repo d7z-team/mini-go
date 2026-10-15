@@ -1,6 +1,6 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
-import { DebugSession } from "../dist/runtime/debug.js";
+import { DebugSession } from "../src/runtime/debug";
 
 for (const command of ["disconnect", "terminate"]) {
   for (const owned of [false, true]) {

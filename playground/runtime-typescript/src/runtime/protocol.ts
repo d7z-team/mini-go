@@ -1,5 +1,5 @@
-import type { WorkerConnection, WorkerFailure, WorkerPort } from "../worker-channel.js";
-import type { Bindings, Frame, FrameRef, HostValue, Options, Snapshot, Stats } from "./types.js";
+import type { WorkerConnection, WorkerFailure, WorkerPort } from "../worker-channel";
+import type { Bindings, Frame, FrameRef, HostValue, Options, Snapshot, Stats } from "./types";
 
 export type RuntimeConfiguration = Omit<
   Options,

@@ -123,8 +123,6 @@ func (l *lowerer) planMapIndexLValue(target ast.Expression, targetType string, s
 	if !ok {
 		return lvaluePlan{}, false
 	}
-	objectType = firstNonEmpty(l.typeRefString(object.Type), objectType)
-	keyType = firstNonEmpty(l.typeRefString(index.Type), keyType)
 	objectLocal := l.newSyntheticLocal(scope, "assign.map", objectType)
 	indexLocal := l.newSyntheticLocal(scope, "assign.key", keyType)
 	return lvaluePlan{

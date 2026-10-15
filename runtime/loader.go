@@ -268,6 +268,9 @@ func (inst *preparedInstruction) bindTypes(table *types.TypeTable, modulePath st
 	if ref.Valid() {
 		inst.runtimeType = runtimeTypeWithTable(ref, table)
 		inst.runtimeType.text = types.FormatWithTable(table, ref)
+		if inst.op == preparedConvert || inst.op == preparedIndexConvert {
+			inst.conversion = conversionMetadataFor(inst.runtimeType)
+		}
 		if signature, ok := table.IsFunction(ref); ok {
 			inst.typeVariadic = signature.Variadic
 		}

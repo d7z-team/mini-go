@@ -1,6 +1,11 @@
-import test from "node:test";
+import { expect, test } from "vitest";
 import { chromium, firefox } from "playwright";
-import { createBrowserPage, openBrowserPage } from "./support/browser.js";
+import {
+  buildBrowserScenario,
+  createBrowserPage,
+  openBrowserPage,
+  readBrowserScenario,
+} from "./support/browser.js";
 import { runtimeVector } from "./support/runtime-vectors.js";
 import { startPeer } from "./support/peer.js";
 
@@ -17,40 +22,20 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
       const page = await createBrowserPage(
         t,
         {
+          "/": '<!doctype html><script type="module" src="/scenario.js"></script>',
+          "/scenario.js": new URL("./support/runtime-browser.js", import.meta.url),
           "/initial": initial.bytes,
           "/replacement": replacement.bytes,
         },
         browserType,
       );
-      page.on("console", (message) => t.diagnostic(`${browserName}: ${message.text()}`));
-      page.on("pageerror", (error) => t.diagnostic(`${browserName}: ${error.stack ?? error}`));
-      const observed = await page.evaluate(async () => {
-        const { createRuntime } = await import("/index.browser.js");
-        const load = async (path) => new Uint8Array(await (await fetch(path)).arrayBuffer());
-        const vm = await createRuntime(await load("/initial"));
-        try {
-          const first = vm.start("default");
-          const before = (await first.result).roots[0].data.Integer;
-          await first.settled;
-          await vm.patch(await load("/replacement"));
-          const second = vm.start("default");
-          const after = (await second.result).roots[0].data.Integer;
-          await second.settled;
-          const stats = await vm.stats();
-          return {
-            before: before.toString(),
-            after: after.toString(),
-            generation: stats.generation.toString(),
-            memory: stats.totalGuestAllocatedBytes.toString(),
-          };
-        } finally {
-          await vm.close();
-        }
-      });
-      t.assert.equal(observed.before, initial.result_integer);
-      t.assert.equal(observed.after, replacement.result_integer);
-      t.assert.equal(observed.generation, "2");
-      t.assert.ok(BigInt(observed.memory) >= 0n);
+      page.on("console", (message) => console.debug(`${browserName}: ${message.text()}`));
+      page.on("pageerror", (error) => console.debug(`${browserName}: ${error.stack ?? error}`));
+      const observed = await readBrowserScenario(page);
+      expect(observed.before).toBe(initial.result_integer);
+      expect(observed.after).toBe(replacement.result_integer);
+      expect(observed.generation).toBe("2");
+      expect(BigInt(observed.memory)).toBeGreaterThanOrEqual(0n);
     },
   );
 
@@ -59,25 +44,16 @@ for (const browserName of (process.env.MINIGO_BROWSERS ?? "chromium,firefox").sp
     { timeout: 90_000 },
     async (t) => {
       const address = await startPeer(t);
+      const routes = await buildBrowserScenario(
+        new URL("./support/rpc-browser.js", import.meta.url),
+      );
       const page = await openBrowserPage(
         t,
         `${address}/playground/runtime-typescript/tests/support/index.html`,
         browserType,
       );
-      await page.evaluate(async () => {
-        const { createRuntime } = await import(
-          "/playground/runtime-typescript/dist/index.browser.js"
-        );
-        const { exerciseRPC } = await import("/playground/runtime-typescript/tests/support/rpc.js");
-        const nativeRPC = await import("/playground/runtime-typescript/dist/rpc.browser.js");
-        const { exerciseNativeRPC } = await import(
-          "/playground/runtime-typescript/tests/support/native-rpc.js"
-        );
-        const load = async (name) =>
-          new Uint8Array(await (await fetch(`/testdata/rpc/images/${name}.json.gz`)).arrayBuffer());
-        await exerciseRPC(createRuntime, load, location.origin);
-        await exerciseNativeRPC(nativeRPC, location.origin);
-      });
+      await page.addScriptTag({ content: routes["/scenario.js"], type: "module" });
+      await readBrowserScenario(page);
     },
   );
 }

@@ -319,42 +319,53 @@ func sliceValue(module *moduleInstance, object, start, end, maxValue vmValue) (v
 }
 
 func lenValue(module *moduleInstance, object vmValue) (vmValue, error) {
+	length, err := lengthValue(module, object)
+	if err != nil {
+		return vmValue{}, err
+	}
+	return newVMValue("Int", length), nil
+}
+
+// lengthValue is the shared raw length contract. Keeping the scalar result
+// separate lets len_compare_branch compare without pushing an intermediate
+// Int value onto the frame stack.
+func lengthValue(module *moduleInstance, object vmValue) (int64, error) {
 	if elem, ok := object.Type.PointerElem(); ok {
 		if length, _, ok := module.arrayType(elem); ok {
-			return newVMValue("Int", length), nil
+			return length, nil
 		}
 	}
 	switch data := object.Data.(type) {
 	case *vmSlice:
 		if !module.isSliceType(object.Type) {
-			return vmValue{}, fmt.Errorf("invalid array backing for %s", object.Type)
+			return 0, fmt.Errorf("invalid array backing for %s", object.Type)
 		}
 		if data == nil {
-			return newVMValue("Int", int64(0)), nil
+			return 0, nil
 		}
-		return newVMValue("Int", int64(data.Len)), nil
+		return int64(data.Len), nil
 	case *vmArray:
 		if module.isSliceType(object.Type) {
-			return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
+			return 0, fmt.Errorf("invalid slice backing for %s", object.Type)
 		}
-		return newVMValue("Int", int64(data.Len)), nil
+		return int64(data.Len), nil
 	case *vmMap:
 		if data == nil {
-			return newVMValue("Int", int64(0)), nil
+			return 0, nil
 		}
-		return newVMValue("Int", int64(data.length())), nil
+		return int64(data.length()), nil
 	case string:
-		return newVMValue("Int", int64(len(data))), nil
+		return int64(len(data)), nil
 	case *waitableResource:
-		return waitableLenValue(data), nil
+		return int64(data.bufferLen()), nil
 	default:
 		if module.isMapType(object.Type) && object.Data == nil {
-			return newVMValue("Int", int64(0)), nil
+			return 0, nil
 		}
 		if module.isWaitableTypeName(object.Type) && object.Data == nil {
-			return waitableLenValue(nil), nil
+			return 0, nil
 		}
-		return vmValue{}, fmt.Errorf("cannot len %s", object.Type)
+		return 0, fmt.Errorf("cannot len %s", object.Type)
 	}
 }
 

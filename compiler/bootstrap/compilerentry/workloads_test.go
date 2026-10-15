@@ -6,25 +6,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/d7z-team/mini-go/compiler"
 	"github.com/d7z-team/mini-go/compiler/cache"
+	"github.com/d7z-team/mini-go/compiler/service"
 )
 
-func TestCompilerWorkloadsCheckAndAnalyze(t *testing.T) {
+func TestCompilerWorkloadsCheckAnalyzeAndPrepare(t *testing.T) {
 	data, err := os.ReadFile("../../../testdata/language/workloads.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var workloads []struct{ Name, Source string }
+	var workloads []struct{ Name, Entry, Source string }
 	if err := json.Unmarshal(data, &workloads); err != nil {
 		t.Fatal(err)
 	}
 	for _, workload := range workloads {
 		t.Run(workload.Name, func(t *testing.T) {
 			packages := []Package{{Namespace: "module:sample", ModulePath: "sample", Files: []File{{Path: "main.mgo", Text: workload.Source}}}}
-			compiler := NewService(cache.TransientConfig{})
-			defer compiler.Close()
+			checker := NewService(cache.TransientConfig{})
+			defer checker.Close()
 			started := time.Now()
-			checked := compiler.Execute(Request{Operation: OperationCheck, Root: "sample", Packages: packages})
+			checked := checker.Execute(Request{Operation: OperationCheck, Root: "sample", Packages: packages})
 			if checked.Error != "" || len(checked.Diagnostics) != 0 {
 				t.Fatalf("check: %s %+v", checked.Error, checked.Diagnostics)
 			}
@@ -50,6 +52,16 @@ func TestCompilerWorkloadsCheckAndAnalyze(t *testing.T) {
 						t.Fatalf("%s: %+v", uri, report.Items)
 					}
 				}
+			}
+			built := tools.Execute(t.Context(), ToolsRequest{
+				Operation: "build/prepare", Session: opened.Session,
+				Build: service.BuildOptions{
+					Revision: opened.Revision, Symbols: true,
+					EntryPoints: []compiler.EntryPoint{{Name: "default", ModulePath: "sample", Function: workload.Entry}},
+				},
+			})
+			if built.Error != nil || len(built.Diagnostics) != 0 || built.ImageJSON == "" || built.SymbolsJSON == "" {
+				t.Fatalf("prepare: %+v", built)
 			}
 		})
 	}

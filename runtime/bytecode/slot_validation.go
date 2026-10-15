@@ -150,7 +150,7 @@ func validateSlotCode(code *SlotCode, constants []Constant, locals []Local, vali
 		var targets []string
 		fallsThrough := true
 		switch instruction.Op {
-		case OpCompareBranch:
+		case OpCompareBranch, OpLenCompareBranch:
 			targets = append(targets, payload.(CompareBranchPayload).Label)
 		case OpJump, OpJumpIf:
 			targets = append(targets, payload.(JumpPayload).Label)

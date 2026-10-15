@@ -5,7 +5,7 @@
 [![CI][ci-badge]][ci]
 
 Mini-Go 是使用 Go-like 语法的嵌入式脚本引擎。Go 应用直接编译并运行脚本，Rust 应用执行同一字节码，
-TypeScript 运行时支持浏览器和 Node.js；`mini-go` CLI 也可以脱离宿主应用运行 `.mgo` 文件。
+TypeScript 运行时支持浏览器和 Node.js；`mini-go` CLI 可以脱离宿主应用运行 `.mgo` 文件。
 
 ## 主要能力
 
@@ -17,7 +17,7 @@ TypeScript 运行时支持浏览器和 Node.js；`mini-go` CLI 也可以脱离�
 
 Mini-Go 实现的标准库表面以[生成参考](./docs/reference/README.md)为准。
 
-## 安装与运行
+## 快速开始
 
 Go 宿主工具链需要 Go 1.26 或更新版本：
 
@@ -42,8 +42,8 @@ mini-go check hello.mgo
 mini-go run hello.mgo
 ```
 
-Mini-Go 源码使用 `.mgo`，测试文件使用 `_test.mgo`。多文件项目、本地模块、宿主能力、执行控制和
-热更新见 [Go 与 CLI 使用指南](./USAGE.md)。
+Mini-Go 源码使用 `.mgo`，测试文件使用 `_test.mgo`。项目布局、宿主能力、执行控制和热更新见
+[Go 与 CLI 使用指南](./USAGE.md)。
 
 ## 嵌入 Go
 
@@ -61,7 +61,7 @@ go get github.com/d7z-team/mini-go
 | Rust 原生 | [`mini-go` crate](https://crates.io/crates/mini-go) · [Rust 运行时](./playground/runtime-rust/README.md) |
 | 浏览器与 Node.js | `npm install @d7z-team/mini-go` · [TypeScript 运行时](./playground/runtime-typescript/README.md) |
 
-编译器资源与运行时产物必须来自同一工具链版本。打包和部署方式见对应组件指南。
+打包、部署和工具链要求见对应组件指南。
 
 ## 文档
 
@@ -75,7 +75,7 @@ go get github.com/d7z-team/mini-go
 | 理解组件边界 | [架构](./ARCHITECTURE.md) |
 | 构建、测试、诊断和发布 | [开发指南](./DEVELOPMENT.md) |
 
-在仓库根运行 `make help` 查看维护命令，贡献约定见 [AGENTS.md](./AGENTS.md)。
+维护流程和贡献约定见[开发指南](./DEVELOPMENT.md)及 [AGENTS.md](./AGENTS.md)。
 
 ## 许可证
 

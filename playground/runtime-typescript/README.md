@@ -1,23 +1,26 @@
 # Mini-Go TypeScript Runtime
 
-该包在 Browser 和 Node.js 中执行 Mini-Go bytecode，并提供源码工具、调试和 MRPC。VM 与生命周期管理
-使用 TypeScript；源码编译在独立 Worker 中运行 Go compiler WASM。
+这个包在浏览器和 Node.js 中执行 Mini-Go bytecode，并提供源码工具、调试和 MRPC 客户端。VM 与实例
+生命周期由 TypeScript 管理；源码编译在独立 Worker 中运行 Go compiler WASM。
 
-开发与 Node.js 部署使用 Node.js 24 或更高版本；浏览器入口不依赖 Node.js 内置模块。
+Node.js 部署使用 Node.js 24.11 或更高版本。浏览器入口由 ESM 打包器提供 Worker 和 WASM 资源。
+
+## 安装与入口
 
 ```bash
 npm install @d7z-team/mini-go
 ```
 
-| 入口 | 职责 |
+| 入口 | 用途 |
 | --- | --- |
-| `@d7z-team/mini-go` | 执行 bytecode、热更新和值转换 |
-| `@d7z-team/mini-go/rpc` | 连接独立 WebSocket MRPC Endpoint |
-| `@d7z-team/mini-go/tools` | 源码构建、语言服务和调试 |
+| `@d7z-team/mini-go` | 加载并执行 bytecode、传递宿主值和热更新 |
+| `@d7z-team/mini-go/tools` | Go compiler WASM、语言服务和调试 |
+| `@d7z-team/mini-go/rpc` | 独立 WebSocket MRPC 连接 |
 
-## 执行镜像
+## 执行 bytecode
 
-`createRuntime` 为实例创建独立 Worker。输入镜像在发送前复制，调用方继续拥有原 buffer。
+`createRuntime` 为每个实例创建独立 Worker。输入镜像会在发送前复制，调用方仍拥有原来的
+`Uint8Array` 或 `ArrayBuffer`。
 
 ```ts
 import { readFile } from "node:fs/promises";
@@ -38,33 +41,31 @@ try {
 }
 ```
 
-`result` 在入口返回时完成；`settled` 等待所属 task、timer 和 FFI 调用收敛。`cancel()` 取消整个
-execution scope，`close()` 停止接纳工作并等待清理。只有宿主无法继续等待时才使用 `terminate()`。
+`execution.result` 在入口返回或失败时完成；`execution.settled` 会继续等待该 scope 的 task、timer 和
+宿主调用收敛。`execution.cancel()` 取消整个 scope。`runtime.close()` 停止接纳新工作并等待清理，只有
+宿主无法继续等待时才使用 `runtime.terminate()`。
 
-64 位 guest 整数映射为 `bigint`，bytes 映射为 `Uint8Array`。返回的 `Snapshot` 独立拥有数据，并通过
-`objects` 与 `HostAddress` 保留别名和循环。
+64 位 guest 整数使用 `bigint`，bytes 使用 `Uint8Array`。返回的 `Snapshot` 独立拥有数据，并通过
+`objects` 和 `HostAddress` 保留对象别名与循环。
 
-### 浏览器部署
+## 浏览器部署
 
-完整部署包内 `dist/`，保留入口、`workers/` 和 `compiler/` 的相对结构：
-
-```bash
-cp -R node_modules/@d7z-team/mini-go/dist public/mini-go
-```
+应用通过 Vite 或其他 ESM 打包器导入公开入口：
 
 ```ts
-import { createRuntime } from "/mini-go/index.browser.js";
+import { createRuntime } from "@d7z-team/mini-go";
 
 const image = new Uint8Array(await (await fetch("/program.json.gz")).arrayBuffer());
 const runtime = await createRuntime(image);
 ```
 
-部署位置变化时通过对应 API 的 `workerUrl` 覆盖 Worker 地址；语言工具还可用 `compilerUrl` 指定
-`compiler/mini-go-compiler.wasm`。HTTP 服务需正确提供 `.wasm` MIME 类型并允许 Worker 与网络连接。
+构建产物包含浏览器入口、运行时 Worker、compiler Worker 和 `mini-go-compiler.wasm`。部署这些资源时，
+可通过 `workerUrl` 覆盖运行时 Worker，通过 tools 的 `compilerUrl` 覆盖 compiler WASM 地址。HTTP 服务需
+为 `.wasm` 返回正确的 MIME 类型，并允许 Worker 访问所需资源。
 
 ## 宿主能力与热更新
 
-`provider` 接收 route、payload 和取消 signal：
+宿主 provider 接收路由、二进制 payload 和取消信号：
 
 ```ts
 const runtime = await createRuntime(image, {
@@ -77,18 +78,19 @@ const runtime = await createRuntime(image, {
 });
 ```
 
-浏览器可通过 `providerModule` 在 Worker 内加载宿主实现。`runtime.patch(nextImage)` 先校验完整候选，
-再在安全点原子发布；失败保持当前程序。旧帧、闭包和 defer 继续使用原 revision，新命名调用进入新版本。
+也可以用 `providerModule` 让 Worker 加载导出 `call` 和可选 `close` 的宿主模块。provider 应响应
+`AbortSignal`，并返回 `Uint8Array`。
 
-`limits` 控制步数、帧、task、FFI、序列和 guest 逻辑内存。`UNLIMITED_STEPS` 只放开累计步数。
-`stats()` 区分 live、peak、total 和 since-census 指标，并报告逻辑 allocation count；这些值使用共享
-bytecode contract 的确定性成本，不代表 JavaScript heap 或进程 RSS。诊断时可用 `profile: true` 创建
-runtime，取得 opcode 次数以及函数的 calls、steps 和执行时间；profile 会增加单步开销。
+`runtime.patch(nextImage)` 会先完整校验候选镜像，再在安全点原子发布；准备失败时当前程序继续运行。
+已有 frame、closure 和 defer 继续使用原 revision，普通命名调用使用当前 revision，
+`revision_local` 调用跟随 caller frame 的 revision。
 
-## 编译器与调试
+`limits` 控制步数、frame、task、FFI、序列和 guest 逻辑内存。`UNLIMITED_STEPS` 只放开累计步数；
+统计口径和性能诊断见[开发指南](../../DEVELOPMENT.md#缓存与性能)。
 
-`@d7z-team/mini-go/tools` 使用独立 Compiler Worker。会话串行处理请求并限制队列、输入和期限；取消或
-超时会重建 Worker，并只恢复宿主已经确认的状态。
+## 源码工具与调试
+
+`@d7z-team/mini-go/tools` 使用独立的 compiler Worker：
 
 ```ts
 import { createLanguageService } from "@d7z-team/mini-go/tools";
@@ -98,15 +100,15 @@ try {
   await service.open({
     Root: "example",
     Packages: [{
-      Namespace: "app",
+      Namespace: "module:example",
       ModulePath: "example",
-      Files: [{ Path: "main.mgo", Text: "package main\nfunc main() int { return 42 }" }],
+      Files: [{ Path: "answer.mgo", Text: "package example\nfunc Answer() int { return 42 }" }],
     }],
   });
   const analysis = await service.analyze();
   const build = await service.prepare({
     Symbols: true,
-    EntryPoints: [{ Name: "default", ModulePath: "example", Function: "main" }],
+    EntryPoints: [{ Name: "default", ModulePath: "example", Function: "Answer" }],
   });
   console.log(analysis.Diagnostics, build.Image, build.Symbols);
 } finally {
@@ -114,49 +116,19 @@ try {
 }
 ```
 
-`update` 提交文档变化，`query` 执行语言查询，`sources` 解析源码树。`upgrade` 只在候选 Worker 完成
-恢复和分析后切换。`createDebugSession` 创建自有 runtime，`attachDebugSession` 连接现有 runtime；
-调试符号必须与镜像匹配。
+语言服务按顺序处理会话请求。取消或超时会回收当前 Worker，并只恢复已经确认的输入；`upgrade` 在候选
+Worker 完成恢复和分析后再切换。`createDebugSession` 创建由 tools 管理的 runtime，
+`attachDebugSession` 连接已有 runtime；调试符号必须与镜像匹配。
 
 ## 独立 RPC
 
-`@d7z-team/mini-go/rpc` 无需执行镜像。它在 Worker 中连接 WebSocket，可绑定服务或发布 TypeScript
-provider；`.mrpc` 生成的 codec、client 和 provider 适配器直接使用该入口。
+通过 `@d7z-team/mini-go/rpc` 的 `connectRPC` 在 Worker 中连接 WebSocket，再绑定生成的客户端或发布
+provider。连接 `close()` 等待本地资源和 publication 清理；resource 应显式关闭，操作级 `timeoutMs`
+与 `AbortSignal` 只约束所属操作。契约生成和完整调用示例见 [RPC 指南](../../RPC.md#typescript--javascript-api)。
 
-```ts
-import { connectRPC } from "@d7z-team/mini-go/rpc";
-import { GreeterClient } from "./generated/greeter.js";
+## 开发与许可
 
-const connection = await connectRPC("wss://example.test/rpc");
-try {
-  const greeter = await GreeterClient.bind(connection);
-  try {
-    console.log(await greeter.hello({ name: "Mini-Go" }));
-  } finally {
-    await greeter.close();
-  }
-} finally {
-  await connection.close();
-}
-```
+构建、测试、打包和性能诊断统一从仓库根执行，见[开发指南](../../DEVELOPMENT.md#typescript-runtime-与-go-compiler-wasm)。
 
-resource 属于创建它的 binding，应显式关闭。连接 `close()` 等待本地资源和 publication 清理；
-`timeoutMs` 与 `AbortSignal` 只约束所属操作。生成和跨语言语义见
-[RPC 指南](https://github.com/d7z-team/mini-go/blob/main/RPC.md#typescript--javascript-api)。
-
-## 源码与维护
-
-| 路径 | 职责 |
-| --- | --- |
-| `src/vm/` | bytecode VM |
-| `src/runtime/` | runtime Worker 与宿主桥 |
-| `src/compiler/` | Go compiler WASM 会话 |
-| `src/rpc/` | 独立 RPC Endpoint |
-| `src/platform/`、`src/workers/` | Browser/Node 适配和 Worker 入口 |
-
-构建、测试、打包和性能诊断统一从仓库根执行，见
-[开发指南](https://github.com/d7z-team/mini-go/blob/main/DEVELOPMENT.md#typescript-runtime-与-go-compiler-wasm)。
-
-## 许可证
-
-TypeScript 包使用 [MIT License](LICENSE)。Go compiler WASM 所含 Go 源码适用 [Go License](LICENSE-Go)。
+TypeScript 包使用 [MIT License](LICENSE)。随包分发的 Go compiler WASM 所含 Go 源码适用
+[Go License](LICENSE-Go)。

@@ -23,29 +23,114 @@ func convertToString(value vmValue) (vmValue, error) {
 	return newVMValue("String", string(rune(n))), nil
 }
 
-func convertToIntegerLike(value vmValue, target vmType) (vmValue, error) {
-	if !isNumericValue(value) {
-		return vmValue{}, fmt.Errorf("cannot convert %s to %s", value.Type, target)
-	}
-	info, ok := target.NumericInfo()
-	if !ok {
-		return vmValue{}, fmt.Errorf("unsupported integer target %s", target)
-	}
-	if info.Kind == types.NumericUnsigned {
-		n, err := numericAsUint64(value)
-		if err != nil {
-			return vmValue{}, err
+// conversionMetadata is prepared with a convert instruction's target type.
+// Primitive conversions only need this small amount of type information; in
+// particular, they must not enter the structural underlying-type resolver.
+type conversionMetadata struct {
+	numeric     types.NumericInfo
+	numericOK   bool
+	primitive   types.PrimitiveKind
+	primitiveOK bool
+}
+
+func conversionMetadataFor(target vmType) conversionMetadata {
+	metadata := conversionMetadata{}
+	metadata.numeric, metadata.numericOK = target.NumericInfo()
+	if target.Table != nil && target.Ref.Kind == types.Named {
+		underlying := target.Table.Underlying(target.Ref)
+		if underlying.Kind == types.Primitive {
+			metadata.primitive = underlying.Primitive
+			metadata.primitiveOK = true
 		}
-		return normalizeUnsignedValue(target, n), nil
+	} else if target.Ref.Kind == types.Primitive {
+		metadata.primitive = target.Ref.Primitive
+		metadata.primitiveOK = true
 	}
-	if info.Kind == types.NumericSigned {
-		n, err := numericAsInt64(value)
-		if err != nil {
-			return vmValue{}, err
+	return metadata
+}
+
+func (metadata conversionMetadata) scalarTarget() bool {
+	return metadata.numericOK || (metadata.primitiveOK &&
+		(metadata.primitive == types.PrimitiveBool || metadata.primitive == types.PrimitiveString))
+}
+
+// convertPrimitiveValue handles conversions whose source and target are
+// scalar values. It deliberately runs before same-underlying composite
+// matching, which otherwise resolves and parses structural type text for
+// every scalar conversion. handled is false when the generic conversion path
+// still needs to inspect the value shape.
+func convertPrimitiveValue(value vmValue, target vmType, metadata conversionMetadata) (out vmValue, handled bool, err error) {
+	if !metadata.scalarTarget() {
+		return vmValue{}, false, nil
+	}
+	if metadata.numericOK {
+		if !isNumericValue(value) {
+			return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 		}
-		return normalizeSignedValue(target, n), nil
+		switch metadata.numeric.Kind {
+		case types.NumericUnsigned:
+			n, conversionErr := numericAsUint64(value)
+			if conversionErr != nil {
+				return vmValue{}, true, conversionErr
+			}
+			return normalizeUnsignedValue(target, n), true, nil
+		case types.NumericSigned:
+			n, conversionErr := numericAsInt64(value)
+			if conversionErr != nil {
+				return vmValue{}, true, conversionErr
+			}
+			return normalizeSignedValue(target, n), true, nil
+		case types.NumericFloat:
+			n, conversionErr := numericAsFloat64(value)
+			if conversionErr != nil {
+				return vmValue{}, true, conversionErr
+			}
+			return normalizeFloatValue(target, n), true, nil
+		case types.NumericComplex:
+			n, conversionErr := numericAsComplex128(value)
+			if conversionErr != nil {
+				return vmValue{}, true, conversionErr
+			}
+			return normalizeComplexValue(target, n), true, nil
+		}
 	}
-	return vmValue{}, fmt.Errorf("unsupported integer target %s", target)
+	if !metadata.primitiveOK {
+		return vmValue{}, false, nil
+	}
+	switch metadata.primitive {
+	case types.PrimitiveBool:
+		if !value.Type.Primitive(types.PrimitiveBool) {
+			return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
+		}
+		boolean, ok := value.Data.(bool)
+		if !ok {
+			return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
+		}
+		return newVMValue(target, boolean), true, nil
+	case types.PrimitiveString:
+		if value.Type.Primitive(types.PrimitiveString) {
+			text, ok := value.Data.(string)
+			if !ok {
+				return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
+			}
+			return newVMValue(target, text), true, nil
+		}
+		if !isIntegerValue(value) {
+			_, numeric := value.Type.NumericInfo()
+			if value.Type.Primitive(types.PrimitiveBool) || numeric || isComplexValue(value) {
+				return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
+			}
+			return vmValue{}, false, nil
+		}
+		converted, conversionErr := convertToString(value)
+		if conversionErr != nil {
+			return vmValue{}, true, conversionErr
+		}
+		converted.Type = target
+		return converted, true, nil
+	default:
+		return vmValue{}, false, nil
+	}
 }
 
 func (m *moduleInstance) convertValue(value vmValue, target any) (vmValue, error) {
@@ -79,6 +164,9 @@ func (m *moduleInstance) convertValueWithVariadic(value vmValue, target any, tar
 	}
 	if value.Type.Equal(targetType) {
 		return value, nil
+	}
+	if out, handled, err := convertPrimitiveValue(value, targetType, conversionMetadataFor(targetType)); handled || err != nil {
+		return out, err
 	}
 	if m.sameRuntimeType(value.Type, targetType) {
 		value.Type = targetType
@@ -129,15 +217,15 @@ func (m *moduleInstance) convertValueWithVariadic(value vmValue, target any, tar
 	if out, ok, err := m.convertSliceToArray(value, targetType); ok || err != nil {
 		return out, err
 	}
-	if out, ok := m.convertSameUnderlyingComposite(value, targetText); ok {
+	if out, ok := m.convertSameUnderlyingComposite(value, targetType); ok {
 		out.Type = targetType
 		return out, nil
 	}
-	if m.isByteSliceType(targetText) {
-		return convertStringToByteSlice(value, targetText)
+	if m.isByteSliceType(targetType) {
+		return convertStringToByteSlice(value, targetType)
 	}
-	if m.isRuneSliceType(targetText) {
-		return convertStringToRuneSlice(value, targetText)
+	if m.isRuneSliceType(targetType) {
+		return convertStringToRuneSlice(value, targetType)
 	}
 	if targetType.Primitive(types.PrimitiveString) {
 		if out, ok, err := m.convertByteSliceToString(value); ok || err != nil {
@@ -147,46 +235,7 @@ func (m *moduleInstance) convertValueWithVariadic(value vmValue, target any, tar
 			return out, err
 		}
 	}
-	if underlying, ok := m.underlyingType(targetText); ok {
-		underlyingType := m.resolvedRuntimeType(underlying)
-		_, numeric := underlyingType.NumericInfo()
-		if !underlyingType.Primitive(types.PrimitiveBool) && !underlyingType.Primitive(types.PrimitiveString) && !numeric {
-			return vmValue{}, fmt.Errorf("unsupported conversion from %s to %s", value.Type, targetText)
-		}
-		out, err := m.convertValue(value, underlying)
-		if err != nil {
-			return vmValue{}, err
-		}
-		out.Type = targetType
-		return out, nil
-	}
-	switch targetText {
-	case "Bool":
-		out, ok := value.Data.(bool)
-		if !ok {
-			return vmValue{}, fmt.Errorf("cannot convert %s to Bool", value.Type)
-		}
-		return newBoolValue(out), nil
-	case "String":
-		return convertToString(value)
-	case "Float32", "Float64":
-		out, err := numericAsFloat64(value)
-		if err != nil {
-			return vmValue{}, fmt.Errorf("cannot convert %s to %s: %w", value.Type, targetText, err)
-		}
-		return normalizeFloatValue(targetType, out), nil
-	case "Complex64", "Complex128":
-		out, err := numericAsComplex128(value)
-		if err != nil {
-			return vmValue{}, fmt.Errorf("cannot convert %s to %s: %w", value.Type, targetText, err)
-		}
-		return normalizeComplexValue(targetType, out), nil
-	default:
-		if _, numeric := targetType.NumericInfo(); numeric {
-			return convertToIntegerLike(value, targetType)
-		}
-		return vmValue{}, fmt.Errorf("unsupported conversion from %s to %s", value.Type, targetText)
-	}
+	return vmValue{}, fmt.Errorf("unsupported conversion from %s to %s", value.Type, targetText)
 }
 
 func (m *moduleInstance) convertSliceToArrayPointer(value vmValue, target vmType) (vmValue, bool, error) {
@@ -271,7 +320,10 @@ func (m *moduleInstance) convertSliceToArray(value vmValue, target vmType) (vmVa
 	return newVMValue(target, out), true, nil
 }
 
-func (m *moduleInstance) convertSameUnderlyingComposite(value vmValue, target string) (vmValue, bool) {
+func (m *moduleInstance) convertSameUnderlyingComposite(value vmValue, target vmType) (vmValue, bool) {
+	if !isCompositeConversionShape(value.Type.ShapeKind()) || !isCompositeConversionShape(target.ShapeKind()) {
+		return vmValue{}, false
+	}
 	targetUnderlying := m.underlyingRuntimeType(target)
 	if !m.conversionUnderlyingIdentical(value.Type, target) {
 		return vmValue{}, false
@@ -283,6 +335,15 @@ func (m *moduleInstance) convertSameUnderlyingComposite(value vmValue, target st
 		return out, true
 	default:
 		return vmValue{}, false
+	}
+}
+
+func isCompositeConversionShape(shape types.Kind) bool {
+	switch shape {
+	case types.Slice, types.Array, types.Map, types.Waitable, types.Struct:
+		return true
+	default:
+		return false
 	}
 }
 

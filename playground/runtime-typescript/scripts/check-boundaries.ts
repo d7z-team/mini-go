@@ -31,7 +31,9 @@ for (const filename of files) {
         ? statement.moduleSpecifier.text
         : undefined;
     if (!module) continue;
-    const target = module.replace(/\.js$/, "");
+    const target = module;
+    if (module === "#platform" && !["index.ts", "tools.ts", "rpc/index.ts"].includes(relative))
+      violations.push(`${relative}: only public entries may import the platform alias`);
     const forbidden =
       (relative.startsWith("vm/") &&
         /^(\.\.\/(runtime|rpc|compiler|platform))(\/|$)/.test(target)) ||
@@ -49,14 +51,21 @@ for (const filename of files) {
       module.startsWith("node:")
     )
       violations.push(`${relative}: browser source imports ${module}`);
-    if (relative.startsWith("workers/")) {
-      const domain = path.basename(relative).split(".")[0];
+    if (/\/worker\.(browser|node)\.ts$/.test(relative)) {
+      const domain = relative.split("/")[0];
+      const generatedCompilerAsset =
+        domain === "compiler" && target.startsWith("../../.build/compiler");
+      const hostPlatformImport = /^\.\.\/platform\/(browser|node)$/.test(target);
       if (
         target.startsWith("../") &&
-        !target.startsWith("../platform/") &&
-        !target.startsWith(`../${domain}/`)
+        !/^\.\.\/platform\/port\.(browser|node)$/.test(target) &&
+        !target.startsWith(`../${domain}/`) &&
+        !generatedCompilerAsset &&
+        !hostPlatformImport
       )
         violations.push(`${relative}: worker imports outside ${domain} and platform: ${module}`);
+      if (hostPlatformImport)
+        violations.push(`${relative}: worker cannot import the host platform adapter: ${module}`);
     }
   }
 }

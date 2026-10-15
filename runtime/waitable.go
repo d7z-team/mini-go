@@ -174,13 +174,6 @@ func waitableSendReady(resource *waitableResource) bool {
 	return resource.bufferLen() < resource.Capacity
 }
 
-func waitableLenValue(resource *waitableResource) vmValue {
-	if resource == nil {
-		return newVMValue("Int", int64(0))
-	}
-	return newVMValue("Int", int64(resource.bufferLen()))
-}
-
 func waitableCapValue(resource *waitableResource) vmValue {
 	if resource == nil {
 		return newVMValue("Int", int64(0))

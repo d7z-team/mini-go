@@ -1,4 +1,4 @@
-import type { WorkerConnection, WorkerPort } from "../worker-channel.js";
+import type { WorkerConnection, WorkerPort } from "../worker-channel";
 import type {
   RPCBindOptions,
   RPCConnectOptions,
@@ -7,7 +7,7 @@ import type {
   RPCPublishOptions,
   RPCStats,
   RPCValue,
-} from "./types.js";
+} from "./types";
 
 export interface RPCFailure {
   message: string;

@@ -261,6 +261,38 @@ func validateSlotTypes(function Function, operations []Instruction, refs artifac
 				result = types.PrimitiveInt32
 			}
 			expectedOutputs = []types.TypeRef{types.Builtin(result)}
+		case OpIndexConvert:
+			view := types.View(table, input(0))
+			if view.Shape() == types.Pointer {
+				element, _ := view.Elem()
+				view = types.View(table, element)
+				if view.Shape() != types.Array {
+					return fmt.Errorf("instruction %d: index-convert pointer operand must point to a byte array", pc)
+				}
+			}
+			byteElement := false
+			switch view.Shape() {
+			case types.Primitive:
+				primitive, _ := view.Primitive()
+				byteElement = primitive == types.PrimitiveString
+			case types.Slice:
+				element, _ := view.Elem()
+				primitive, _ := types.View(table, element).Primitive()
+				byteElement = primitive == types.PrimitiveUint8
+			case types.Array:
+				_, element, _ := view.Array()
+				primitive, _ := types.View(table, element).Primitive()
+				byteElement = primitive == types.PrimitiveUint8
+			}
+			if !byteElement {
+				return fmt.Errorf("instruction %d: index-convert requires string or byte sequence", pc)
+			}
+			integerInputs = []int{1}
+			if !types.IsIntegerType(table, operation.Payload.(TypePayload).Type) {
+				return fmt.Errorf("instruction %d: index-convert target is not an integer", pc)
+			}
+			expectedInputs = []types.TypeRef{input(0), input(1)}
+			expectedOutputs = []types.TypeRef{operation.Payload.(TypePayload).Type}
 		case OpDelete:
 			key, _, ok := types.View(table, input(0)).Map()
 			if !ok {
@@ -306,10 +338,27 @@ func validateSlotTypes(function Function, operations []Instruction, refs artifac
 			if _, err := scalarResultType(relations, operation.Payload.(CompareBranchPayload).Operator, []types.TypeRef{input(0), input(1)}); err != nil {
 				return fmt.Errorf("instruction %d: %w", pc, err)
 			}
+		case OpLenCompareBranch:
+			payload := operation.Payload.(CompareBranchPayload)
+			if !relations.Identical(payload.Type, types.Builtin(types.PrimitiveInt)).OK {
+				return fmt.Errorf("instruction %d: length comparison descriptor must use Int", pc)
+			}
+			view := types.View(table, input(0))
+			if view.Shape() == types.Pointer {
+				element, _ := view.Elem()
+				view = types.View(table, element)
+			}
+			shape := view.Shape()
+			if shape != types.Primitive && shape != types.Slice && shape != types.Array && shape != types.Map && shape != types.Waitable {
+				return fmt.Errorf("instruction %d: length comparison requires a length-bearing object", pc)
+			}
+			if primitive, ok := view.Primitive(); ok && primitive != types.PrimitiveString {
+				return fmt.Errorf("instruction %d: length comparison requires a length-bearing object", pc)
+			}
+			integerInputs = []int{1}
 		}
 		for _, index := range integerInputs {
-			primitive, ok := types.View(table, input(index)).Primitive()
-			if !ok || primitive < types.PrimitiveInt || primitive > types.PrimitiveUintptr {
+			if !types.IsIntegerType(table, input(index)) {
 				return fmt.Errorf("instruction %d input %d: index or size is not an integer", pc, index)
 			}
 		}

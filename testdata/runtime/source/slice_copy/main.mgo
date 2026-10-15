@@ -1,2 +1,50 @@
 package main
-func Main() int { a := []int{1, 2, 3, 4}; copy(a[1:], a[:3]); return a[0]*1000 + a[1]*100 + a[2]*10 + a[3] }
+
+type Byte byte
+type Text string
+
+func Main() int {
+	a := []int{1, 2, 3, 4}
+	copy(a[1:], a[:3])
+
+	named := []Byte{0, 0, 0, 0}
+	namedCount := copy(named[1:], []Byte{1, 2})
+
+	textBytes := []byte{0, 0, 0}
+	textCount := copy(textBytes, Text("xy"))
+
+	array := [5]byte{1, 2, 3, 4, 5}
+	arrayCount := copy(array[1:4], array[:3])
+
+	left := []byte("same")
+	right := []byte("same")
+	left[0] = 'X'
+	immutable := string(right)
+	right[0] = 'Y'
+
+	var nilBytes []byte
+	nilCount := copy(nilBytes, []byte{9, 8}) + copy(textBytes, nilBytes)
+	var nilInts []int
+	nilInts = append(nilInts)
+	var nilBytesAppend []byte
+	nilBytesAppend = append(nilBytesAppend, []byte{}...)
+	empty := []int{}
+	empty = append(empty, []int{}...)
+	overlap := []byte{1, 2, 3, 4}
+	overlap = append(overlap[1:3], overlap[:2]...)
+	offset := make([]byte, 2, 5)
+	offset = append(offset, 7, 8, 9)
+	namedAppend := []Byte{1}
+	namedAppend = append(namedAppend, Byte(2))
+	if namedCount != 2 || named[1] != 1 || named[2] != 2 ||
+		textCount != 2 || textBytes[0] != 'x' || textBytes[1] != 'y' ||
+		arrayCount != 3 || array[0] != 1 || array[1] != 1 || array[2] != 2 || array[3] != 3 || array[4] != 5 ||
+		nilCount != 0 || nilInts != nil || nilBytesAppend != nil || len(empty) != 0 ||
+		overlap[0] != 2 || overlap[1] != 3 || overlap[2] != 1 || overlap[3] != 2 ||
+		len(offset) != 5 || offset[2] != 7 || offset[4] != 9 ||
+		len(namedAppend) != 2 || namedAppend[1] != 2 ||
+		left[0] != 'X' || right[0] != 'Y' || immutable != "same" {
+		return -1
+	}
+	return a[0]*1000 + a[1]*100 + a[2]*10 + a[3]
+}

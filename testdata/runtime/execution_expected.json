@@ -19,10 +19,12 @@
   "defer_result": "42",
   "divide_recover": "42",
   "imported_type": "42",
+  "index_convert": "109",
   "integer_width": "-128",
   "interface_assertion": "42",
   "interface_nil": "42",
   "interface_value": "42",
+  "len_compare_branch": "7",
   "loop_capture": "333",
   "map_alias": "41",
   "map_range": "35",
@@ -57,5 +59,8 @@
   "stdlib_sha256": "359",
   "stdlib_strconv": "42",
   "string_conversion": "42",
-  "typed_pointer_view": "42"
+  "typed_pointer_view": "42",
+  "direct_call_results": "19",
+  "unicode_rune_range": "11114",
+  "interface_method_map_key": "7"
 }

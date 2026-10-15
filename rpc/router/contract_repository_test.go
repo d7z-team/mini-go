@@ -27,10 +27,16 @@ func TestContractRepositoryResolvesExactImmutableBundle(t *testing.T) {
 	if err := repository.Publish(first, second); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []MRPCBundle{first, second} {
+	expectedBundles := []MRPCBundle{cloneMRPCBundle(first), cloneMRPCBundle(second)}
+	first.Files[0].Text = "caller mutation"
+	second.Files[0].Hash = "caller mutation"
+	for _, expected := range expectedBundles {
 		resolved, err := repository.ResolveContract(context.Background(), ContractReference{ImportPath: expected.ImportPath, Hash: expected.Hash})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !equalMRPCBundle(resolved, expected) {
+			t.Fatal("caller mutation changed published bundle")
 		}
 		resolved.Files[0].Text = "mutated"
 		again, err := repository.ResolveContract(context.Background(), ContractReference{ImportPath: expected.ImportPath, Hash: expected.Hash})

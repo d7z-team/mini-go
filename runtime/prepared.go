@@ -78,14 +78,18 @@ const (
 	preparedTypeDispatch
 	preparedCompareBranch
 	preparedGetPath
+	preparedIndexConvert
+	preparedLenCompareBranch
 )
 
 var preparedOpcodes = map[ir.Opcode]preparedOpcode{
-	ir.OpGetPath:       preparedGetPath,
-	ir.OpCompareBranch: preparedCompareBranch,
-	ir.OpTypeDispatch:  preparedTypeDispatch,
-	ir.OpSelect:        preparedSelect,
-	ir.OpMapIterInit:   preparedMapIterInit, ir.OpMapIterNext: preparedMapIterNext, ir.OpMapIterClose: preparedMapIterClose,
+	ir.OpGetPath:          preparedGetPath,
+	ir.OpCompareBranch:    preparedCompareBranch,
+	ir.OpIndexConvert:     preparedIndexConvert,
+	ir.OpLenCompareBranch: preparedLenCompareBranch,
+	ir.OpTypeDispatch:     preparedTypeDispatch,
+	ir.OpSelect:           preparedSelect,
+	ir.OpMapIterInit:      preparedMapIterInit, ir.OpMapIterNext: preparedMapIterNext, ir.OpMapIterClose: preparedMapIterClose,
 	ir.OpConst: preparedConst, ir.OpZero: preparedZero, ir.OpPop: preparedPop,
 	ir.OpUnary: preparedUnary, ir.OpBinary: preparedBinary,
 	ir.OpLoadLocal: preparedLoadLocal, ir.OpStoreLocal: preparedStoreLocal,
@@ -253,6 +257,7 @@ type preparedInstruction struct {
 	callModule        string
 	callModuleIndex   int
 	callFunctionIndex int
+	conversion        conversionMetadata
 }
 
 func (inst preparedInstruction) opcodeText() string {
@@ -285,7 +290,7 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 		out.typeDispatch, err = decodePreparedPayload[ir.TypeDispatchPayload](inst)
 	case preparedConst:
 		out.constant, err = decodePreparedPayload[ir.ConstPayload](inst)
-	case preparedZero, preparedTypeAssert, preparedTypeAssertOK, preparedConvert:
+	case preparedZero, preparedTypeAssert, preparedTypeAssertOK, preparedConvert, preparedIndexConvert:
 		out.typeOperand, err = decodePreparedPayload[ir.TypePayload](inst)
 	case preparedUnary, preparedBinary:
 		var payload *ir.OperatorPayload
@@ -330,7 +335,7 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 		}
 	case preparedJump, preparedJumpIf:
 		out.jump, err = decodePreparedPayload[ir.JumpPayload](inst)
-	case preparedCompareBranch:
+	case preparedCompareBranch, preparedLenCompareBranch:
 		out.comparison, err = decodePreparedPayload[ir.CompareBranchPayload](inst)
 		if err == nil {
 			var ok bool

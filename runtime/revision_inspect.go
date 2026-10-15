@@ -292,7 +292,7 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 					ref.Path += "/iterator " + name
 					inspect(ref, iterator.object)
 				}
-				if active.completion != nil {
+				if active.completionActive {
 					ref := root
 					ref.Path += "/completion"
 					for _, value := range active.completion.returnValues {

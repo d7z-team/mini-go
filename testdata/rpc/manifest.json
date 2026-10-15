@@ -44,7 +44,7 @@
       "oracle": "MRPC catalog and generator"
     },
     "generated/typescript/service.ts": {
-      "sha256": "1c46a744613f30f27eae430cfb7d4a7d1c3bd0e7e9a5baac2bbca0fe70c71693",
+      "sha256": "6846d566a1ec2ac4d599b71b57828e67978c32c25d7f11d0d0256a12c18d88be",
       "kind": "binding",
       "source": "schema/",
       "oracle": "MRPC catalog and generator"
@@ -56,25 +56,25 @@
       "oracle": "MRPC catalog and generator"
     },
     "images/call.json.gz": {
-      "sha256": "acb5287a792319be5ad38fffbad516cd7968e3913f5474b00ee089b120e145fd",
+      "sha256": "adbe82d52c47786a377438efc6fcb39db40a561524c1524cb017ccde90ffec4f",
       "kind": "image",
       "source": "source/call",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "e8d0c883fd54a17c13fea7b1f9c603b30b31fa408317e20b67b2e1db19f700d0"
+      "compiler_id": "57cb899e14df7e577affc55cfbdb647e96e3d02fe70a5fa4411905b349396021"
     },
     "images/provider-patch.json.gz": {
-      "sha256": "26c8c7d38ae5d6ba13f874f0b555b4ae0072d196454f084ebd06e10f381d7fa7",
+      "sha256": "8db852a0150ee4fdd4c6f3814969ea1a844fd3bf37c2e44beac8a5487ba200c0",
       "kind": "image",
       "source": "source/provider",
       "oracle": "unoptimized revision with the same RPC contract",
-      "compiler_id": "e8d0c883fd54a17c13fea7b1f9c603b30b31fa408317e20b67b2e1db19f700d0"
+      "compiler_id": "57cb899e14df7e577affc55cfbdb647e96e3d02fe70a5fa4411905b349396021"
     },
     "images/provider.json.gz": {
-      "sha256": "3df02baeecb02501f53210bd146aca8eaf8ee5ebce456ca8414e5b6b78772201",
+      "sha256": "11cb49a139b951414f6c1c88313d334c417deb970270b57e363852133ff06e7f",
       "kind": "image",
       "source": "source/provider",
       "oracle": "independent Go and Rust execution",
-      "compiler_id": "e8d0c883fd54a17c13fea7b1f9c603b30b31fa408317e20b67b2e1db19f700d0"
+      "compiler_id": "57cb899e14df7e577affc55cfbdb647e96e3d02fe70a5fa4411905b349396021"
     },
     "package.json": {
       "sha256": "609158e6c5fbc237939fa3ddf7faab80ab690bdc0c8d584414a885130103c4e8",
@@ -95,13 +95,13 @@
       "oracle": "handwritten observable results"
     },
     "schema/service.mrpc": {
-      "sha256": "e5bffb73f2fac07e18fd9d6d0e9b38225891aa4f0265c3ba78074ab95d56d930",
+      "sha256": "097d38eb4322bc06b655e0b3bdb76d5669b88f32c500201038f24fe3cbb3f734",
       "kind": "schema",
       "source": "schema/service.mrpc",
       "oracle": "reviewed protocol contract"
     },
     "schema/types.mrpc": {
-      "sha256": "bdf4109e2beeb2f2b2e837dd8583e24c67a16d62e4ba3b715473ee71b4590bb7",
+      "sha256": "27f63b4d034787262a0255393656fadf266ca0afc44b917c8de7d498da7df766",
       "kind": "schema",
       "source": "schema/types.mrpc",
       "oracle": "reviewed protocol contract"

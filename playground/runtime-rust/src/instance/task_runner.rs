@@ -114,7 +114,10 @@ pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
             !conditional || frame.operand_from_end(frame.pc, 0).is_some_and(|value| matches!(value.data, Data::Bool(_)))
         }
         PreparedInstruction::Unary(_) => frame.operand_count(frame.pc) != 0,
-        PreparedInstruction::Binary(operator) | PreparedInstruction::CompareBranch { operator, .. } => {
+        PreparedInstruction::LenCompareBranch { .. } => frame.operand_count(frame.pc) >= 2
+            && frame.operand_from_end(frame.pc, 1).is_some_and(|value| matches!(value.data, Data::String(_) | Data::Array(_) | Data::Slice(_))),
+        PreparedInstruction::Binary(operator)
+        | PreparedInstruction::CompareBranch { operator, .. } => {
             frame.operand_count(frame.pc) >= 2
                 && !(operator.operator == crate::operators::Operator::Add
                     && matches!(
@@ -125,6 +128,9 @@ pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
         PreparedInstruction::Operand => match &frame.prepared.code[frame.pc] {
             Instruction::LoadIndex => frame.operand_count(frame.pc) >= 2
                 && frame.operand_from_end(frame.pc, 1).is_some_and(|value| matches!(value.data, Data::String(_) | Data::Array(_))),
+            Instruction::IndexConvert(_) => frame.operand_count(frame.pc) >= 2
+                && frame.operand_from_end(frame.pc, 1).is_some_and(|value| matches!(value.data, Data::String(_) | Data::Array(_)))
+                && frame.operand_from_end(frame.pc, 0).is_some_and(|value| value.integer().is_ok()),
             Instruction::Pop => frame.operand_count(frame.pc) != 0,
             Instruction::Zero(_) => matches!(
                 frame.prepared.operand_types[frame.pc],
@@ -273,9 +279,11 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
         | PreparedInstruction::Unary(_)
         | PreparedInstruction::GetPath(_) => 1,
         PreparedInstruction::Binary(_) | PreparedInstruction::CompareBranch { .. } => 2,
+        PreparedInstruction::LenCompareBranch { .. } => 2,
         PreparedInstruction::Operand => match function.code[pc] {
             Instruction::Pop | Instruction::LoadField(_) | Instruction::Len | Instruction::Cap => 1,
             Instruction::LoadIndex
+            | Instruction::IndexConvert(_)
             | Instruction::StringRuneAt
             | Instruction::StringNextRuneIndex => 2,
             _ => 0,
@@ -394,6 +402,32 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
             };
             result = Some(value);
         }
+        PreparedInstruction::LenCompareBranch {
+            operator,
+            target,
+            when,
+        } => {
+            let Some(left) = frame.operand_from_end(pc, 1) else {
+                return false;
+            };
+            let Some(right) = frame.operand_from_end(pc, 0) else {
+                return false;
+            };
+            let length = match &left.data {
+                Data::String(bytes) => bytes.len(),
+                Data::Array(values) => values.len(),
+                Data::Slice(slice) => slice.length,
+                _ => return false,
+            };
+            let Ok(matched) =
+                crate::operators::compare_length(operator.operator, length as i64, right)
+            else {
+                return false;
+            };
+            if matched == when {
+                next_pc = target;
+            }
+        }
         PreparedInstruction::Binary(operator)
         | PreparedInstruction::CompareBranch { operator, .. } => {
             if frame.operand_count(pc) < 2 {
@@ -505,6 +539,38 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 if result.is_none() {
                     return false;
                 }
+            }
+            Instruction::IndexConvert(_) => {
+                let Some(object) = frame.operand_from_end(pc, 1) else {
+                    return false;
+                };
+                let Some(key) = frame.operand_from_end(pc, 0) else {
+                    return false;
+                };
+                let Ok(index) = key.integer().and_then(|index| {
+                    usize::try_from(index)
+                        .map_err(|_| RuntimeError::new("panic", "index", "negative index"))
+                }) else {
+                    return false;
+                };
+                let value = match &object.data {
+                    Data::String(bytes) => bytes.get(index).map(|byte| Value {
+                        typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
+                        data: Data::Unsigned(u64::from(*byte)),
+                    }),
+                    Data::Array(values) => values.get(index).cloned(),
+                    _ => None,
+                };
+                let Some(value) = value else {
+                    return false;
+                };
+                let Some(target) = frame.prepared.operand_types[pc].as_ref() else {
+                    return false;
+                };
+                let Ok(value) = crate::operators::convert(value, target.clone(), types) else {
+                    return false;
+                };
+                result = Some(value);
             }
             Instruction::Len | Instruction::Cap => {
                 let capacity = matches!(function.code[pc], Instruction::Cap);

@@ -1,7 +1,9 @@
-import { spawnSync } from "node:child_process";
-import { access, cp, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { access, mkdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { build } from "vite";
+import { rolldown } from "rolldown";
+import { dts } from "rolldown-plugin-dts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const packageJSON = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as {
@@ -23,24 +25,27 @@ try {
 }
 
 await rm(staging, { recursive: true, force: true });
-const result = spawnSync(
-  process.execPath,
-  [path.join(root, "node_modules/typescript/bin/tsc"), "-p", path.join(root, "tsconfig.json")],
-  { cwd: root, stdio: "inherit" },
-);
-if (result.error) throw result.error;
-if (result.status !== 0)
-  throw new Error(`TypeScript compiler exited ${result.status ?? result.signal}`);
-
-const compilerAssets = path.join(staging, "compiler");
-await mkdir(compilerAssets, { recursive: true });
-await Promise.all([
-  cp(compiler, path.join(compilerAssets, "mini-go-compiler.wasm")),
-  cp(wasmExec, path.join(compilerAssets, "wasm_exec.js")),
-]);
+for (const mode of ["browser", "node"]) {
+  await build({ root, mode, configFile: path.join(root, "vite.config.ts") });
+}
+const declarations = await rolldown({
+  cwd: root,
+  input: { index: "src/index.ts", rpc: "src/rpc/index.ts", tools: "src/tools.ts" },
+  plugins: [dts({ generator: "tsc", emitDtsOnly: true })],
+});
+try {
+  await declarations.write({
+    dir: path.join(staging, "types"),
+    format: "es",
+    entryFileNames: "[name].js",
+    chunkFileNames: "[name].d.ts",
+  });
+} finally {
+  await declarations.close();
+}
 
 await mkdir(path.join(root, ".build"), { recursive: true });
-// A failed TypeScript build leaves the previous distribution usable.
+// Publish the complete JS, assets and declaration graph together.
 const backup = path.join(root, ".build/previous");
 await rm(backup, { recursive: true, force: true });
 try {

@@ -3,9 +3,9 @@ import {
   serializeError,
   type WorkerConnection,
   type WorkerFailure,
-} from "../worker-channel.js";
-import { deferred } from "../deferred.js";
-import type { CompilerCommand, CompilerResponse } from "./protocol.js";
+} from "../worker-channel";
+import { deferred } from "../deferred";
+import type { CompilerCommand, CompilerResponse } from "./protocol";
 
 export interface CompilerOptions {
   /** Override the compiler Worker entry when assets are deployed separately. */

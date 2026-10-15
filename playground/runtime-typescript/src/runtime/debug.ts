@@ -1,5 +1,5 @@
-import type { RuntimeClient } from "./client.js";
-import type { Options } from "./types.js";
+import type { RuntimeClient } from "./client";
+import type { Options } from "./types";
 
 export interface DebugSource {
   module: string;

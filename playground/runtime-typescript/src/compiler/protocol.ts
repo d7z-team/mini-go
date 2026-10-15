@@ -1,4 +1,4 @@
-import type { WorkerFailure } from "../worker-channel.js";
+import type { WorkerFailure } from "../worker-channel";
 
 export type CompilerCommand =
   | {

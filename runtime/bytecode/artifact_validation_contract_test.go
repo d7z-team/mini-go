@@ -4,7 +4,48 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/d7z-team/mini-go/compiler/types"
 )
+
+func TestComparisonBranchPayloadValidation(t *testing.T) {
+	for _, op := range []Opcode{OpCompareBranch, OpLenCompareBranch} {
+		for _, scenario := range []string{"valid", "missing type", "missing target", "invalid operator"} {
+			t.Run(op.String()+"/"+scenario, func(t *testing.T) {
+				payload := CompareBranchPayload{Type: testType("Int"), Label: "done", Operator: "<"}
+				switch scenario {
+				case "missing type":
+					payload.Type = types.TypeRef{}
+				case "missing target":
+					payload.Label = ""
+				case "invalid operator":
+					payload.Operator = "+"
+				}
+				err := validateInstruction("functions[0].instructions[0]", &Instruction{Op: op, Payload: payload})
+				if scenario == "valid" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				issue, ok := ValidationIssueFromError(err)
+				if !ok || issue.Path != "functions[0].instructions[0]" {
+					t.Fatalf("comparison diagnostic = %v", err)
+				}
+				message := "comparison requires a type and target"
+				if op == OpLenCompareBranch {
+					message = "length " + message
+				}
+				if scenario == "invalid operator" {
+					message = "invalid comparison operator"
+				}
+				if !strings.Contains(err.Error(), message) {
+					t.Fatalf("comparison diagnostic = %v, want %q", err, message)
+				}
+			})
+		}
+	}
+}
 
 func TestValidationReadsPayloadEditsBetweenAnalyses(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")

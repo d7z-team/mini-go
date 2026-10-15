@@ -17,7 +17,7 @@ func (m *moduleInstance) isRuneSliceType(typ any) bool {
 	return ok && elem.Primitive(types.PrimitiveInt32)
 }
 
-func convertStringToByteSlice(value vmValue, target string) (vmValue, error) {
+func convertStringToByteSlice(value vmValue, target any) (vmValue, error) {
 	if !value.Type.Primitive(types.PrimitiveString) {
 		return vmValue{}, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 	}
@@ -28,7 +28,7 @@ func convertStringToByteSlice(value vmValue, target string) (vmValue, error) {
 	return newByteSliceValue(target, text), nil
 }
 
-func convertStringToRuneSlice(value vmValue, target string) (vmValue, error) {
+func convertStringToRuneSlice(value vmValue, target any) (vmValue, error) {
 	if !value.Type.Primitive(types.PrimitiveString) {
 		return vmValue{}, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 	}

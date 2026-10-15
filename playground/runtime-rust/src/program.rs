@@ -139,6 +139,11 @@ pub(crate) enum PreparedInstruction {
         target: usize,
         when: bool,
     },
+    LenCompareBranch {
+        operator: crate::operators::PreparedOperator,
+        target: usize,
+        when: bool,
+    },
     Construct(usize),
     TypeDispatch(usize),
     Intrinsic(wire::Intrinsic),
@@ -516,6 +521,9 @@ impl Program {
                                         | Instruction::GetPath(_)
                                         | Instruction::Convert(_)
                                         | Instruction::LoadIndex
+                                        | Instruction::StringNextRuneIndex
+                                        | Instruction::IndexConvert(_)
+                                        | Instruction::CallDirect(_)
                                 ) && operands.outputs.len() == 1
                                     && ((output & !LOCAL_OUTPUT) as usize)
                                         < function.local_types.len()
@@ -771,7 +779,16 @@ impl Program {
                         }
                         CompareBranch(payload) => PreparedInstruction::CompareBranch {
                             operator: crate::operators::PreparedOperator::parse(&payload.operator)?,
-                            target: labels[&payload.label],
+                            target: *labels.get(&payload.label).ok_or_else(|| {
+                                RuntimeError::new("invalid_jump", &path, &payload.label)
+                            })?,
+                            when: payload.when,
+                        },
+                        LenCompareBranch(payload) => PreparedInstruction::LenCompareBranch {
+                            operator: crate::operators::PreparedOperator::parse(&payload.operator)?,
+                            target: *labels.get(&payload.label).ok_or_else(|| {
+                                RuntimeError::new("invalid_jump", &path, &payload.label)
+                            })?,
                             when: payload.when,
                         },
                         MakeStruct(payload) => {
@@ -927,9 +944,8 @@ impl Program {
                         _ => PreparedInstruction::Operand,
                     });
                     let typ = match instruction {
-                        Zero(value) | Convert(value) | TypeAssert(value) | TypeAssertOk(value) => {
-                            Some(&value.r#type)
-                        }
+                        Zero(value) | Convert(value) | TypeAssert(value) | TypeAssertOk(value)
+                        | IndexConvert(value) => Some(&value.r#type),
                         MakeStruct(value) => Some(&value.r#type),
                         MakeSequence(value) => Some(&value.r#type),
                         MakeSlice(value) => Some(&value.r#type),
@@ -951,14 +967,27 @@ impl Program {
                                 operator: operation,
                                 ..
                             } => operation,
+                            PreparedInstruction::LenCompareBranch {
+                                operator: operation,
+                                ..
+                            } => operation,
                             _ => continue,
                         };
                         for (index, input) in operands.inputs.iter().enumerate() {
-                            let typ = match input.kind {
-                                0 => &function.slot_types[input.index as usize],
-                                2 => &function.local_types[input.index as usize],
-                                _ => &constant_types[input.index as usize],
-                            };
+                            let length_type =
+                                crate::types::TypeIdentity::Primitive(wire::PrimitiveInt);
+                            let typ =
+                                if matches!(function.code[pc], Instruction::LenCompareBranch(_))
+                                    && index == 0
+                                {
+                                    &length_type
+                                } else {
+                                    match input.kind {
+                                        0 => &function.slot_types[input.index as usize],
+                                        2 => &function.local_types[input.index as usize],
+                                        _ => &constant_types[input.index as usize],
+                                    }
+                                };
                             operation.bind(index, typ, decoded.types())?;
                         }
                     }

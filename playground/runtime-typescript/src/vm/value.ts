@@ -5,17 +5,9 @@ import type {
   PathElement,
   Snapshot,
   TypeIdentity,
-} from "./types.js";
-import { Kind, PrimitiveKind, WIRE_FIELDS } from "./contract.generated.js";
-import {
-  JsonNumber,
-  type JsonValue,
-  boolean,
-  fail,
-  integer,
-  schemaObject,
-  string,
-} from "./json.js";
+} from "./types";
+import { Kind, PrimitiveKind, WIRE_FIELDS } from "./contract.generated";
+import { JsonNumber, type JsonValue, boolean, fail, integer, schemaObject, string } from "./json";
 
 const textEncoder = new TextEncoder();
 
@@ -81,9 +73,23 @@ export interface DynamicType {
   fields?: { name: string; type: RuntimeType; tag: string; embedded: boolean }[];
 }
 
+/** Static facts used by prepared storage/accounting paths. */
+export interface TypeFacts {
+  readonly kind: number;
+  readonly primitive: number;
+  readonly containsReferences: boolean;
+  readonly flat: boolean;
+  readonly depth: number;
+  readonly fieldCount: number;
+}
+
 export class TypeRegistry {
   private readonly nodes = new Map<string, TypeNode>();
   private readonly named = new Map<string, TypeNode>();
+  private readonly typeKeys = new WeakMap<object, string>();
+  private readonly underlyingTypes = new WeakMap<RuntimeType, RuntimeType>();
+  private readonly primitiveTypes: (RuntimeType | undefined)[] = [];
+  private readonly typeFacts = new WeakMap<RuntimeType, TypeFacts>();
 
   constructor(
     readonly module: string,
@@ -130,7 +136,104 @@ export class TypeRegistry {
   }
 
   runtime(ref: TypeRef): RuntimeType {
+    if (ref.kind === Kind.Primitive && Number.isSafeInteger(ref.primitive) && ref.primitive >= 0) {
+      const cached = this.primitiveTypes[ref.primitive];
+      if (cached) return cached;
+      const value = { module: this.module, ref, registry: this };
+      this.primitiveTypes[ref.primitive] = value;
+      return value;
+    }
     return { module: this.module, ref, registry: this };
+  }
+
+  facts(type: RuntimeType): TypeFacts {
+    const cached = this.typeFacts.get(type);
+    if (cached) return cached;
+    const facts = this.computeFacts(type, new Set<string>());
+    this.typeFacts.set(type, facts);
+    return facts;
+  }
+
+  private computeFacts(type: RuntimeType, active: Set<string>): TypeFacts {
+    const cached = this.typeFacts.get(type);
+    if (cached) return cached;
+    const underlying = this.underlying(type);
+    const node = underlying.registry.node(underlying);
+    const kind = underlying.dynamic?.kind ?? node?.kind ?? underlying.ref.kind;
+    const primitiveKind = underlying.ref.primitive;
+    if (kind === Kind.Primitive || kind === Kind.Void || kind === Kind.Any) {
+      const facts = {
+        kind,
+        primitive: primitiveKind,
+        containsReferences: kind === Kind.Any,
+        flat: kind === Kind.Primitive,
+        depth: 0,
+        fieldCount: 0,
+      } satisfies TypeFacts;
+      this.typeFacts.set(type, facts);
+      return facts;
+    }
+    const identity = `${underlying.module}\0${underlying.ref.node || this.key(underlying)}`;
+    if (active.has(identity))
+      return {
+        kind,
+        primitive: primitiveKind,
+        containsReferences: true,
+        flat: false,
+        depth: 129,
+        fieldCount: 0,
+      };
+    active.add(identity);
+    const element =
+      underlying.dynamic?.elem ?? (node?.elem ? underlying.registry.runtime(node.elem) : undefined);
+    const fields =
+      underlying.dynamic?.fields ??
+      (node?.fields ?? []).map((field) => ({
+        name: field.name,
+        type: underlying.registry.runtime(field.type),
+        tag: field.tag,
+        embedded: field.embedded,
+      }));
+    let facts: TypeFacts;
+    if (kind === Kind.Struct) {
+      let containsReferences = false;
+      let depth = 0;
+      for (const field of fields) {
+        const nested = this.computeFacts(field.type, active);
+        containsReferences ||= nested.containsReferences;
+        depth = Math.max(depth, nested.depth + 1);
+      }
+      facts = {
+        kind,
+        primitive: primitiveKind,
+        containsReferences,
+        flat: !containsReferences,
+        depth,
+        fieldCount: fields.length,
+      };
+    } else if (kind === Kind.Array && element) {
+      const nested = this.computeFacts(element, active);
+      facts = {
+        kind,
+        primitive: primitiveKind,
+        containsReferences: nested.containsReferences,
+        flat: false,
+        depth: nested.depth + 1,
+        fieldCount: 0,
+      };
+    } else {
+      facts = {
+        kind,
+        primitive: primitiveKind,
+        containsReferences: true,
+        flat: false,
+        depth: 1,
+        fieldCount: 0,
+      };
+    }
+    active.delete(identity);
+    this.typeFacts.set(type, facts);
+    return facts;
   }
 
   node(type: RuntimeType): TypeNode | undefined {
@@ -145,21 +248,27 @@ export class TypeRegistry {
   }
 
   underlying(type: RuntimeType): RuntimeType {
-    if (type.dynamic) return type;
+    if (type.dynamic || type.ref.kind <= Kind.Primitive) return type;
+    const cached = this.underlyingTypes.get(type);
+    if (cached) return cached;
     let current = type;
     const seen = new Set<string>();
     for (;;) {
       const node = current.registry.node(current);
-      if (!node) return current;
+      if (!node) break;
       const key = `${current.module}\0${node.id}`;
       if (seen.has(key)) fail("recursive underlying type", `${current.module}.type_table`);
       seen.add(key);
       if (node.alias && node.alias_target) current = current.registry.runtime(node.alias_target);
       else if (node.underlying) current = current.registry.runtime(node.underlying);
-      else if (node.kind !== Kind.Named)
-        return { ...current, ref: { ...current.ref, kind: node.kind } };
-      else return current;
+      else {
+        if (node.kind !== Kind.Named)
+          current = { ...current, ref: { ...current.ref, kind: node.kind } };
+        break;
+      }
     }
+    if (current.ref.kind !== Kind.Named) this.underlyingTypes.set(type, current);
+    return current;
   }
 
   element(type: RuntimeType): RuntimeType | undefined {
@@ -185,7 +294,15 @@ export class TypeRegistry {
   }
 
   key(type: RuntimeType): string {
-    return JSON.stringify(this.canonical(type, new Set()));
+    if (type.ref.kind === Kind.Void || type.ref.kind === Kind.Any) return `kind:${type.ref.kind}`;
+    if (type.ref.kind === Kind.Primitive) return `primitive:${type.ref.primitive}`;
+    if (type.ref.kind === Kind.Named)
+      return `named:${type.ref.named.module_path}\0${type.ref.named.decl_id}`;
+    const cached = this.typeKeys.get(type);
+    if (cached !== undefined) return cached;
+    const key = JSON.stringify(this.canonical(type, new Set()));
+    this.typeKeys.set(type, key);
+    return key;
   }
 
   private canonical(type: RuntimeType, seen: Set<string>): unknown {
@@ -260,6 +377,14 @@ export class TypeRegistry {
   }
 
   identical(left: RuntimeType, right: RuntimeType): boolean {
+    if (left === right) return true;
+    if (left.ref.kind !== right.ref.kind) return false;
+    if (left.ref.kind === Kind.Primitive) return left.ref.primitive === right.ref.primitive;
+    if (left.ref.kind === Kind.Named)
+      return (
+        left.ref.named.module_path === right.ref.named.module_path &&
+        left.ref.named.decl_id === right.ref.named.decl_id
+      );
     return this.key(left) === right.registry.key(right);
   }
 }
@@ -325,8 +450,14 @@ export interface FunctionValue {
   receiver?: Value;
 }
 
+export interface GuestMapEntry {
+  key: Value;
+  value: Value;
+}
+
 export interface GuestMap {
-  entries: { key: Value; value: Value }[];
+  entries: GuestMapEntry[];
+  buckets: Map<string, Set<GuestMapEntry>>;
 }
 
 export interface Channel {
@@ -365,7 +496,11 @@ export function intValue(registry: TypeRegistry, value: bigint): Value {
 }
 
 export function stringValue(registry: TypeRegistry, value: Uint8Array): Value {
-  return { type: primitive(registry, PrimitiveKind.PrimitiveString), kind: "string", value };
+  return {
+    type: primitive(registry, PrimitiveKind.PrimitiveString),
+    kind: "string",
+    value: new Uint8Array(value),
+  };
 }
 
 export function nilValue(type: RuntimeType): Value {
@@ -461,12 +596,39 @@ export function cloneValue(value: Value): Value {
     case "interface":
       return { ...value, value: cloneValue(value.value as Value) };
     case "string":
-      return { ...value, value: Uint8Array.from(value.value as Uint8Array) };
+      // Guest strings are immutable. Host boundaries and mutable byte slices
+      // copy their backing storage where ownership can change.
+      return { ...value };
     case "complex":
       return { ...value, value: { ...(value.value as { real: number; imag: number }) } };
     default:
       return { ...value };
   }
+}
+
+/** Decode one Go rune; each invalid UTF-8 byte consumes exactly one byte. */
+export function decodeRune(bytes: Uint8Array, offset: number): [number, number] {
+  if (offset < 0 || offset >= bytes.length) fail("string index out of range", "string", "panic");
+  const first = bytes[offset]!;
+  if (first < 0x80) return [first, 1];
+  if (first < 0xc2 || first > 0xf4) return [0xfffd, 1];
+  const width = first >= 0xf0 ? 4 : first >= 0xe0 ? 3 : 2;
+  if (offset + width > bytes.length) return [0xfffd, 1];
+  let rune = first & (0x7f >> width);
+  for (let index = 1; index < width; index++) {
+    const next = bytes[offset + index]!;
+    if ((next & 0xc0) !== 0x80) return [0xfffd, 1];
+    rune = (rune << 6) | (next & 0x3f);
+  }
+  if (
+    (width === 2 && rune < 0x80) ||
+    (width === 3 && rune < 0x800) ||
+    (width === 4 && rune < 0x10000) ||
+    rune > 0x10ffff ||
+    (rune >= 0xd800 && rune <= 0xdfff)
+  )
+    return [0xfffd, 1];
+  return [rune, width];
 }
 
 export function parseTypeRef(value: JsonValue, path: string): TypeRef {
@@ -654,25 +816,10 @@ export function normalize(value: Value): Value {
   if (underlying.ref.kind !== Kind.Primitive) return value;
   const primitiveKind = underlying.ref.primitive;
   if (value.kind === "int") {
-    const widths = new Map<number, number>([
-      [PrimitiveKind.PrimitiveInt8, 8],
-      [PrimitiveKind.PrimitiveInt16, 16],
-      [PrimitiveKind.PrimitiveInt32, 32],
-      [PrimitiveKind.PrimitiveInt64, 64],
-      [PrimitiveKind.PrimitiveInt, 64],
-    ]);
-    const width = widths.get(primitiveKind);
+    const width = INTEGER_WIDTHS[primitiveKind];
     if (width) value.value = BigInt.asIntN(width, value.value as bigint);
   } else if (value.kind === "uint") {
-    const widths = new Map<number, number>([
-      [PrimitiveKind.PrimitiveUint8, 8],
-      [PrimitiveKind.PrimitiveUint16, 16],
-      [PrimitiveKind.PrimitiveUint32, 32],
-      [PrimitiveKind.PrimitiveUint64, 64],
-      [PrimitiveKind.PrimitiveUintptr, 64],
-      [PrimitiveKind.PrimitiveUint, 64],
-    ]);
-    const width = widths.get(primitiveKind);
+    const width = UNSIGNED_INTEGER_WIDTHS[primitiveKind];
     if (width) value.value = BigInt.asUintN(width, value.value as bigint);
   } else if (value.kind === "float" && primitiveKind === PrimitiveKind.PrimitiveFloat32) {
     value.value = Math.fround(value.value as number);
@@ -683,6 +830,23 @@ export function normalize(value: Value): Value {
   }
   return value;
 }
+
+const INTEGER_WIDTHS: Readonly<Record<number, number>> = Object.freeze({
+  [PrimitiveKind.PrimitiveInt8]: 8,
+  [PrimitiveKind.PrimitiveInt16]: 16,
+  [PrimitiveKind.PrimitiveInt32]: 32,
+  [PrimitiveKind.PrimitiveInt64]: 64,
+  [PrimitiveKind.PrimitiveInt]: 64,
+});
+
+const UNSIGNED_INTEGER_WIDTHS: Readonly<Record<number, number>> = Object.freeze({
+  [PrimitiveKind.PrimitiveUint8]: 8,
+  [PrimitiveKind.PrimitiveUint16]: 16,
+  [PrimitiveKind.PrimitiveUint32]: 32,
+  [PrimitiveKind.PrimitiveUint64]: 64,
+  [PrimitiveKind.PrimitiveUintptr]: 64,
+  [PrimitiveKind.PrimitiveUint]: 64,
+});
 
 export function dereference(address: Address): Value {
   let value = address.root.value;
@@ -869,6 +1033,7 @@ export function guestEqual(left: Value, right: Value): boolean {
     case "float":
       return left.value === right.value;
     case "string":
+    case "bytes":
       return bytesEqual(left.value as Uint8Array, right.value as Uint8Array);
     case "complex": {
       const a = left.value as { real: number; imag: number };
@@ -897,6 +1062,147 @@ export function guestEqual(left: Value, right: Value): boolean {
   }
 }
 
+const objectHashIds = new WeakMap<object, number>();
+let nextObjectHashId = 1;
+
+function objectHashId(value: object): number {
+  let id = objectHashIds.get(value);
+  if (id === undefined) {
+    id = nextObjectHashId++;
+    objectHashIds.set(value, id);
+  }
+  return id;
+}
+
+function hashText(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function hashAddress(address: Address): string {
+  const path = address.path.filter((segment) => segment.kind !== "typeView");
+  let text = `root:${address.root.id}/path:${path.length};`;
+  for (const segment of path) {
+    if (segment.kind === "field") text += `f${segment.name.length}:${segment.name};`;
+    else if (segment.kind === "index") text += `i${segment.index};`;
+    else if (segment.kind === "arrayView") text += `a${segment.start};`;
+  }
+  return hashText(text);
+}
+
+function hashValue(value: Value, seen = new Set<object>()): string {
+  if (value.kind === "interface") return hashValue(value.value as Value, seen);
+  let text = `${value.type.registry.key(value.type)}|${value.kind}|`;
+  switch (value.kind) {
+    case "nil":
+    case "uninitialized":
+      break;
+    case "bool":
+      text += value.value ? "1" : "0";
+      break;
+    case "int":
+    case "uint":
+      text += String(value.value);
+      break;
+    case "float": {
+      const number = value.value as number;
+      text += number === 0 ? "0" : String(number);
+      break;
+    }
+    case "string":
+    case "bytes": {
+      const bytes = value.value as Uint8Array;
+      text += String(bytes.length) + ":";
+      for (const byte of bytes) text += String.fromCharCode(byte);
+      break;
+    }
+    case "complex": {
+      const complex = value.value as { real: number; imag: number };
+      text += `${complex.real === 0 ? 0 : complex.real},${complex.imag === 0 ? 0 : complex.imag}`;
+      break;
+    }
+    case "pointer":
+      return `pointer:${hashAddress(value.value as Address)}`;
+    case "channel":
+    case "mutex":
+      return `${value.kind}:${objectHashId(value.value as object)}`;
+    case "array": {
+      const array = value.value as Value[];
+      if (seen.has(array)) return `${text}cycle`;
+      seen.add(array);
+      text += array.map((item) => hashValue(item, seen)).join(",");
+      seen.delete(array);
+      break;
+    }
+    case "struct": {
+      const fields = value.value as Map<string, Value>;
+      if (seen.has(fields)) return `${text}cycle`;
+      seen.add(fields);
+      for (const [name, item] of [...fields].sort(([left], [right]) => left.localeCompare(right)))
+        if (name !== "_") text += `${name}:${hashValue(item, seen)};`;
+      seen.delete(fields);
+      break;
+    }
+    default:
+      return `${value.kind}:${objectHashId(value.value as object)}`;
+  }
+  return hashText(text);
+}
+
+export function createGuestMap(): GuestMap {
+  return { entries: [], buckets: new Map() };
+}
+
+export function guestMapGet(map: GuestMap, key: Value): GuestMapEntry | undefined {
+  const bucket = map.buckets.get(hashValue(key));
+  if (!bucket) return undefined;
+  for (const entry of bucket) if (guestEqual(entry.key, key)) return entry;
+  return undefined;
+}
+
+export function guestMapSet(map: GuestMap, key: Value, value: Value): GuestMapEntry {
+  const hash = hashValue(key);
+  let bucket = map.buckets.get(hash);
+  if (!bucket) {
+    bucket = new Set();
+    map.buckets.set(hash, bucket);
+  }
+  for (const entry of bucket) {
+    if (guestEqual(entry.key, key)) {
+      entry.value = value;
+      return entry;
+    }
+  }
+  const entry = { key, value };
+  map.entries.push(entry);
+  bucket.add(entry);
+  return entry;
+}
+
+export function guestMapDelete(map: GuestMap, key: Value): boolean {
+  const hash = hashValue(key);
+  const bucket = map.buckets.get(hash);
+  if (!bucket) return false;
+  for (const entry of bucket) {
+    if (!guestEqual(entry.key, key)) continue;
+    bucket.delete(entry);
+    if (!bucket.size) map.buckets.delete(hash);
+    const index = map.entries.indexOf(entry);
+    if (index >= 0) map.entries.splice(index, 1);
+    return true;
+  }
+  return false;
+}
+
+export function guestMapClear(map: GuestMap): void {
+  map.entries.length = 0;
+  map.buckets.clear();
+}
+
 export function assertComparable(value: Value): void {
   if (value.kind === "interface") {
     assertComparable(value.value as Value);
@@ -914,11 +1220,13 @@ export function assertComparable(value: Value): void {
 }
 
 function addressEqual(left: Address, right: Address): boolean {
-  if (left.root !== right.root || left.path.length !== right.path.length) return false;
-  for (let index = 0; index < left.path.length; index++) {
-    const a = left.path[index]!;
-    const b = right.path[index]!;
-    if (a.kind === "typeView" || b.kind === "typeView") continue;
+  if (left.root !== right.root) return false;
+  const leftPath = left.path.filter((segment) => segment.kind !== "typeView");
+  const rightPath = right.path.filter((segment) => segment.kind !== "typeView");
+  if (leftPath.length !== rightPath.length) return false;
+  for (let index = 0; index < leftPath.length; index++) {
+    const a = leftPath[index]!;
+    const b = rightPath[index]!;
     if (a.kind !== b.kind) return false;
     if (a.kind === "field" && b.kind === "field" && a.name !== b.name) return false;
     if (a.kind === "index" && b.kind === "index" && a.index !== b.index) return false;

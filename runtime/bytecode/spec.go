@@ -112,7 +112,7 @@ func CurrentSpec() Spec {
 		},
 		SlotOperandsFields: []FieldSpec{
 			{Name: "inputs", Type: "[]Operand", Rule: "values evaluated in source order; direct locals must not be addressable"},
-			{Name: "outputs", Type: "[]uint32", Rule: "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len or cap"},
+			{Name: "outputs", Type: "[]uint32", Rule: "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len, cap, string-next-rune-index, index-convert, get-path, or a single-result direct call"},
 			{Name: "release", Type: "[]uint32", Rule: "clear after instruction completion, before entering the next instruction"},
 			{Name: "release_before", Type: "[]uint32", Rule: "clear on instruction entry, once across suspension and retries"},
 		},

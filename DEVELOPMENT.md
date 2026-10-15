@@ -6,7 +6,7 @@
 ## 开发环境
 
 Go 版本由 [Makefile](Makefile) 的 `GOTOOLCHAIN` 固定；Rust 最低版本见
-[Cargo.toml](playground/runtime-rust/Cargo.toml)，TypeScript 工具使用 Node.js 24，具体约束见
+[Cargo.toml](playground/runtime-rust/Cargo.toml)，TypeScript 工具使用 Node.js 24.11 或更高版本，具体约束见
 [package.json](playground/runtime-typescript/package.json)。各语言依赖由 lockfile 固定。
 
 准备 Go、make、Cargo、rustfmt 和 Node.js 后，在仓库根安装依赖并补齐未随 Git 分发的镜像：
@@ -26,9 +26,8 @@ make race TEST_PACKAGES='./rpc/...'
 make lint test build
 ```
 
-`TEST_FLAGS` 替换默认 Go 测试参数；`-count=1` 只跳过 Go 测试结果缓存。`make check` 聚合 Go、Rust、
-TypeScript、互操作和脚本验证。修改生成输入后先执行 `make generate`，生成或构建完成后再测试消费方。
-只需补齐未随 Git 分发且 identity 已匹配的镜像时运行 `make artifacts`；细分目标见 `make help`。
+`TEST_FLAGS` 替换默认 Go 测试参数；`-count=1` 只跳过 Go 测试结果缓存。`make check` 聚合下表中的
+Go、Rust、TypeScript、互操作及扩展与脚本验证。生成或构建完成后再测试消费方。
 
 | 改动范围 | 最低验证 |
 | --- | --- |
@@ -37,8 +36,9 @@ TypeScript、互操作和脚本验证。修改生成输入后先执行 `make gen
 | compiler、stdlib、schema 或 generator | `make generate` 后运行所有消费方测试 |
 | stdlib API 或源码注释 | `make doc` 和相关行为测试 |
 | Rust 原生实现 | 目标 Cargo 测试；`make lint-rust test-rust` |
-| TypeScript VM 或 compiler WASM | `make lint-typescript test-typescript` |
+| TypeScript VM 或 compiler WASM | `make test-typescript`（包含类型检查与构建） |
 | RPC 跨语言契约 | 两侧测试；`make test-interop` |
+| 编辑器扩展 / CI 与发布脚本 | `make test-vscode` / `make test-scripts` |
 | 手写文档 | 链接、锚点、命令和示例 |
 
 性能采样和严格期限测试应避开重型构建。受限环境可设置 `GOFLAGS=-p=1`、`GOMAXPROCS`、
@@ -62,8 +62,12 @@ make doc
 ```
 
 `make generate` 更新绑定、契约、镜像和 manifest；`make doc` 单独从标准库注释生成
-`docs/reference/`。不要直接修改派生文件。改变 schema、envelope 或缓存格式时同步更新所属版本或
-identity，并核对完整 Git 差异。
+`docs/reference/`。仅补齐未随 Git 分发且 identity 已匹配的镜像时使用 `make artifacts`。
+派生物从事实源生成；改变 schema、envelope 或缓存格式时同步更新所属版本或 identity，并核对 Git 差异。
+
+新增 opcode 从 [opcode_contract.go](runtime/bytecode/opcode_contract.go) 更新契约，生成各 runtime
+描述，并补充共享语料的有效与无效输入。指令融合还需核对 compiler 的 slot 生命周期、三端类型校验
+和调试位置映射。
 
 ### 外部参考
 
@@ -75,8 +79,7 @@ GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev core-api snapshot -json-v1
 GOTOOLCHAIN=go1.26.6 go run ./cmd/mini-go-dev core-api verify
 ```
 
-普通生成不会刷新这些外部参考。新增 opcode 时更新
-[opcode_contract.go](runtime/bytecode/opcode_contract.go)，重新生成各 runtime 描述，并覆盖有效与无效输入。
+普通生成使用已固定的参考，不刷新外部基线。
 
 ### 生成预编译示例
 
@@ -101,16 +104,11 @@ Mini-Go 缓存，缓存契约和故障注入使用隔离 backend。完整测试�
 
 ### Rust 验证
 
-| 命令 | 范围 |
-| --- | --- |
-| `make lint-rust` | rustfmt、最小/单 feature 编译和完整 Clippy |
-| `make test-rust` | 优化模式的 VM、compiler、LSP/DAP、RPC、Host 和 stdlib |
-| `make test-interop` | Go/Rust RPC 互操作与 Go provider 标准库 |
-| `make bench-rust` | runtime、分配和 GC 诊断 |
+`make lint-rust` 检查格式、最小/单 feature 编译和完整 Clippy；`make test-rust` 覆盖 VM、compiler、
+LSP/DAP、RPC、Host 和 stdlib。`make test-interop` 验证 Go/Rust RPC 与 Go provider 标准库。
 
-局部测试可传 `RUST_TEST_FLAGS` 或直接运行 Cargo。编译会话测试使用继承 release 优化级别的
-`test-release` profile；正式发布和 benchmark 使用 `release` profile。安装、feature 和 API 见
-[Rust README](playground/runtime-rust/README.md)与[使用指南](playground/runtime-rust/USAGE.md)。
+局部测试可传 `RUST_TEST_FLAGS` 或直接运行 Cargo。编译会话测试使用 `test-release` profile，
+正式发布和 benchmark 使用 `release` profile。feature 选择见 [Rust README](playground/runtime-rust/README.md)。
 
 ### TypeScript runtime 与 Go compiler WASM
 
@@ -120,13 +118,14 @@ Playwright 浏览器，此后使用根 Makefile 完成构建与验证：
 ```bash
 make deps runtime-execution-image
 npm exec --prefix playground/runtime-typescript -- playwright install chromium firefox
-make lint-typescript test-typescript
+make test-typescript
 ```
 
-`make build-typescript` 生成 compiler WASM 和分发产物；组件内的 npm 命令只消费准备好的 `.build/compiler/`。
-测试覆盖 Node、浏览器、Worker 生命周期、共享 VM 语料、compiler、RPC 和安装包。
-`MINIGO_BROWSERS` 可筛选浏览器。打包使用 `make pack-typescript`，VS Code 扩展独立使用
-`make test-vscode`。接入方式见 [TypeScript README](playground/runtime-typescript/README.md)。
+`make build-typescript` 生成 Go compiler WASM，并通过 Vite 构建 Browser/Node 入口、Worker、WASM
+资源和类型声明。`make test-typescript` 包含严格类型检查与 Vitest 测试，覆盖 Node、浏览器、compiler、
+RPC、Worker 生命周期，以及安装包在 Vite 开发与生产模式下的使用。
+`MINIGO_BROWSERS` 可筛选浏览器；`make pack-typescript` 生成 npm 包。
+SDK 接入与部署见 [TypeScript README](playground/runtime-typescript/README.md)。
 
 ### Fuzz 与自举
 
@@ -141,12 +140,7 @@ make fuzz FUZZ_PACKAGES='./compiler/... ./tooling/...' FUZZ_PATTERN='Parse'
 
 ## 缓存与性能
 
-缓存路径由 `MINIGO_CACHE` 配置，用户操作见[编译缓存](USAGE.md#编译缓存)。
-
-### 自定义缓存
-
-`compiler/cache.Cache` 存取经过验证的 `cache.CompiledArtifact`。使用 `cache.SealArtifact` 建立不可变
-快照，通过 `Copy` 取得可修改副本；backend 生命周期由创建者管理。缓存不得持有请求 context 或宿主对象。
+缓存路径由 `MINIGO_CACHE` 配置，用户操作和自定义 backend 接入见[编译缓存](USAGE.md#编译缓存)。
 
 ### 缓存诊断
 
@@ -166,6 +160,10 @@ MINIGO_DEBUG=cachehash=1,cacheverify=1 go run ./cmd/mini-go check main.mgo
 identity 和并行度，串行保留多轮原始采样；消融一次只改变一个机制。VM 核心与公开 API、冷启动与缓存
 命中应分别测量。联合比较 elapsed、总 steps、steps/s、opcode 和分配，因为 opcode mix 变化后 steps/s
 不能单独表示改进。profile 只用于诊断，不作为性能门槛；原始结果与临时 profile 放在 `/tmp`。
+
+TypeScript 的 `profile: true` 统计 opcode、函数调用和步数；`profileTiming: true` 增加逐步 self time
+计时。宿主成本使用 CPU/heap sampling 分析；guest allocation count、JavaScript heap 差值和采样次数
+均不能代表 V8 的精确对象分配次数。正确性测试验证结果与精确预算，不以执行耗时作为通过条件。
 
 ### 观测口径
 
@@ -193,8 +191,8 @@ identity 和并行度，串行保留多轮原始采样；消融一次只改变�
 
 ### 编译会话驱动
 
-应用通常使用 [Rust 异步 API](playground/runtime-rust/USAGE.md#本地源码与编译器工具)或
-[TypeScript tools](playground/runtime-typescript/README.md#编译器与调试)。自建驱动必须在成功交付后
+应用通常使用 [Rust 编译会话](playground/runtime-rust/USAGE.md#调试与-compiler-session)或
+[TypeScript tools](playground/runtime-typescript/README.md#源码工具与调试)。自建驱动必须在成功交付后
 确认状态，未交付结果应丢弃；恢复只重放已经确认的输入，升级准备失败保留当前 owner。
 字段和版本以 [compilerentry](compiler/bootstrap/compilerentry/)及[工具链契约](spec/README.md)为准。
 
@@ -203,8 +201,8 @@ identity 和并行度，串行保留多轮原始采样；消融一次只改变�
 [publish.yml](.github/workflows/publish.yml) 编排验证和发布，[changes.yml](.github/workflows/changes.yml)
 决定改动范围。修改 CI、打包或发布脚本后运行 `make test-scripts`。
 
-Rust crate 与 npm 包使用同一提交快照版本。发布脚本在隔离 staging 中替换源码 manifest 的
-`0.0.0-dev`，并要求完整 Git 历史和干净工作区；生成的 metadata 用于验证发布产物与 registry 一致。
+Rust crate 与 npm 包使用同一提交快照版本。打包要求完整 Git 历史和干净工作区，生成的 metadata
+用于核对发布产物与 registry。
 
 ```bash
 make test-scripts

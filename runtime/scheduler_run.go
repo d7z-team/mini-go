@@ -368,7 +368,7 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 			return taskYield{}, nil, fmt.Errorf("execution call depth limit exceeded: max %d", limit)
 		}
 		current := task.frames[len(task.frames)-1]
-		if current.completion != nil {
+		if current.completionActive {
 			machine.controlMu.Lock()
 			values, done, err := machine.advanceCompletion(task)
 			machine.controlMu.Unlock()
@@ -406,7 +406,7 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 					Err:         err,
 				}
 			}
-			current.completion = &frameCompletion{returnValues: values}
+			current.setCompletion(frameCompletion{returnValues: values})
 			continue
 		}
 		pc := callFrame.pc

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { readFileSync } from "node:fs";
-import test from "node:test";
-import { RuntimeClient } from "../dist/runtime/client.js";
+import { test, vi } from "vitest";
+import { RuntimeClient } from "../src/runtime/client";
 
 const segment = 2_147_483_647;
 
@@ -24,14 +24,14 @@ async function harness(t, options = {}) {
     fail;
   const timers = new Map(),
     sent = [];
-  t.mock.method(performance, "now", () => now);
-  t.mock.method(globalThis, "setTimeout", (callback, delay) => {
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay) => {
     assert.ok(delay >= 0 && delay <= segment);
     const id = ++next;
     timers.set(id, { callback, delay, due: now + delay });
     return id;
   });
-  t.mock.method(globalThis, "clearTimeout", (id) => timers.delete(id));
+  vi.spyOn(globalThis, "clearTimeout").mockImplementation((id) => timers.delete(id));
   const worker = {
     send(message) {
       if (worker.rejectLifecycle && message.kind === "close") throw new Error("send failed");
@@ -57,9 +57,13 @@ async function harness(t, options = {}) {
     terminate() {},
   };
   const vm = await RuntimeClient.create(new Uint8Array(), options, () => worker);
-  t.after(async () => {
-    await vm.close().catch(() => {});
-    assert.equal(timers.size, 0);
+  t.onTestFinished(async () => {
+    try {
+      await vm.close().catch(() => {});
+      assert.equal(timers.size, 0);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
   return {
     vm,

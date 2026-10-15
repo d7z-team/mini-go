@@ -1852,6 +1852,22 @@ impl Instance {
                 let value = self.running.pop()?;
                 result = Some(crate::operators::unary(operator, value, &self.types)?);
             }
+            Prepared::LenCompareBranch {
+                operator,
+                target,
+                when,
+            } => {
+                let frame = self.running.frames.last().unwrap();
+                let object = frame.operand_from_end(pc, 1).unwrap().clone();
+                let right = frame.operand_from_end(pc, 0).unwrap().clone();
+                let length = self.container_length(object, false)?;
+                let matched = crate::operators::compare_length(operator.operator, length, &right)?;
+                let frame = self.running.frames.last_mut().unwrap();
+                frame.slot_input = 0;
+                if matched == when {
+                    frame.pc = target;
+                }
+            }
             Prepared::Binary(operator) | Prepared::CompareBranch { operator, .. } => {
                 // Inputs stay rooted in their slots until commit, including
                 // while string allocation triggers a memory census.
@@ -1874,11 +1890,12 @@ impl Instance {
                     self.charge_guest(length as u64)?;
                 }
                 let frame = self.running.frames.last().unwrap();
-                let (left, right) = (
-                    frame.operand_from_end(pc, 1).unwrap(),
-                    frame.operand_from_end(pc, 0).unwrap(),
+                let (left_value, right_value) = (
+                    frame.operand_from_end(pc, 1).unwrap().clone(),
+                    frame.operand_from_end(pc, 0).unwrap().clone(),
                 );
-                let value = crate::operators::binary(operator, left, right, &self.types)?;
+                let value =
+                    crate::operators::binary(operator, &left_value, &right_value, &self.types)?;
                 self.running.frames.last_mut().unwrap().slot_input = 0;
                 if let Prepared::CompareBranch { target, when, .. } = function.execution[pc] {
                     let Data::Bool(matched) = value.data else {
@@ -1894,7 +1911,7 @@ impl Instance {
             Prepared::Operand | Prepared::Construct(_) => match instruction
                 .expect("unprepared operation descriptor")
             {
-                TypeDispatch(_) | CompareBranch(_) | GetPath(_) => {
+                TypeDispatch(_) | CompareBranch(_) | LenCompareBranch(_) | GetPath(_) => {
                     unreachable!("dispatch is prepared")
                 }
                 Zero(_) => {
@@ -2233,6 +2250,13 @@ impl Instance {
                         result = Some(value);
                     }
                 }
+                IndexConvert(_) => {
+                    let key = self.running.pop()?;
+                    let object = self.running.pop()?;
+                    let (value, _) = self.index_value(&object, &key)?;
+                    let typ = function.operand_types[pc].as_ref().unwrap().clone();
+                    result = Some(self.convert_value(value, typ)?);
+                }
                 StoreIndex => {
                     let mut values = self.running.pop_values(&self.frame_pool, 3)?;
                     let value = values.pop().unwrap();
@@ -2569,80 +2593,8 @@ impl Instance {
                         function.code[self.running.frames.last().unwrap().pc - 1],
                         Cap
                     );
-                    let mut value = self.running.pop()?;
-                    let pointee = self.types.pointer_element(&value.typ)?;
-                    if let Some(elem) = pointee
-                        && let Some((_, node)) = self.types.node(&elem)?
-                        && node.kind == wire::Array
-                    {
-                        result = Some(Value::int(node.length));
-                    }
-                    if result.is_some() {
-                        // The type determines the length even for a nil pointer.
-                        self.running
-                            .frames
-                            .last_mut()
-                            .unwrap()
-                            .push_result(result.take().unwrap());
-                        return Ok(());
-                    }
-                    if let Data::Pointer(address) = &value.data {
-                        value = self.read_address(address)?;
-                    }
-                    let length = match value.data {
-                        Data::String(bytes) if !capacity => bytes.len(),
-                        Data::Array(values) => values.len(),
-                        Data::Nil => 0,
-                        Data::Slice(slice) => {
-                            if capacity {
-                                slice.capacity
-                            } else {
-                                slice.length
-                            }
-                        }
-                        Data::Map(root) if !capacity => {
-                            let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
-                                return Err(RuntimeError::new(
-                                    "invalid_map",
-                                    "len",
-                                    "invalid backing",
-                                ));
-                            };
-                            entries.len()
-                        }
-                        Data::ResourceRef(root) => {
-                            let scheduler::Resource::Channel {
-                                capacity: size,
-                                values,
-                                ..
-                            } = &*self.resource(root)?
-                            else {
-                                return Err(RuntimeError::new(
-                                    "type_error",
-                                    "len",
-                                    "expected channel",
-                                ));
-                            };
-                            if capacity {
-                                *size
-                            } else if *size == 0 {
-                                0
-                            } else {
-                                values.len()
-                            }
-                        }
-                        _ => {
-                            return Err(RuntimeError::new(
-                                "type_error",
-                                "len",
-                                "expected container",
-                            ));
-                        }
-                    };
-                    result = Some(Value {
-                        typ: TypeIdentity::Primitive(wire::PrimitiveInt),
-                        data: Data::Integer(length as i64),
-                    });
+                    let value = self.running.pop()?;
+                    result = Some(Value::int(self.container_length(value, capacity)?));
                 }
                 Slice => {
                     let mut values = self.running.pop_values(&self.frame_pool, 4)?;

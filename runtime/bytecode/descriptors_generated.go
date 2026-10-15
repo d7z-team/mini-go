@@ -523,6 +523,14 @@ func (t *DescriptorTables) Payload(op Opcode, index uint32) (Payload, error) {
 		if uint64(index) < uint64(len(t.FieldPath)) {
 			return t.FieldPath[index], nil
 		}
+	case Opcode(70):
+		if uint64(index) < uint64(len(t.Type)) {
+			return t.Type[index], nil
+		}
+	case Opcode(71):
+		if uint64(index) < uint64(len(t.CompareBranch)) {
+			return t.CompareBranch[index], nil
+		}
 	}
 	return nil, fmt.Errorf("invalid descriptor %d for opcode %s", index, op)
 }

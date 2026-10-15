@@ -34,6 +34,9 @@ compiler 拥有源码级语义，runtime 只消费低级执行镜像。宿主能
 FFI 与生成源码扩展；compiler/runtime 不依赖 RPC 实现。命令入口只管理参数和进程生命周期，
 可复用逻辑留在所属 library 包。依赖方向由 [check-boundaries.sh](scripts/check-boundaries.sh) 检查。
 
+TypeScript 的 VM、compiler 与 RPC 按职责共用源码，Browser/Node 入口只适配平台。VM 与
+Go compiler WASM 分别运行在独立 Worker 中；构建和部署见 [TypeScript README](playground/runtime-typescript/README.md)。
+
 ## 编译、链接与派生物
 
 ```text
@@ -50,8 +53,9 @@ FFI 与生成源码扩展；compiler/runtime 不依赖 RPC 实现。命令入口
 共用这一装配规则。类型语义使用 `compiler/types` 的结构化模型；canonical text 只出现在源码、
 字节码、RPC 和展示边界。
 
-函数体使用带显式 slot 和类型信息的 SlotCode。优化必须保留求值顺序、值语义、副作用和
-defer/recover 行为。各 runtime 完成镜像校验和元数据准备后才发布 Program；调试符号拥有独立身份。
+函数体使用带显式 slot 和类型信息的 SlotCode。优化保留求值顺序、值语义、副作用、defer/recover
+和调试观察点。各 runtime 完成镜像校验和元数据准备后才发布 Program；执行元数据归所属 revision
+所有，调试符号拥有独立身份。
 
 源码、资源和 `.mrpc` 声明是分发边界。执行镜像、生成 binding、缓存、契约和 bootstrap bundle
 属于当前工具链的派生物，更新方式见[生成与派生物](DEVELOPMENT.md#生成与派生物)。
@@ -61,7 +65,7 @@ defer/recover 行为。各 runtime 完成镜像校验和元数据准备后才发
 分析和构建缓存按源码、依赖、配置及有效限制标识。缓存保存经过验证的不可变快照，查询结果由调用方
 拥有；符号和导出数据始终绑定到对应产物。请求 context、宿主对象和凭据不会进入长期缓存。
 
-缓存容量、guest 计费和进程内存是不同指标。backend 生命周期由创建者管理，接入与诊断见
+backend 生命周期由创建者管理，接入见[编译缓存](USAGE.md#编译缓存)，诊断见
 [缓存与性能](DEVELOPMENT.md#缓存与性能)。
 
 ## 执行模型与状态所有权
@@ -79,12 +83,13 @@ Go 和 Rust 通过有界执行器推进可恢复 task；TypeScript VM 在实例 
 task 私有帧由唯一执行者持有，共享状态以短事务提交。GC、热更新和一致性调试操作只在安全点运行。
 异步宿主调用通过 owner event 返回，不能同步重入 VM。
 
-步数按实际执行的 guest 指令累计。guest 逻辑存储与宿主 heap、JavaScript heap 和进程 RSS 分开统计。
-可寻址值保持稳定身份；复制、切片、指针和反射共用值语义与别名规则。传给宿主的快照独立拥有数据，
-并保留循环和别名。
+步数按实际执行的 guest 指令累计，逻辑内存按共享 bytecode 契约计费；宿主 heap、进程 RSS 与缓存
+容量单独观测。TypeScript 的内存 owner 维护增量计费，在接近上限或无法证明引用变化时扫描可达图。
+执行时的 PC 与镜像位置保留映射，供调试和性能定位使用。
 
-TypeScript VM 由单一 memory owner 维护 guest 逻辑内存，并使用共享 bytecode contract 计费；这些统计
-用于跨 runtime 检查资源语义，不代表 JavaScript heap 或进程 RSS。
+可寻址值保持稳定身份；复制、切片、指针和反射共用值语义与别名规则。传给宿主的快照独立拥有数据，
+并保留循环和别名。返回值与 panic 值在交付前保持可达；帧和 buffer 复用前释放其持有的值，异步
+消费者不能引用已经复用的存储。
 
 ## 生命周期与宿主边界
 
@@ -96,7 +101,7 @@ FFI Session 收敛；取消一次关闭等待不会撤销已经开始的清理�
 在所属实例完成清理后由创建者关闭。
 
 FFI 回调应快速返回。阻塞工作由宿主执行器承载，再以 completion 交付；结果只能接收或丢弃一次。
-失败、取消和迟到回复都必须保留明确 owner，异步消费者不能引用已复用的存储。
+失败、取消和迟到回复都必须由所属 owner 完成清理。
 
 ## 语言服务与调试
 
@@ -111,8 +116,9 @@ Go LSP 直接使用 compiler 语言核心。Rust `compiler` feature 在 Rust VM 
 ## 热更新
 
 热更新先完整准备候选 Program，再在 Instance 安全点原子提交。准备检查类型、globals、导出、入口、
-能力和基准 revision；失败不改变当前状态。已有帧、defer 和闭包继续引用旧 revision，后续命名调用
-使用新 revision；identity 与 layout 均匹配的 global 存储保持稳定。
+能力和基准 revision；失败不改变当前状态。已有帧、defer 和闭包继续引用旧 revision；普通命名调用
+使用当前 revision，标记为 `revision_local` 的命名调用使用 caller frame 的 revision。
+identity 与 layout 均匹配的 global 存储保持稳定。
 
 旧 revision 由真实引用保留，引用解除后回收。FFI Session 与 RPC 资源跨代码 revision 存续；代码补丁
 和服务 publication 替换是两个独立事务。公开操作见[运行时热更新](USAGE.md#运行时热更新)。
@@ -123,5 +129,6 @@ Go LSP 直接使用 compiler 语言核心。Rust `compiler` feature 在 Rust VM 
 能力声明参与实例创建和补丁准入，intrinsic 只承载 VM 基础操作与通用宿主能力。
 
 RPC 按契约身份绑定客户端与 provider。resource 属于创建它的 binding，Endpoint 管理双向操作与传输，
-Router 管理服务选择，Publication/Gateway 管理发布和连接。TypeScript Endpoint 同时服务 VM 内 RPC
-与独立 Browser/Node RPC Worker。公开用法见 [RPC 指南](RPC.md)。
+Router 管理服务选择，Publication/Gateway 管理发布和连接。ContractRepository 拥有不可变的 MRPC 源码
+快照，整批校验成功后原子发布；发布输入和查询结果与仓库存储彼此独立。TypeScript Endpoint 同时服务
+VM 内 RPC 与独立 Browser/Node RPC Worker。公开用法见 [RPC 指南](RPC.md)。

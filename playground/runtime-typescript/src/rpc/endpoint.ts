@@ -1,12 +1,6 @@
-import type { RPCFailure, RPCWorkerStats } from "./protocol.js";
-import { deferred, type Deferred } from "../deferred.js";
-import type {
-  RPCBindOptions,
-  RPCContract,
-  RPCMethod,
-  RPCPublishOptions,
-  RPCValue,
-} from "./types.js";
+import type { RPCFailure, RPCWorkerStats } from "./protocol";
+import { deferred, type Deferred } from "../deferred";
+import type { RPCBindOptions, RPCContract, RPCMethod, RPCPublishOptions, RPCValue } from "./types";
 
 const ENDPOINT_PROTOCOL = "minigo.rpc.endpoint.v12";
 const HELLO = 1;

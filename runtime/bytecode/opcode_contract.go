@@ -61,7 +61,7 @@ var opcodeSpecs = []OpcodeSpec{
 	{Op: "recover", Arity: OperandArity{Kind: "fixed", Inputs: 0, Outputs: 1}, Category: "control", Operands: "write recovered panic value"},
 	{Op: "defer_push", Arity: OperandArity{Kind: "fixed", Inputs: 1, Outputs: 0}, Category: "control", Payload: "defer", Operands: "read function", Notes: "owner_depth lets compiler-lowered helper frames register a deferred call on an enclosing source frame"},
 	{Op: "call_value", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read callee and args, write results"},
-	{Op: "call_direct", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read args, write results"},
+	{Op: "call_direct", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read args, write results; a single fixed scalar result may target a private local"},
 	{Op: "tail_call_direct", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read args and complete through target", Terminal: true},
 	{Op: "call_interface", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call_interface", Operands: "read interface receiver and args, write results", Notes: "dynamic dispatch by canonical interface method metadata; not Go source selector syntax"},
 	{Op: "make_closure", Arity: OperandArity{Kind: "fixed", Inputs: 0, Outputs: 1}, Category: "call", Payload: "closure", Operands: "write closure"},
@@ -109,6 +109,8 @@ var opcodeSpecs = []OpcodeSpec{
 	{Op: "call_intrinsic", Arity: OperandArity{Kind: "payload"}, Category: "runtime", Payload: "call_intrinsic", Operands: "read args, write results"},
 	{Op: "compare_branch", Arity: OperandArity{Kind: "fixed", Inputs: 2, Outputs: 0}, Category: "control", Payload: "compare_branch", Operands: "consume two operands", Notes: "compare typed operands and branch with explicit polarity"},
 	{Op: "get_path", Arity: OperandArity{Kind: "fixed", Inputs: 1, Outputs: 1}, Category: "value", Payload: "field_path", Operands: "consume one operand, produce one result", Notes: "read a bounded sequence of declared fields"},
+	{Op: "index_convert", Arity: OperandArity{Kind: "fixed", Inputs: 2, Outputs: 1}, Category: "composite", Payload: "type", Operands: "read indexable object/index, write converted integer", Notes: "fused load_index followed by a scalar integer conversion"},
+	{Op: "len_compare_branch", Arity: OperandArity{Kind: "fixed", Inputs: 2, Outputs: 0}, Category: "control", Payload: "compare_branch", Operands: "read indexable object/integer, branch without materializing len", Notes: "length is the left comparison operand; compiler normalizes the operator when source length was on the right"},
 }
 
 var knownOpcodes = func() map[string]Opcode {

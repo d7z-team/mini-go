@@ -115,18 +115,17 @@ func (r *ContractRepository) Publish(bundles ...MRPCBundle) error {
 	if r == nil {
 		return errors.New("MRPC contract repository is nil")
 	}
-	normalized := make([]MRPCBundle, len(bundles))
 	seen := make(map[ContractReference]MRPCBundle, len(bundles))
-	for index, bundle := range bundles {
-		normalized[index] = cloneMRPCBundle(bundle)
-		if err := normalizeMRPCBundle(&normalized[index], false); err != nil {
+	for _, bundle := range bundles {
+		bundle = cloneMRPCBundle(bundle)
+		if err := normalizeMRPCBundle(&bundle, false); err != nil {
 			return err
 		}
-		ref := ContractReference{ImportPath: normalized[index].ImportPath, Hash: normalized[index].Hash}
-		if previous, duplicate := seen[ref]; duplicate && !equalMRPCBundle(previous, normalized[index]) {
+		ref := ContractReference{ImportPath: bundle.ImportPath, Hash: bundle.Hash}
+		if previous, duplicate := seen[ref]; duplicate && !equalMRPCBundle(previous, bundle) {
 			return errors.New("conflicting MRPC bundles in one publication")
 		}
-		seen[ref] = normalized[index]
+		seen[ref] = bundle
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -139,7 +138,7 @@ func (r *ContractRepository) Publish(bundles ...MRPCBundle) error {
 		}
 	}
 	for ref, bundle := range seen {
-		r.bundles[ref] = cloneMRPCBundle(bundle)
+		r.bundles[ref] = bundle
 	}
 	return nil
 }

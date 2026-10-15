@@ -1,9 +1,7 @@
 // The same generated TypeScript binding runs unchanged in Node.js and browsers.
-export async function exerciseNativeRPC(api, address) {
+export async function exerciseNativeRPC(api, address, bindings) {
   const { connectRPC, RPCStatus, rpcCodecs } = api;
-  const { LaboratoryClient, LaboratoryContract, createLaboratoryProvider } = await import(
-    "../../.build/test-bindings/service.js"
-  );
+  const { LaboratoryClient, LaboratoryContract, createLaboratoryProvider } = bindings;
   const rpcUrl = `${address.replace("http", "ws")}/rpc`;
   const connectOptions = { leaseTtlMs: 1_000, admissionTimeoutMs: 10_000 };
   const check = (condition, message) => {

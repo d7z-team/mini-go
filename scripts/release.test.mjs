@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -134,4 +135,122 @@ test("release manifest rewrite keeps Cargo and npm versions aligned", async (t) 
   assert.equal(packageJSON.version, version);
   assert.equal(packageLock.version, version);
   assert.equal(packageLock.packages[""].version, version);
+});
+
+test("release verification accepts the bundled compiler asset and package test entry", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "mini-go-release-verify-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const output = path.join(root, "release");
+  const sourceTypescript = path.join(
+    output,
+    "source/playground/runtime-typescript",
+  );
+  const version = "0.0.42-git.g123abcd";
+  const runtimeDirectory = path.join(root, `mini-go-${version}`);
+  const npmDirectory = path.join(root, "npm/package");
+  const compiler = Buffer.from("compiler wasm fixture");
+  const compilerSHA256 = createHash("sha256").update(compiler).digest("hex");
+  await mkdir(path.join(output, "source"), { recursive: true });
+  await mkdir(path.join(runtimeDirectory, "assets"), { recursive: true });
+  await writeFile(
+    path.join(runtimeDirectory, "assets/compiler.json.gz"),
+    "runtime",
+  );
+  await writeFile(path.join(runtimeDirectory, "LICENSE-Go"), "go license");
+  await mkdir(path.join(npmDirectory, "dist/assets"), { recursive: true });
+  await writeFile(
+    path.join(npmDirectory, "dist/assets/mini-go-compiler.wasm"),
+    compiler,
+  );
+  await writeFile(
+    path.join(npmDirectory, "package.json"),
+    JSON.stringify({ name: "@d7z-team/mini-go", version }),
+  );
+  await writeFile(path.join(npmDirectory, "LICENSE-Go"), "go license");
+  await mkdir(sourceTypescript, { recursive: true });
+  await writeFile(path.join(sourceTypescript, "package.json"), "{}");
+
+  const crate = path.join(output, `mini-go-${version}.crate`);
+  const npmTarball = path.join(output, `d7z-team-mini-go-${version}.tgz`);
+  await mkdir(output, { recursive: true });
+  run("tar", ["-cf", crate, "-C", root, `mini-go-${version}`], root);
+  run(
+    "tar",
+    ["-czf", npmTarball, "-C", path.join(root, "npm"), "package"],
+    root,
+  );
+  await writeFile(
+    path.join(output, "mini-go.files"),
+    run("tar", ["-tf", crate], root) + "\n",
+  );
+  await writeFile(
+    path.join(output, "npm.files"),
+    run("tar", ["-tzf", npmTarball], root) + "\n",
+  );
+
+  const runtimeSHA256 = createHash("sha256")
+    .update(
+      await readFile(path.join(runtimeDirectory, "assets/compiler.json.gz")),
+    )
+    .digest("hex");
+  const npmIntegrity = `sha512-${createHash("sha512")
+    .update(await readFile(npmTarball))
+    .digest("base64")}`;
+  await writeFile(
+    path.join(output, "release.json"),
+    JSON.stringify({
+      version,
+      runtimeCompilerSHA256: runtimeSHA256,
+      typescriptCompilerSHA256: compilerSHA256,
+      npmIntegrity,
+    }),
+  );
+  await writeFile(
+    path.join(output, "SHA256SUMS"),
+    run(
+      "sha256sum",
+      [path.basename(crate), path.basename(npmTarball)],
+      output,
+    ) + "\n",
+  );
+
+  const bin = path.join(root, "bin");
+  const log = path.join(root, "npm.log");
+  const makeLog = path.join(root, "make.log");
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(bin, "cargo"), "#!/bin/sh\nexit 0\n", {
+    mode: 0o755,
+  });
+  await writeFile(
+    path.join(bin, "make"),
+    "#!/bin/sh\nprintf '%s|%s\\n' \"$GOFLAGS\" \"$*\" >> \"$MINIGO_TEST_MAKE_LOG\"\nmkdir -p \"$MINIGO_TEST_SOURCE_ROOT/bin\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$MINIGO_TEST_SOURCE_ROOT/bin/mini-go-rpc-peer-go\"\nchmod +x \"$MINIGO_TEST_SOURCE_ROOT/bin/mini-go-rpc-peer-go\"\n",
+    { mode: 0o755 },
+  );
+  await writeFile(
+    path.join(bin, "npm"),
+    "#!/bin/sh\nprintf '%s|%s\\n' \"$MINIGO_RPC_GO_PEER\" \"$*\" >> \"$MINIGO_TEST_NPM_LOG\"\nexit 0\n",
+    { mode: 0o755 },
+  );
+  execFileSync(
+    "bash",
+    [path.join(scripts, "release-verify.sh"), "--output", output],
+    {
+      cwd: root,
+      env: {
+        ...process.env,
+        MINIGO_TEST_MAKE_LOG: makeLog,
+        MINIGO_TEST_SOURCE_ROOT: path.join(output, "source"),
+        MINIGO_TEST_NPM_LOG: log,
+        PATH: `${bin}:${process.env.PATH}`,
+      },
+      stdio: "pipe",
+    },
+  );
+  const makeCommands = await readFile(makeLog, "utf8");
+  assert.match(makeCommands, /-buildvcs=false\|/);
+  assert.match(makeCommands, /-C .*source _rpc-go-peer/);
+  const npmCommands = await readFile(log, "utf8");
+  assert.match(npmCommands, /\/source\/bin\/mini-go-rpc-peer-go\|.*run test:package/);
+  assert.match(npmCommands, /run test:package/);
+  assert.match(npmCommands, /publish .*--dry-run/);
 });

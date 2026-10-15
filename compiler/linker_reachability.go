@@ -326,7 +326,7 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 		}
 		for _, instruction := range operations {
 			switch instruction.Op {
-			case ir.OpCompareBranch:
+			case ir.OpCompareBranch, ir.OpLenCompareBranch:
 				enqueueReachableType(index.table, index.reachableTypes, instruction.Payload.(ir.CompareBranchPayload).Type)
 			case ir.OpTypeDispatch:
 				for _, match := range instruction.Payload.(ir.TypeDispatchPayload).Cases {
@@ -336,7 +336,7 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 				}
 			case ir.OpGetPath:
 				enqueueReachableType(index.table, index.reachableTypes, instruction.Payload.(ir.FieldPathPayload).Type)
-			case ir.OpZero, ir.OpTypeAssert, ir.OpTypeAssertOK, ir.OpConvert:
+			case ir.OpZero, ir.OpTypeAssert, ir.OpTypeAssertOK, ir.OpConvert, ir.OpIndexConvert:
 				var payload ir.TypePayload
 				if err := ir.ReadInstructionPayload(instruction.Payload, &payload); err != nil {
 					return nil, fmt.Errorf("decode type payload in %s.%s: %w", ref.modulePath, ref.function, err)

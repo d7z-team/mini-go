@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { bytesCodec, messageCodec, optionalCodec, rpcCodecs } from "@d7z-team/mini-go/rpc";
 

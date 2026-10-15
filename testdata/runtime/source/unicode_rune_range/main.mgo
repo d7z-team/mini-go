@@ -1,0 +1,64 @@
+package main
+
+type NamedRune rune
+
+func Main() int {
+	text := "A界😀B"
+	total := 0
+	count := 0
+	for _, value := range text {
+		switch value {
+		case 'A':
+			total += 1
+		case '界':
+			total += 10
+		case '😀':
+			total += 100
+		case 'B':
+			total += 1000
+		}
+		count++
+	}
+
+	// Keep the range body checks separate from the result calculation so this
+	// fixture exercises control-flow edges without changing the established
+	// expected value.
+	continueCount := 0
+	for _, value := range text {
+		if value == 'A' {
+			continue
+		}
+		continueCount++
+	}
+
+	breakCount := 0
+	for _, value := range text {
+		breakCount++
+		if value == '界' {
+			break
+		}
+	}
+
+	emptyCount := 0
+	for _, value := range "" {
+		emptyCount += int(value)
+	}
+
+	invalidCount := 0
+	for _, value := range "\xffA\x80" {
+		if value == rune(0xfffd) {
+			invalidCount++
+		}
+	}
+
+	named := NamedRune('界')
+	namedValue := 0
+	for _, value := range string(named) {
+		namedValue += int(value)
+	}
+	if continueCount != 3 || breakCount != 2 || emptyCount != 0 ||
+		invalidCount != 2 || namedValue != 30028 {
+		return -1
+	}
+	return total*10 + count
+}

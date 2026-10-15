@@ -22,11 +22,20 @@ type slotLowerer struct {
 }
 
 type packageEmitter struct {
-	artifact   *ir.Artifact
-	functions  map[string]types.FunctionSignature
-	constants  map[string]uint32
-	globals    map[string]types.TypeRef
-	containers map[slotContainerType]types.TypeRef
+	artifact  *ir.Artifact
+	functions map[string]types.FunctionSignature
+	constants map[string]uint32
+	// anonymousConstants is scoped to this artifact. Named constants retain
+	// their declaration identity and are deliberately kept out of this pool.
+	anonymousConstants map[anonymousConstantKey]uint32
+	globals            map[string]types.TypeRef
+	containers         map[slotContainerType]types.TypeRef
+}
+
+type anonymousConstantKey struct {
+	typ     types.TypeRef
+	value   string
+	untyped bool
 }
 
 type slotContainerType struct {
@@ -35,7 +44,7 @@ type slotContainerType struct {
 }
 
 func newPackageEmitter(artifact *ir.Artifact, functions []hir.Function) *packageEmitter {
-	e := &packageEmitter{artifact: artifact, functions: make(map[string]types.FunctionSignature, len(functions)), constants: make(map[string]uint32, len(artifact.Constants)), globals: make(map[string]types.TypeRef, len(artifact.Globals))}
+	e := &packageEmitter{artifact: artifact, functions: make(map[string]types.FunctionSignature, len(functions)), constants: make(map[string]uint32, len(artifact.Constants)), anonymousConstants: make(map[anonymousConstantKey]uint32), globals: make(map[string]types.TypeRef, len(artifact.Globals))}
 	for _, function := range functions {
 		e.functions[function.ID] = function.Signature
 	}
@@ -148,12 +157,30 @@ func (l *slotLowerer) expression(expr hir.Expression) ([]ir.Operand, error) {
 		}
 		return l.emit(ir.OpGetPath, path, inputs, typ), nil
 	case hir.ExprLiteral:
+		encoded := expr.Value.Encode(&l.artifact.TypeTable, expr.Type, expr.Untyped)
+		// Only primitive literals are immutable. In particular, a string
+		// converted to []byte is emitted as a Slice<Uint8> constant; sharing
+		// that constant would make independent source expressions share their
+		// mutable backing storage.
+		shareable := types.View(&l.artifact.TypeTable, expr.Type).Underlying().Kind == types.Primitive
+		if expr.ConstantID == "" {
+			var key anonymousConstantKey
+			if shareable {
+				key = anonymousConstantKey{typ: expr.Type, value: string(encoded), untyped: expr.Untyped}
+				if index, found := l.anonymousConstants[key]; found {
+					return []ir.Operand{{Kind: ir.OperandConstant, Index: index}}, nil
+				}
+			}
+			index := uint32(len(l.artifact.Constants))
+			l.artifact.Constants = append(l.artifact.Constants, ir.Constant{ID: "c." + strconv.Itoa(int(index)), Type: expr.Type, Value: encoded, Untyped: expr.Untyped})
+			if shareable {
+				l.anonymousConstants[key] = index
+			}
+			return []ir.Operand{{Kind: ir.OperandConstant, Index: index}}, nil
+		}
 		index := len(l.artifact.Constants)
 		id := expr.ConstantID
-		if id == "" {
-			id = "c." + strconv.Itoa(index)
-		}
-		l.artifact.Constants = append(l.artifact.Constants, ir.Constant{ID: id, Type: expr.Type, Value: expr.Value.Encode(&l.artifact.TypeTable, expr.Type, expr.Untyped), Untyped: expr.Untyped})
+		l.artifact.Constants = append(l.artifact.Constants, ir.Constant{ID: id, Type: expr.Type, Value: encoded, Untyped: expr.Untyped})
 		l.constants[id] = uint32(index)
 		return []ir.Operand{{Kind: ir.OperandConstant, Index: uint32(index)}}, nil
 	case hir.ExprConst:

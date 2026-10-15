@@ -1,0 +1,27 @@
+package main
+
+func add(value int) int { return value + 1 }
+
+func normal() int {
+	var result int
+	result = add(4)
+	return result
+}
+
+func deferred() (result int) {
+	var value int
+	value = add(5)
+	defer func() { result = value + 1 }()
+	return 0
+}
+
+func recovered() (result int) {
+	defer func() {
+		if recover() != nil {
+			result = add(6)
+		}
+	}()
+	panic("boom")
+}
+
+func Main() int { return normal() + deferred() + recovered() }

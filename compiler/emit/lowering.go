@@ -68,6 +68,9 @@ func LowerUnvalidatedWithSymbols(program hir.Program) (ir.Artifact, ir.PackageSy
 		if err := directLocalResults(&code, &fn, &artifact.TypeTable, &functionSymbols); err != nil {
 			return ir.Artifact{}, ir.PackageSymbols{}, err
 		}
+		if err := fuseHotPathInstructions(&code, &fn, &artifact.TypeTable, artifact.Constants, &functionSymbols); err != nil {
+			return ir.Artifact{}, ir.PackageSymbols{}, err
+		}
 		if err := allocateSlots(&code); err != nil {
 			return ir.Artifact{}, ir.PackageSymbols{}, err
 		}

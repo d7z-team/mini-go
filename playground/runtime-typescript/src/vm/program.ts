@@ -2,12 +2,13 @@ import {
   CONTRACT,
   INTRINSICS,
   Kind,
+  PrimitiveKind,
   OPCODE_ARITIES,
   OPCODE_DESCRIPTOR_TABLES,
   OPCODE_NAMES,
   DESCRIPTOR_FIELDS,
   WIRE_FIELDS,
-} from "./contract.generated.js";
+} from "./contract.generated";
 import {
   JsonNumber,
   VMError,
@@ -21,20 +22,27 @@ import {
   sha256Hex,
   string,
   type JsonValue,
-} from "./json.js";
+} from "./json";
 import {
   TypeRegistry,
   cell,
   decodeConstant,
   parseSignature,
   parseTypeRef,
+  primitive,
   zero,
   type Cell,
   type FunctionSignature,
   type RuntimeType,
   type TypeRef,
   type Value,
-} from "./value.js";
+} from "./value";
+import {
+  operatorCode,
+  unaryOperatorCode,
+  type OperatorCode,
+  type UnaryOperatorCode,
+} from "./operators";
 
 export interface LoadOptions {
   maxImageBytes: number;
@@ -50,11 +58,42 @@ export interface PreparedOperands {
   releaseBefore: readonly number[];
 }
 
+export interface PreparedSelectCase {
+  channel: number;
+  send?: number;
+  value?: number;
+  ok?: number;
+}
+
 export interface PreparedInstruction {
   opcode: number;
   name: string;
+  /** Index in the wire instruction array, retained for source/debug mapping. */
+  wirePC: number;
   descriptor: Record<string, unknown> | undefined;
   operands: PreparedOperands;
+  arity: readonly [number, number];
+  target?: number;
+  local?: number;
+  upvalue?: number;
+  global?: number;
+  constant?: number;
+  type?: RuntimeType;
+  /** First two operands and first two outputs are read without inputScratch. */
+  input0?: readonly [number, number];
+  input1?: readonly [number, number];
+  output0?: number;
+  output1?: number;
+  operatorCode?: OperatorCode | UnaryOperatorCode;
+  callModule?: string;
+  callFunction?: string;
+  method?: string;
+  intrinsic?: string;
+  field?: string;
+  fieldPath?: readonly number[];
+  captures?: readonly Record<string, unknown>[];
+  selectIndex?: number;
+  selectCases?: readonly PreparedSelectCase[];
 }
 
 export interface PreparedFunction {
@@ -64,12 +103,18 @@ export interface PreparedFunction {
   readonly signature: FunctionSignature;
   readonly localTypes: RuntimeType[];
   readonly localIndexes: Map<string, number>;
+  readonly cellLocals: ReadonlySet<number>;
   readonly resultLocals: number[];
   readonly upvalueTypes: RuntimeType[];
   readonly upvalueIndexes: Map<string, number>;
   readonly slotTypes: RuntimeType[];
+  readonly maxInputArity: number;
   readonly instructions: PreparedInstruction[];
   readonly labels: Map<string, number>;
+  /** Wire-to-executable mapping after label-only instructions are stripped. */
+  readonly wireToExecutablePC: readonly number[];
+  /** Executable instruction to original wire PC mapping. */
+  readonly executableToWirePC: readonly number[];
 }
 
 export interface PreparedModule {
@@ -334,6 +379,10 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     );
     const instructions: PreparedInstruction[] = [];
     const labels = new Map<string, number>();
+    const wireToExecutablePC: number[] = [];
+    const executableToWirePC: number[] = [];
+    let executablePC = 0;
+    let maxInputArity = 0;
     for (const [pc, item] of array(code.instructions, `${path}.code.instructions`).entries()) {
       const instructionPath = `${path}.code.instructions[${pc}]`;
       if (!Array.isArray(item) || item.length !== 3)
@@ -359,15 +408,33 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
       }
       if (operandIndex >= operandRecords.length)
         fail("operand index out of range", `${instructionPath}[2]`);
-      const prepared = { opcode, name, descriptor, operands: operandRecords[operandIndex]! };
-      instructions.push(prepared);
+      wireToExecutablePC[pc] = executablePC;
       if (name === "label") {
         const label = descriptor?.label;
-        if (typeof label !== "string" || labels.has(label))
+        if (typeof label !== "string" || !label.trim() || labels.has(label))
           fail("invalid or duplicate label", instructionPath);
-        labels.set(label, pc);
+        const operands = operandRecords[operandIndex]!;
+        const arity = instructionArity({ opcode, name, descriptor }, instructionPath);
+        if (operands.inputs.length !== arity[0] || operands.outputs.length !== arity[1])
+          fail("operand arity mismatch", instructionPath, "invalid_operand");
+        if (operands.release.length || operands.releaseBefore.length)
+          fail("label cannot release slots", instructionPath, "invalid_operand");
+        labels.set(label, executablePC);
+        continue;
       }
+      executableToWirePC.push(pc);
+      const prepared = {
+        opcode,
+        name,
+        wirePC: pc,
+        descriptor,
+        operands: operandRecords[operandIndex]!,
+      };
+      instructions.push({ ...prepared, arity: instructionArity(prepared, instructionPath) });
+      maxInputArity = Math.max(maxInputArity, prepared.operands.inputs.length);
+      executablePC++;
     }
+    wireToExecutablePC.push(executablePC);
     const seenResults = new Set<string>();
     const resultLocals = array(raw.result_locals, `${path}.result_locals`).map(
       (result, resultIndex) => {
@@ -386,6 +453,23 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
       fail("function has fewer locals than parameters", `${path}.locals`);
     if (resultLocals.length && resultLocals.length !== signature.results.length)
       fail("result locals do not match function results", `${path}.result_locals`);
+    const cellLocals = new Set<number>();
+    for (const instruction of instructions) {
+      const descriptor = instruction.descriptor ?? {};
+      if (instruction.name === "address_of") {
+        if (descriptor.kind === "local") {
+          const index = localIndexes.get(String(descriptor.local));
+          if (index !== undefined) cellLocals.add(index);
+        }
+      } else if (instruction.name === "make_closure") {
+        for (const capture of descriptorList(descriptor, "captures", path)) {
+          const address = descriptorRecord(capture, path);
+          if (address.kind !== "local") continue;
+          const index = localIndexes.get(String(address.local));
+          if (index !== undefined) cellLocals.add(index);
+        }
+      }
+    }
     const fn: PreparedFunction = {
       id,
       module,
@@ -393,12 +477,16 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
       signature,
       localTypes,
       localIndexes,
+      cellLocals,
       resultLocals,
       upvalueTypes,
       upvalueIndexes,
       slotTypes,
+      maxInputArity,
       instructions,
       labels,
+      wireToExecutablePC,
+      executableToWirePC,
     };
     module.functions.set(id, fn);
   }
@@ -466,7 +554,31 @@ const DIRECT_LOCAL_OUTPUTS = new Set([
   "cap",
   "convert",
   "get_path",
+  "call_direct",
+  "string_next_rune_index",
+  "index_convert",
 ]);
+
+function isFixedScalar(type: RuntimeType): boolean {
+  const primitive = type.registry.underlying(type).ref;
+  return (
+    primitive.kind === Kind.Primitive &&
+    (primitive.primitive === PrimitiveKind.PrimitiveBool ||
+      (primitive.primitive >= PrimitiveKind.PrimitiveInt &&
+        primitive.primitive <= PrimitiveKind.PrimitiveComplex128))
+  );
+}
+
+function isIntegerScalar(type: RuntimeType): boolean {
+  const primitive = type.registry.underlying(type).ref;
+  return (
+    primitive.kind === Kind.Primitive &&
+    ((primitive.primitive >= PrimitiveKind.PrimitiveInt &&
+      primitive.primitive <= PrimitiveKind.PrimitiveInt64) ||
+      (primitive.primitive >= PrimitiveKind.PrimitiveUint &&
+        primitive.primitive <= PrimitiveKind.PrimitiveUintptr))
+  );
+}
 
 function validatePreparedProgram(modules: Map<string, PreparedModule>): void {
   for (const module of modules.values()) {
@@ -495,8 +607,64 @@ function validateFunction(fn: PreparedFunction, modules: Map<string, PreparedMod
     const path = `${fn.module.path}.${fn.id}.instructions[${pc}]`;
     validateOperands(fn, instruction, path);
     validateDescriptor(fn, instruction, modules, path);
+    prepareInstructionMetadata(instruction);
   }
   validateSlotInitialization(fn);
+}
+
+function prepareInstructionMetadata(instruction: PreparedInstruction): void {
+  const input0 = instruction.operands.inputs[0];
+  const input1 = instruction.operands.inputs[1];
+  const output0 = instruction.operands.outputs[0];
+  const output1 = instruction.operands.outputs[1];
+  if (input0 !== undefined) instruction.input0 = input0;
+  if (input1 !== undefined) instruction.input1 = input1;
+  if (output0 !== undefined) instruction.output0 = output0;
+  if (output1 !== undefined) instruction.output1 = output1;
+  const descriptor = instruction.descriptor;
+  if (!descriptor) return;
+  if (typeof descriptor.operator === "string") {
+    instruction.operatorCode =
+      instruction.name === "unary"
+        ? unaryOperatorCode(descriptor.operator)
+        : operatorCode(descriptor.operator);
+  }
+  if (typeof descriptor.$target === "number") instruction.target = descriptor.$target;
+  if (typeof descriptor.$local === "number") instruction.local = descriptor.$local;
+  if (typeof descriptor.$upvalue === "number") instruction.upvalue = descriptor.$upvalue;
+  if (typeof descriptor.$global === "number") instruction.global = descriptor.$global;
+  if (typeof descriptor.$constant === "number") instruction.constant = descriptor.$constant;
+  if (descriptor.$type && typeof descriptor.$type === "object")
+    instruction.type = descriptor.$type as RuntimeType;
+  if (typeof descriptor.module_path === "string") instruction.callModule = descriptor.module_path;
+  if (typeof descriptor.function === "string") instruction.callFunction = descriptor.function;
+  if (typeof descriptor.method === "string") instruction.method = descriptor.method;
+  if (typeof descriptor.id === "string") instruction.intrinsic = descriptor.id;
+  if (typeof descriptor.field === "string") instruction.field = descriptor.field;
+  if (instruction.name === "get_path") {
+    const fields = descriptorList(descriptor, "fields", instruction.name);
+    instruction.fieldPath = Object.freeze(fields.map((field) => Number(field)));
+  }
+  if (instruction.name === "make_closure") {
+    instruction.captures = Object.freeze(
+      descriptorList(descriptor, "captures", instruction.name).map((capture) =>
+        descriptorRecord(capture, instruction.name),
+      ),
+    );
+  }
+  if (instruction.name === "select") {
+    instruction.selectIndex = descriptor.$index as number;
+    instruction.selectCases = Object.freeze(
+      descriptorList(descriptor, "cases", instruction.name).map((value) => {
+        const selected = descriptorRecord(value, instruction.name);
+        const result: PreparedSelectCase = { channel: selected.$channel as number };
+        if (selected.$send !== undefined) result.send = selected.$send as number;
+        if (selected.$value !== undefined) result.value = selected.$value as number;
+        if (selected.$ok !== undefined) result.ok = selected.$ok as number;
+        return result;
+      }),
+    );
+  }
 }
 
 function validateOperands(
@@ -518,7 +686,11 @@ function validateOperands(
         fail("untyped constant is not an execution operand", inputPath, "invalid_operand");
       continue;
     }
-    if (kind === 2 && slot < fn.localTypes.length) continue;
+    if (kind === 2 && slot < fn.localTypes.length) {
+      if (fn.cellLocals.has(slot))
+        fail("direct local input requires private local storage", inputPath, "invalid_operand");
+      continue;
+    }
     fail("input kind or index is out of range", inputPath, "invalid_operand");
   }
   validateDistinctSlots(operands.outputs, `${path}.outputs`);
@@ -531,6 +703,18 @@ function validateOperands(
         output - LOCAL_OUTPUT >= fn.localTypes.length
       )
         fail("invalid direct local output", `${path}.outputs`, "invalid_operand");
+      if (fn.cellLocals.has(output - LOCAL_OUTPUT))
+        fail(
+          "direct local output requires private local storage",
+          `${path}.outputs`,
+          "invalid_operand",
+        );
+      if (!isFixedScalar(fn.localTypes[output - LOCAL_OUTPUT]!))
+        fail(
+          "direct local output requires a fixed scalar local",
+          `${path}.outputs`,
+          "invalid_operand",
+        );
     } else if (output >= fn.slotTypes.length) {
       fail("output slot is out of range", `${path}.outputs`, "invalid_operand");
     }
@@ -552,7 +736,10 @@ function validateOperands(
     fail("label cannot release slots", path, "invalid_operand");
 }
 
-function instructionArity(instruction: PreparedInstruction, path: string): [number, number] {
+function instructionArity(
+  instruction: Pick<PreparedInstruction, "opcode" | "name" | "descriptor">,
+  path: string,
+): [number, number] {
   const fixed = OPCODE_ARITIES[instruction.opcode] as readonly [number, number] | null;
   if (fixed) return [fixed[0], fixed[1]];
   const descriptor = instruction.descriptor!;
@@ -647,6 +834,49 @@ function validateDescriptor(
     if (!target) fail("module does not exist", `${path}.${name}`, "link_error");
     return target;
   };
+  const operandType = (operand: readonly [number, number]): RuntimeType => {
+    const [kind, index] = operand;
+    if (kind === 0) return fn.slotTypes[index]!;
+    if (kind === 1) return fn.module.constants[index]!.type;
+    if (kind === 2) return fn.localTypes[index]!;
+    fail("unknown operand kind", path, "invalid_operand");
+  };
+  const isLengthBearing = (type: RuntimeType): boolean => {
+    let underlying = type.registry.underlying(type);
+    if (underlying.ref.kind === Kind.Pointer) {
+      const element = underlying.registry.element(underlying);
+      if (!element) return false;
+      underlying = underlying.registry.underlying(element);
+    }
+    if (
+      underlying.ref.kind === Kind.Primitive &&
+      underlying.ref.primitive !== PrimitiveKind.PrimitiveString
+    )
+      return false;
+    return new Set<number>([Kind.Primitive, Kind.Slice, Kind.Array, Kind.Map, Kind.Waitable]).has(
+      underlying.ref.kind,
+    );
+  };
+  const isByteIndexable = (type: RuntimeType): boolean => {
+    let underlying = type.registry.underlying(type);
+    if (underlying.ref.kind === Kind.Pointer) {
+      const element = underlying.registry.element(underlying);
+      if (!element) return false;
+      underlying = underlying.registry.underlying(element);
+      if (underlying.ref.kind !== Kind.Array) return false;
+    }
+    if (underlying.ref.kind === Kind.Primitive)
+      return underlying.ref.primitive === PrimitiveKind.PrimitiveString;
+    if (underlying.ref.kind !== Kind.Slice && underlying.ref.kind !== Kind.Array) return false;
+    const element = underlying.registry.element(underlying);
+    if (!element) return false;
+    const primitive = underlying.registry.underlying(element).ref;
+    return (
+      primitive.kind === Kind.Primitive && primitive.primitive === PrimitiveKind.PrimitiveUint8
+    );
+  };
+  const outputType = (output: number): RuntimeType =>
+    output >= LOCAL_OUTPUT ? fn.localTypes[output - LOCAL_OUTPUT]! : fn.slotTypes[output]!;
   const validateAddress = (value: unknown, addressPath: string, allowExport: boolean): void => {
     const address = descriptorRecord(value, addressPath);
     assertAllowedFields(address, WIRE_FIELDS.AddressPayload, addressPath);
@@ -723,6 +953,33 @@ function validateDescriptor(
       descriptor.$type = validateTypeDescriptor(fn.module, descriptor.type, `${path}.type`);
       descriptor.$target = label(descriptor.label, `${path}.label`);
       break;
+    case "len_compare_branch": {
+      const type = validateTypeDescriptor(fn.module, descriptor.type, `${path}.type`);
+      if (
+        !type ||
+        !fn.module.registry.identical(
+          type,
+          primitive(fn.module.registry, PrimitiveKind.PrimitiveInt),
+        )
+      )
+        fail("length comparison descriptor must use Int", `${path}.type`, "invalid_operand");
+      if (!isLengthBearing(operandType(instruction.operands.inputs[0]!)))
+        fail("length comparison requires a length-bearing object", path, "invalid_operand");
+      const indexType = fn.module.registry.underlying(operandType(instruction.operands.inputs[1]!));
+      if (
+        indexType.ref.kind !== Kind.Primitive ||
+        indexType.ref.primitive < PrimitiveKind.PrimitiveInt ||
+        indexType.ref.primitive > PrimitiveKind.PrimitiveUintptr
+      )
+        fail("length comparison operand must be an integer", path, "invalid_operand");
+      descriptor.$type = type;
+      if (
+        !["==", "!=", "<", "<=", ">", ">="].includes(descriptorString(descriptor, "operator", path))
+      )
+        fail("invalid comparison operator", `${path}.operator`, "invalid_operand");
+      descriptor.$target = label(descriptor.label, `${path}.label`);
+      break;
+    }
     case "type_dispatch":
       descriptor.$subject = local("subject");
       descriptor.$default_local = local("default_local", true);
@@ -779,6 +1036,20 @@ function validateDescriptor(
         (instruction.name === "tail_call_direct" && results !== fn.signature.results.length)
       )
         fail("call contract does not match target signature", path, "invalid_call");
+      if (instruction.name === "call_direct") {
+        const localOutput = instruction.operands.outputs[0];
+        if (localOutput !== undefined && localOutput >= LOCAL_OUTPUT) {
+          if (callee.signature.results.length !== 1)
+            fail("direct local call output requires one result", path, "invalid_call");
+          const localIndex = localOutput - LOCAL_OUTPUT;
+          const resultType = target.registry.runtime(callee.signature.results[0]!);
+          if (
+            !isFixedScalar(resultType) ||
+            !target.registry.identical(fn.localTypes[localIndex]!, resultType)
+          )
+            fail("direct local call output type does not match result", path, "invalid_call");
+        }
+      }
       break;
     }
     case "call_value":
@@ -889,6 +1160,19 @@ function validateDescriptor(
       });
       break;
     }
+    case "index_convert": {
+      const type = validateTypeDescriptor(fn.module, descriptor.type, `${path}.type`);
+      if (!type || !isIntegerScalar(type))
+        fail("index conversion target must be an integer", `${path}.type`, "invalid_operand");
+      if (!isByteIndexable(operandType(instruction.operands.inputs[0]!)))
+        fail("index conversion requires string or byte sequence", path, "invalid_operand");
+      if (!isIntegerScalar(operandType(instruction.operands.inputs[1]!)))
+        fail("index conversion index must be an integer", path, "invalid_operand");
+      if (!fn.module.registry.identical(outputType(instruction.operands.outputs[0]!), type))
+        fail("index conversion output type differs from descriptor", path, "invalid_operand");
+      descriptor.$type = type;
+      break;
+    }
   }
 }
 
@@ -904,10 +1188,14 @@ function validateSlotInitialization(fn: PreparedFunction): void {
     const addLabel = (value: unknown): void => {
       const target = fn.labels.get(String(value));
       if (target === undefined) fail("unknown jump label", fn.id, "invalid_jump");
-      successors[pc]!.push(target);
+      // A label after the final executable instruction maps to the normal
+      // fallthrough completion PC after labels are stripped.
+      if (target < count) successors[pc]!.push(target);
+      else if (target > count) fail("jump target is outside function", fn.id, "invalid_jump");
     };
     let fallthrough = true;
-    if (instruction.name === "compare_branch") addLabel(descriptor.label);
+    if (instruction.name === "compare_branch" || instruction.name === "len_compare_branch")
+      addLabel(descriptor.label);
     else if (instruction.name === "jump" || instruction.name === "jump_if") {
       addLabel(descriptor.label);
       fallthrough = instruction.name === "jump_if";

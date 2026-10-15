@@ -62,7 +62,7 @@ func (machine *executionMachine) startPanic(task *executionTask, current *execut
 		Err:                panicState.err,
 		stack:              machine.panicStack(task, current, pc),
 	}
-	current.completion = &frameCompletion{panic: panicState}
+	current.setCompletion(frameCompletion{panic: panicState})
 }
 
 func (machine *executionMachine) panicStack(task *executionTask, current *executionFrame, pc int) []runtimeStackFrame {
@@ -125,7 +125,7 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 			return nil, false, nil
 		}
 		if current.completion.resume {
-			current.completion = nil
+			current.clearCompletion()
 			return nil, false, nil
 		}
 		if current.completion.panic == nil && current.frame.hasResultLocals() {
@@ -145,7 +145,7 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 			}
 			owner := task.frames[len(task.frames)-1]
 			if current.completion.panic != nil {
-				owner.completion = &frameCompletion{panic: current.completion.panic}
+				owner.setCompletion(frameCompletion{panic: current.completion.panic})
 			} else {
 				if len(current.completion.returnValues) != 0 {
 					return nil, false, fmt.Errorf("deferred function returned %d values", len(current.completion.returnValues))
@@ -155,7 +155,7 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 					if err != nil {
 						return nil, false, err
 					}
-					owner.completion = &frameCompletion{returnValues: values}
+					owner.setCompletion(frameCompletion{returnValues: values})
 				}
 			}
 			task.releaseCompletingFrame()
@@ -168,7 +168,7 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 			}
 			if len(task.frames) != 0 {
 				owner := task.frames[len(task.frames)-1]
-				owner.completion = &frameCompletion{panic: current.completion.panic}
+				owner.setCompletion(frameCompletion{panic: current.completion.panic})
 				task.releaseCompletingFrame()
 				continue
 			}
@@ -283,12 +283,12 @@ func (machine *executionMachine) recoverValue(task *executionTask) vmValue {
 	if top < 1 || !task.frames[top].deferred || task.frames[top].recoveredPanic != nil {
 		return newVMValue("Any", nil)
 	}
-	owner := task.frames[top-1].completion
-	if owner == nil || owner.panic == nil {
+	owner := task.frames[top-1]
+	if !owner.completionActive || owner.completion.panic == nil {
 		return newVMValue("Any", nil)
 	}
-	task.frames[top].recoveredPanic = owner.panic
-	return newVMValue("Any", owner.panic.err.Value)
+	task.frames[top].recoveredPanic = owner.completion.panic
+	return newVMValue("Any", owner.completion.panic.err.Value)
 }
 
 const panicNilMessage = "panic called with nil argument"

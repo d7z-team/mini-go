@@ -215,6 +215,62 @@ pub(super) fn verify_types(
             Zero(payload) | Convert(payload) | TypeAssert(payload) => {
                 outputs = Some(vec![resolve(&payload.r#type)?])
             }
+            IndexConvert(payload) => {
+                let mut object = input(0).clone();
+                if let Some(element) = registry.pointer_element(&object)? {
+                    if !registry
+                        .node(&element)?
+                        .is_some_and(|(_, node)| node.kind == wire::Array)
+                    {
+                        return Err(RuntimeError::new(
+                            "invalid_operand",
+                            path,
+                            "index-convert pointer requires an array",
+                        ));
+                    }
+                    object = element;
+                }
+                let byte_sequence = match registry.underlying(&object)? {
+                    TypeIdentity::Primitive(wire::PrimitiveString) => true,
+                    TypeIdentity::Slice(element) => {
+                        registry.underlying(&element)?
+                            == TypeIdentity::Primitive(wire::PrimitiveUint8)
+                    }
+                    _ => registry.node(&object)?.is_some_and(|(module, node)| {
+                        if !matches!(node.kind, wire::Array | wire::Slice) {
+                            return false;
+                        }
+                        registry
+                            .resolve(module, &node.elem)
+                            .and_then(|element| registry.underlying(&element))
+                            .is_ok_and(|element| {
+                                element == TypeIdentity::Primitive(wire::PrimitiveUint8)
+                            })
+                    }),
+                };
+                if !byte_sequence {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "index-convert requires string or byte sequence",
+                    ));
+                }
+                integer_inputs.push(1);
+                let target = resolve(&payload.r#type)?;
+                if !matches!(
+                    registry.underlying(&target)?,
+                    TypeIdentity::Primitive(kind)
+                        if (wire::PrimitiveInt..=wire::PrimitiveUintptr).contains(&kind)
+                ) {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "index-convert target must be an integer",
+                    ));
+                }
+                inputs = Some(vec![input(0).clone(), input(1).clone()]);
+                outputs = Some(vec![target]);
+            }
             TypeAssertOk(payload) => {
                 outputs = Some(vec![resolve(&payload.r#type)?, boolean.clone()])
             }
@@ -528,6 +584,42 @@ pub(super) fn verify_types(
                     ));
                 }
                 scalar_result_type(registry, &payload.operator, &[input(0), input(1)], path)?;
+            }
+            LenCompareBranch(payload) => {
+                if !registry.identical(
+                    &resolve(&payload.r#type)?,
+                    &TypeIdentity::Primitive(wire::PrimitiveInt),
+                )? || !matches!(
+                    payload.operator.as_str(),
+                    "==" | "!=" | "<" | "<=" | ">" | ">="
+                ) {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "length comparison requires Int descriptor and comparison operator",
+                    ));
+                }
+                integer_inputs.push(1);
+                let mut object = input(0).clone();
+                if let Some(element) = registry.pointer_element(&object)? {
+                    object = element;
+                }
+                let length_bearing = match registry.underlying(&object)? {
+                    TypeIdentity::Primitive(wire::PrimitiveString) | TypeIdentity::Slice(_) => true,
+                    _ => registry.node(&object)?.is_some_and(|(_, node)| {
+                        matches!(
+                            node.kind,
+                            wire::Array | wire::Slice | wire::Map | wire::Waitable
+                        )
+                    }),
+                };
+                if !length_bearing {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "length comparison requires a length-bearing object",
+                    ));
+                }
             }
             Unary(payload) => {
                 outputs = Some(vec![scalar_result_type(

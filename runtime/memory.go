@@ -281,7 +281,7 @@ func (sizer *runtimeValueSizer) task(task *executionTask) {
 		for _, deferred := range frame.defers {
 			sizer.value(newVMValue("Function", deferred.ref))
 		}
-		if active.completion != nil {
+		if active.completionActive {
 			for _, value := range active.completion.returnValues {
 				sizer.value(value)
 			}

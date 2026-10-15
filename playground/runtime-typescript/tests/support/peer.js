@@ -13,7 +13,7 @@ export async function startPeer(t) {
   });
   const lines = createInterface({ input: peer.stdout });
   t.signal.addEventListener("abort", () => peer.kill());
-  t.after(async () => {
+  t.onTestFinished(async () => {
     lines.close();
     peer.stdin.end("stop\n");
     await new Promise((resolve) => {

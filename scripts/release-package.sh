@@ -42,6 +42,8 @@ trap 'rm -rf "$scratch"' EXIT
 export GOCACHE=${GOCACHE:-"$scratch/go-build"}
 export MINIGO_CACHE=${MINIGO_CACHE:-"$scratch/mini-go"}
 export NPM_CONFIG_CACHE=${NPM_CONFIG_CACHE:-"$scratch/npm"}
+# The staged source has no Git metadata; its revision is recorded in release.json.
+export GOFLAGS="${GOFLAGS:+$GOFLAGS }-buildvcs=false"
 if [[ "$allow_dirty" == true ]]; then
 	git -C "$repository" ls-files --cached --others --exclude-standard -z |
 		while IFS= read -r -d '' file; do
@@ -74,7 +76,7 @@ if [[ $(sha256sum "$compiler" | cut -d ' ' -f 1) != "$runtime_compiler_sha256" ]
 	echo "TypeScript build replaced the Rust runtime compiler image" >&2
 	exit 1
 fi
-typescript_compiler_sha256=$(sha256sum "$typescript/dist/compiler/mini-go-compiler.wasm" | cut -d ' ' -f 1)
+typescript_compiler_sha256=$(sha256sum "$typescript/dist/assets/mini-go-compiler.wasm" | cut -d ' ' -f 1)
 (cd "$typescript" && npm pack --ignore-scripts --json --pack-destination "$output") >"$output/npm-pack.json"
 npm_tarball="$output/d7z-team-mini-go-$version.tgz"
 test -f "$npm_tarball"

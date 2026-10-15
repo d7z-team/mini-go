@@ -5,6 +5,38 @@ import (
 	"testing"
 )
 
+func TestComparisonBranchTargets(t *testing.T) {
+	for _, op := range []Opcode{OpCompareBranch, OpLenCompareBranch} {
+		for _, target := range []string{"done", "missing"} {
+			t.Run(op.String()+"/"+target, func(t *testing.T) {
+				source := "Int"
+				if op == OpLenCompareBranch {
+					source = "String"
+				}
+				artifact := NewArtifact("example/module", "main")
+				artifact.Functions = []Function{{ID: "main", Code: testSlotCode([]string{source, "Int"}, []Instruction{
+					{Op: OpZero, Payload: TypePayload{Type: testType(source)}},
+					{Op: OpZero, Payload: TypePayload{Type: testType("Int")}},
+					{Op: op, Payload: CompareBranchPayload{Type: testType("Int"), Operator: "==", Label: target}},
+					{Op: OpLabel, Payload: LabelPayload{Label: "done"}},
+					{Op: OpReturn, Payload: ReturnPayload{}},
+				}, [][2][]uint32{{nil, {0}}, {nil, {1}}, {{0, 1}, nil}, {nil, nil}, {nil, nil}})}}
+				err := testValidateArtifact(&artifact)
+				if target == "done" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				issue, ok := ValidationIssueFromError(err)
+				if !ok || issue.Code != ValidationLabelUnknown || issue.Path != "functions[0].instructions[2]" {
+					t.Fatalf("unknown target diagnostic = %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestValidateArtifactRejectsUnknownAddressLocal(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{

@@ -14,6 +14,62 @@ impl Instance {
         self.types.resolve(module, &node.elem)
     }
 
+    pub(super) fn container_length(
+        &mut self,
+        mut value: Value,
+        capacity: bool,
+    ) -> Result<i64, RuntimeError> {
+        let pointee = self.types.pointer_element(&value.typ)?;
+        if let Some(element) = pointee
+            && let Some((_, node)) = self.types.node(&element)?
+            && node.kind == wire::Array
+        {
+            return Ok(node.length);
+        }
+        if let Data::Pointer(address) = &value.data {
+            value = self.read_address(address)?;
+        }
+        let length = match value.data {
+            Data::String(bytes) if !capacity => bytes.len(),
+            Data::Array(values) => values.len(),
+            Data::Nil => 0,
+            Data::Slice(slice) => {
+                if capacity {
+                    slice.capacity
+                } else {
+                    slice.length
+                }
+            }
+            Data::Map(root) if !capacity => {
+                let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
+                    return Err(RuntimeError::new("invalid_map", "len", "invalid backing"));
+                };
+                entries.len()
+            }
+            Data::ResourceRef(root) => {
+                let scheduler::Resource::Channel {
+                    capacity: size,
+                    values,
+                    ..
+                } = &*self.resource(root)?
+                else {
+                    return Err(RuntimeError::new("type_error", "len", "expected channel"));
+                };
+                if capacity {
+                    *size
+                } else if *size == 0 {
+                    0
+                } else {
+                    values.len()
+                }
+            }
+            _ => {
+                return Err(RuntimeError::new("type_error", "len", "expected container"));
+            }
+        };
+        Ok(length as i64)
+    }
+
     pub(super) fn slice_values(&self, value: &Value) -> Result<Vec<Value>, RuntimeError> {
         match &value.data {
             Data::Slice(slice) => {

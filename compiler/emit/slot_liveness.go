@@ -39,7 +39,7 @@ func allocateSlots(code *ir.SlotCode) error {
 			labels[name], leaders[pc] = pc, true
 		}
 		switch instruction.Op {
-		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpTypeDispatch, ir.OpReturn, ir.OpPanic, ir.OpTailCallDirect:
+		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpTypeDispatch, ir.OpReturn, ir.OpPanic, ir.OpTailCallDirect:
 			if pc+1 < count {
 				leaders[pc+1] = true
 			}
@@ -94,7 +94,7 @@ func allocateSlots(code *ir.SlotCode) error {
 		var targets []string
 		fallsThrough := true
 		switch last.Op {
-		case ir.OpCompareBranch:
+		case ir.OpCompareBranch, ir.OpLenCompareBranch:
 			targets = []string{payload.(ir.CompareBranchPayload).Label}
 		case ir.OpJump, ir.OpJumpIf:
 			targets = []string{payload.(ir.JumpPayload).Label}

@@ -33,24 +33,26 @@ export class JsonDocument {
   constructor(
     readonly value: JsonValue,
     private readonly source: string,
-    private readonly spans: WeakMap<object, Span>,
-    private readonly properties: WeakMap<object, Map<string, Span>>,
+    private readonly artifactSpans: WeakMap<object, Span>,
+    private readonly image: object,
+    private readonly imageSpan: Span,
+    private readonly imageHashSpan: Span | undefined,
   ) {}
 
   bytes(value: object): Uint8Array {
-    const span = this.spans.get(value);
+    const span = this.artifactSpans.get(value);
     if (!span) fail("JSON value has no source span", "image");
     return textEncoder.encode(this.source.slice(span.start, span.end));
   }
 
   replacingProperty(value: object, key: string, replacement: string): Uint8Array {
-    const span = this.spans.get(value);
-    const property = this.properties.get(value)?.get(key);
-    if (!span || !property) fail(`JSON property ${key} has no source span`, `image.${key}`);
+    if (value !== this.image || key !== "hash" || !this.imageHashSpan)
+      fail(`JSON property ${key} has no source span`, `image.${key}`);
+    const property = this.imageHashSpan;
     return textEncoder.encode(
-      this.source.slice(span.start, property.start) +
+      this.source.slice(this.imageSpan.start, property.start) +
         replacement +
-        this.source.slice(property.end, span.end),
+        this.source.slice(property.end, this.imageSpan.end),
     );
   }
 }
@@ -109,26 +111,37 @@ export async function decodeJson(input: Uint8Array, maxBytes: number): Promise<J
 class StrictJsonParser {
   private offset = 0;
   private nodes = 0;
-  private readonly spans = new WeakMap<object, Span>();
-  private readonly properties = new WeakMap<object, Map<string, Span>>();
+  private readonly artifactSpans = new WeakMap<object, Span>();
+  private image!: object;
+  private imageSpan!: Span;
+  private imageHashSpan: Span | undefined;
 
   constructor(private readonly source: string) {}
 
   parse(): JsonDocument {
-    const value = this.value(0, "$", true);
+    const value = this.value(0, "$", true, Track.Image);
+    if (!value || typeof value !== "object" || Array.isArray(value) || value instanceof JsonNumber)
+      this.error("execution image must be an object");
     this.space();
     if (this.offset !== this.source.length) this.error("trailing JSON input");
-    return new JsonDocument(value, this.source, this.spans, this.properties);
+    return new JsonDocument(
+      value,
+      this.source,
+      this.artifactSpans,
+      this.image,
+      this.imageSpan,
+      this.imageHashSpan,
+    );
   }
 
-  private value(depth: number, path: string, count: boolean): JsonValue {
+  private value(depth: number, path: string, count: boolean, track = Track.None): JsonValue {
     this.space();
     if (depth > 128) fail("JSON nesting exceeds limit", path, "load_limit");
     if (count && ++this.nodes > 2_000_000)
       fail("JSON node count exceeds limit", path, "load_limit");
     switch (this.source[this.offset]) {
       case "{":
-        return this.object(depth + 1, path);
+        return this.object(depth + 1, path, track);
       case "[":
         return this.array(depth + 1, path);
       case '"':
@@ -144,7 +157,7 @@ class StrictJsonParser {
     }
   }
 
-  private object(depth: number, path: string): { [key: string]: JsonValue } {
+  private object(depth: number, path: string, track: Track): { [key: string]: JsonValue } {
     const start = this.offset;
     this.offset++;
     const result: { [key: string]: JsonValue } = Object.create(null) as {
@@ -153,11 +166,18 @@ class StrictJsonParser {
     this.space();
     if (this.source[this.offset] === "}") {
       this.offset++;
-      this.spans.set(result, { start, end: this.offset });
+      if (track === Track.Image) {
+        this.image = result;
+        this.imageSpan = { start, end: this.offset };
+      } else if (track === Track.Artifact)
+        this.artifactSpans.set(result, { start, end: this.offset });
       return result;
     }
-    const properties = new Map<string, Span>();
-    this.properties.set(result, properties);
+    if (track === Track.Image) {
+      this.image = result;
+      this.imageSpan = { start, end: 0 };
+    }
+    if (track === Track.Artifact) this.artifactSpans.set(result, { start, end: 0 });
     for (;;) {
       if (this.source[this.offset] !== '"') this.error("expected object key");
       const key = this.string();
@@ -166,12 +186,22 @@ class StrictJsonParser {
       if (this.source[this.offset++] !== ":") this.error("expected ':'");
       this.space();
       const valueStart = this.offset;
-      result[key] = this.value(depth, `${path}.${key}`, true);
-      properties.set(key, { start: valueStart, end: this.offset });
+      const childTrack =
+        track === Track.Image && key === "packages"
+          ? Track.Packages
+          : track === Track.Packages
+            ? Track.Archive
+            : track === Track.Archive && key === "artifact"
+              ? Track.Artifact
+              : Track.None;
+      result[key] = this.value(depth, path, true, childTrack);
+      if (track === Track.Image && key === "hash")
+        this.imageHashSpan = { start: valueStart, end: this.offset };
       this.space();
       const delimiter = this.source[this.offset++];
       if (delimiter === "}") {
-        this.spans.set(result, { start, end: this.offset });
+        if (track === Track.Image) this.imageSpan.end = this.offset;
+        else if (track === Track.Artifact) this.artifactSpans.get(result)!.end = this.offset;
         return result;
       }
       if (delimiter !== ",") this.error("expected ',' or '}'");
@@ -180,21 +210,18 @@ class StrictJsonParser {
   }
 
   private array(depth: number, path: string): JsonValue[] {
-    const start = this.offset;
     this.offset++;
     const result: JsonValue[] = [];
     this.space();
     if (this.source[this.offset] === "]") {
       this.offset++;
-      this.spans.set(result, { start, end: this.offset });
       return result;
     }
     for (;;) {
-      result.push(this.value(depth, `${path}[${result.length}]`, true));
+      result.push(this.value(depth, path, true));
       this.space();
       const delimiter = this.source[this.offset++];
       if (delimiter === "]") {
-        this.spans.set(result, { start, end: this.offset });
         return result;
       }
       if (delimiter !== ",") this.error("expected ',' or ']'");
@@ -204,12 +231,14 @@ class StrictJsonParser {
 
   private string(): string {
     const start = this.offset++;
+    let escaped = false;
     for (;;) {
       const code = this.source.charCodeAt(this.offset++);
       if (code === 0x22) break;
       if (code === 0x5c) {
-        const escaped = this.source.charCodeAt(this.offset++);
-        if (escaped === 0x75) {
+        escaped = true;
+        const escapeCode = this.source.charCodeAt(this.offset++);
+        if (escapeCode === 0x75) {
           for (let index = 0; index < 4; index++) {
             const digit = this.source.charCodeAt(this.offset++);
             if (
@@ -221,13 +250,14 @@ class StrictJsonParser {
             )
               this.error("invalid Unicode escape");
           }
-        } else if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74].includes(escaped)) {
+        } else if (![0x22, 0x5c, 0x2f, 0x62, 0x66, 0x6e, 0x72, 0x74].includes(escapeCode)) {
           this.error("invalid string escape");
         }
       } else if (!Number.isFinite(code) || code < 0x20) {
         this.error("invalid string");
       }
     }
+    if (!escaped) return this.source.slice(start + 1, this.offset - 1);
     try {
       return JSON.parse(this.source.slice(start, this.offset)) as string;
     } catch {
@@ -250,13 +280,24 @@ class StrictJsonParser {
   }
 
   private space(): void {
-    while (/\s/.test(this.source[this.offset] ?? "") && this.offset < this.source.length)
+    while (this.offset < this.source.length) {
+      const code = this.source.charCodeAt(this.offset);
+      if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) break;
       this.offset++;
+    }
   }
 
   private error(message: string): never {
     fail(`${message} at byte ${this.offset}`, "image");
   }
+}
+
+const enum Track {
+  None,
+  Image,
+  Packages,
+  Archive,
+  Artifact,
 }
 
 export function object(value: JsonValue, path: string): Record<string, JsonValue> {
@@ -271,11 +312,17 @@ export function schemaObject(
   fields: readonly string[],
 ): Record<string, JsonValue> {
   const result = object(value, path);
-  const allowed = new Set(fields);
+  let allowed = schemaFieldSets.get(fields);
+  if (!allowed) {
+    allowed = new Set(fields);
+    schemaFieldSets.set(fields, allowed);
+  }
   for (const key of Object.keys(result))
     if (!allowed.has(key)) fail(`unknown field ${key}`, `${path}.${key}`);
   return result;
 }
+
+const schemaFieldSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
 export function array(value: JsonValue | undefined, path: string): JsonValue[] {
   if (value === undefined) return [];

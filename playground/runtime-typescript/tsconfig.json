@@ -1,16 +1,18 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM"],
     "strict": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
-    "declaration": true,
-    "rootDir": "src",
-    "outDir": ".build/dist",
-    "noEmitOnError": true,
+    "noEmit": true,
+    "types": ["node", "vite/client"],
+    "paths": {
+      "#platform": ["./src/platform/browser.ts"],
+      "@d7z-team/mini-go/rpc": ["./src/rpc/index.ts"]
+    },
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noImplicitReturns": true,
@@ -21,5 +23,5 @@
     "noUncheckedSideEffectImports": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "../../testdata/rpc/generated/typescript/*.ts"]
 }

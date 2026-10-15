@@ -239,15 +239,16 @@ func (task *executionTask) consumeStep(limit int64) error {
 }
 
 type executionFrame struct {
-	frame           *frame
-	expectedResults int
-	qualifyResults  bool
-	resume          func(*executionTask, *executionFrame, []vmValue) error
-	abort           func()
-	deferred        bool
-	recoveredPanic  *machinePanic
-	completion      *frameCompletion
-	pinnedRevision  *instanceRevision
+	frame            *frame
+	expectedResults  int
+	qualifyResults   bool
+	resume           func(*executionTask, *executionFrame, []vmValue) error
+	abort            func()
+	deferred         bool
+	recoveredPanic   *machinePanic
+	completion       frameCompletion
+	completionActive bool
+	pinnedRevision   *instanceRevision
 }
 
 type artifactCallbackRequest struct {
@@ -300,6 +301,16 @@ type frameCompletion struct {
 	returnValues []vmValue
 	panic        *machinePanic
 	resume       bool
+}
+
+func (frame *executionFrame) setCompletion(completion frameCompletion) {
+	frame.completion = completion
+	frame.completionActive = true
+}
+
+func (frame *executionFrame) clearCompletion() {
+	frame.completion = frameCompletion{}
+	frame.completionActive = false
 }
 
 type machinePanic struct {

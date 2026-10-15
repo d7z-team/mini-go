@@ -88,8 +88,10 @@ export interface ResourceOptions {
 export interface VMOptions extends ResourceOptions {
   capabilities?: string[];
   symbols?: Uint8Array;
-  /** Enables opcode and function timing diagnostics. */
+  /** Enables opcode and function count diagnostics. */
   profile?: boolean;
+  /** Adds per-instruction wall-clock samples to function diagnostics. */
+  profileTiming?: boolean;
 }
 
 export interface FrameRef {

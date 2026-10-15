@@ -1,5 +1,5 @@
-import { copyTransferBytes, toError } from "../worker-channel.js";
-import { deferred, type Deferred } from "../deferred.js";
+import { copyTransferBytes, toError } from "../worker-channel";
+import { deferred, type Deferred } from "../deferred";
 import type {
   RuntimeControl,
   RuntimeControlResult,
@@ -7,7 +7,7 @@ import type {
   RuntimeResponse,
   RuntimeWorkerConnection,
   RuntimeWorkerFactory,
-} from "./protocol.js";
+} from "./protocol";
 import type {
   Bindings,
   Execution,
@@ -17,7 +17,7 @@ import type {
   Options,
   Snapshot,
   Stats,
-} from "./types.js";
+} from "./types";
 
 const textEncoder = new TextEncoder();
 

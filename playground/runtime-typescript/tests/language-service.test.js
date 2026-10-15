@@ -1,8 +1,8 @@
-import test from "node:test";
+import { test } from "vitest";
 import { readFile } from "node:fs/promises";
 import * as tools from "@d7z-team/mini-go/tools";
 import { exerciseTools } from "./support/language-service.js";
-import { createBrowserPage } from "./support/browser.js";
+import { createBrowserPage, readBrowserScenario } from "./support/browser.js";
 import { exerciseCompilerWorkload } from "./support/compiler-workloads.js";
 
 const workloads = JSON.parse(
@@ -14,7 +14,7 @@ for (const workload of workloads) {
     `Node compiler workload ${workload.Name} preserves warm snapshots`,
     { timeout: 600_000 },
     async (t) => {
-      t.diagnostic(JSON.stringify(await exerciseCompilerWorkload(tools, workload, t.signal)));
+      await exerciseCompilerWorkload(tools, workload, t.signal);
     },
   );
   test(
@@ -22,13 +22,13 @@ for (const workload of workloads) {
     { timeout: 600_000 },
     async (t) => {
       const page = await createBrowserPage(t, {
+        "/": '<!doctype html><script type="module" src="/scenario.js"></script>',
+        "/scenario.js": new URL("./support/compiler-browser.js", import.meta.url),
         "/workloads.js": new URL("./support/compiler-workloads.js", import.meta.url),
+        "/workload.json": JSON.stringify(workload),
       });
-      const result = await page.evaluate(async (workload) => {
-        const { exerciseCompilerWorkload } = await import("/workloads.js");
-        return exerciseCompilerWorkload(await import("/tools.browser.js"), workload);
-      }, workload);
-      t.diagnostic(JSON.stringify(result));
+      const result = await readBrowserScenario(page);
+      return result;
     },
   );
 }
@@ -49,11 +49,7 @@ test(
   "Node tools use the distributed compiler and shared language/source fixtures",
   { timeout: 600_000 },
   async (t) => {
-    t.diagnostic(
-      JSON.stringify(
-        await exerciseTools(tools, workspace, sourceFixture, debugFixture, queries, t.signal),
-      ),
-    );
+    await exerciseTools(tools, workspace, sourceFixture, debugFixture, queries, t.signal);
   },
 );
 test(
@@ -61,16 +57,15 @@ test(
   { timeout: 600_000 },
   async (t) => {
     const page = await createBrowserPage(t, {
-      "/scenario.js": new URL("./support/language-service.js", import.meta.url),
+      "/": '<!doctype html><script type="module" src="/scenario.js"></script>',
+      "/scenario.js": new URL("./support/language-browser.js", import.meta.url),
+      "/language-scenario.js": new URL("./support/language-service.js", import.meta.url),
+      "/workspace.json": JSON.stringify(workspace),
+      "/source.json": JSON.stringify(sourceFixture),
+      "/debug.json": JSON.stringify(debugFixture),
+      "/queries.json": JSON.stringify(queries),
     });
-    const measurements = await page.evaluate(
-      async ({ workspace, sourceFixture, debugFixture, queries }) => {
-        const tools = await import("/tools.browser.js");
-        const { exerciseTools } = await import("/scenario.js");
-        return exerciseTools(tools, workspace, sourceFixture, debugFixture, queries);
-      },
-      { workspace, sourceFixture, debugFixture, queries },
-    );
-    t.diagnostic(JSON.stringify(measurements));
+    const measurements = await readBrowserScenario(page);
+    return measurements;
   },
 );

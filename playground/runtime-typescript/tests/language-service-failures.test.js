@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { LanguageService } from "../dist/compiler/language-service.js";
+import { test } from "vitest";
+import { LanguageService } from "../src/compiler/language-service";
 
 function frame(metadata) {
   const encoded = new TextEncoder().encode(JSON.stringify(metadata));

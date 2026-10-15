@@ -1,0 +1,14 @@
+package main
+
+type View interface { Label() string }
+
+type Item struct { Text string }
+
+func (i Item) Label() string { return i.Text }
+
+func Main() int {
+	values := make(map[string]int)
+	var view View = Item{Text: "alpha"}
+	values[view.Label()] = 7
+	return values["alpha"]
+}
