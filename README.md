@@ -47,23 +47,17 @@ mini-go run hello.mgo
 Mini-Go source files use `.mgo`; tests use `_test.mgo`. See the [Go and CLI guide](./USAGE.md) for
 project layout, host capabilities, execution control, and hot patching.
 
-## Embed in Go
+## Embed in an application
 
-```bash
-go get github.com/d7z-team/mini-go
-```
+An embedding application loads a reusable `Program` and creates an isolated instance for each runtime
+state. Go applications can compile sources directly; Rust and TypeScript provide their own runtime
+and source-tool APIs.
 
-An embedding application provides sources, creates an `Engine`, compiles a reusable `Program`, and
-instantiates isolated runtime state. Start with the [complete Go example](./USAGE.md#完整嵌入示例).
-
-## Other runtimes
-
-| Environment | Package and guide |
-| --- | --- |
-| Native Rust | [`mini-go` crate][crate-runtime] · [Rust runtime][rust-runtime] |
-| Browser and Node.js | `npm install @d7z-team/mini-go` · [TypeScript runtime][typescript-runtime] |
-
-Use the component guide for packaging, deployment, and toolchain details.
+| Environment | Install | Start here |
+| --- | --- | --- |
+| Go | `go get github.com/d7z-team/mini-go` | [Complete Go example](./USAGE.md#完整嵌入示例) |
+| Native Rust | [`mini-go` crate][crate-runtime] | [Rust runtime][rust-runtime] |
+| Browser and Node.js | `npm install @d7z-team/mini-go` | [TypeScript runtime][typescript-runtime] |
 
 ## Documentation
 
@@ -73,8 +67,6 @@ The detailed guides below are written in Chinese.
 | --- | --- |
 | Embed in Go or use the CLI | [Go and CLI guide](./USAGE.md) |
 | Define and connect RPC services | [RPC guide](./RPC.md) |
-| Use native Rust | [Rust runtime][rust-runtime] |
-| Use Browser or Node.js | [TypeScript runtime][typescript-runtime] |
 | Configure the editor | [VS Code extension](./vscode-ext/README.md) |
 | Understand component boundaries | [Architecture](./ARCHITECTURE.md) |
 | Build, test, diagnose, or release | [Development guide](./DEVELOPMENT.md) |

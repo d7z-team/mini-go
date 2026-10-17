@@ -23,16 +23,16 @@ func reflectInspectDescribe(ctx intrinsicContext, args []vmValue) ([]vmValue, er
 		typ, present = module.resolvedRuntimeType(typ).Underlying().PointerElem()
 	}
 	var kind uint64
-	var comparable bool
+	var isComparable bool
 	if present {
 		typ = module.resolvedRuntimeType(typ)
 		kind = uint64(reflectKindCode(typ.Underlying()))
-		comparable, err = module.isComparableRuntimeType(typ, map[string]struct{}{})
+		isComparable, err = module.isComparableRuntimeType(typ, map[string]struct{}{})
 		if err != nil {
 			return nil, err
 		}
 	}
-	return []vmValue{newVMValue("Uint", kind), newVMValue("Bool", comparable), newVMValue("Bool", isNil)}, nil
+	return []vmValue{newVMValue("Uint", kind), newVMValue("Bool", isComparable), newVMValue("Bool", isNil)}, nil
 }
 
 func reflectInspectElementImplements(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {

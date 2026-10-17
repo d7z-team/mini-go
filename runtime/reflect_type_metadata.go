@@ -156,12 +156,12 @@ func reflectTypeDescriptorValue(ctx intrinsicContext, info TypeInfo) vmValue {
 			outputs[index] = reflectTypeValueForRuntimeType(ctx, module, vmType{Ref: result, Table: underlying.Table})
 		}
 	}
-	comparable := false
+	isComparable := false
 	if module != nil {
 		var err error
-		comparable, err = module.isComparableRuntimeType(runtimeType, map[string]struct{}{})
+		isComparable, err = module.isComparableRuntimeType(runtimeType, map[string]struct{}{})
 		if err != nil {
-			comparable = false
+			isComparable = false
 		}
 	}
 	descriptor := newRuntimeStructValue(module, "reflect.runtimeTypeData", map[string]vmValue{
@@ -182,7 +182,7 @@ func reflectTypeDescriptorValue(ctx intrinsicContext, info TypeInfo) vmValue {
 		"length":      newVMValue("Int", length),
 		"inputs":      newSliceValue("Slice<reflect.Type>", inputs),
 		"outputs":     newSliceValue("Slice<reflect.Type>", outputs),
-		"comparable":  newVMValue("Bool", comparable),
+		"comparable":  newVMValue("Bool", isComparable),
 		"fieldCount":  newVMValue("Int", int64(len(info.Fields))),
 		"methodCount": newVMValue("Int", int64(len(info.Methods))),
 	})

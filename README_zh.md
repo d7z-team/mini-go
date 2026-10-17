@@ -45,23 +45,16 @@ mini-go run hello.mgo
 Mini-Go 源码使用 `.mgo`，测试文件使用 `_test.mgo`。项目布局、宿主能力、执行控制和热更新见
 [Go 与 CLI 使用指南](./USAGE.md)。
 
-## 嵌入 Go
+## 嵌入应用
 
-```bash
-go get github.com/d7z-team/mini-go
-```
+宿主加载可复用的 `Program`，为每份运行状态创建隔离实例。Go 应用可以直接编译源码；Rust 与
+TypeScript 提供各自的运行时和源码工具 API。
 
-宿主提供源码并创建 `Engine`，编译出可复用的 `Program`，再为每份隔离状态创建实例。
-从[完整 Go 示例](./USAGE.md#完整嵌入示例)开始接入。
-
-## 其他运行环境
-
-| 环境 | 安装与指南 |
-| --- | --- |
-| Rust 原生 | [`mini-go` crate](https://crates.io/crates/mini-go) · [Rust 运行时](./playground/runtime-rust/README.md) |
-| 浏览器与 Node.js | `npm install @d7z-team/mini-go` · [TypeScript 运行时](./playground/runtime-typescript/README.md) |
-
-打包、部署和工具链要求见对应组件指南。
+| 环境 | 安装 | 接入入口 |
+| --- | --- | --- |
+| Go | `go get github.com/d7z-team/mini-go` | [完整 Go 示例](./USAGE.md#完整嵌入示例) |
+| Rust 原生 | [`mini-go` crate](https://crates.io/crates/mini-go) | [Rust 运行时](./playground/runtime-rust/README.md) |
+| 浏览器与 Node.js | `npm install @d7z-team/mini-go` | [TypeScript 运行时](./playground/runtime-typescript/README.md) |
 
 ## 文档
 
@@ -69,8 +62,6 @@ go get github.com/d7z-team/mini-go
 | --- | --- |
 | 嵌入 Go 或使用 CLI | [Go 与 CLI 使用指南](./USAGE.md) |
 | 定义和接入 RPC 服务 | [RPC 指南](./RPC.md) |
-| 使用 Rust 原生运行时 | [Rust 运行时](./playground/runtime-rust/README.md) |
-| 使用浏览器或 Node.js | [TypeScript 运行时](./playground/runtime-typescript/README.md) |
 | 配置编辑器 | [VS Code 扩展](./vscode-ext/README.md) |
 | 理解组件边界 | [架构](./ARCHITECTURE.md) |
 | 构建、测试、诊断和发布 | [开发指南](./DEVELOPMENT.md) |

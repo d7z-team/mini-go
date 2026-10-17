@@ -28,10 +28,6 @@ func inf(sign int) float64 {
 	return floatbits.Inf(sign)
 }
 
-func isNaN(f float64) bool {
-	return floatbits.IsNaN(f)
-}
-
 func nan() float64 {
 	return floatbits.NaN()
 }

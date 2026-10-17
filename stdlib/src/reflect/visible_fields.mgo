@@ -44,7 +44,7 @@ func VisibleFields(typ Type) []StructField {
 				fields = append(fields, field)
 			}
 			if field.Anonymous {
-				embedded, ok := embeddedStructFieldType(field)
+				embedded, ok := fieldStructType(field)
 				if ok {
 					visit(embedded)
 				}

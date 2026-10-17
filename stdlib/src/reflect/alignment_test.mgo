@@ -92,6 +92,30 @@ func TestReflectFieldMetadataAndAccess(t *testing.T) {
 	}
 }
 
+func TestReflectFieldIndexesAreIndependent(t *testing.T) {
+	typ := reflect.TypeOf(reflectVisibleRoot{})
+	index := []int{0, 0}
+	field := typ.FieldByIndex(index)
+	index[0] = 99
+	if len(field.Index) != 1 || field.Index[0] != 0 {
+		t.Fatal("FieldByIndex should own its returned index")
+	}
+	field.Index[0] = 99
+	found, ok := typ.FieldByName("Leaf")
+	if !ok || len(found.Index) != 2 || found.Index[0] != 0 || found.Index[1] != 0 {
+		t.Fatal("field index mutation changed later lookup")
+	}
+	visible := reflect.VisibleFields(typ)
+	visible[0].Index[0] = 99
+	if visible[1].Index[0] != 0 || visible[1].Index[1] != 0 || visible[2].Index[0] != 1 {
+		t.Fatal("visible fields should own separate indexes")
+	}
+	found.Index[1] = 99
+	if visible[1].Index[1] != 0 {
+		t.Fatal("lookup and visible field indexes should be independent")
+	}
+}
+
 func TestReflectMethodMetadataAndFunction(t *testing.T) {
 	typ := reflect.TypeOf(methodCounter{})
 	method, ok := typ.MethodByName("Add")

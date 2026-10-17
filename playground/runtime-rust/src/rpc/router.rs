@@ -815,8 +815,8 @@ impl Binder for Router {
 fn affinity(key: &str, id: u64) -> u64 {
     key.bytes()
         .chain(id.to_le_bytes())
-        .fold(0xcbf29ce484222325u64, |hash, byte| {
-            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
         })
 }
 fn prefer_error(current: Status, next: Status) -> Status {

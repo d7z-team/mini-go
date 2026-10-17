@@ -2273,11 +2273,11 @@ impl Instance {
         expected_results: usize,
         continuation: Continuation,
     ) -> Result<(), RuntimeError> {
-        let caller = self.running.frames.len() - 1;
+        let caller_index = self.running.frames.len() - 1;
         self.push_frame(callee, arguments, expected_results, false, 0)?;
-        // Frame preparation may fail or request a census. Publish the resume
+        // Frame preparation may fail or request collection. Publish the resume
         // state only once a callee owns the call, so retry reads the operands.
-        self.running.frames[caller].continuation = Some(continuation);
+        self.running.frames[caller_index].continuation = Some(continuation);
         Ok(())
     }
 

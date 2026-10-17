@@ -1,16 +1,19 @@
 # 集成测试
 
-本目录通过公开 API 验证跨 compiler/runtime、宿主和进程的行为。单个包的测试留在所属包，
-多个后端共同验证的输入放在根 [testdata](../testdata/README.md)。
+本目录验证跨 compiler/runtime、宿主和进程的行为。单个包的行为测试留在所属包；多个组件共同消费的
+源码、镜像和预期由根 [testdata](../testdata/README.md) 维护。
 
-## 场景与数据
+覆盖编译产物加载、源码语义、缓存和优化、宿主能力、调试，以及 RPC 服务发布、热更新和跨进程通信。
+数据目录与事实源分工见[共享测试数据](../testdata/README.md#目录-owner)。
 
-| 范围 | 数据来源 |
-| --- | --- |
-| compiler/runtime 语义、缓存与优化一致性 | 本目录的 `testdata/`，按行为组织 |
-| RPC 的 VM 调用、服务发布与跨语言通信 | 根 [RPC 数据](../testdata/README.md#rpc-一致性数据) |
-| 标准库宿主与调试 | 根 [标准库宿主数据](../testdata/stdlib-host/) 与 [调试数据](../testdata/debug/) |
+## 运行
 
-使用 `make test TEST_PACKAGES='./integrations'` 运行本目录测试，并复用 Mini-Go 编译缓存。
-包筛选和跨进程验证见[日常工作流](../DEVELOPMENT.md#日常工作流)；需要 peer 的跨语言通信矩阵使用
-[Rust 验证](../DEVELOPMENT.md#rust-验证)中的 `make test-interop`。
+运行本目录的 Go 集成测试：
+
+```bash
+make test TEST_PACKAGES='./integrations'
+```
+
+涉及 Rust peer 或 Go provider 的跨进程矩阵使用 `make test-interop`。测试范围、缓存和生成入口统一见
+[开发指南](../DEVELOPMENT.md#日常工作流)；共享数据修改后的生成与验证见
+[生成与派生物](../DEVELOPMENT.md#生成与派生物)。

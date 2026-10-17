@@ -1,19 +1,17 @@
 # Mini-Go 标准库
 
-本目录保存与引擎同版本发布的标准库源码、能力声明和可选 Go 宿主实现。公开包与 API 见
-[生成参考](../docs/reference/README.md)，宿主装配见[使用指南](../USAGE.md#系统能力)。
+本目录保存与引擎版本配套的标准库源码、能力声明和可选 Go 宿主实现。公开包和 API 以
+[生成参考](../docs/reference/README.md)为准，宿主能力的装配方式见[使用指南](../USAGE.md#宿主能力)。
 
-## 目录
+## 目录职责
 
-| 路径 | 内容 |
+| 路径 | owner |
 | --- | --- |
-| `src/<import-path>/` | Mini-Go 源码及同目录的 `*_test.mgo` 行为测试 |
+| `src/<import-path>/` | Mini-Go 标准库源码、注释和同目录 `*_test.mgo` 行为测试 |
 | `host/` | console、环境和文件系统的 schema、生成绑定、provider 与 backend |
-| 根 package `stdlib` | 不可变源码入口与能力声明 |
+| `stdlib.go`、`capability.go` | 源码入口、能力声明和宿主装配 |
 
-## 开发
-
-公开注释与同目录行为测试描述实际支持的 API，Go 测试验证宿主和跨层集成。生成与验证顺序见
-[开发指南](../DEVELOPMENT.md#生成与派生物)，单独验证时选择 `./stdlib/...` 包。
+标准库源码定义 source-level 行为；Go 测试验证宿主实现和跨层结果。修改源码、能力声明或生成输入后，按
+[开发指南](../DEVELOPMENT.md#生成与派生物)的流程更新派生物，再运行受影响的 `./stdlib/...` 测试。
 
 移植源码保留原版权头，适用 [Go 许可证](LICENSE_GO)。

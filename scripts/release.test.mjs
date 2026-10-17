@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,6 +23,16 @@ function run(command, parameters, cwd) {
     },
   }).trim();
 }
+
+test("release scripts report missing option values as usage errors", () => {
+  for (const script of ["release-package.sh", "release-verify.sh"]) {
+    const result = spawnSync("bash", [path.join(scripts, script), "--output"], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 2, `${script}: ${result.stderr}`);
+    assert.match(result.stderr, /usage:/);
+  }
+});
 
 test("release version uses the complete commit count and seven-character identity", async (t) => {
   const repository = await mkdtemp(

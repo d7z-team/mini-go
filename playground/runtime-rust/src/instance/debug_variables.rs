@@ -106,7 +106,7 @@ impl Instance {
                 );
             }
             Data::Pointer(_) | Data::Interface(_) if offset == 0 && limit != 0 => {
-                paths.push(("*".to_owned(), VariablePath::Dereference))
+                paths.push(("*".to_owned(), VariablePath::Dereference));
             }
             _ => {}
         }

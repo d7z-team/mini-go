@@ -29,15 +29,6 @@ func trimRightSpace(s []byte) []byte {
 	return s[:end]
 }
 
-func containsCutsetByte(cutset string, value byte) bool {
-	for _, candidate := range cutset {
-		if int(value) == int(candidate) {
-			return true
-		}
-	}
-	return false
-}
-
 func containsCutsetRune(cutset string, value rune) bool {
 	for _, candidate := range cutset {
 		if candidate == value {

@@ -4,8 +4,8 @@ use super::*;
 
 /// Temporary operand roots retain the values that are still owned by a frame
 /// while a fallible owner transaction is resumed. The managed heap remains
-/// authoritative for payload bytes; this buffer is only a short-lived root
-/// list and carries no parallel allocation census.
+/// authoritative for payload bytes and allocation accounting; this buffer is
+/// a short-lived root list.
 #[derive(Default)]
 pub(super) struct OperandRoots {
     handles: Vec<Handle>,

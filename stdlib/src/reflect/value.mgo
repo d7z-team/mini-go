@@ -1169,10 +1169,3 @@ func isCapCapableValue(value Value) bool {
 	}
 	return false
 }
-
-func valueKindLabel(value Value) string {
-	if value.IsValid() {
-		return value.Kind().String()
-	}
-	return "invalid"
-}

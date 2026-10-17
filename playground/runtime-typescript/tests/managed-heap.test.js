@@ -3,15 +3,7 @@ import { test } from "vitest";
 import { ManagedHeap } from "../src/vm/managed-heap";
 import { VirtualMachine } from "../src/vm/vm";
 import { runtimeVector } from "./support/runtime-vectors.js";
-
-function execute(vm, id) {
-  for (let count = 0; count < 100_000; count++) {
-    const state = vm.pump(4096);
-    if (state.error) throw new Error(state.error);
-    if (state.executions.find((execution) => execution.id === id)?.settled) return vm.result(id);
-  }
-  throw new Error("execution did not settle");
-}
+import { executeVM, initializeVM } from "./support/vm.js";
 
 function allocate(heap, stride, logical = BigInt(stride), references = []) {
   const layout = heap.registerLayout({ stride, references });
@@ -25,12 +17,8 @@ function allocate(heap, stride, logical = BigInt(stride), references = []) {
 test("slice backing allocation in the real VM publishes managed payload storage", async () => {
   const vm = await VirtualMachine.create(runtimeVector("slice_copy").bytes, {});
   try {
-    for (;;) {
-      const state = vm.pump(4096);
-      if (state.error) throw new Error(state.error);
-      if (state.ready) break;
-    }
-    const result = execute(vm, vm.start("default", []));
+    initializeVM(vm, "slice backing allocation");
+    const result = executeVM(vm, vm.start("default", []));
     assert.equal(result.roots.length, 1);
     assert.ok(vm.guestMemory.managedHeap.stats().totalAllocations > 0n);
   } finally {

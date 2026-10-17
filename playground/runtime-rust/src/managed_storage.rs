@@ -479,8 +479,8 @@ pub struct StorageWorkerPool {
 /// Logical capacity owned by a live runtime control structure. It has no
 /// payload edges: those belong to the frame/task's normal root enumerator.
 /// Dropping an unpublished lease aborts admission; dropping a committed lease
-/// releases capacity when its owner ends. The lease is the owner record: the
-/// collector never reconstructs or defers this charge from a heap census.
+/// releases capacity when its owner ends. Admission and release update the
+/// heap's capacity ledger directly.
 pub(crate) struct StorageControlLease {
     heap: Arc<RwLock<StorageHeap>>,
     bytes: u64,
@@ -4079,7 +4079,7 @@ mod tests {
         let mut heap = StorageHeap::default();
         let layout = layout(&mut heap, 16, &[0, 8]);
         let objects: Vec<_> = (0..128).map(|_| allocate(&mut heap, layout, 16)).collect();
-        let mut seed = 0x9e3779b9u32;
+        let mut seed = 0x9e37_79b9_u32;
         let mut graph = vec![Vec::new(); objects.len()];
         for index in 0..objects.len() {
             for edge in 0..2 {

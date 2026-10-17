@@ -32,7 +32,7 @@ mod tests {
 
     #[test]
     fn frozen_unicode_lookup_covers_every_scalar() {
-        let mut expected = vec![0u8; 0x110000];
+        let mut expected = vec![0u8; 0x0011_0000];
         for (index, ranges) in [tables::LETTER, tables::DIGIT, tables::UPPER]
             .iter()
             .enumerate()

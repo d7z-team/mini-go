@@ -1,9 +1,5 @@
 package reflect
 
-func valueTypeIdentity(value Value) string {
-	return typeIdentity(value.valueType)
-}
-
 func isBoolValue(value Value) bool {
 	return value.Kind() == Bool
 }

@@ -140,6 +140,9 @@ func TestRuntimeStructuredComparableShapes(t *testing.T) {
 	}{
 		{name: "array of int", typ: "Array<2, Int>", want: true},
 		{name: "array of slice", typ: "Array<1, Slice<Int>>", want: false},
+		{name: "nested arrays", typ: "Array<2, Array<3, Int>>", want: true},
+		{name: "struct of arrays", typ: "struct{Left:Array<2, Int>, Right:Array<2, Int>}", want: true},
+		{name: "nested noncomparable field", typ: "struct{Left:Array<2, Int>, Right:struct{Values:Slice<Int>}}", want: false},
 		{name: "struct of map", typ: "struct{Values:Map<String, Int>}", want: false},
 		{name: "pointer", typ: "Ptr<Int>", want: true},
 		{name: "function", typ: "function() Int", want: false},

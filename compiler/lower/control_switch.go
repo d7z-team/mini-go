@@ -58,11 +58,11 @@ func (l *lowerer) lowerSwitchWithLabel(stmt ast.Statement, scope *funcScope, use
 			l.add("hirgen.switch.tag.type", "switch tag expression has no type", stmt.Expr.Span)
 			return nil, false
 		}
-		comparable := l.isComparableType(tagType)
+		isComparable := l.isComparableType(tagType)
 		if hasSwitchFact && switchFact.Tag.Valid() {
-			comparable = switchFact.Comparable
+			isComparable = switchFact.Comparable
 		}
-		if !comparable {
+		if !isComparable {
 			l.add("hirgen.switch.tag.comparable", "switch tag expression must be comparable", stmt.Expr.Span)
 			return nil, false
 		}

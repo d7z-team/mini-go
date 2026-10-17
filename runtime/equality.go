@@ -79,11 +79,11 @@ func (m *moduleInstance) equalValuesSeen(left, right vmValue, depth int) (bool, 
 		if !m.sameRuntimeType(leftValue.Type, rightValue.Type) {
 			return false, nil
 		}
-		comparable, err := m.isComparableRuntimeType(leftValue.Type, map[string]struct{}{})
+		isComparable, err := m.isComparableRuntimeType(leftValue.Type, map[string]struct{}{})
 		if err != nil {
 			return false, err
 		}
-		if !comparable {
+		if !isComparable {
 			return false, newGuestPanic(fmt.Errorf("%s is not comparable", leftValue.Type))
 		}
 		return m.equalConcreteValues(leftValue, rightValue, depth+1)

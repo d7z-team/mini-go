@@ -195,9 +195,9 @@ func (a *analyzer) declareUniverse() {
 	// currently compiled module as the defining module.
 	errorType, _ := types.NewParser("", a.info.TypeTable).Parse("interface{Error:function() String}")
 	a.declare(a.info.Universe, ObjectType, "error", 0, errorType, false, false)
-	comparable := types.TypeRef{Kind: types.Interface, Node: "universe.comparable"}
-	_ = a.info.TypeTable.Add(types.TypeNode{ID: comparable.Node, Kind: types.Interface, Name: "comparable", TypeSet: true})
-	a.declare(a.info.Universe, ObjectType, "comparable", 0, comparable, false, false)
+	comparableType := types.TypeRef{Kind: types.Interface, Node: "universe.comparable"}
+	_ = a.info.TypeTable.Add(types.TypeNode{ID: comparableType.Node, Kind: types.Interface, Name: "comparable", TypeSet: true})
+	a.declare(a.info.Universe, ObjectType, "comparable", 0, comparableType, false, false)
 	for _, name := range predeclaredBuiltinNames {
 		a.declare(a.info.Universe, ObjectBuiltin, name, 0, types.TypeRef{}, false, false)
 	}

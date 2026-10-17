@@ -3,10 +3,6 @@ import { test } from "vitest";
 import { VirtualMachine } from "../src/vm/vm";
 import { runtimeVector, sealImage } from "./support/runtime-vectors.js";
 
-function forceCollection(vm, major) {
-  vm.collectHeap(major);
-}
-
 test("young allocation growth does not request a full old graph scan", async () => {
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
   try {
@@ -25,7 +21,7 @@ test("young allocation growth does not request a full old graph scan", async () 
 
 function initializeWithCollection(vm, label) {
   for (let count = 0; count < 100_000; count++) {
-    forceCollection(vm, count % 2 === 0);
+    vm.collectHeap(count % 2 === 0);
     const state = vm.pump(1);
     if (state.error) throw new Error(`${label}: ${state.error}`);
     if (state.ready) return;
@@ -35,7 +31,7 @@ function initializeWithCollection(vm, label) {
 
 function executeWithCollection(vm, execution, label) {
   for (let count = 0; count < 100_000; count++) {
-    forceCollection(vm, count % 2 === 0);
+    vm.collectHeap(count % 2 === 0);
     const state = vm.pump(1);
     if (state.error) throw new Error(`${label}: ${state.error}`);
     if (state.executions.find((item) => item.id === execution)?.settled)
@@ -100,7 +96,7 @@ test("forced collection preserves an active closure across a hot patch", async (
     initializeWithCollection(vm, "hot patch original");
     const oldExecution = vm.start("default", []);
     for (let count = 0; count < 256; count++) {
-      forceCollection(vm, count % 2 === 0);
+      vm.collectHeap(count % 2 === 0);
       vm.pump(1);
       if ((vm.stats().profile?.opcodes.make_closure ?? 0n) > 0n) break;
     }

@@ -42,10 +42,6 @@ func syntaxError(function string, input string) error {
 	return &NumError{Func: function, Num: input, Err: ErrSyntax}
 }
 
-func rangeError(function string, input string) error {
-	return &NumError{Func: function, Num: input, Err: ErrRange}
-}
-
 func parseError(function string, input string, err error) error {
 	return &NumError{Func: function, Num: input, Err: err}
 }

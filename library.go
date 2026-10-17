@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/d7z-team/mini-go/compiler/workspace"
@@ -59,7 +58,7 @@ func NewStandardLibrary(id string, sources fs.FS, capabilities ...HostCapability
 		seen[capability] = struct{}{}
 		normalized = append(normalized, capability)
 	}
-	sort.Slice(normalized, func(i, j int) bool { return normalized[i] < normalized[j] })
+	slices.Sort(normalized)
 	paths, err := sourceSet.PackagePaths()
 	if err != nil {
 		return Library{}, err
@@ -133,18 +132,12 @@ func NewLibrarySet(libraries ...Library) (*LibrarySet, error) {
 			return nil, fmt.Errorf("registered library %q has invalid kind %d", library.id, library.kind)
 		}
 	}
-	sort.Slice(set.modules, func(i, j int) bool { return set.modules[i].modulePath < set.modules[j].modulePath })
-	sort.Slice(set.standards, func(i, j int) bool { return set.standards[i].id < set.standards[j].id })
-	sort.Slice(set.capabilities, func(i, j int) bool { return set.capabilities[i] < set.capabilities[j] })
-	uniqueCapabilities := set.capabilities[:0]
-	for _, capability := range set.capabilities {
-		if len(uniqueCapabilities) == 0 || capability != uniqueCapabilities[len(uniqueCapabilities)-1] {
-			uniqueCapabilities = append(uniqueCapabilities, capability)
-		}
-	}
-	set.capabilities = uniqueCapabilities
+	slices.SortFunc(set.modules, func(a, b Library) int { return strings.Compare(a.modulePath, b.modulePath) })
+	slices.SortFunc(set.standards, func(a, b Library) int { return strings.Compare(a.id, b.id) })
+	slices.Sort(set.capabilities)
+	set.capabilities = slices.Compact(set.capabilities)
 	for path, capabilities := range set.packageCapabilities {
-		sort.Slice(capabilities, func(i, j int) bool { return capabilities[i] < capabilities[j] })
+		slices.Sort(capabilities)
 		set.packageCapabilities[path] = slices.Compact(capabilities)
 	}
 	return set, nil

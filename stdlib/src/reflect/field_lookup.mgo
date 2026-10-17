@@ -46,7 +46,7 @@ func fieldByNameFunc(typ Type, match func(string) bool) (StructField, bool) {
 				if found || !field.Anonymous {
 					continue
 				}
-				embedded, ok := embeddedStructFieldType(field)
+				embedded, ok := fieldStructType(field)
 				if !ok {
 					continue
 				}
@@ -81,10 +81,6 @@ func fieldByNameFunc(typ Type, match func(string) bool) (StructField, bool) {
 	return StructField{}, false
 }
 
-func embeddedStructFieldType(field StructField) (Type, bool) {
-	return fieldStructType(field)
-}
-
 func fieldStructType(field StructField) (Type, bool) {
 	typ := field.Type
 	if typ.Kind() == Pointer {
@@ -97,20 +93,14 @@ func fieldStructType(field StructField) (Type, bool) {
 }
 
 func joinIndex(prefix []int, suffix []int) []int {
-	out := []int{}
-	for i := 0; i < len(prefix); i++ {
-		out = append(out, prefix[i])
-	}
-	for i := 0; i < len(suffix); i++ {
-		out = append(out, suffix[i])
-	}
+	out := make([]int, len(prefix) + len(suffix))
+	copy(out, prefix)
+	copy(out[len(prefix):], suffix)
 	return out
 }
 
 func copyIndex(index []int) []int {
-	out := []int{}
-	for i := 0; i < len(index); i++ {
-		out = append(out, index[i])
-	}
+	out := make([]int, len(index))
+	copy(out, index)
 	return out
 }

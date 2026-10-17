@@ -721,7 +721,7 @@ impl Instance {
             return ready[0] as i64;
         }
         let mut state = if self.select_state == 0 {
-            0x9e3779b97f4a7c15
+            0x9e37_79b9_7f4a_7c15
         } else {
             self.select_state
         };

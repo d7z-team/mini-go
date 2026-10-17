@@ -6,6 +6,10 @@ output="$repository/build/release"
 while (($#)); do
 	case "$1" in
 	--output)
+		if (($# < 2)); then
+			echo "usage: release-verify.sh [--output PATH]" >&2
+			exit 2
+		fi
 		output=$(realpath -m "$2")
 		shift 2
 		;;

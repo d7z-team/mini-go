@@ -11,6 +11,10 @@ while (($#)); do
 		shift
 		;;
 	--output)
+		if (($# < 2)); then
+			echo "usage: release-package.sh [--allow-dirty] [--output PATH]" >&2
+			exit 2
+		fi
 		output=$(realpath -m "$2")
 		shift 2
 		;;

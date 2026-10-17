@@ -28,13 +28,6 @@ func scanJSONLiteral(text string, pos int, literal string) (int, bool) {
 	return pos + len(literal), true
 }
 
-func scanJSONString(text string, pos int) (int, bool) {
-	if pos >= len(text) || text[pos] != '"' {
-		return pos, false
-	}
-	return scanJSONValue(text, pos)
-}
-
 func scanJSONNumber(text string, pos int) (int, bool) {
 	if pos >= len(text) || (text[pos] != '-' && (text[pos] < '0' || text[pos] > '9')) {
 		return pos, false
@@ -55,12 +48,4 @@ func skipJSONSpace(text string, pos int) int {
 
 func isJSONDigit(ch string) bool {
 	return ch >= "0" && ch <= "9"
-}
-
-func isJSONDigitOneToNine(ch string) bool {
-	return ch >= "1" && ch <= "9"
-}
-
-func isJSONHex(ch string) bool {
-	return ch >= "0" && ch <= "9" || ch >= "a" && ch <= "f" || ch >= "A" && ch <= "F"
 }

@@ -2,28 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { VirtualMachine } from "../src/vm/vm";
 import { allRuntimeVectors, runtimeVector, sealImage } from "./support/runtime-vectors.js";
-
-function execute(vm, id) {
-  for (let count = 0; count < 100_000; count++) {
-    const state = vm.pump(4096);
-    if (state.executions.find((item) => item.id === id)?.settled) return vm.result(id);
-  }
-  assert.fail("execution did not settle within its deterministic pump budget");
-}
-
-function initialize(vm, label) {
-  for (let count = 0; count < 100_000; count++) {
-    const state = vm.pump(4096);
-    if (state.error) assert.fail(`${label}: initialization failed: ${state.error}`);
-    if (state.ready) return;
-    assert.equal(vm.actions().length, 0, `${label}: initialization host action`);
-  }
-  assert.fail(`${label}: initialization did not settle within its deterministic pump budget`);
-}
+import { executeVM, initializeVM } from "./support/vm.js";
 
 test.each(allRuntimeVectors)("direct VM executes $name O$optimization", async (vector) => {
   const vm = await VirtualMachine.create(vector.bytes, {});
-  initialize(vm, `${vector.name} O${vector.optimization}`);
+  initializeVM(vm, `${vector.name} O${vector.optimization}`);
   const execution = vm.start("default", []);
   let state;
   for (let count = 0; count < 100_000; count++) {
@@ -104,8 +87,8 @@ test("typed min/max validates direction, arity and homogeneous ordered operands"
     };
     if (valid) {
       const vm = await VirtualMachine.create(sealImage(image), {});
-      initialize(vm, name);
-      assert.equal(execute(vm, vm.start("default", [])).roots[0].data.Integer, 0n);
+      initializeVM(vm, name);
+      assert.equal(executeVM(vm, vm.start("default", [])).roots[0].data.Integer, 0n);
       vm.close();
       vm.pump(1);
     } else {
@@ -138,16 +121,16 @@ test("label instructions retain their zero-operand contract after preparation", 
 
 test("fused index and length opcodes keep their operand contracts", async () => {
   const validIndexVM = await VirtualMachine.create(runtimeVector("index_convert").bytes, {});
-  initialize(validIndexVM, "index_convert");
+  initializeVM(validIndexVM, "index_convert");
   const validIndexExecution = validIndexVM.start("default", []);
-  assert.equal(execute(validIndexVM, validIndexExecution).roots[0].data.Integer, 109n);
+  assert.equal(executeVM(validIndexVM, validIndexExecution).roots[0].data.Integer, 109n);
   validIndexVM.close();
   validIndexVM.pump(1);
 
   const validLengthVM = await VirtualMachine.create(runtimeVector("len_compare_branch").bytes, {});
-  initialize(validLengthVM, "len_compare_branch");
+  initializeVM(validLengthVM, "len_compare_branch");
   const validLengthExecution = validLengthVM.start("default", []);
-  assert.equal(execute(validLengthVM, validLengthExecution).roots[0].data.Integer, 7n);
+  assert.equal(executeVM(validLengthVM, validLengthExecution).roots[0].data.Integer, 7n);
   validLengthVM.close();
   validLengthVM.pump(1);
 
@@ -179,8 +162,8 @@ test("fused index and length opcodes keep their operand contracts", async () => 
   await assert.rejects(
     (async () => {
       const vm = await VirtualMachine.create(sealImage(lengthImage), {});
-      initialize(vm, "invalid len_compare_branch object");
-      execute(vm, vm.start("default", []));
+      initializeVM(vm, "invalid len_compare_branch object");
+      executeVM(vm, vm.start("default", []));
     })(),
     /length comparison requires a length-bearing object/,
   );
@@ -229,8 +212,8 @@ test("fused length branches compare integer thresholds without narrowing", async
       ],
     };
     const vm = await VirtualMachine.create(sealImage(image), {});
-    initialize(vm, "integer length threshold");
-    assert.equal(execute(vm, vm.start("default", [])).roots[0].data.Integer, expected);
+    initializeVM(vm, "integer length threshold");
+    assert.equal(executeVM(vm, vm.start("default", [])).roots[0].data.Integer, expected);
     vm.close();
   }
 });
@@ -249,8 +232,8 @@ test("map iteration publishes direct key/value locals with an ordinary ok slot",
   assert.ok(operands.outputs[2] < 0x80000000);
 
   const vm = await VirtualMachine.create(vector.bytes, {});
-  initialize(vm, "mixed map iterator outputs");
-  assert.equal(execute(vm, vm.start("default", [])).roots[0].data.Integer, 35n);
+  initializeVM(vm, "mixed map iterator outputs");
+  assert.equal(executeVM(vm, vm.start("default", [])).roots[0].data.Integer, 35n);
   vm.close();
 });
 
@@ -298,8 +281,8 @@ test("reused local storage clears a slice before len observes it", async () => {
     ],
   };
   const vm = await VirtualMachine.create(sealImage(image), {});
-  initialize(vm, "reused nil slice");
-  const result = execute(vm, vm.start("default", [])).roots[0].data.Integer;
+  initializeVM(vm, "reused nil slice");
+  const result = executeVM(vm, vm.start("default", [])).roots[0].data.Integer;
   assert.equal(result, 0n);
   vm.close();
   vm.pump(1);
@@ -344,9 +327,9 @@ test("direct outputs require private locals while ordinary declarations can be r
 
   const vector = runtimeVector("direct_call_results");
   const vm = await VirtualMachine.create(vector.bytes, {});
-  initialize(vm, "private local rebinding");
+  initializeVM(vm, "private local rebinding");
   const execution = vm.start("default", []);
-  assert.equal(execute(vm, execution).roots[0].data.Integer, BigInt(vector.result_integer));
+  assert.equal(executeVM(vm, execution).roots[0].data.Integer, BigInt(vector.result_integer));
   vm.release(execution);
   vm.close();
 });
@@ -364,12 +347,12 @@ test("direct call results preserve ordinary and revision-local dispatch across a
     const replacement = sealImage(image);
 
     const probe = await VirtualMachine.create(replacement, {});
-    initialize(probe, "direct call replacement");
-    const expected = execute(probe, probe.start("default", [])).roots[0].data.Integer;
+    initializeVM(probe, "direct call replacement");
+    const expected = executeVM(probe, probe.start("default", [])).roots[0].data.Integer;
     probe.close();
 
     const vm = await VirtualMachine.create(original, {});
-    initialize(vm, "direct call original");
+    initializeVM(vm, "direct call original");
     const execution = vm.start("default", []);
     let waiting;
     for (let count = 0; count < 100 && !waiting; count++) {
@@ -384,7 +367,7 @@ test("direct call results preserve ordinary and revision-local dispatch across a
     assert.ok(waiting, "pause the old caller before its direct local result call");
     await vm.patch(replacement);
     assert.equal(
-      execute(vm, execution).roots[0].data.Integer,
+      executeVM(vm, execution).roots[0].data.Integer,
       expected - (revisionLocal ? 10n : 0n),
       `revision_local=${revisionLocal}`,
     );
@@ -403,13 +386,13 @@ test("hot patch keeps active frames on their revision and routes new calls to th
   const replacementBytes = sealImage(replacement);
 
   const probe = await VirtualMachine.create(replacementBytes, {});
-  initialize(probe, "replacement probe");
-  const replacementResult = execute(probe, probe.start("default", [])).roots[0].data.Integer;
+  initializeVM(probe, "replacement probe");
+  const replacementResult = executeVM(probe, probe.start("default", [])).roots[0].data.Integer;
   probe.close();
   assert.notEqual(replacementResult, BigInt(vector.result_integer));
 
   const vm = await VirtualMachine.create(vector.bytes, { profile: true });
-  initialize(vm, "original program");
+  initializeVM(vm, "original program");
   const oldExecution = vm.start("default", []);
   for (let count = 0; count < 10_000; count++) {
     vm.pump(1);
@@ -418,8 +401,8 @@ test("hot patch keeps active frames on their revision and routes new calls to th
   assert.ok((vm.stats().profile?.opcodes.make_closure ?? 0n) > 0n, "old closure was created");
   await vm.patch(replacementBytes);
   const newExecution = vm.start("default", []);
-  assert.equal(execute(vm, oldExecution).roots[0].data.Integer, BigInt(vector.result_integer));
-  assert.equal(execute(vm, newExecution).roots[0].data.Integer, replacementResult);
+  assert.equal(executeVM(vm, oldExecution).roots[0].data.Integer, BigInt(vector.result_integer));
+  assert.equal(executeVM(vm, newExecution).roots[0].data.Integer, replacementResult);
   vm.release(oldExecution);
   vm.release(newExecution);
 
@@ -444,8 +427,8 @@ test("profile counts avoid clock reads unless timing is explicitly enabled", asy
   };
   try {
     const counted = await VirtualMachine.create(vector.bytes, { profile: true });
-    initialize(counted, "count-only profile");
-    execute(counted, counted.start("default", []));
+    initializeVM(counted, "count-only profile");
+    executeVM(counted, counted.start("default", []));
     const countedStats = counted.stats();
     assert.equal(
       Object.values(countedStats.profile?.opcodes ?? {}).reduce((sum, count) => sum + count, 0n),
@@ -465,7 +448,7 @@ test("profile counts avoid clock reads unless timing is explicitly enabled", asy
       "count-only profiling must not sample per-step time",
     );
     const snapshot = structuredClone(countedStats.profile);
-    execute(counted, counted.start("default", []));
+    executeVM(counted, counted.start("default", []));
     assert.deepEqual(countedStats.profile, snapshot, "published profile is an owned snapshot");
     const [name, functionStats] = Object.entries(countedStats.profile.functions)[0];
     functionStats.steps = -1n;
@@ -477,8 +460,8 @@ test("profile counts avoid clock reads unless timing is explicitly enabled", asy
       profile: true,
       profileTiming: true,
     });
-    initialize(timed, "timed profile");
-    execute(timed, timed.start("default", []));
+    initializeVM(timed, "timed profile");
+    executeVM(timed, timed.start("default", []));
     assert.ok(
       Object.values(timed.stats().profile?.functions ?? {}).some(({ nanos }) => nanos > 0n),
       "timed profiling must sample the clock",
@@ -494,15 +477,15 @@ test("step counter promotes after the safe Number range without losing exactness
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {
     limits: { maxSteps: 0 },
   });
-  initialize(vm, "step counter promotion");
+  initializeVM(vm, "step counter promotion");
   const before = vm.stats().steps;
   const first = vm.start("default", []);
-  execute(vm, first);
+  executeVM(vm, first);
   const executionSteps = vm.stats().steps - before;
   vm.release(first);
   vm.steps = Number.MAX_SAFE_INTEGER - 1;
   vm.stepsOverflow = undefined;
-  execute(vm, vm.start("default", []));
+  executeVM(vm, vm.start("default", []));
   assert.equal(vm.stats().steps, BigInt(Number.MAX_SAFE_INTEGER - 1) + executionSteps);
   vm.close();
   vm.pump(1);
@@ -513,13 +496,13 @@ test("number and bigint step budgets stop at the exact instruction boundary", as
     const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {
       limits: { maxSteps: limit },
     });
-    initialize(vm, "exact step budget");
+    initializeVM(vm, "exact step budget");
     vm.steps =
       typeof limit === "bigint" && limit > BigInt(Number.MAX_SAFE_INTEGER)
         ? Number.MAX_SAFE_INTEGER - 1
         : 0;
     const execution = vm.start("default", []);
-    assert.throws(() => execute(vm, execution), { code: "step_limit" });
+    assert.throws(() => executeVM(vm, execution), { code: "step_limit" });
     assert.equal(vm.stats().steps, BigInt(limit));
     vm.pump(1);
     assert.equal(vm.stats().steps, BigInt(limit));
@@ -532,7 +515,7 @@ test("frame cache charges entry and scratch capacity against its bound", async (
   const vm = await VirtualMachine.create(runtimeVector("recursive_call").bytes, {
     limits: { maxFrameCacheBytes: 80 },
   });
-  initialize(vm, "bounded frame cache");
+  initializeVM(vm, "bounded frame cache");
   const canceled = vm.start("default", []);
   vm.pump(1);
   vm.cancel(canceled);
@@ -542,7 +525,7 @@ test("frame cache charges entry and scratch capacity against its bound", async (
     count++
   ) {}
   vm.release(canceled);
-  execute(vm, vm.start("default", []));
+  executeVM(vm, vm.start("default", []));
   assert.ok(vm.frameCacheBytes <= 80, "cached storage must stay within its configured bound");
   assert.ok(vm.frameCache.length <= 1, "a zero-local frame still consumes cache budget");
   for (const storage of vm.frameCache) {
@@ -559,7 +542,7 @@ test("frame cache charges entry and scratch capacity against its bound", async (
   const active = await VirtualMachine.create(runtimeVector("recursive_call").bytes, {
     limits: { maxFrameCacheBytes: 80 },
   });
-  initialize(active, "active frame cache close");
+  initializeVM(active, "active frame cache close");
   active.start("default", []);
   active.pump(1);
   active.close();
@@ -600,7 +583,7 @@ test("debugger maps stripped label locations back to wire PCs", async () => {
   const vm = await VirtualMachine.create(vector.bytes, {
     symbols: new TextEncoder().encode(JSON.stringify(symbols)),
   });
-  initialize(vm, "debug symbols");
+  initializeVM(vm, "debug symbols");
   vm.debugOpen({ "main.mgo": { module: modulePath, path: "main.mgo", text: "" } }, "default");
   const configured = vm.debugRequest("setBreakpoints", {
     source: { path: "main.mgo" },
