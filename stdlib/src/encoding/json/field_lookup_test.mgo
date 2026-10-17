@@ -1,0 +1,22 @@
+package json_test
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestFieldLookupPreservesExactAndFoldedOrder(t *testing.T) {
+	type Record struct {
+		Upper int `json:"Name"`
+		Lower int `json:"name"`
+		Kelvin int `json:"K"`
+	}
+	var records []Record
+	err := json.Unmarshal([]byte(`[{"name":1,"Name":2,"NAME":3,"K":4},{"NAME":5,"name":6,"Name":7,"K":8,"K":9}]`), &records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 || records[0] != (Record{Upper: 3, Lower: 1, Kelvin: 4}) || records[1] != (Record{Upper: 7, Lower: 6, Kelvin: 9}) {
+		t.Fatalf("field lookup returned %v", records)
+	}
+}

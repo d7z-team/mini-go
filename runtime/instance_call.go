@@ -32,16 +32,12 @@ func (i *Instance) startEntry(ctx context.Context, entry string, args ...HostVal
 
 func (i *Instance) convertHostArguments(ctx context.Context, module *moduleInstance, args []HostValue) ([]vmValue, error) {
 	values := make([]vmValue, len(args))
-	logicalBytes := int64(0)
 	for index, arg := range args {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		measured, err := measureHostValue(ctx, arg, i.vm.limits)
+		err := measureHostValue(ctx, arg, i.vm.limits)
 		if err != nil {
-			return nil, fmt.Errorf("host argument %d: %w", index, err)
-		}
-		if err := addMeasuredBytes(&logicalBytes, measured); err != nil {
 			return nil, fmt.Errorf("host argument %d: %w", index, err)
 		}
 		value, err := hostValueToVM(ctx, module, arg.Type(), arg)
@@ -49,9 +45,6 @@ func (i *Instance) convertHostArguments(ctx context.Context, module *moduleInsta
 			return nil, fmt.Errorf("host argument %d: %w", index, err)
 		}
 		values[index] = value
-	}
-	if err := i.vm.chargeAllocationBytes(logicalBytes); err != nil {
-		return nil, err
 	}
 	return values, nil
 }

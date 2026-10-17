@@ -76,7 +76,7 @@ func reflectTypeMeasure(ctx intrinsicContext, args []vmValue) ([]vmValue, error)
 	info, err := reflectResolvedTypeInfo(ctx, args[0])
 	var result uint64
 	if err == nil {
-		property, ok := args[1].Data.(string)
+		property, ok := args[1].payload().(string)
 		if !ok {
 			return nil, errors.New("reflect.type_measure expects a string property")
 		}
@@ -336,7 +336,7 @@ func reflectValueSliceBounds(ctx intrinsicContext, args []vmValue, full bool) ([
 	if module.isArrayType(current.Type) && !reflectBoolField(fields.get("addressable")) {
 		return reflectValueError("reflect: Slice of unaddressable array Value"), nil
 	}
-	_, isString := current.Data.(string)
+	_, isString := current.payload().(string)
 	if full && isString {
 		return reflectValueError("reflect: Slice3 of string Value"), nil
 	}

@@ -151,7 +151,10 @@ type functionRef struct {
 	ModulePath string
 	FunctionID string
 	exact      *moduleInstance
-	upvalues   map[string]*slot
+	// captureSlots follows the callee declaration order and is the sole
+	// runtime ownership of captured cells. Symbolic names are projected from
+	// the callee declaration when a reflection/managed boundary needs them.
+	captureSlots []*slot
 }
 
 func newModuleRegistry() *moduleRegistry {

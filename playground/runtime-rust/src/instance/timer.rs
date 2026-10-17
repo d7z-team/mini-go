@@ -191,11 +191,13 @@ mod tests {
 
     #[test]
     fn deadlines_remain_ordered_after_restart_and_scope_removal() {
-        let heap = Heap::new(16, 4096).unwrap();
         let mut timers = TimerQueue::default();
         let mut handles = Vec::new();
         for (scope, deadline) in [40, 10, 30, 10, 50, 20].into_iter().enumerate() {
-            let handle = heap.allocate(Value::int(0), 16).unwrap();
+            let handle = Handle {
+                slot: scope as u32 + 1,
+                generation: 1,
+            };
             handles.push(handle);
             timers.push(Timer {
                 channel: Value {

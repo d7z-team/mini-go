@@ -52,3 +52,11 @@ func (cache *metadataCache[K, V]) clear() {
 	cache.values = nil
 	cache.mu.Unlock()
 }
+
+func (cache *metadataCache[K, V]) delete(key K) {
+	cache.mu.Lock()
+	if cache.values != nil {
+		delete(cache.values, key)
+	}
+	cache.mu.Unlock()
+}

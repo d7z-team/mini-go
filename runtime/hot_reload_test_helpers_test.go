@@ -100,6 +100,20 @@ func patchCallArtifact(base, value int64) ir.Artifact {
 	return artifact
 }
 
+func patchRevisionLocalCallArtifact(base, value int64, reorder bool) ir.Artifact {
+	artifact := patchCallArtifact(base, value)
+	for index := range artifact.Functions {
+		if artifact.Functions[index].ID == "fn.value" {
+			artifact.Functions[index].RevisionLocal = true
+		}
+	}
+	if reorder {
+		entry, value := artifact.Functions[0], artifact.Functions[1]
+		artifact.Functions = []ir.Function{value, entry}
+	}
+	return artifact
+}
+
 func patchTailCallArtifact(value int64) ir.Artifact {
 	artifact := ir.NewArtifact("patch/tail", "main")
 	artifact.Constants = []ir.Constant{{ID: "const.value", Type: testType("Int64"), Value: json.RawMessage(jsonInt(value))}}

@@ -57,6 +57,12 @@ type OperatorPayload struct {
 	Operator string `json:"operator"`
 }
 
+type MinMaxPayload struct {
+	Type     types.TypeRef `json:"type"`
+	Operator string        `json:"operator"`
+	ArgCount int           `json:"arg_count"`
+}
+
 type CompareBranchPayload struct {
 	Operator string        `json:"operator"`
 	Type     types.TypeRef `json:"type"`

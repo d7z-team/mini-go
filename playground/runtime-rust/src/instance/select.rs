@@ -90,9 +90,35 @@ impl Instance {
         continuation: Option<frame::Continuation>,
     ) -> Result<(), RuntimeError> {
         let mut selection = self.prepare_selection(selection)?;
+        self.running.selection_lease.take();
+        let case_count = u64::try_from(selection.cases.len()).map_err(|_| {
+            RuntimeError::new(
+                "allocation_limit",
+                "select",
+                "selection case count overflows",
+            )
+        })?;
+        let per_case = crate::contract_generated::STORAGE_CONTROL_RECORD
+            .checked_add(
+                crate::contract_generated::STORAGE_DYNAMIC
+                    .checked_mul(3)
+                    .ok_or_else(|| {
+                        RuntimeError::new("allocation_limit", "select", "selection cost overflows")
+                    })?,
+            )
+            .ok_or_else(|| {
+                RuntimeError::new("allocation_limit", "select", "selection cost overflows")
+            })?;
+        let selection_bytes = crate::contract_generated::STORAGE_CONTROL_RECORD
+            .checked_add(case_count.checked_mul(per_case).ok_or_else(|| {
+                RuntimeError::new("allocation_limit", "select", "selection cost overflows")
+            })?)
+            .ok_or_else(|| {
+                RuntimeError::new("allocation_limit", "select", "selection cost overflows")
+            })?;
+        self.running.selection_lease = Some(self.acquire_owner_lease(selection_bytes)?);
         self.running.selection_completion = Some(Box::new(selection.clone()));
         let ready = self.try_selection(&mut selection);
-        self.running.selection_completion = None;
         let ready = ready?;
         if let Some(continuation) = continuation {
             self.running.frames.last_mut().unwrap().continuation = Some(continuation);
@@ -177,13 +203,13 @@ impl Instance {
                     }
                     None => self.reflect_struct("Value", [])?,
                 };
-                self.running.frames.last_mut().unwrap().extend_results([
+                self.extend_results([
                     Value::int(index as i64),
                     value,
                     Value::boolean(received),
                     Value::string(message),
                     Value::boolean(success),
-                ]);
+                ])?;
                 return Ok(());
             }
             if let Some(error) = outcome.error {
@@ -206,10 +232,9 @@ impl Instance {
                     }
                 }
                 SelectDestination::Receive(with_ok) => {
-                    let frame = self.running.frames.last_mut().unwrap();
-                    frame.push_result(outcome.value.unwrap());
+                    self.push_result(outcome.value.unwrap())?;
                     if with_ok {
-                        frame.push_result(Value::boolean(outcome.received));
+                        self.push_result(Value::boolean(outcome.received))?;
                     }
                 }
                 SelectDestination::Send => {}
@@ -218,6 +243,7 @@ impl Instance {
             Ok(())
         })();
         self.running.selection_completion = None;
+        self.running.selection_lease.take();
         result
     }
 
@@ -225,13 +251,6 @@ impl Instance {
         &mut self,
         mut selection: Selection,
     ) -> Result<Selection, RuntimeError> {
-        if selection.cases.len() > self.limits.max_sequence_elements {
-            return Err(RuntimeError::new(
-                "value_limit",
-                "select",
-                "too many select cases",
-            ));
-        }
         let root_start = self.running.allocation_roots.len();
         for case in &selection.cases {
             self.running.allocation_roots.push(case.channel.clone());
@@ -240,7 +259,6 @@ impl Instance {
             }
         }
         let prepared = (|| {
-            self.charge_guest(128 + selection.cases.len() as u64 * 176)?;
             for case in &mut selection.cases {
                 let (_, node) = self
                     .types
@@ -262,7 +280,7 @@ impl Instance {
                     self.running.allocation_roots.push(value.clone());
                     case.send = Some(value);
                 } else {
-                    let value = self.zero(&element, 0)?;
+                    let value = self.zero(&element)?;
                     self.running.allocation_roots.push(value.clone());
                     case.zero = Some(value);
                 }
@@ -288,28 +306,25 @@ impl Instance {
             }
             let handle = Self::resource_handle(&case.channel)?;
             let resource = self.resource(handle)?;
-            let Resource::Channel {
-                closed,
-                capacity,
-                values,
-                ..
-            } = &*resource
-            else {
+            let Resource::Channel { channel } = &*resource else {
                 return Err(RuntimeError::new(
                     "type_error",
                     "select",
                     "expected channel",
                 ));
             };
-            if *closed
+            let channel = channel
+                .lock()
+                .map_err(|_| RuntimeError::new("runtime", "select", "channel lock poisoned"))?;
+            if channel.is_closed()
                 || self
                     .blocked
                     .select_peer(handle, case.send.is_some())
                     .is_some()
                 || if case.send.is_some() {
-                    values.len() < *capacity
+                    channel.ready_to_send()
                 } else {
-                    !values.is_empty()
+                    !channel.is_empty()
                 }
             {
                 ready.push(index);
@@ -321,8 +336,8 @@ impl Instance {
         }
         let case = &selection.cases[index as usize];
         let handle = Self::resource_handle(&case.channel)?;
-        let mut resource = self.resource(handle)?.clone();
-        let Resource::Channel { closed, values, .. } = &mut resource else {
+        let resource = self.resource(handle)?.clone();
+        let Resource::Channel { channel } = &resource else {
             unreachable!()
         };
         let mut outcome = SelectOutcome {
@@ -332,7 +347,11 @@ impl Instance {
             error: None,
         };
         if let Some(value) = &case.send {
-            if *closed {
+            let closed = channel
+                .lock()
+                .map_err(|_| RuntimeError::new("runtime", "select", "channel lock poisoned"))?
+                .is_closed();
+            if closed {
                 outcome.error = Some(RuntimeError::new("panic", "send", "send on closed channel"));
             } else if let Some((key, peer, _)) = self.blocked.select_peer(handle, true) {
                 self.blocked.complete_selection(
@@ -345,28 +364,61 @@ impl Instance {
                     },
                 );
             } else {
-                values.push_back(value.clone());
-                self.store_resource(handle, resource)?;
+                let element = match self.element_type(&case.channel.typ) {
+                    Ok(element) => element,
+                    Err(_) => value.typ.clone(),
+                };
+                let payload = self.encode_channel_value(value, &element)?;
+                self.sync_heap_type_registry();
+                self.heap.publish_payload(&payload)?;
+                let record_version = self.prepare_channel_record_update(handle)?;
+                let sent = channel
+                    .lock()
+                    .map_err(|_| RuntimeError::new("runtime", "select", "channel lock poisoned"))?
+                    .try_send_prepared(&self.heap.storage_pool(), &payload)?;
+                if sent != crate::managed_channel::SendResult::Sent {
+                    return Ok(false);
+                }
+                self.commit_channel_record_update(handle, record_version, channel)?;
             }
-        } else if let Some(value) = values.pop_front() {
+        } else if let Some(payload) = {
+            let channel = channel
+                .lock()
+                .map_err(|_| RuntimeError::new("runtime", "select", "channel lock poisoned"))?;
+            channel.peek(&self.heap.storage_pool())?
+        } {
+            let element = self.element_type(&case.channel.typ)?;
+            let value = self.decode_channel_value(&payload, &element)?;
+            self.sync_heap_type_registry();
+            let record_version = self.prepare_channel_record_update(handle)?;
+            channel
+                .lock()
+                .map_err(|_| RuntimeError::new("runtime", "select", "channel lock poisoned"))?
+                .consume(&self.heap.storage_pool())?;
             value.trace(&mut |handle| self.running.transient_roots.push(handle));
-            self.store_resource(handle, resource)?;
+            self.commit_channel_record_update(handle, record_version, channel)?;
             outcome.value = Some(value);
             outcome.received = true;
-        } else if *closed {
-            outcome.value = case.zero.clone();
-        } else if let Some((key, peer, value)) = self.blocked.select_peer(handle, false) {
-            outcome.value = value;
-            outcome.received = true;
-            self.blocked.complete_selection(
-                key,
-                SelectOutcome {
-                    index: peer as i64,
-                    value: None,
-                    received: false,
-                    error: None,
-                },
-            );
+        } else {
+            let closed = channel
+                .lock()
+                .map_err(|_| RuntimeError::new("runtime", "select", "channel lock poisoned"))?
+                .is_closed();
+            if closed {
+                outcome.value = case.zero.clone();
+            } else if let Some((key, peer, value)) = self.blocked.select_peer(handle, false) {
+                outcome.value = value;
+                outcome.received = true;
+                self.blocked.complete_selection(
+                    key,
+                    SelectOutcome {
+                        index: peer as i64,
+                        value: None,
+                        received: false,
+                        error: None,
+                    },
+                );
+            }
         }
         selection.outcome = Some(outcome);
         Ok(true)
@@ -385,11 +437,8 @@ mod tests {
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-        vm.start("default", vec![]).unwrap();
+        vm.start("default", &[]).unwrap();
         let scope = vm.running.scope;
-        let limit = vm.limits.max_allocated_bytes;
-        vm.limits.max_allocated_bytes = vm.memory.stats().live_bytes;
-        vm.running.begin_instruction(0);
         let selection = Selection {
             cases: vec![],
             destination: SelectDestination::Send,
@@ -400,19 +449,13 @@ mod tests {
                 reflect_async::IntrinsicResume::Send,
             ))
         };
-        assert_eq!(
-            vm.start_selection(selection.clone(), false, continuation())
-                .unwrap_err()
-                .code,
-            "census_required"
-        );
-        assert!(vm.running.frames[0].continuation.is_none());
-        assert!(vm.running.selection_completion.is_none());
-        assert!(vm.blocked.is_empty());
-        vm.running.finish_instruction();
-        vm.limits.max_allocated_bytes = limit;
+        let before = vm.heap_stats().guest_bytes;
         vm.start_selection(selection, false, continuation())
             .unwrap();
+        assert_eq!(
+            vm.heap_stats().guest_bytes - before,
+            crate::contract_generated::STORAGE_CONTROL_RECORD
+        );
         assert_eq!(vm.blocked.len(), 1);
         assert!(matches!(
             vm.blocked.iter().next().unwrap().frames[0].continuation,
@@ -426,26 +469,23 @@ mod tests {
     }
 
     #[test]
-    fn pending_selection_cannot_match_itself_and_cancellation_removes_all_roots() {
+    fn pending_selection_cannot_match_itself_and_cancellation_releases_payload() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
                 {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         let scope = vm.running.scope;
+        let resource = vm.new_channel_resource(&TypeIdentity::Any, 0).unwrap();
         let handle = vm
             .allocate(Value {
                 typ: TypeIdentity::Any,
-                data: Data::Resource(Box::new(Resource::Channel {
-                    capacity: 0,
-                    closed: false,
-                    values: VecDeque::new(),
-                })),
+                data: Data::Resource(Box::new(resource)),
             })
             .unwrap();
-        let value = vm.heap.allocate(Value::int(42), 128).unwrap();
+        let value = vm.allocate(Value::int(42)).unwrap();
         let channel = Value {
             typ: TypeIdentity::Any,
             data: Data::ResourceRef(handle),
@@ -483,8 +523,8 @@ mod tests {
         assert!(vm.blocked.is_empty());
         assert!(vm.blocked.select_peer(handle, true).is_none());
         assert!(vm.blocked.select_peer(handle, false).is_none());
-        assert!(vm.heap.get(value).is_err());
-        assert!(vm.heap.get(handle).is_err());
+        vm.collect_garbage().unwrap();
+        assert!(!vm.heap.is_live(value));
         vm.close().unwrap();
     }
 
@@ -496,17 +536,14 @@ mod tests {
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         let mut channels = Vec::new();
         for _ in 0..2 {
+            let resource = vm.new_channel_resource(&TypeIdentity::Any, 0).unwrap();
             let handle = vm
                 .allocate(Value {
                     typ: TypeIdentity::Any,
-                    data: Data::Resource(Box::new(Resource::Channel {
-                        capacity: 0,
-                        closed: false,
-                        values: VecDeque::new(),
-                    })),
+                    data: Data::Resource(Box::new(resource)),
                 })
                 .unwrap();
             channels.push(Value {
@@ -574,5 +611,139 @@ mod tests {
         }
         vm.close().unwrap();
         assert_eq!(vm.heap_stats().live_objects, 0);
+    }
+
+    #[test]
+    fn typed_channel_send_receive_uses_managed_ring() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+            ]);
+        });
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", &[]).unwrap();
+        let element = TypeIdentity::Primitive(wire::PrimitiveInt);
+        let resource = vm.new_channel_resource(&element, 2).unwrap();
+        let handle = vm
+            .allocate(Value {
+                typ: TypeIdentity::Any,
+                data: Data::Resource(Box::new(resource.clone())),
+            })
+            .unwrap();
+        vm.register_channel_resource(handle, &resource);
+        vm.globals
+            .insert(("test".into(), "string_channel".into()), handle);
+        let channel = Value {
+            typ: TypeIdentity::Slice(Arc::new(element)),
+            data: Data::ResourceRef(handle),
+        };
+        assert!(vm.try_send(&channel, Value::int(41)).unwrap());
+        assert!(vm.try_send(&channel, Value::int(42)).unwrap());
+        assert!(!vm.try_send(&channel, Value::int(43)).unwrap());
+        let (first, ok) = vm.try_receive(&channel).unwrap().unwrap();
+        assert!(ok);
+        assert_eq!(first.integer().unwrap(), 41);
+        let (second, ok) = vm.try_receive(&channel).unwrap().unwrap();
+        assert!(ok);
+        assert_eq!(second.integer().unwrap(), 42);
+        assert!(vm.try_receive(&channel).unwrap().is_none());
+        vm.close().unwrap();
+    }
+
+    #[test]
+    fn channel_uses_logical_element_costs_instead_of_physical_stride() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+            ]);
+        });
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", &[]).unwrap();
+        for typ in [
+            TypeIdentity::Primitive(wire::PrimitiveBool),
+            TypeIdentity::Primitive(wire::PrimitiveInt8),
+            TypeIdentity::Primitive(wire::PrimitiveString),
+        ] {
+            let resource = vm.new_channel_resource(&typ, 2).unwrap();
+            let Resource::Channel { channel } = &resource else {
+                unreachable!("new_channel_resource must create a channel");
+            };
+            assert_eq!(
+                channel.lock().unwrap().logical_bytes(),
+                vm.types.storage_logical_bytes(&typ).unwrap()
+            );
+        }
+        vm.close().unwrap();
+    }
+
+    #[test]
+    fn dynamic_string_channel_uses_managed_descriptor_ring() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+            ]);
+        });
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", &[]).unwrap();
+        let element = TypeIdentity::Primitive(wire::PrimitiveString);
+        let resource = vm.new_channel_resource(&element, 2).unwrap();
+        let handle = vm
+            .allocate(Value {
+                typ: TypeIdentity::Any,
+                data: Data::Resource(Box::new(resource.clone())),
+            })
+            .unwrap();
+        vm.register_channel_resource(handle, &resource);
+        vm.globals
+            .insert(("test".into(), "string_channel".into()), handle);
+        let channel = Value {
+            typ: TypeIdentity::Slice(Arc::new(element)),
+            data: Data::ResourceRef(handle),
+        };
+        assert!(vm.try_send(&channel, Value::string("hello")).unwrap());
+        vm.collect_garbage().unwrap();
+        let (received, ok) = vm.try_receive(&channel).unwrap().unwrap();
+        assert!(ok);
+        assert_eq!(received.to_string(), "hello");
+        vm.close().unwrap();
+    }
+
+    #[test]
+    fn any_channel_preserves_runtime_type_in_descriptor_slot() {
+        let program = test_helpers::program_with_artifact(|artifact| {
+            artifact["functions"] = serde_json::json!([
+                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+            ]);
+        });
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", &[]).unwrap();
+        let element = TypeIdentity::Any;
+        let resource = vm.new_channel_resource(&element, 2).unwrap();
+        let handle = vm
+            .allocate(Value {
+                typ: TypeIdentity::Any,
+                data: Data::Resource(Box::new(resource.clone())),
+            })
+            .unwrap();
+        vm.register_channel_resource(handle, &resource);
+        vm.globals
+            .insert(("test".into(), "any_channel".into()), handle);
+        let channel = Value {
+            typ: TypeIdentity::Slice(Arc::new(element)),
+            data: Data::ResourceRef(handle),
+        };
+        assert!(vm.try_send(&channel, Value::int(7)).unwrap());
+        assert!(vm.try_send(&channel, Value::string("seven")).unwrap());
+        vm.collect_garbage().unwrap();
+        let (number, ok) = vm.try_receive(&channel).unwrap().unwrap();
+        assert!(ok);
+        let Data::Interface(number) = number.data else {
+            panic!("any channel value must preserve its runtime type")
+        };
+        assert_eq!(number.integer().unwrap(), 7);
+        let (text, ok) = vm.try_receive(&channel).unwrap().unwrap();
+        assert!(ok);
+        assert_eq!(text.to_string(), "seven");
+        vm.close().unwrap();
     }
 }

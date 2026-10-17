@@ -11,11 +11,11 @@ Node.js 部署使用 Node.js 24.11 或更高版本。浏览器入口由 ESM 打�
 npm install @d7z-team/mini-go
 ```
 
-| 入口 | 用途 |
-| --- | --- |
-| `@d7z-team/mini-go` | 加载并执行 bytecode、传递宿主值和热更新 |
-| `@d7z-team/mini-go/tools` | Go compiler WASM、语言服务和调试 |
-| `@d7z-team/mini-go/rpc` | 独立 WebSocket MRPC 连接 |
+| 入口                      | 用途                                    |
+| ------------------------- | --------------------------------------- |
+| `@d7z-team/mini-go`       | 加载并执行 bytecode、传递宿主值和热更新 |
+| `@d7z-team/mini-go/tools` | Go compiler WASM、语言服务和调试        |
+| `@d7z-team/mini-go/rpc`   | 独立 WebSocket MRPC 连接                |
 
 ## 执行 bytecode
 
@@ -47,6 +47,9 @@ try {
 
 64 位 guest 整数使用 `bigint`，bytes 使用 `Uint8Array`。返回的 `Snapshot` 独立拥有数据，并通过
 `objects` 和 `HostAddress` 保留对象别名与循环。
+
+调用参数中的宿主值可以共享子对象，但不能包含循环引用或已 detach 的 `ArrayBuffer`；调用方应在发送前
+保持传入的 typed array 有效。
 
 ## 浏览器部署
 
@@ -85,8 +88,12 @@ const runtime = await createRuntime(image, {
 已有 frame、closure 和 defer 继续使用原 revision，普通命名调用使用当前 revision，
 `revision_local` 调用跟随 caller frame 的 revision。
 
-`limits` 控制步数、frame、task、FFI、序列和 guest 逻辑内存。`UNLIMITED_STEPS` 只放开累计步数；
-统计口径和性能诊断见[开发指南](../../DEVELOPMENT.md#缓存与性能)。
+`limits.maxGuestBytes` 限制已占用与预留的逻辑存储，`limits.maxResidentBytes` 限制受管页、frame
+和运行时元数据的实际接纳容量。`UNLIMITED_STEPS` 只放开累计步数，任务、FFI 和内存限额仍有效。
+
+`stats()` 返回累计账本，不触发回收。`occupiedBytes` 包含尚未回收的垃圾，`reservedBytes` 是
+未提交额度，`lastMajorReachableBytes` 是上次 major 的可达快照。分配与回收的完整统计口径见
+[开发指南](../../DEVELOPMENT.md#缓存与性能)，存储和生命周期见[架构](../../ARCHITECTURE.md#执行模型与状态所有权)。
 
 ## 源码工具与调试
 
@@ -99,11 +106,13 @@ const service = await createLanguageService({ timeoutMs: 30_000 });
 try {
   await service.open({
     Root: "example",
-    Packages: [{
-      Namespace: "module:example",
-      ModulePath: "example",
-      Files: [{ Path: "answer.mgo", Text: "package example\nfunc Answer() int { return 42 }" }],
-    }],
+    Packages: [
+      {
+        Namespace: "module:example",
+        ModulePath: "example",
+        Files: [{ Path: "answer.mgo", Text: "package example\nfunc Answer() int { return 42 }" }],
+      },
+    ],
   });
   const analysis = await service.analyze();
   const build = await service.prepare({

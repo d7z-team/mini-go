@@ -45,9 +45,6 @@ func TestExportAddressPreservesInitializedSlotAcrossPatch(t *testing.T) {
 	if _, err := instance.ApplyPatch(plan); err != nil {
 		t.Fatal(err)
 	}
-	if pointer.slot.module.revision.generation != 2 {
-		t.Fatal("pointer retained the old slot owner")
-	}
 	value, err := pointer.loadValue()
 	number, ok := value.signedValue()
 	if err != nil || !ok || number != 1 {

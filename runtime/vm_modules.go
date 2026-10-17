@@ -69,10 +69,10 @@ func (vm *vm) moduleForFunctionRef(current *moduleInstance, ref functionRef) (*m
 }
 
 func (vm *vm) resolveFunctionValue(current *moduleInstance, value vmValue) (*moduleInstance, functionRef, error) {
-	if value.Data == nil && current.isFunctionType(value.Type) {
+	if value.payload() == nil && current.isFunctionType(value.Type) {
 		return nil, functionRef{}, errNilFunctionCall
 	}
-	ref, ok := value.Data.(functionRef)
+	ref, ok := value.payload().(functionRef)
 	if !ok {
 		return nil, functionRef{}, fmt.Errorf("call expects Function value, got %s", value.Type)
 	}

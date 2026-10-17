@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"unsafe"
 
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
@@ -10,9 +11,7 @@ import (
 func (machine *executionMachine) executeControl(task *executionTask, current *executionFrame, pc int, inst *preparedInstruction) (taskYield, bool, error) {
 	callFrame := current.frame
 	yield, handled, err := machine.executeControlBody(task, current, pc, inst)
-	if _, census := findGuestCensusRequest(err); !census {
-		callFrame.releasePopValues()
-	}
+	callFrame.releasePopValues()
 	task.preparingSelection = nil
 	return yield, handled, err
 }
@@ -54,9 +53,6 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 			export, ok := module.executable.Exports[payload.Export]
 			if !ok || export.Kind != "global" {
 				return fmt.Errorf("address target %s.%s is not an exported variable", payload.ModulePath, payload.Export)
-			}
-			if err := machine.vm.chargeAllocation(); err != nil {
-				return err
 			}
 			value, err := caller.frame.slotAddress(module.state.globals[export.ID], *payload)
 			if err != nil {
@@ -111,10 +107,8 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 				if qualify {
 					args = caller.frame.module.qualifyValuesForArgumentBoundary(args)
 				}
-				callee, err := machine.vm.newPreparedExecutionFrame(target, functionForInitialization, args, nil, task.id, payload.ResultCount, qualify)
-				if _, census := findGuestCensusRequest(err); !census {
-					caller.frame.releasePopValues()
-				}
+				callee, err := machine.vm.newPreparedExecutionFrame(target, functionForInitialization, args, nil, task.id, payload.ResultCount, qualify, 0, task.allocationBatch)
+				caller.frame.releasePopValues()
 				if err != nil {
 					return err
 				}
@@ -122,15 +116,21 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 				return nil
 			})
 		}
-		args, err := callFrame.popN(payload.ArgCount)
-		if err != nil {
-			return taskYield{}, true, err
-		}
-		qualify := target.modulePath() != callFrame.module.modulePath()
-		if qualify {
+		var callee *executionFrame
+		if target == callFrame.module {
+			operands, operandErr := callFrame.takeCallOperands(payload.ArgCount)
+			if operandErr != nil {
+				return taskYield{}, true, operandErr
+			}
+			callee, err = machine.vm.newPreparedExecutionFrameFromOperands(target, function, callFrame, operands, nil, task.id, payload.ResultCount, false, 0, task.allocationBatch)
+		} else {
+			args, popErr := callFrame.popN(payload.ArgCount)
+			if popErr != nil {
+				return taskYield{}, true, popErr
+			}
 			args = callFrame.module.qualifyValuesForArgumentBoundary(args)
+			callee, err = machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, payload.ResultCount, true, 0, task.allocationBatch)
 		}
-		callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, payload.ResultCount, qualify)
 		if err != nil {
 			return taskYield{}, true, err
 		}
@@ -155,7 +155,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		if target, ok := values[0].Data.(reflectMakeFuncTarget); ok {
+		if target, ok := values[0].payload().(reflectMakeFuncTarget); ok {
 			args := values[1:]
 			if target.handlerModule != callFrame.module {
 				args = callFrame.module.qualifyValuesForArgumentBoundary(args)
@@ -164,7 +164,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 			if err != nil {
 				return taskYield{}, true, err
 			}
-			callee, err := machine.vm.newExecutionFrame(request.module, request.functionID, request.args, request.upvalues, task.id, request.resultCount, false)
+			callee, err := machine.vm.newExecutionFrame(request.module, request.functionID, request.args, request.captureSlots, task.id, request.resultCount, false, 0, task.allocationBatch)
 			if err != nil {
 				return taskYield{}, true, err
 			}
@@ -185,7 +185,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 		if qualify {
 			args = callFrame.module.qualifyValuesForArgumentBoundary(args)
 		}
-		callee, err := machine.vm.newExecutionFrame(target, ref.FunctionID, args, ref.upvalues, task.id, payload.ResultCount, qualify)
+		callee, err := machine.vm.newExecutionFrame(target, ref.FunctionID, args, ref.captureSlots, task.id, payload.ResultCount, qualify, 0, task.allocationBatch)
 		if err != nil {
 			return taskYield{}, true, err
 		}
@@ -205,12 +205,16 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		args := append([]vmValue{receiver}, values[1:]...)
+		// popN owns a reusable argument buffer. The resolved receiver replaces
+		// the interface operand in place, so interface calls do not allocate a
+		// second argument slice before frame activation.
+		values[0] = receiver
+		args := values
 		qualify := target.modulePath() != callFrame.module.modulePath()
 		if qualify {
 			args = callFrame.module.qualifyValuesForArgumentBoundary(args)
 		}
-		callee, err := machine.vm.newExecutionFrame(target, functionID, args, nil, task.id, payload.ResultCount, qualify)
+		callee, err := machine.vm.newExecutionFrame(target, functionID, args, nil, task.id, payload.ResultCount, qualify, 0, task.allocationBatch)
 		if err != nil {
 			return taskYield{}, true, err
 		}
@@ -233,11 +237,8 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 		childID := machine.vm.nextSpawnExecutionContextID()
 		// Spawn has no caller result slots; the child's declared return values
 		// are discarded when its task completes.
-		childFrame, err := machine.vm.newExecutionFrame(target, ref.FunctionID, args, ref.upvalues, childID, -1, false)
+		childFrame, err := machine.vm.newExecutionFrame(target, ref.FunctionID, args, ref.captureSlots, childID, -1, false, ir.StorageControlRecordBytes)
 		if err != nil {
-			return taskYield{}, true, err
-		}
-		if err := machine.vm.chargeAllocation(); err != nil {
 			return taskYield{}, true, err
 		}
 		child := &executionTask{id: childID, scope: task.scope, execution: task.execution, budget: task.budget, frames: []*executionFrame{childFrame}, debugParents: machine.debugParentSnapshot(task)}
@@ -269,7 +270,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		route, ok := args[0].Data.(string)
+		route, ok := args[0].payload().(string)
 		if !ok {
 			return taskYield{}, true, fmt.Errorf("FFI route must be a string, got %s", args[0].Type)
 		}
@@ -306,7 +307,24 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 			return taskYield{}, true, err
 		}
 		owner := task.frames[len(task.frames)-1-ownerDepth]
-		owner.frame.defers = append(owner.frame.defers, deferredCall{caller: callFrame.module, ref: ref})
+		reservation, err := machine.vm.reserveControlBytes(ir.StorageControlRecordBytes, task.allocationBatch)
+		if err != nil {
+			callFrame.slotInput++
+			return taskYield{}, true, err
+		}
+		if len(owner.frame.defers) == cap(owner.frame.defers) {
+			growth := max(1, cap(owner.frame.defers))
+			if err := owner.frame.growResident(uint64(growth) * uint64(unsafe.Sizeof(deferredCall{}))); err != nil {
+				reservation.abort()
+				callFrame.slotInput++
+				return taskYield{}, true, err
+			}
+			defers := make([]deferredCall, len(owner.frame.defers), cap(owner.frame.defers)+growth)
+			copy(defers, owner.frame.defers)
+			owner.frame.defers = defers
+		}
+		reservation.commit()
+		owner.frame.defers = append(owner.frame.defers, deferredCall{caller: callFrame.module, ref: ref, admittedBytes: ir.StorageControlRecordBytes})
 		return taskYield{}, true, nil
 	case preparedRecover:
 		callFrame.push(machine.recoverValue(task))
@@ -324,7 +342,7 @@ func (machine *executionMachine) executeControlBody(task *executionTask, current
 		if err != nil {
 			return taskYield{}, true, err
 		}
-		values, err = callFrame.normalizeReturnValues(values)
+		values, err = callFrame.validateReturnValues(values)
 		if err != nil {
 			return taskYield{}, true, err
 		}
@@ -345,14 +363,16 @@ func (machine *executionMachine) enterDirectTailCall(task *executionTask, curren
 	if err != nil {
 		return err
 	}
-	args := append([]vmValue(nil), inputs...)
+	// newFrame copies arguments into callee-owned storage before this frame
+	// can yield, so the reusable pop buffer is safe to pass directly.
+	args := inputs
 	qualify := target.modulePath() != callFrame.module.modulePath()
 	if qualify {
 		args = callFrame.module.qualifyValuesForArgumentBoundary(args)
 	}
 	debugging := machine.vm.breakpointsActive.Load() || machine.vm.debugStepActive.Load() || machine.vm.hostPauseRequested.Load()
 	if !debugging && len(callFrame.defers) == 0 && !qualify {
-		callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, current.expectedResults, current.qualifyResults)
+		callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, current.expectedResults, current.qualifyResults, 0, task.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -366,7 +386,7 @@ func (machine *executionMachine) enterDirectTailCall(task *executionTask, curren
 		callFrame.recycle()
 		return nil
 	}
-	callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, payload.ResultCount, qualify)
+	callee, err := machine.vm.newPreparedExecutionFrame(target, function, args, nil, task.id, payload.ResultCount, qualify, 0, task.allocationBatch)
 	if err != nil {
 		return err
 	}

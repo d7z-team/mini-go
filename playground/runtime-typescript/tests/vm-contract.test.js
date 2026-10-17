@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { GuestMemory } from "../src/vm/guest-memory";
 import { VirtualMachine } from "../src/vm/vm";
 import { allRuntimeVectors, runtimeVector, sealImage } from "./support/runtime-vectors.js";
 
@@ -22,27 +21,31 @@ function initialize(vm, label) {
   assert.fail(`${label}: initialization did not settle within its deterministic pump budget`);
 }
 
-test("direct VM executes every shared optimization corpus", async () => {
-  for (const vector of allRuntimeVectors) {
-    const vm = await VirtualMachine.create(vector.bytes, {});
-    initialize(vm, `${vector.name} O${vector.optimization}`);
-    const execution = vm.start("default", []);
-    let state;
-    for (let count = 0; count < 100_000; count++) {
-      state = vm.pump(4096);
-      if (state.executions.find((item) => item.id === execution)?.settled) break;
-      assert.equal(vm.actions().length, 0, `${vector.name} O${vector.optimization}: host action`);
-    }
-    assert.equal(
-      vm.result(execution).roots[0].data.Integer,
-      BigInt(vector.result_integer),
-      `${vector.name} O${vector.optimization}`,
-    );
-    vm.release(execution);
-    vm.close();
-    vm.pump(1);
-    assert.equal(vm.stats().liveGuestBytes, 0n, `${vector.name} O${vector.optimization}: release`);
+test.each(allRuntimeVectors)("direct VM executes $name O$optimization", async (vector) => {
+  const vm = await VirtualMachine.create(vector.bytes, {});
+  initialize(vm, `${vector.name} O${vector.optimization}`);
+  const execution = vm.start("default", []);
+  let state;
+  for (let count = 0; count < 100_000; count++) {
+    state = vm.pump(4096);
+    if (state.executions.find((item) => item.id === execution)?.settled) break;
+    assert.equal(vm.actions().length, 0, `${vector.name} O${vector.optimization}: host action`);
   }
+  let result;
+  try {
+    result = vm.result(execution);
+  } catch (error) {
+    throw new Error(`${vector.name} O${vector.optimization}: execution failed`, { cause: error });
+  }
+  assert.equal(
+    result.roots[0].data.Integer,
+    BigInt(vector.result_integer),
+    `${vector.name} O${vector.optimization}`,
+  );
+  vm.release(execution);
+  vm.close();
+  vm.pump(1);
+  assert.equal(vm.stats().occupiedBytes, 0n, `${vector.name} O${vector.optimization}: release`);
 });
 
 test("execution image decoder enforces the current object schema", async () => {
@@ -54,6 +57,64 @@ test("execution image decoder enforces the current object schema", async () => {
     ["null", source.replace(/"version":[0-9]+/, '"version":null'), /expected integer/],
   ]) {
     await assert.rejects(VirtualMachine.create(new TextEncoder().encode(input), {}), pattern, name);
+  }
+});
+
+test("typed min/max validates direction, arity and homogeneous ordered operands", async () => {
+  const source = JSON.parse(new TextDecoder().decode(runtimeVector("arithmetic").bytes));
+  for (const [name, left, right, output, operator, count, valid] of [
+    ["integer", 3, 3, 3, "min", 2, true],
+    ["direction", 3, 3, 3, "sum", 2, false],
+    ["empty", 3, 3, 3, "min", 0, false],
+    ["arity", 3, 3, 3, "min", 3, false],
+    ["boolean", 1, 1, 1, "min", 2, false],
+    ["complex", 16, 16, 16, "min", 2, false],
+    ["input type", 3, 15, 3, "min", 2, false],
+    ["output type", 3, 3, 15, "min", 2, false],
+  ]) {
+    const image = structuredClone(source);
+    const artifact = Object.values(image.packages)[0].artifact;
+    const fn = artifact.functions.find((item) => item.id === "fn.Main");
+    const type = (primitive) => ({ kind: 3, primitive, named: { module_path: "", decl_id: "" } });
+    fn.code = {
+      types: [type(left), type(right), type(output)],
+      instructions: [
+        [4, 0, 0],
+        [4, 1, 1],
+        [72, 0, 2],
+        [17, 0, 3],
+      ],
+      descriptors: {
+        type: [{ type: type(left) }, { type: type(right) }],
+        minmax: [{ type: type(left), operator, arg_count: count }],
+        return: [{ result_count: 1 }],
+      },
+      operands: [
+        { outputs: [0] },
+        { outputs: [1] },
+        {
+          inputs: [
+            [0, 0],
+            [0, 1],
+          ],
+          outputs: [2],
+        },
+        { inputs: [[0, 2]] },
+      ],
+    };
+    if (valid) {
+      const vm = await VirtualMachine.create(sealImage(image), {});
+      initialize(vm, name);
+      assert.equal(execute(vm, vm.start("default", [])).roots[0].data.Integer, 0n);
+      vm.close();
+      vm.pump(1);
+    } else {
+      await assert.rejects(
+        VirtualMachine.create(sealImage(image), {}),
+        { code: "invalid_operand" },
+        name,
+      );
+    }
   }
 });
 
@@ -174,9 +235,80 @@ test("fused length branches compare integer thresholds without narrowing", async
   }
 });
 
+test("map iteration publishes direct key/value locals with an ordinary ok slot", async () => {
+  const vector = runtimeVector("map_range");
+  const image = JSON.parse(new TextDecoder().decode(vector.bytes));
+  const artifact = Object.values(image.packages)[0].artifact;
+  const main = artifact.functions.find((candidate) => candidate.id === "fn.Main");
+  const next = main.code.instructions.find(([opcode]) => opcode === 44);
+  assert.ok(next, "map_iter_next instruction");
+  const operands = main.code.operands[next[2]];
+  assert.equal(operands.outputs.length, 3);
+  assert.ok(operands.outputs[0] >= 0x80000000);
+  assert.ok(operands.outputs[1] >= 0x80000000);
+  assert.ok(operands.outputs[2] < 0x80000000);
+
+  const vm = await VirtualMachine.create(vector.bytes, {});
+  initialize(vm, "mixed map iterator outputs");
+  assert.equal(execute(vm, vm.start("default", [])).roots[0].data.Integer, 35n);
+  vm.close();
+});
+
+test("reused local storage clears a slice before len observes it", async () => {
+  const image = JSON.parse(new TextDecoder().decode(runtimeVector("slice_copy").bytes));
+  const artifact = Object.values(image.packages)[0].artifact;
+  const main = artifact.functions.find((candidate) => candidate.id === "fn.Main");
+  const slice = main.locals.find((local) => local.type.kind === 5).type;
+  const integer = { kind: 3, primitive: 3, named: { module_path: "", decl_id: "" } };
+  main.signature = { results: [integer] };
+  main.locals = [{ id: "local.slice", type: slice }];
+  artifact.constants = [{ id: "one", type: integer, value: 1 }];
+  main.code = {
+    types: [integer, slice, slice, integer],
+    descriptors: {
+      const: [{ constant: "one" }],
+      makeslice: [{ has_capacity: true, type: slice }],
+      type: [{ type: slice }],
+      local: [{ local: "local.slice" }],
+      return: [{ result_count: 1 }],
+    },
+    instructions: [
+      [3, 0, 0],
+      [29, 0, 1],
+      [9, 0, 2],
+      [4, 0, 3],
+      [9, 0, 4],
+      [36, 0, 5],
+      [17, 0, 6],
+    ],
+    operands: [
+      { outputs: [0] },
+      {
+        inputs: [
+          [0, 0],
+          [0, 0],
+        ],
+        outputs: [1],
+      },
+      { inputs: [[0, 1]] },
+      { outputs: [2] },
+      { inputs: [[0, 2]] },
+      { inputs: [[2, 0]], outputs: [3] },
+      { inputs: [[0, 3]] },
+    ],
+  };
+  const vm = await VirtualMachine.create(sealImage(image), {});
+  initialize(vm, "reused nil slice");
+  const result = execute(vm, vm.start("default", [])).roots[0].data.Integer;
+  assert.equal(result, 0n);
+  vm.close();
+  vm.pump(1);
+});
+
 test("direct outputs require private locals while ordinary declarations can be rebound", async () => {
   for (const [name, functionID, localID, opcode] of [
     ["direct_call_results", "fn.deferred", "local.value", 22],
+    ["direct_call_results", "fn.deferred", "local.result", 22],
     ["slot_locals", "fn.pointers", "local.x", 7],
   ]) {
     const image = JSON.parse(new TextDecoder().decode(runtimeVector(name).bytes));
@@ -193,6 +325,22 @@ test("direct outputs require private locals while ordinary declarations can be r
       name,
     );
   }
+
+  const inputImage = JSON.parse(
+    new TextDecoder().decode(runtimeVector("direct_call_results").bytes),
+  );
+  const inputArtifact = Object.values(inputImage.packages)[0].artifact;
+  const inputFunction = inputArtifact.functions.find((candidate) => candidate.id === "fn.deferred");
+  const resultIndex = inputFunction.locals.findIndex(
+    (candidate) => candidate.id === "local.result",
+  );
+  assert.ok(resultIndex >= 0);
+  inputFunction.code.operands[1].inputs[0] = [2, resultIndex];
+  await assert.rejects(
+    VirtualMachine.create(sealImage(inputImage), {}),
+    /direct local input requires private local storage/,
+    "named result locals remain cells for direct inputs",
+  );
 
   const vector = runtimeVector("direct_call_results");
   const vm = await VirtualMachine.create(vector.bytes, {});
@@ -316,6 +464,12 @@ test("profile counts avoid clock reads unless timing is explicitly enabled", asy
       Object.values(countedStats.profile?.functions ?? {}).every(({ nanos }) => nanos === 0n),
       "count-only profiling must not sample per-step time",
     );
+    const snapshot = structuredClone(countedStats.profile);
+    execute(counted, counted.start("default", []));
+    assert.deepEqual(countedStats.profile, snapshot, "published profile is an owned snapshot");
+    const [name, functionStats] = Object.entries(countedStats.profile.functions)[0];
+    functionStats.steps = -1n;
+    assert.ok(counted.stats().profile.functions[name].steps > 0n);
     counted.close();
     counted.pump(1);
 
@@ -400,7 +554,7 @@ test("frame cache charges entry and scratch capacity against its bound", async (
   }
   vm.close();
   vm.pump(1);
-  assert.equal(vm.stats().liveGuestBytes, 0n, "closing a cached VM releases guest accounting");
+  assert.equal(vm.stats().occupiedBytes, 0n, "closing a cached VM releases guest accounting");
 
   const active = await VirtualMachine.create(runtimeVector("recursive_call").bytes, {
     limits: { maxFrameCacheBytes: 80 },
@@ -478,33 +632,4 @@ test("debugger maps stripped label locations back to wire PCs", async () => {
   assert.equal(trace.stackFrames[0].source.path, "main.mgo");
   vm.close();
   vm.pump(1);
-});
-
-test("guest memory publishes deterministic lifecycle counters", () => {
-  const memory = new GuestMemory({ maxAllocatedBytes: 550n, maxHeapBytes: 300n });
-  assert.equal(
-    memory.publish({ liveHeapBytes: 128n, liveHeapObjects: 1n, liveGuestBytes: 256n }, true),
-    0n,
-  );
-  assert.deepEqual(memory.stats(), {
-    liveHeapBytes: 128n,
-    liveHeapObjects: 1n,
-    peakHeapBytes: 128n,
-    totalHeapAllocatedBytes: 128n,
-    liveGuestBytes: 256n,
-    peakGuestBytes: 256n,
-    totalGuestAllocatedBytes: 256n,
-    guestAllocatedSinceCensusBytes: 256n,
-    guestAllocations: 1n,
-  });
-  memory.reserve(32n);
-  assert.throws(() => memory.reserve(300n), { code: "allocation_limit" });
-  assert.equal(
-    memory.publish({ liveHeapBytes: 64n, liveHeapObjects: 1n, liveGuestBytes: 200n }, true),
-    64n,
-  );
-  assert.equal(memory.stats().totalGuestAllocatedBytes, 288n);
-  memory.release();
-  assert.equal(memory.stats().liveGuestBytes, 0n);
-  assert.equal(memory.stats().peakGuestBytes, 256n);
 });

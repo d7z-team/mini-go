@@ -65,7 +65,8 @@ fn frame_owned_map_iterator_is_traced_and_released_on_completion_cancel_and_clos
     })), LoadLimits::default()).unwrap());
     for action in ["complete", "cancel", "close"] {
         let mut instance = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
-        instance.start("default", vec![]).unwrap();
+        let idle_objects = instance.heap_stats().live_objects;
+        instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(4).unwrap(), PollStatus::Running);
         instance.collect_garbage().unwrap();
         match action {
@@ -75,11 +76,20 @@ fn frame_owned_map_iterator_is_traced_and_released_on_completion_cancel_and_clos
                 while instance.poll_steps(1).unwrap() == PollStatus::Running {
                     instance.collect_garbage().unwrap();
                 }
-                assert_eq!(instance.results()[0].integer().unwrap(), 42);
+                assert_eq!(
+                    instance.snapshot_results(Default::default()).unwrap().roots[0]
+                        .integer()
+                        .unwrap(),
+                    42
+                );
             }
         }
         instance.collect_garbage().unwrap();
-        assert_eq!(instance.heap_stats().live_objects, 0, "{action}");
+        assert_eq!(
+            instance.heap_stats().live_objects,
+            if action == "close" { 0 } else { idle_objects },
+            "{action}"
+        );
         instance.close().unwrap();
     }
 }
@@ -155,17 +165,22 @@ fn allocation_pressure_preserves_popped_arguments_and_unpublished_frame_slots() 
         let mut instance = Instance::new(
             program.clone(),
             ExecutionLimits {
-                max_objects: 4,
-                max_heap_bytes: 4096,
+                max_guest_bytes: 4096,
                 ..Default::default()
             },
         )
         .unwrap();
-        instance.start("default", vec![]).unwrap();
+        let idle_objects = instance.heap_stats().live_objects;
+        instance.start("default", &[]).unwrap();
         while instance.poll_steps(quantum).unwrap() == PollStatus::Running {}
-        assert_eq!(instance.results()[0].integer().unwrap(), 42);
+        assert_eq!(
+            instance.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            42
+        );
         instance.collect_garbage().unwrap();
-        assert_eq!(instance.heap_stats().live_objects, 0);
+        assert_eq!(instance.heap_stats().live_objects, idle_objects);
         observations.push((
             instance.steps(),
             instance.heap_stats().total_allocated_bytes,

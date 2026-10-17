@@ -12,7 +12,7 @@ func (t *TypeTable) Underlying(ref TypeRef) TypeRef {
 		return ref
 	}
 	if t.indexOwner != t {
-		if err := t.index(); err != nil {
+		if err := t.rebuildIndexes(); err != nil {
 			return ref
 		}
 	}

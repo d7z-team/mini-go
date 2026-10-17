@@ -546,7 +546,7 @@ impl PublicationRegistry {
         let snapshot = normalize_snapshot(client.snapshot(context.clone()).await?.0)?;
         let sequence = self
             .next_token
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
                 |id| id.checked_add(1),

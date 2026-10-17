@@ -5,7 +5,7 @@ use mini_go::{
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
-    value::Data,
+    snapshot::HostData,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -95,17 +95,18 @@ fn struct_construction_fills_defaults_and_preserves_copied_array_fields() {
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     for quantum in [1, 64] {
         let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         while vm.poll_steps(quantum).unwrap() != PollStatus::Ready {}
-        let Data::Struct(fields) = vm.results()[0].data() else {
+        let snapshot = vm.snapshot_results(Default::default()).unwrap();
+        let HostData::Struct(fields) = &snapshot.roots[0].data else {
             panic!("expected record")
         };
         assert_eq!(fields["Default"].integer().unwrap(), 0);
-        let Data::Array(copied) = fields["Values"].data() else {
+        let HostData::Array(copied) = &fields["Values"].data else {
             panic!("expected copied array")
         };
         assert_eq!(copied[0].integer().unwrap(), 42);
-        let Data::Array(original) = vm.results()[1].data() else {
+        let HostData::Array(original) = &snapshot.roots[1].data else {
             panic!("expected original array")
         };
         assert_eq!(original[0].integer().unwrap(), 0);
@@ -143,5 +144,66 @@ fn struct_layout_rejects_unknown_and_duplicate_initializers_during_preparation()
             matches!(error.code, "invalid_operand" | "missing_field"),
             "{error}"
         );
+    }
+}
+
+#[test]
+fn struct_field_paths_follow_declaration_order_across_local_and_temporary_storage() {
+    let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+    let record = json!({"kind":wire::Struct,"node":"record"});
+    let code = support::slot_code(
+        json!([integer, integer, record, integer, integer]),
+        &[
+            ("const", json!({"constant":"first"}), json!({"outputs":[0]})),
+            ("const", json!({"constant":"last"}), json!({"outputs":[1]})),
+            (
+                "make_struct",
+                json!({"type":record,"fields":["Zulu","Alpha"]}),
+                json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]}),
+            ),
+            (
+                "store_local",
+                json!({"local":"record"}),
+                json!({"inputs":[[0,2]],"release":[2]}),
+            ),
+            (
+                "get_path",
+                json!({"type":record,"fields":[0]}),
+                json!({"inputs":[[2,0]],"outputs":[3]}),
+            ),
+            (
+                "load_local",
+                json!({"local":"record"}),
+                json!({"outputs":[2]}),
+            ),
+            (
+                "get_path",
+                json!({"type":record,"fields":[1]}),
+                json!({"inputs":[[0,2]],"outputs":[4],"release":[2]}),
+            ),
+            (
+                "return",
+                json!({"result_count":2}),
+                json!({"inputs":[[0,3],[0,4]],"release":[3,4]}),
+            ),
+        ],
+    );
+    let image = support::image(json!({
+        "type_table":{"nodes":[{"id":"record","kind":wire::Struct,"fields":[
+            {"name":"Zulu","type":integer},{"name":"Alpha","type":integer}
+        ]}]},
+        "constants":[{"id":"first","type":integer,"value":19},{"id":"last","type":integer,"value":73}],
+        "functions":[{"id":"fn.Main","signature":{"results":[integer,integer]},
+            "locals":[{"id":"record","type":record}],"code":code}]
+    }));
+    let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
+    for quantum in [1, 64] {
+        let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
+        vm.start("default", &[]).unwrap();
+        while vm.poll_steps(quantum).unwrap() != PollStatus::Ready {}
+        let snapshot = vm.snapshot_results(Default::default()).unwrap();
+        assert_eq!(snapshot.roots[0].integer().unwrap(), 19);
+        assert_eq!(snapshot.roots[1].integer().unwrap(), 73);
+        vm.close().unwrap();
     }
 }

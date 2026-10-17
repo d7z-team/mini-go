@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestMapStorageConcurrentPublicationKeepsLimitAndIdentity(t *testing.T) {
+func TestMapStorageConcurrentPublicationKeepsIdentity(t *testing.T) {
 	for _, workers := range []int{1, 2, 4} {
 		data := newVMMap(0)
 		start := make(chan struct{})
@@ -18,7 +18,7 @@ func TestMapStorageConcurrentPublicationKeepsLimitAndIdentity(t *testing.T) {
 				for index := worker; index < 64; index += workers {
 					key := vmMapKey{Kind: vmMapKeyInt, Int64: int64(index)}
 					value := newVMValue("Int", int64(index))
-					if data.storeWithinLimit(key, vmMapEntry{Key: value, Value: value}, 16) == nil {
+					if data.store(key, vmMapEntry{Key: value, Value: value}) == nil {
 						published.Add(1)
 					}
 					for key, entry := range data.snapshot() {
@@ -31,7 +31,7 @@ func TestMapStorageConcurrentPublicationKeepsLimitAndIdentity(t *testing.T) {
 		}
 		close(start)
 		group.Wait()
-		if published.Load() != 16 || data.length() != 16 {
+		if published.Load() != 64 || data.length() != 64 {
 			t.Fatalf("workers=%d: published=%d size=%d", workers, published.Load(), data.length())
 		}
 		before := data.snapshot()
@@ -51,7 +51,7 @@ func TestMapStorageConcurrentPublicationKeepsLimitAndIdentity(t *testing.T) {
 		if data.length() != 0 || len(data.entryIdentities()) != 0 {
 			t.Fatal("clear retained entries or identities")
 		}
-		if len(before) != 16 {
+		if len(before) != 64 {
 			t.Fatal("snapshot changed after map mutation")
 		}
 	}

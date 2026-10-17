@@ -27,8 +27,10 @@
 | `wire.json` | 当前严格 bytecode schema 的有效与无效输入 | Go 生成，Rust 独立解码；TypeScript 在执行镜像入口验证同一 schema |
 | `stdlib.json.gz` | 标准库宿主行为镜像 | Go、Rust |
 
-TypeScript 使用共享 contract 验证 live、peak、total、since-census 与释放语义；这些数值不是
-JavaScript 对象大小或进程 RSS。
+三端从共享 contract 取得逻辑存储成本；`runtime/storage_cost.json` 用独立期望核对 cell、backing、
+函数、map 和 channel 的实际分配增量。测试同时验证 reservation 的提交与回滚、owner 释放和 GC 搬迁。
+当前占用、尚未提交的预留、累计分配与上次 major 可达快照分别观察。resident 反映各后端受控存储的
+实际容量，不要求跨后端相等；JavaScript 对象大小与进程 RSS 单独测量。
 
 ## RPC 一致性数据
 

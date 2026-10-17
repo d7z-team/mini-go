@@ -204,7 +204,12 @@ func (i *Instance) ApplyPatch(plan *PatchPlan) (PatchResult, error) {
 	}
 	err = bindModuleRequirements(next.root, next.modules)
 	if err != nil {
+		next.close()
 		return PatchResult{}, fail(PatchError{Code: "requirements_failed", Message: err.Error()})
+	}
+	if _, err := next.ensureManagedAnchor(); err != nil {
+		next.close()
+		return PatchResult{}, fail(PatchError{Code: "resource_limit", Message: err.Error()})
 	}
 
 	previousInfo := RevisionInfo{Generation: current.generation, Hash: current.code.image.Hash, SymbolsHash: current.symbolsHash()}
@@ -223,6 +228,9 @@ func (i *Instance) ApplyPatch(plan *PatchPlan) (PatchResult, error) {
 	i.vm.debugger.mu.Unlock()
 	current.retire(true)
 	i.vm.addRetiredRevision(current)
+	if err := i.vm.collectMajorManaged(); err != nil {
+		i.vm.recordAllocationFailure(err)
+	}
 	i.vm.sweepRetiredRevisions()
 	i.patchMu.Lock()
 	if i.pendingPatch == plan {

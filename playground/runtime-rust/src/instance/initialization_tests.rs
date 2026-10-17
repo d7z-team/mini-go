@@ -9,7 +9,7 @@ fn entry_initialization_belongs_to_the_admitted_task() {
         ]);
     });
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", Vec::new()).unwrap();
+    vm.start("default", &[]).unwrap();
     let owner = vm.running.id;
     assert_eq!(
         vm.initializing.values().copied().collect::<Vec<_>>(),
@@ -29,7 +29,7 @@ fn module_wait_releases_task_and_observes_completion_or_failure() {
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         let task = vm.running.id;
         vm.initializing.insert("dependency".into(), task + 1);
         assert!(vm.initialize_module("dependency").unwrap());
@@ -73,7 +73,7 @@ fn module_wait_detects_cross_task_cycle_before_parking() {
         ]);
     });
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", Vec::new()).unwrap();
+    vm.start("default", &[]).unwrap();
     let task = vm.running.id;
     vm.initializing.insert("first".into(), task);
     vm.initializing.insert("second".into(), task + 1);

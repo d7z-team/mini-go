@@ -177,6 +177,63 @@ func TestFullOptimizationPropagatesSingleResultBooleanWithoutRemovingRebind(t *t
 	}
 }
 
+func TestFullOptimizationPropagatesAdjacentBooleanBeforeLaterEscape(t *testing.T) {
+	for _, escaped := range []hir.Expression{
+		{Kind: hir.ExprFunction, Captures: []hir.CaptureTarget{{Local: "flag"}}},
+		{Kind: hir.ExprAddressOf, Local: "flag"},
+	} {
+		t.Run(string(escaped.Kind), func(t *testing.T) {
+			program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
+				{Kind: hir.StmtStoreLocal, Local: "flag", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)}},
+				{Kind: hir.StmtJumpIf, Expr: hir.Expression{Kind: hir.ExprLocal, Local: "flag"}, Label: "done"},
+				{Kind: hir.StmtExpr, Expr: escaped},
+				{Kind: hir.StmtLabel, Label: "done"},
+				{Kind: hir.StmtReturn},
+			}}}}
+			optimized, err := Apply(program, LevelFull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := optimized.Functions[0].Body
+			if !reflect.DeepEqual(body, []hir.Statement{{Kind: hir.StmtReturn}}) {
+				t.Fatalf("constant branch did not simplify to the selected return: %#v", body)
+			}
+		})
+	}
+}
+
+func TestFullOptimizationPropagatesImmutableLocalIntoExpression(t *testing.T) {
+	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
+		{Kind: hir.StmtStoreLocal, Local: "value", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`7`)}},
+		{Kind: hir.StmtReturn, Results: []hir.Expression{{Kind: hir.ExprBinary, Operator: "+", Left: &hir.Expression{Kind: hir.ExprLocal, Local: "value"}, Right: &hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}}}},
+	}}}}
+	optimized, err := Apply(program, LevelFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := optimized.Functions[0].Body[0].Results[0]
+	if result.Left == nil || result.Left.Kind != hir.ExprLiteral || result.Left.Value.Text != "7" {
+		t.Fatalf("literal local was not propagated: %#v", result)
+	}
+}
+
+func TestFullOptimizationPropagatesScalarCopyAcrossStraightLineCode(t *testing.T) {
+	integer := types.Builtin(types.PrimitiveInt)
+	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
+		{Kind: hir.StmtStoreLocal, Local: "source", Expr: hir.Expression{Kind: hir.ExprLocal, Local: "argument", Type: integer}},
+		{Kind: hir.StmtStoreLocal, Local: "copy", Expr: hir.Expression{Kind: hir.ExprLocal, Local: "source", Type: integer}},
+		{Kind: hir.StmtReturn, Results: []hir.Expression{{Kind: hir.ExprLocal, Local: "copy", Type: integer}}},
+	}}}}
+	optimized, err := Apply(program, LevelFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := optimized.Functions[0].Body[0].Results[0]
+	if result.Kind != hir.ExprLocal || result.Local != "argument" {
+		t.Fatalf("scalar copy was not propagated: %#v", result)
+	}
+}
+
 func TestFullOptimizationFoldsPureBooleanAndDropsUnusedPureStore(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
 		{Kind: hir.StmtStoreLocal, Local: "local.unused", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`true`)}, SourcePoints: []hir.Location{{File: "main.mgo", Line: 1}}},
@@ -297,6 +354,53 @@ func TestFullOptimizationRetainsEscapedAndReboundLocals(t *testing.T) {
 	}
 }
 
+func TestLivenessPreservesNestedSelectAddressAndCaptureReads(t *testing.T) {
+	body := []hir.Statement{
+		{Kind: hir.StmtStoreLocal, Local: "unused", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`0`)}},
+		{Kind: hir.StmtStoreLocal, Local: "nested", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}},
+		{Kind: hir.StmtStoreLocal, Local: "channel", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`2`)}},
+		{Kind: hir.StmtStoreLocal, Local: "send", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`3`)}},
+		{Kind: hir.StmtStoreLocal, Local: "addressed", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`4`)}},
+		{Kind: hir.StmtStoreLocal, Local: "captured", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`5`)}},
+		{Kind: hir.StmtExpr, Expr: hir.Expression{
+			Kind:  hir.ExprLet,
+			Local: "inner",
+			Bind:  &hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`0`)},
+			Body:  &hir.Expression{Kind: hir.ExprBinary, Left: &hir.Expression{Kind: hir.ExprLocal, Local: "nested"}, Right: &hir.Expression{Kind: hir.ExprLocal, Local: "inner"}},
+		}},
+		{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprAddressOf, Path: []hir.AddressSegment{{Local: "addressed"}}}},
+		{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprFunction, Captures: []hir.CaptureTarget{{Local: "captured"}}}},
+		{Kind: hir.StmtSelect, SelectCases: []hir.SelectCase{{Channel: "channel", Send: "send"}}, SelectDefault: true},
+		{Kind: hir.StmtReturn},
+	}
+	optimized, changed := removeDeadPureLocalStoresOnce(body, nil)
+	if !changed || !reflect.DeepEqual(optimized, body[1:]) {
+		t.Fatalf("liveness must preserve every read and eliminate only the unused store: %#v", optimized)
+	}
+}
+
+func TestFullOptimizationRetainsPathAddressedAndZeroStores(t *testing.T) {
+	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
+		{Kind: hir.StmtStoreLocal, Local: "path.addressed", Expr: hir.Expression{Kind: hir.ExprLiteral, Value: constant.Scalar(`1`)}},
+		{Kind: hir.StmtExpr, Expr: hir.Expression{Kind: hir.ExprAddressOf, Path: []hir.AddressSegment{{Local: "path.addressed"}}}},
+		{Kind: hir.StmtStoreLocal, Local: "zero.value", Expr: hir.Expression{Kind: hir.ExprZero}},
+		{Kind: hir.StmtReturn},
+	}}}}
+	optimized, err := Apply(program, LevelFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores := 0
+	for _, statement := range optimized.Functions[0].Body {
+		if statement.Kind == hir.StmtStoreLocal {
+			stores++
+		}
+	}
+	if stores != 2 {
+		t.Fatalf("addressed path or zero store was removed: %#v", optimized.Functions[0].Body)
+	}
+}
+
 func TestApplyIsIdempotentAndDoesNotMutateInput(t *testing.T) {
 	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{
 		{Kind: hir.StmtJump, Label: "next", SourcePoints: []hir.Location{{File: "main.mgo", Line: 1, Column: 1}}},
@@ -317,6 +421,46 @@ func TestApplyIsIdempotentAndDoesNotMutateInput(t *testing.T) {
 	}
 	if !reflect.DeepEqual(program.Functions[0].Body, original) {
 		t.Fatalf("optimizer mutated its input: %#v", program.Functions[0].Body)
+	}
+}
+
+func TestApplyDeepClonesNestedExpressionState(t *testing.T) {
+	integer := types.Builtin(types.PrimitiveInt)
+	program := hir.Program{Functions: []hir.Function{{ID: "fn.main", Body: []hir.Statement{{
+		Kind: hir.StmtExpr,
+		Expr: hir.Expression{
+			Kind:        hir.ExprLetResults,
+			Locals:      []string{"binding"},
+			Captures:    []hir.CaptureTarget{{Kind: "local", Local: "captured"}},
+			Path:        []hir.AddressSegment{{Kind: "local", Local: "addressed"}},
+			ResultTypes: []types.TypeRef{integer},
+			Bind:        &hir.Expression{Kind: hir.ExprLiteral, Type: integer, Value: constant.Scalar("1")},
+			Body:        &hir.Expression{Kind: hir.ExprLocal, Local: "binding", Type: integer},
+		},
+	}}}}}
+	optimized, err := Apply(program, LevelDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	optimized.Functions[0].Body[0].Expr.Locals[0] = "changed"
+	optimized.Functions[0].Body[0].Expr.Captures[0].Local = "changed"
+	optimized.Functions[0].Body[0].Expr.Path[0].Local = "changed"
+	optimized.Functions[0].Body[0].Expr.ResultTypes[0] = types.Builtin(types.PrimitiveString)
+	optimized.Functions[0].Body[0].Expr.Body.Local = "changed"
+	if got := program.Functions[0].Body[0].Expr.Locals[0]; got != "binding" {
+		t.Fatalf("input let locals were aliased: %q", got)
+	}
+	if got := program.Functions[0].Body[0].Expr.Captures[0].Local; got != "captured" {
+		t.Fatalf("input captures were aliased: %q", got)
+	}
+	if got := program.Functions[0].Body[0].Expr.Path[0].Local; got != "addressed" {
+		t.Fatalf("input address path was aliased: %q", got)
+	}
+	if got := program.Functions[0].Body[0].Expr.ResultTypes[0]; got != integer {
+		t.Fatalf("input result types were aliased: %#v", got)
+	}
+	if got := program.Functions[0].Body[0].Expr.Body.Local; got != "binding" {
+		t.Fatalf("input nested expression was aliased: %q", got)
 	}
 }
 

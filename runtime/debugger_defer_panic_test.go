@@ -325,7 +325,7 @@ func TestDebuggerSchemaDeferredRepanicReplacesOwnerPanic(t *testing.T) {
 	if !errors.As(err, &panicErr) {
 		t.Fatalf("expected PanicError, got %T: %v", err, err)
 	}
-	if panicErr.Value.Type.String() != "String" || panicErr.Value.Data != "replacement" {
+	if panicErr.Value.Type.String() != "String" || panicErr.Value.materializedData() != "replacement" {
 		t.Fatalf("expected replacement panic value, got %#v", panicErr.Value)
 	}
 	events := debugger.Events()

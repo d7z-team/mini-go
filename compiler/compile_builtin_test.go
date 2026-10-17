@@ -22,6 +22,7 @@ func Main() int64 {
 	return int64(min(scores[0], scores[1], scores[2])) +
 		int64(max(scores[0], scores[1], scores[2])) + Low + High + int64(Mixed)
 }
+
 `)
 	if err != nil {
 		t.Fatalf("compileTestSource failed: %v", err)
@@ -36,6 +37,31 @@ func Main() int64 {
 			}
 		}
 	}
+}
+
+func TestCompileSourceEmitsTypedMinMaxInstruction(t *testing.T) {
+	result, err := compileTestSource("example/main", "main.mgo", `
+package main
+func Main(left int64, right int64) int64 { return min(left, right) }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK() {
+		t.Fatalf("compile min/max: %#v", result.Diagnostics)
+	}
+	for _, function := range result.Artifact.Functions {
+		for _, instruction := range functionOperations(t, function) {
+			if instruction.Op == ir.OpMinMax {
+				payload, ok := instruction.Payload.(ir.MinMaxPayload)
+				if !ok || payload.Operator != "min" || payload.ArgCount != 2 {
+					t.Fatalf("min/max payload = %#v", instruction.Payload)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("compiled function did not contain min_max")
 }
 
 func TestCompileSourceTypeArgumentsAndValueShadowing(t *testing.T) {

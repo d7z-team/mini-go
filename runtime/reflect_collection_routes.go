@@ -96,7 +96,7 @@ func reflectValueSwap(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if module == nil || !module.isSliceType(value.Type) {
 		return []vmValue{newVMValue("String", "reflect: Swapper of non-slice Value"), newVMValue("Bool", false)}, nil
 	}
-	slice, ok := value.Data.(*vmSlice)
+	slice, ok := value.payload().(*vmSlice)
 	if !ok {
 		return []vmValue{newVMValue("String", fmt.Sprintf("reflect: invalid slice backing for %s", value.Type)), newVMValue("Bool", false)}, nil
 	}
@@ -104,7 +104,16 @@ func reflectValueSwap(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		return []vmValue{newVMValue("String", "reflect: slice index out of range"), newVMValue("Bool", false)}, nil
 	}
 	if left != right {
-		leftValue := slice.valueAt(int(left))
+		if slice.managedHeap != nil && slice.managedRef.valid() {
+			stride := slice.managedElem.Stride
+			leftOffset := slice.managedBase + uint32(slice.Start+int(left))*stride
+			rightOffset := slice.managedBase + uint32(slice.Start+int(right))*stride
+			if err := slice.managedHeap.swap(slice.managedRef, leftOffset, rightOffset, stride); err != nil {
+				return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
+			}
+			return []vmValue{newVMValue("String", ""), newVMValue("Bool", true)}, nil
+		}
+		leftValue := module.cloneValueForStore(slice.valueAt(int(left)))
 		rightValue := slice.valueAt(int(right))
 		if err := slice.setValueAt(int(left), rightValue); err != nil {
 			return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil

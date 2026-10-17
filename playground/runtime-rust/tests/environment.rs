@@ -9,7 +9,7 @@ use mini_go::{
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
-    value::Data,
+    snapshot::HostData,
 };
 use serde_json::json;
 use std::sync::{
@@ -59,7 +59,7 @@ fn computing_with_a_timer_reads_time_at_bounded_owner_boundaries() {
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
     vm.set_environment(clock.clone(), Arc::new(mini_go::environment::SystemEntropy))
         .unwrap();
-    vm.start("default", vec![]).unwrap();
+    vm.start("default", &[]).unwrap();
     assert_eq!(vm.poll_steps(10000).unwrap(), PollStatus::Running);
     assert_eq!(vm.steps(), 10000);
     let reads = clock.0.load(Ordering::Relaxed);
@@ -118,7 +118,7 @@ fn timer_event_resumes_a_blocked_task_only_after_deadline() {
                 ..Default::default()
             })
             .unwrap();
-        let execution = instance.start("default", Vec::new()).unwrap();
+        let execution = instance.start("default", &[]).unwrap();
         drive_until_state(&execution, ExecutionState::Pending);
         clock.0.store(9, Ordering::SeqCst);
         drive_until_state(&execution, ExecutionState::Pending);
@@ -130,7 +130,11 @@ fn timer_event_resumes_a_blocked_task_only_after_deadline() {
         ));
         execution.wait_scope(&Cancellation::default()).unwrap();
         instance.collect_garbage().unwrap();
-        assert_eq!(instance.heap_stats().live_objects, 0);
+        // The open instance still owns its current code/global anchor.
+        assert_eq!(
+            instance.heap_stats().live_bytes,
+            mini_go::contract_generated::STORAGE_RECORD_HEADER
+        );
         instance.shutdown(&Cancellation::default()).unwrap();
         executor.shutdown(&Cancellation::default()).unwrap();
     }
@@ -190,12 +194,23 @@ fn partial_entropy_failure_preserves_written_bytes_and_count() {
     instance
         .set_environment(Arc::new(ManualClock::default()), Arc::new(PartialEntropy))
         .unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
-    assert!(matches!(instance.results()[1].data(), Data::Bool(false)));
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
+    assert!(matches!(
+        &instance.snapshot_results(Default::default()).unwrap().roots[1].data,
+        HostData::Bool(false)
+    ));
     instance.collect_garbage().unwrap();
-    assert_eq!(instance.heap_stats().live_bytes, 0);
+    assert_eq!(
+        instance.heap_stats().live_bytes,
+        mini_go::contract_generated::STORAGE_RECORD_HEADER
+    );
 }
 
 #[test]
@@ -221,9 +236,12 @@ fn stopping_a_timer_closes_its_signal_and_releases_waiters() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert!(matches!(instance.results()[0].data(), Data::Bool(false)));
+    assert!(matches!(
+        &instance.snapshot_results(Default::default()).unwrap().roots[0].data,
+        HostData::Bool(false)
+    ));
     assert_eq!(instance.stats().timers, 0);
     assert_eq!(instance.stats().blocked_tasks, 0);
 }

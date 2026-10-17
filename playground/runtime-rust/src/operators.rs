@@ -132,10 +132,140 @@ fn invalid(operator: &str) -> RuntimeError {
 
 /// Operand normalization belongs to the prepared function's type registry.
 /// None keeps dynamic resolution; zero means a proven nonnumeric operand.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct PreparedOperator {
     pub operator: Operator,
     numeric: [Option<u8>; 2],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MinMaxKind {
+    Signed,
+    Unsigned,
+    Float,
+    String,
+}
+
+pub(crate) fn min_max_kind(
+    typ: &TypeIdentity,
+    registry: &TypeRegistry,
+) -> Result<MinMaxKind, RuntimeError> {
+    let typ = registry.underlying(typ)?;
+    match typ {
+        TypeIdentity::Primitive(wire::PrimitiveString) => Ok(MinMaxKind::String),
+        TypeIdentity::Primitive(
+            wire::PrimitiveInt
+            | wire::PrimitiveInt8
+            | wire::PrimitiveInt16
+            | wire::PrimitiveInt32
+            | wire::PrimitiveInt64,
+        ) => Ok(MinMaxKind::Signed),
+        TypeIdentity::Primitive(
+            wire::PrimitiveUint
+            | wire::PrimitiveUint8
+            | wire::PrimitiveUint16
+            | wire::PrimitiveUint32
+            | wire::PrimitiveUint64
+            | wire::PrimitiveUintptr,
+        ) => Ok(MinMaxKind::Unsigned),
+        TypeIdentity::Primitive(wire::PrimitiveFloat32 | wire::PrimitiveFloat64) => {
+            Ok(MinMaxKind::Float)
+        }
+        _ => Err(RuntimeError::new(
+            "invalid_operation",
+            "min/max",
+            "operand type does not support min/max",
+        )),
+    }
+}
+
+pub(crate) fn min_max<'a>(
+    kind: MinMaxKind,
+    operator: &str,
+    values: impl IntoIterator<Item = &'a Value>,
+) -> Result<Value, RuntimeError> {
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return Err(RuntimeError::new(
+            "invalid_operation",
+            "min/max",
+            "min/max requires at least one value",
+        ));
+    };
+    let choose_min = match operator {
+        "min" => true,
+        "max" => false,
+        _ => {
+            return Err(RuntimeError::new(
+                "invalid_operation",
+                operator,
+                "invalid min/max operator",
+            ));
+        }
+    };
+    let mut best = first;
+    for candidate in values {
+        let replace = match kind {
+            MinMaxKind::Signed => {
+                let (Data::Integer(left), Data::Integer(right)) = (&best.data, &candidate.data)
+                else {
+                    return Err(invalid(operator));
+                };
+                if choose_min {
+                    right < left
+                } else {
+                    right > left
+                }
+            }
+            MinMaxKind::Unsigned => {
+                let (Data::Unsigned(left), Data::Unsigned(right)) = (&best.data, &candidate.data)
+                else {
+                    return Err(invalid(operator));
+                };
+                if choose_min {
+                    right < left
+                } else {
+                    right > left
+                }
+            }
+            MinMaxKind::Float => {
+                let (Data::Float(left), Data::Float(right)) = (&best.data, &candidate.data) else {
+                    return Err(invalid(operator));
+                };
+                if left.is_nan() {
+                    false
+                } else if right.is_nan() {
+                    best = candidate;
+                    false
+                } else if *left == 0.0 && *right == 0.0 {
+                    if choose_min {
+                        right.is_sign_negative() && !left.is_sign_negative()
+                    } else {
+                        !right.is_sign_negative() && left.is_sign_negative()
+                    }
+                } else if choose_min {
+                    right < left
+                } else {
+                    right > left
+                }
+            }
+            MinMaxKind::String => {
+                let (Data::String(left), Data::String(right)) = (&best.data, &candidate.data)
+                else {
+                    return Err(invalid(operator));
+                };
+                if choose_min {
+                    right < left
+                } else {
+                    right > left
+                }
+            }
+        };
+        if replace {
+            best = candidate;
+        }
+    }
+    Ok(best.clone())
 }
 
 impl PreparedOperator {
@@ -415,6 +545,28 @@ pub(crate) fn equal(
     right: &Value,
     registry: &TypeRegistry,
 ) -> Result<bool, RuntimeError> {
+    if let (Some(left_shape), Some(right_shape)) =
+        (left.data.aggregate_shape(), right.data.aggregate_shape())
+    {
+        if left_shape != right_shape || !registry.identical(&left.typ, &right.typ)? {
+            return Ok(false);
+        }
+        for index in 0..left_shape.1 {
+            let right_value = if left_shape.0 {
+                right.element(index)?
+            } else {
+                let name = left.data.field_name(index).unwrap();
+                if name == "_" {
+                    continue;
+                }
+                right.field(name)?
+            };
+            if !equal(&left.element(index)?, &right_value, registry)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
     Ok(match (&left.data, &right.data) {
         (Data::Interface(a), Data::Interface(b)) => {
             if !registry.identical(&a.typ, &b.typ)? {
@@ -448,32 +600,6 @@ pub(crate) fn equal(
         }
         (Data::String(a), Data::String(b)) => a == b,
         (Data::Pointer(a), Data::Pointer(b)) => a == b,
-        (Data::Array(a), Data::Array(b))
-            if registry.identical(&left.typ, &right.typ)? && a.len() == b.len() =>
-        {
-            for (a, b) in a.iter().zip(b.iter()) {
-                if !equal(a, b, registry)? {
-                    return Ok(false);
-                }
-            }
-            true
-        }
-        (Data::Struct(a), Data::Struct(b))
-            if registry.identical(&left.typ, &right.typ)? && a.len() == b.len() =>
-        {
-            for (name, value) in a {
-                if name != "_"
-                    && !b
-                        .get(name)
-                        .map(|other| equal(value, other, registry))
-                        .transpose()?
-                        .unwrap_or(false)
-                {
-                    return Ok(false);
-                }
-            }
-            true
-        }
         (
             Data::Map(_)
             | Data::Slice(_)
@@ -817,5 +943,92 @@ mod tests {
         .unwrap();
         assert_eq!(value.typ, typ);
         assert!(matches!(value.data, Data::Integer(-128)));
+    }
+
+    #[test]
+    fn min_max_preserves_integer_and_float_boundaries() {
+        let registry = TypeRegistry::new(std::iter::empty()).unwrap();
+        let integer = TypeIdentity::Primitive(wire::PrimitiveInt);
+        let values = [
+            Value {
+                typ: integer.clone(),
+                data: Data::Integer(8),
+            },
+            Value {
+                typ: integer.clone(),
+                data: Data::Integer(-3),
+            },
+            Value {
+                typ: integer.clone(),
+                data: Data::Integer(4),
+            },
+        ];
+        assert_eq!(
+            min_max(min_max_kind(&integer, &registry).unwrap(), "min", &values)
+                .unwrap()
+                .integer()
+                .unwrap(),
+            -3
+        );
+
+        let negative_zero = Value {
+            typ: TypeIdentity::Primitive(wire::PrimitiveFloat64),
+            data: Data::Float(-0.0),
+        };
+        let positive_zero = Value {
+            typ: TypeIdentity::Primitive(wire::PrimitiveFloat64),
+            data: Data::Float(0.0),
+        };
+        let min = min_max(
+            MinMaxKind::Float,
+            "min",
+            &[positive_zero.clone(), negative_zero.clone()],
+        )
+        .unwrap();
+        assert!(matches!(min.data, Data::Float(value) if value.is_sign_negative()));
+        let max = min_max(MinMaxKind::Float, "max", &[negative_zero, positive_zero]).unwrap();
+        assert!(matches!(max.data, Data::Float(value) if !value.is_sign_negative()));
+
+        let nan = Value {
+            typ: TypeIdentity::Primitive(wire::PrimitiveFloat64),
+            data: Data::Float(f64::NAN),
+        };
+        let value = min_max(
+            MinMaxKind::Float,
+            "min",
+            &[
+                Value {
+                    typ: TypeIdentity::Primitive(wire::PrimitiveFloat64),
+                    data: Data::Float(1.0),
+                },
+                nan.clone(),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(value.data, Data::Float(value) if value.is_nan()));
+        let value = min_max(
+            MinMaxKind::Float,
+            "min",
+            &[
+                nan,
+                Value {
+                    typ: TypeIdentity::Primitive(wire::PrimitiveFloat64),
+                    data: Data::Float(1.0),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(matches!(value.data, Data::Float(value) if value.is_nan()));
+    }
+
+    #[test]
+    fn min_max_compares_strings_as_guest_bytes() {
+        let values = [
+            Value::string(b"z"),
+            Value::string(b"a"),
+            Value::string(b"m"),
+        ];
+        let value = min_max(MinMaxKind::String, "max", &values).unwrap();
+        assert!(matches!(value.data, Data::String(bytes) if &*bytes == b"z"));
     }
 }

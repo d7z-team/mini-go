@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func (machine *executionMachine) debugParentSnapshot(task *executionTask) []debugFrame {
@@ -56,19 +58,33 @@ func (machine *executionMachine) module(modulePath string) (*moduleInstance, err
 }
 
 func (machine *executionMachine) directCallTarget(frame *frame, inst *preparedInstruction) (*moduleInstance, loadedFunction, error) {
+	modulePath := inst.callModule
+	if modulePath == "" {
+		modulePath = strings.TrimSpace(inst.call.ModulePath)
+		if modulePath == "" {
+			modulePath = frame.module.modulePath()
+		}
+	}
+	if inst.callRevisionLocal {
+		if frame == nil || frame.revision == nil || frame.revision.modules == nil {
+			return nil, loadedFunction{}, errors.New("revision-local call has no caller revision")
+		}
+		module, ok := frame.revision.modules.module(modulePath)
+		if !ok || module == nil || module.executable == nil {
+			return nil, loadedFunction{}, fmt.Errorf("module %q is not loaded in caller revision", modulePath)
+		}
+		function, ok := module.executable.Functions[inst.call.Function]
+		if !ok {
+			return nil, loadedFunction{}, fmt.Errorf("unknown function %q", inst.call.Function)
+		}
+		return module, function, nil
+	}
 	current := machine.vm.revision.Load()
 	if current != nil && frame.revision == current &&
 		inst.callModuleIndex >= 0 && inst.callModuleIndex < len(current.moduleOrder) {
 		module := current.moduleOrder[inst.callModuleIndex]
 		if module != nil && inst.callFunctionIndex >= 0 && inst.callFunctionIndex < len(module.executable.FunctionOrder) {
 			return module, module.executable.FunctionOrder[inst.callFunctionIndex], nil
-		}
-	}
-	modulePath := inst.callModule
-	if modulePath == "" {
-		modulePath = strings.TrimSpace(inst.call.ModulePath)
-		if modulePath == "" {
-			modulePath = frame.module.modulePath()
 		}
 	}
 	target, err := machine.module(modulePath)
@@ -119,14 +135,12 @@ func (machine *executionMachine) initializeModule(task *executionTask, caller *e
 		}
 		return ready(task, caller)
 	}
-	initFrame, err := machine.vm.newExecutionFrame(module, moduleInitFunctionID, nil, nil, task.id, 0, false)
+	initFrame, err := machine.vm.newExecutionFrame(module, moduleInitFunctionID, nil, nil, task.id, 0, false, 0)
 	if err != nil {
 		return err
 	}
-	// Frame preparation may request a guest census. Do not publish the
-	// initializing state until preparation succeeds, otherwise retrying the
-	// instruction observes its own transient request as a permanent module
-	// failure and can loop without executing another bytecode step.
+	// Do not publish the initializing state until frame preparation succeeds;
+	// failed admission must leave module initialization retryable.
 	module.state.beginInitialization()
 	module.state.initTask = task
 	initFrame.abort = func() { module.state.finishInitialization(errors.New("module initialization aborted")) }
@@ -158,10 +172,9 @@ const (
 	taskYieldCooperate = "cooperate"
 	taskYieldPoll      = "poll"
 	taskYieldBudget    = "budget"
-	taskYieldCensus    = "census"
 )
 
-func (vm *vm) newExecutionFrame(module *moduleInstance, functionID string, args []vmValue, upvalues map[string]*slot, contextID int64, expectedResults int, qualifyResults bool) (*executionFrame, error) {
+func (vm *vm) newExecutionFrame(module *moduleInstance, functionID string, args []vmValue, captureSlots []*slot, contextID int64, expectedResults int, qualifyResults bool, additionalStorage int64, batches ...*managedAllocationBatch) (*executionFrame, error) {
 	if module == nil || module.executable == nil {
 		return nil, errors.New("nil module")
 	}
@@ -169,29 +182,46 @@ func (vm *vm) newExecutionFrame(module *moduleInstance, functionID string, args 
 	if !ok {
 		return nil, fmt.Errorf("unknown function %q", functionID)
 	}
-	return vm.newPreparedExecutionFrame(module, fn, args, upvalues, contextID, expectedResults, qualifyResults)
+	return vm.newPreparedExecutionFrame(module, fn, args, captureSlots, contextID, expectedResults, qualifyResults, additionalStorage, batches...)
 }
 
-func (vm *vm) newPreparedExecutionFrame(module *moduleInstance, fn loadedFunction, args []vmValue, upvalues map[string]*slot, contextID int64, expectedResults int, qualifyResults bool) (*executionFrame, error) {
-	if len(args) != len(fn.Decl.Signature.Params) {
-		return nil, fmt.Errorf("function %s argument count mismatch: got %d, want %d", fn.Decl.ID, len(args), len(fn.Decl.Signature.Params))
+func (vm *vm) newPreparedExecutionFrame(module *moduleInstance, fn loadedFunction, args []vmValue, captureSlots []*slot, contextID int64, expectedResults int, qualifyResults bool, additionalStorage int64, batches ...*managedAllocationBatch) (*executionFrame, error) {
+	return vm.newPreparedExecutionFrameWithSource(module, fn, args, nil, captureSlots, contextID, expectedResults, qualifyResults, additionalStorage, batches...)
+}
+
+func (vm *vm) newPreparedExecutionFrameFromOperands(module *moduleInstance, fn loadedFunction, caller *frame, operands []ir.Operand, captureSlots []*slot, contextID int64, expectedResults int, qualifyResults bool, additionalStorage int64, batches ...*managedAllocationBatch) (*executionFrame, error) {
+	return vm.newPreparedExecutionFrameWithSource(module, fn, nil, &frameArgumentSource{caller: caller, operands: operands}, captureSlots, contextID, expectedResults, qualifyResults, additionalStorage, batches...)
+}
+
+func (vm *vm) newPreparedExecutionFrameWithSource(module *moduleInstance, fn loadedFunction, args []vmValue, source *frameArgumentSource, captureSlots []*slot, contextID int64, expectedResults int, qualifyResults bool, additionalStorage int64, batches ...*managedAllocationBatch) (*executionFrame, error) {
+	argumentCount := len(args)
+	if source != nil {
+		argumentCount = len(source.operands)
+	}
+	if argumentCount != len(fn.Decl.Signature.Params) {
+		return nil, fmt.Errorf("function %s argument count mismatch: got %d, want %d", fn.Decl.ID, argumentCount, len(fn.Decl.Signature.Params))
 	}
 	if expectedResults >= 0 && expectedResults != len(fn.Decl.Signature.Results) {
 		return nil, fmt.Errorf("function %s result count mismatch: got %d, want %d", fn.Decl.ID, expectedResults, len(fn.Decl.Signature.Results))
 	}
-	resultSlots := expectedResults
-	if resultSlots < 0 {
-		resultSlots = 0
-	}
-	callFrame, allocated, err := newFrame(module, fn, args, upvalues, contextID)
+	allocationBytes := additionalStorage + preparedFrameLogicalBytes(module, fn, len(captureSlots))
+	reservation, err := vm.reserveControlBytes(allocationBytes, batches...)
 	if err != nil {
 		return nil, err
 	}
-	if allocated {
-		if err := vm.chargeRuntimeObject(len(fn.Decl.Locals)+len(fn.Decl.Code.Types)+len(upvalues)+resultSlots, 0); err != nil {
-			return nil, err
-		}
+	var callFrame *frame
+	if source != nil {
+		callFrame, _, err = newFrameWithArgumentSource(module, fn, nil, source, captureSlots, contextID, batches...)
+	} else {
+		callFrame, _, err = newFrame(module, fn, args, captureSlots, contextID, batches...)
 	}
+	if err != nil {
+		reservation.abort()
+		return nil, err
+	}
+	reservation.commit()
+	callFrame.admittedBytes = allocationBytes
+	callFrame.allocationAdmitted = true
 	var pinnedRevision *instanceRevision
 	if module.revision.retain() {
 		pinnedRevision = module.revision
@@ -217,7 +247,7 @@ func (vm *vm) prepareScheduledFunction(module *moduleInstance, functionID string
 	if err := machine.admitTask(); err != nil {
 		return err
 	}
-	root, err := vm.newExecutionFrame(module, functionID, args, nil, contextID, -1, false)
+	root, err := vm.newExecutionFrame(module, functionID, args, nil, contextID, -1, false, ir.StorageControlRecordBytes)
 	if err != nil {
 		return Error{
 			Generation:  module.revision.generation,
@@ -226,10 +256,6 @@ func (vm *vm) prepareScheduledFunction(module *moduleInstance, functionID string
 			FunctionID:  functionID,
 			Err:         err,
 		}
-	}
-	if err := vm.chargeAllocation(); err != nil {
-		root.frame.recycle()
-		return err
 	}
 	scope := machine.newScope(scopeID, contextID, program, module.revision)
 	task := &executionTask{id: contextID, scope: scope, budget: scope.budget, frames: []*executionFrame{root}}
@@ -301,6 +327,11 @@ func (machine *executionMachine) run(instructionBudget int) (outcome runOutcome)
 		machine.paused = nil
 	}
 	for {
+		if machine.vm.heap != nil && machine.vm.heap.collectionRequested.Load() {
+			if err := machine.vm.collectManagedAtSafepoint(); err != nil {
+				return failedRun(err)
+			}
+		}
 		if machine.runnableCount() != 0 {
 			if instructionBudget > 0 && attempted >= instructionBudget {
 				return runOutcome{state: ExecutionRunning}
@@ -321,10 +352,7 @@ func (machine *executionMachine) run(instructionBudget int) (outcome runOutcome)
 			if current.state != ExecutionRunning {
 				return current
 			}
-			// Poll and census yields deliberately return to the caller. A census can
-			// execute no bytecode, so retrying it inside this loop could otherwise
-			// turn one bounded PollSteps call into an unbounded control loop.
-			if yield.kind == taskYieldPoll || yield.kind == taskYieldCensus {
+			if yield.kind == taskYieldPoll {
 				return current
 			}
 			if err := machine.wakeBlocked(); err != nil {
@@ -342,7 +370,7 @@ func (machine *executionMachine) run(instructionBudget int) (outcome runOutcome)
 	}
 }
 
-func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) (taskYield, []vmValue, error) {
+func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) (yield taskYield, values []vmValue, err error) {
 	defer task.releaseStepGrant()
 	defer func() { task.preparingSelection = nil }()
 	if task.blocked != nil {
@@ -351,8 +379,54 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 		}
 		return taskYield{kind: taskYieldBlocked}, nil, nil
 	}
+	// The serial owner path does not go through taskBatch.launch, so it must
+	// still receive the same worker TLAB as parallel slices. Without this lease
+	// a nursery-full page can only report errManagedCollection from the mutator
+	// and aggregate values panic instead of reaching the owner safepoint.
+	if task.allocationBatch == nil && machine.vm.heap != nil {
+		heap := machine.vm.heap
+		credit := managedBatchCredit
+		heap.mu.Lock()
+		used := heap.counters.occupiedBytes + heap.counters.reservedBytes
+		if heap.maxGuestBytes != 0 && used < heap.maxGuestBytes && heap.maxGuestBytes-used < credit {
+			credit = heap.maxGuestBytes - used
+		}
+		heap.mu.Unlock()
+		var batch *managedAllocationBatch
+		// A lease reserves its whole credit in the shared guest ledger.  Do not
+		// lease the final partial window: frame/control admission must still be
+		// able to consume the remaining budget, and the owner reservation path
+		// is exact for these small heaps.
+		if credit >= managedBatchCredit {
+			batch, _ = heap.acquireBatch(credit, managedBatchHandles)
+		}
+		// A lease is an optional fast path. Tiny heaps may be unable to admit
+		// the nursery pair even though the owner allocator can still produce the
+		// precise resource-limit diagnostic for this frame.
+		if batch != nil {
+			task.allocationBatch = batch
+			defer func() {
+				if err != nil || task.retryInstruction {
+					batch.abortUnfinished()
+				}
+				if flushErr := batch.flush(); err == nil && flushErr != nil {
+					err = flushErr
+				}
+				task.retainedFrames(func(_ int, frame *executionFrame) bool {
+					if frame != nil {
+						frame.frame.allocationBatch = nil
+					}
+					return true
+				})
+				task.allocationBatch = nil
+			}()
+		}
+	}
 	for {
 		task.preparingSelection = nil
+		if machine.vm.heap != nil && machine.vm.heap.collectionRequested.Load() {
+			return taskYield{kind: taskYieldCooperate}, nil, nil
+		}
 		if machine.vm.controlWaiters.Load() != 0 {
 			return taskYield{kind: taskYieldPoll}, nil, nil
 		}
@@ -368,20 +442,13 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 			return taskYield{}, nil, fmt.Errorf("execution call depth limit exceeded: max %d", limit)
 		}
 		current := task.frames[len(task.frames)-1]
+		if current != nil && current.frame != nil {
+			current.frame.allocationBatch = task.allocationBatch
+		}
 		if current.completionActive {
 			machine.controlMu.Lock()
 			values, done, err := machine.advanceCompletion(task)
 			machine.controlMu.Unlock()
-			if census, ok := findGuestCensusRequest(err); ok {
-				if len(task.frames) == 0 || task.frames[len(task.frames)-1].frame.pc == 0 {
-					return taskYield{}, nil, errors.New("census continuation has no caller instruction")
-				}
-				caller := task.frames[len(task.frames)-1].frame
-				caller.pc--
-				task.retryInstruction = true
-				task.pendingCensus = census.bytes
-				return taskYield{kind: taskYieldCensus}, nil, nil
-			}
 			if err != nil || done {
 				return taskYield{kind: taskYieldComplete}, values, err
 			}

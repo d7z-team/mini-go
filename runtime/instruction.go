@@ -3,13 +3,13 @@ package runtime
 import (
 	"errors"
 	"fmt"
+
+	"github.com/d7z-team/mini-go/compiler/types"
 )
 
 func (vm *vm) executeInstruction(task *executionTask, frame *frame, inst *preparedInstruction) error {
 	err := vm.executeInstructionBody(task, frame, inst)
-	if _, census := findGuestCensusRequest(err); !census {
-		frame.releasePopValues()
-	}
+	frame.releasePopValues()
 	return err
 }
 
@@ -85,8 +85,10 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if !typ.Valid() {
 			typ = frame.module.runtimeType(payload.Type)
 		}
-		if inst.structSchema != nil {
-			frame.push(newVMValue(typ, &vmStruct{schema: inst.structSchema}))
+		if typ.ShapeKind() == types.Array || typ.ShapeKind() == types.Struct {
+			// Zero is already represented by the destination's zero-filled
+			// typed lanes. Do not construct a host tree merely to encode it.
+			frame.push(vmValue{Type: typ})
 		} else {
 			frame.push(frame.module.zeroValue(typ))
 		}
@@ -104,11 +106,36 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		}
 		frame.push(out)
 	case preparedBinary, preparedCompareBranch:
-		left, right, err := frame.pop2()
-		if err != nil {
-			return err
+		var out vmValue
+		var err error
+		handled := false
+		leftInfo := runtimeNumericByPrimitive[inst.numericInputs[0]].info
+		rightInfo := runtimeNumericByPrimitive[inst.numericInputs[1]].info
+		if frame.slotInput == 2 && (leftInfo.Kind == types.NumericSigned || leftInfo.Kind == types.NumericUnsigned) &&
+			(rightInfo.Kind == types.NumericSigned || rightInfo.Kind == types.NumericUnsigned) {
+			left, leftReady := frame.integerOperand(inst.operands.Inputs[0], leftInfo)
+			right, rightReady := frame.integerOperand(inst.operands.Inputs[1], rightInfo)
+			if leftReady && rightReady {
+				leftKind, rightKind := vmScalarSigned, vmScalarSigned
+				if leftInfo.Kind == types.NumericUnsigned {
+					leftKind = vmScalarUnsigned
+				}
+				if rightInfo.Kind == types.NumericUnsigned {
+					rightKind = vmScalarUnsigned
+				}
+				out, handled, err = evalIntegerBinary(inst.operator, inst.runtimeType, leftKind, left, rightKind, right)
+				if handled {
+					frame.slotInput = 0
+				}
+			}
 		}
-		out, err := frame.module.evalBinary(inst.operator, left, right, inst.numericInputs)
+		if !handled {
+			left, right, popErr := frame.pop2()
+			if popErr != nil {
+				return popErr
+			}
+			out, err = frame.module.evalBinary(inst.operator, left, right, inst.numericInputs)
+		}
 		if err != nil {
 			return err
 		}
@@ -123,6 +150,16 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		} else {
 			frame.push(out)
 		}
+	case preparedMinMax:
+		values, err := frame.popN(inst.minMax.ArgCount)
+		if err != nil {
+			return err
+		}
+		out, err := frame.module.evalMinMax(inst.minMaxKind, inst.minMax.Operator, values)
+		if err != nil {
+			return err
+		}
+		frame.push(out)
 	case preparedLenCompareBranch:
 		object, other, err := frame.pop2()
 		if err != nil {
@@ -210,14 +247,11 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		if err := vm.chargeRuntimeObject(len(values), 0); err != nil {
-			return err
-		}
 		typ := inst.runtimeType
 		if !typ.Valid() {
 			typ = frame.module.runtimeType(payload.Type)
 		}
-		out, err := newSequenceValue(frame.module, typ, values)
+		out, err := newSequenceValueWithBatch(frame.module, typ, values, frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -251,7 +285,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if !typ.Valid() {
 			typ = frame.module.runtimeType(payload.Type)
 		}
-		out, err := newMapValueWithCapacity(frame.module, typ, values, capacity)
+		out, err := newMapValueWithCapacityBatch(frame.module, typ, values, capacity, frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -262,9 +296,6 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		if err := vm.chargeRuntimeObject(len(payload.Fields), 0); err != nil {
-			return err
-		}
 		typ := inst.runtimeType
 		if !typ.Valid() {
 			typ = frame.module.runtimeType(payload.Type)
@@ -273,7 +304,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if schema == nil {
 			schema, _ = frame.module.structSchema(typ)
 		}
-		out, err := newStructValueWithSchema(frame.module, typ, schema, payload.Fields, values)
+		out, err := newStructValueWithSchemaBatch(frame.module, typ, schema, payload.Fields, values, frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -311,7 +342,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if !typ.Valid() {
 			typ = frame.module.runtimeType(payload.Type)
 		}
-		out, err := makeWaitableValue(frame.module, typ, capacity)
+		out, err := makeWaitableValueWithBatch(frame.module, typ, capacity, frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -392,11 +423,20 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		return frame.initMapIterator(inst.local.Local, values[0])
+		return frame.initMapIteratorAt(inst.localIndex, inst.local.Local, values[0])
 	case preparedMapIterNext:
-		return frame.nextMapIterator(inst.local.Local)
+		return frame.nextMapIteratorAt(inst.localIndex, inst.local.Local)
 	case preparedMapIterClose:
-		delete(frame.mapIterators, inst.local.Local)
+		var iterator *mapIterator
+		if inst.localIndex >= 0 && inst.localIndex < len(frame.mapIteratorSlots) {
+			iterator = frame.mapIteratorSlots[inst.localIndex]
+		}
+		if iterator != nil {
+			iterator.release(vm)
+		}
+		if inst.localIndex >= 0 && inst.localIndex < len(frame.mapIteratorSlots) {
+			frame.mapIteratorSlots[inst.localIndex] = nil
+		}
 	case preparedMapKeys:
 		value, err := frame.pop()
 		if err != nil {
@@ -413,7 +453,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		out, err := appendValue(frame.module, values[0], values[1:], payload.Expand)
+		out, err := appendValueWithBatch(frame.module, values[0], values[1:], payload.Expand, frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -423,7 +463,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		if err := deleteValue(frame.module, object, key); err != nil {
+		if err := deleteValueWithBatch(frame.module, object, key, frame.allocationBatch); err != nil {
 			return err
 		}
 	case preparedClear:
@@ -431,7 +471,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		if err := clearValue(frame.module, value); err != nil {
+		if err := clearValueWithBatch(frame.module, value, frame.allocationBatch); err != nil {
 			return err
 		}
 	case preparedCopy:
@@ -449,7 +489,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		_, err = setIndexValue(frame.module, values[0], values[1], values[2])
+		_, err = setIndexValueWithBatch(frame.module, values[0], values[1], values[2], frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -465,9 +505,9 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 					return err
 				}
 			}
-			storage, ok := object.Data.(*vmStruct)
+			storage, ok := object.payload().(*vmStruct)
 			if !ok || storage == nil {
-				return errors.New("field path requires a struct")
+				return fmt.Errorf("field path requires a struct, got %s", object.Type)
 			}
 			object, ok = storage.fieldAt(step.index)
 			if !ok {
@@ -504,9 +544,6 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		}
 	case preparedAddressOf:
 		payload := inst.address
-		if err := vm.chargeAllocation(); err != nil {
-			return err
-		}
 		value, err := frame.address(*payload)
 		if err != nil {
 			return err
@@ -535,7 +572,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		out, ok, err := waitableTryRecvValues(frame.module, value)
+		out, ok, err := waitableTryRecvValues(frame.module, value, frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -556,7 +593,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		ok, err := waitableTrySendValue(frame.module, waitable, value)
+		ok, err := waitableTrySendValue(frame.module, waitable, value, frame.allocationBatch)
 		if err != nil {
 			return err
 		}
@@ -582,6 +619,9 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if inst.localIndex < 0 || inst.localIndex >= len(frame.localCells) {
 			return fmt.Errorf("unknown local %q", payload.Local)
 		}
+		if copied, err := frame.copyLocalToOutput(inst.localIndex); copied {
+			return err
+		}
 		slot := frame.localCells[inst.localIndex]
 		frame.push(slot.load())
 	case preparedStoreLocal:
@@ -594,13 +634,14 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 			return fmt.Errorf("unknown local %q", payload.Local)
 		}
 		cell := frame.localCells[inst.localIndex]
-		if payload.Rebind {
-			if inst.localIndex < len(frame.function.LocalEscapes) && frame.function.LocalEscapes[inst.localIndex] && cell != &frame.localStorage[inst.localIndex] {
-				cell = newSlot(cell.typ, cell.module, cell.variadic)
-				frame.localCells[inst.localIndex] = cell
-			} else {
-				*cell = slot{typ: cell.typ, module: cell.module, variadic: cell.variadic}
+		if payload.Rebind && inst.localIndex < len(frame.function.LocalEscapes) && frame.function.LocalEscapes[inst.localIndex] {
+			cell = newSlot(cell.typ, cell.module, cell.variadic)
+			if cell.module != nil && cell.module.vm != nil && cell.module.vm.heap != nil {
+				if _, err := cell.ensureManagedCell(); err != nil {
+					return err
+				}
 			}
+			frame.localCells[inst.localIndex] = cell
 		}
 		if err := cell.store(value); err != nil {
 			return fmt.Errorf("store local %s: %w", payload.Local, err)
@@ -676,26 +717,23 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if len(payload.Captures) != len(target.Decl.Upvalues) {
 			return fmt.Errorf("closure %s capture count mismatch: got %d, want %d", payload.Function, len(payload.Captures), len(target.Decl.Upvalues))
 		}
-		if err := vm.chargeRuntimeObject(len(payload.Captures), 0); err != nil {
-			return err
-		}
-		upvalues := make(map[string]*slot, len(payload.Captures))
+		captureSlots := make([]*slot, len(payload.Captures))
 		for i, capture := range payload.Captures {
 			slot, err := frame.capture(capture)
 			if err != nil {
 				return err
 			}
-			upvalues[target.Decl.Upvalues[i].ID] = slot
+			captureSlots[i] = slot
 		}
 		var exact *moduleInstance
 		if len(payload.Captures) != 0 || !isLogicalFunction(target) {
 			exact = targetModule
 		}
 		frame.push(newVMValue("Function", functionRef{
-			ModulePath: targetModule.executable.Artifact.Module.Path,
-			FunctionID: payload.Function,
-			exact:      exact,
-			upvalues:   upvalues,
+			ModulePath:   targetModule.executable.Artifact.Module.Path,
+			FunctionID:   payload.Function,
+			exact:        exact,
+			captureSlots: captureSlots,
 		}))
 	case preparedCallIntrinsic:
 		payload := inst.callIntrinsic
@@ -703,7 +741,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 		if err != nil {
 			return err
 		}
-		values, err := invokeIntrinsic(intrinsicContext{vm: vm, module: frame.module, task: task}, payload.ID, args)
+		values, err := invokeIntrinsic(intrinsicContext{vm: vm, module: frame.module, task: task, batch: task.allocationBatch}, payload.ID, args)
 		if err != nil {
 			var request *artifactCallbackRequest
 			if errors.As(err, &request) {

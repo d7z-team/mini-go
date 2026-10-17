@@ -5,6 +5,46 @@ import (
 	"testing"
 )
 
+func TestManagedMutexIdentitySurvivesCollection(t *testing.T) {
+	module := newManagedValueTestModule()
+	module.vm.revision.Store(&instanceRevision{root: module})
+	ctx := intrinsicContext{vm: module.vm, module: module}
+	typ := coerceRuntimeType("Waitable<Bool>")
+	structureType := coerceRuntimeType("struct{state:Waitable<Bool>}")
+	cell := newSlot(structureType, module, false)
+	cell.publish(module.adoptValue(newRuntimeStructValue(module, structureType, map[string]vmValue{
+		"state": newVMValue(typ, nil),
+	})))
+	address := newTargetPointer(&vmPointer{
+		Type: typ, target: pointerField, module: module,
+		parent: newSlotPointerValue(structureType, "mutex", cell), field: "state",
+	})
+	args := []vmValue{address}
+	if _, err := mutexLock(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	value, err := derefPointer(address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resource, ok := value.payload().(*mutexResource); !ok || !resource.locked {
+		t.Fatalf("mutex state was not published: %s (%T)", value.Type, value.payload())
+	}
+	if _, err := module.vm.heap.collect([]guestRef{address.ref}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mutexUnlock(ctx, args); err != nil {
+		t.Fatal(err)
+	}
+	values, err := mutexTryLock(ctx, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked, ok := values[0].boolValue(); !ok || !locked {
+		t.Fatal("mutex could not be acquired again")
+	}
+}
+
 func TestMutexGrantCancellationAndDelivery(t *testing.T) {
 	ctx := intrinsicContext{vm: &vm{}}
 	state := newVMValue("Waitable<Bool>", nil)
@@ -56,20 +96,5 @@ func TestMutexGrantCancellationAndDelivery(t *testing.T) {
 	got, err = mutexTryLock(ctx, args)
 	if err != nil || got[0].Data != true {
 		t.Fatalf("mutex could not be reused: %v %v", got, err)
-	}
-}
-
-func TestMutexWaitRetainsResourceWithoutSourceReference(t *testing.T) {
-	waiter := &mutexWaiter{}
-	resource := &mutexResource{grant: waiter}
-	task := &executionTask{blocked: &blockedOperation{kind: "mutex", mutex: &mutexLockRequest{resource: resource, waiter: waiter}}}
-	sizer := newRuntimeValueSizer()
-	sizer.task(task)
-	if sizer.bytes < 272 {
-		t.Fatalf("pending mutex resource was not accounted: %d", sizer.bytes)
-	}
-	(&executionMachine{}).cancelBlockedOperation(task)
-	if resource.grant != nil || task.blocked != nil {
-		t.Fatal("cancel retained mutex registration")
 	}
 }

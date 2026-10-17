@@ -278,7 +278,7 @@ func (l *lowerer) structLiteralFields(typ *ast.TypeExpr, canonical string) []str
 		}
 		return out
 	}
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(canonical))
+	view, ok := l.typeView(canonical)
 	if !ok || view.Shape() != types.Struct {
 		return nil
 	}

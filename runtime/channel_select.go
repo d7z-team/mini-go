@@ -10,16 +10,18 @@ import (
 // A selection owns all of its registrations. A transaction either commits a
 // single winner (including both peers of a rendezvous), or publishes all cases.
 type channelSelection struct {
-	vm        *vm
-	cases     []channelSelectCase
-	index     int
-	done      bool
-	value     vmValue
-	ok        bool
-	err       error
-	owner     *taskOwnership
-	ticket    *taskWaitTicket
-	allocated bool
+	vm            *vm
+	batch         *managedAllocationBatch
+	cases         []channelSelectCase
+	index         int
+	done          bool
+	value         vmValue
+	ok            bool
+	err           error
+	owner         *taskOwnership
+	ticket        *taskWaitTicket
+	allocated     bool
+	admittedBytes int64
 }
 
 type channelSelectCase struct {
@@ -42,30 +44,40 @@ func (vm *vm) prepareChannelSelection(task *executionTask, module *moduleInstanc
 	if _, _, err := vm.checkCollectionSize(int64(len(cases)), int64(len(cases))); err != nil {
 		return nil, err
 	}
-	if err := vm.chargeAllocationBytes(ir.RuntimeNodeBytes + int64(len(cases))*(ir.RuntimeNodeBytes+3*ir.RuntimeSlotBytes)); err != nil {
+	logicalBytes := ir.StorageControlRecordBytes + int64(len(cases))*(ir.StorageControlRecordBytes+3*ir.StorageDynamicBytes)
+	var batch *managedAllocationBatch
+	if task != nil {
+		batch = task.allocationBatch
+	}
+	selection.batch = batch
+	if err := vm.chargeAllocationBytes(logicalBytes, batch); err != nil {
 		return nil, err
 	}
-	selection.allocated = true
+	selection.allocated, selection.admittedBytes = true, logicalBytes
 	for index := range selection.cases {
 		selected := &selection.cases[index]
 		selected.selection, selected.index = selection, index
 		resource, err := waitableValueData(module, selected.channel)
 		if err != nil {
+			selection.release()
 			return nil, err
 		}
 		selected.resource = resource
 		if selected.send {
 			if !module.waitableCanSend(selected.channel.Type) {
+				selection.release()
 				return nil, fmt.Errorf("cannot send on receive-only waitable %s", selected.channel.Type)
 			}
 			if resource != nil {
 				selected.value, err = normalizeWaitableSendValue(module, resource, selected.value)
 				if err != nil {
+					selection.release()
 					return nil, err
 				}
 			}
 		} else {
 			if !module.waitableCanRecv(selected.channel.Type) {
+				selection.release()
 				return nil, fmt.Errorf("cannot receive from send-only waitable %s", selected.channel.Type)
 			}
 			selected.zero = waitableZeroValue(module, selected.channel.Type, resource)
@@ -148,12 +160,19 @@ func (selection *channelSelection) tryCommit() bool {
 			peer.selection.complete(peer.index, selected.value, true)
 			selection.complete(index, vmValue{}, false)
 		} else {
-			resource.appendBuffer(selected.value)
+			if err := resource.appendBuffer(selected.value, selection.batch); err != nil {
+				selection.err = err
+			}
 			selection.complete(index, vmValue{}, false)
 		}
 	} else if resource.bufferLen() != 0 {
-		value := resource.popBuffer()
-		selection.complete(index, value, true)
+		value, err := resource.popBuffer(selection.batch)
+		if err != nil {
+			selection.err = err
+			selection.complete(index, vmValue{}, false)
+		} else {
+			selection.complete(index, value, true)
+		}
 	} else if peer := selected.peer(); peer != nil && !resource.Closed {
 		value := peer.value
 		peer.selection.complete(peer.index, vmValue{}, false)
@@ -209,4 +228,16 @@ func (selection *channelSelection) unregister() {
 		}
 		selected.previous, selected.next, selected.registered = nil, nil, false
 	}
+	selection.release()
+}
+
+func (selection *channelSelection) release() {
+	if selection == nil || !selection.allocated {
+		return
+	}
+	if selection.vm != nil {
+		selection.vm.releaseAllocationBytes(selection.admittedBytes)
+	}
+	selection.admittedBytes = 0
+	selection.allocated = false
 }

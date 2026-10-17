@@ -15,51 +15,73 @@ import (
 )
 
 type vm struct {
-	leaseMu                sync.Mutex
-	activeSlices           int
-	owner                  atomic.Bool
-	controlWaiters         atomic.Int64
-	instance               *Instance
-	revision               atomic.Pointer[instanceRevision]
-	limits                 Limits
-	debugger               *Debugger
-	breakpointsActive      atomic.Bool
-	maxSteps               int64
-	nextRunID              int64
-	nextExecutionContextID int64
-	controlRoots           []vmValue // Temporary values owned by a resource control transaction.
-	paused                 *debugPauseState
-	wake                   chan struct{}
-	ownerWake              chan struct{}
-	skipDebugPause         debugResumePoint
-	debugStep              debugStepState
-	debugStepActive        atomic.Bool
-	hostPauseRequested     atomic.Bool
-	interruptRequested     atomic.Bool
-	pendingEvents          atomic.Int64
-	selectState            uint64
-	machine                *executionMachine
-	liveGuestBytes         atomic.Int64
-	allocatedSinceSweep    atomic.Int64
-	totalAllocatedBytes    atomic.Int64
-	peakGuestBytes         atomic.Int64
-	idleFrameBytes         atomic.Int64
-	pendingBoundaryBytes   atomic.Int64
-	executedSteps          int64
-	ffiSession             ffi.Session
-	ffiCalls               map[*pendingFFICall]struct{}
-	retiredMu              sync.Mutex
-	retiredRevisions       []*instanceRevision
-	reflectTypes           metadataCache[string, TypeInfo]
-	reflectTypeValues      metadataCache[string, vmValue]
-	dynamicTypeCount       int
-	dynamicTypeBytes       int64
-	hostMu                 sync.Mutex
-	clock                  Clock
-	entropy                io.Reader
-	timers                 map[*waitableResource]*runtimeTimer
-	profileOptions         GuestProfileOptions
-	taskObserver           func(int64, bool, []int64)
+	leaseMu                      sync.Mutex
+	activeSlices                 int
+	owner                        atomic.Bool
+	controlWaiters               atomic.Int64
+	instance                     *Instance
+	heap                         *managedHeap
+	valueLayouts                 *preparedLayoutRegistry
+	managedWaitablesMu           sync.Mutex
+	managedWaitables             map[guestRef]*waitableResource
+	managedFunctionsMu           sync.Mutex
+	managedFunctions             map[guestRef]managedFunctionRecord
+	managedRevisionsMu           sync.Mutex
+	managedRevisions             map[guestRef]*instanceRevision
+	retentionCollectionRequested atomic.Bool
+	revision                     atomic.Pointer[instanceRevision]
+	limits                       Limits
+	debugger                     *Debugger
+	breakpointsActive            atomic.Bool
+	maxSteps                     int64
+	nextRunID                    int64
+	nextExecutionContextID       int64
+	controlRoots                 []vmValue // Temporary values owned by a resource control transaction.
+	paused                       *debugPauseState
+	wake                         chan struct{}
+	ownerWake                    chan struct{}
+	skipDebugPause               debugResumePoint
+	debugStep                    debugStepState
+	debugStepActive              atomic.Bool
+	hostPauseRequested           atomic.Bool
+	interruptRequested           atomic.Bool
+	pendingEvents                atomic.Int64
+	selectState                  uint64
+	machine                      *executionMachine
+	idleFrameBytes               atomic.Int64
+	pendingBoundaryBytes         atomic.Int64
+	executedSteps                int64
+	ffiSession                   ffi.Session
+	ffiCalls                     map[*pendingFFICall]struct{}
+	retiredMu                    sync.Mutex
+	retiredRevisions             []*instanceRevision
+	reflectTypes                 metadataCache[string, TypeInfo]
+	reflectTypeValues            metadataCache[string, vmValue]
+	reflectMetadataMu            sync.Mutex
+	reflectTypeOwners            map[guestRef]string
+	reflectTypeOwnerCounts       map[string]uint32
+	// Inline aggregate encoding can publish a concrete runtimeType record
+	// before the enclosing record is committed. Such a publication may not
+	// produce a heap reclaim callback when the enclosing reservation aborts;
+	// keep only those tickets as candidates for the collection-time repair
+	// path instead of rescanning every live owner on every collection.
+	reflectTypeOwnerCandidates map[guestRef]struct{}
+	reflectDynamicTypeCosts    map[string]int64
+	// Bytes reclaimed by the last collection are coalesced into one ledger
+	// release. Reclaim callbacks run under the heap lock, so retaining a
+	// temporary slice here would add allocation and postpone the same work
+	// multiple times.
+	reflectMetadataReleases int64
+	dynamicTypeCount        int
+	dynamicTypeBytes        int64
+	hostMu                  sync.Mutex
+	allocationFailureMu     sync.Mutex
+	allocationFailure       error
+	clock                   Clock
+	entropy                 io.Reader
+	timers                  map[*waitableResource]*runtimeTimer
+	profileOptions          GuestProfileOptions
+	taskObserver            func(int64, bool, []int64)
 }
 
 const (
@@ -132,7 +154,7 @@ type panicError struct {
 }
 
 func (e panicError) Error() string {
-	return fmt.Sprintf("panic: %s(%v)", e.Value.Type, e.Value.Data)
+	return fmt.Sprintf("panic: %s(%v)", e.Value.Type, e.Value.payload())
 }
 
 type StepLimitError struct {
@@ -224,15 +246,17 @@ type Limits struct {
 	MaxSteps     int64
 	MaxCallDepth int
 	MaxTasks     int
-	// MaxAllocatedBytes bounds logical live guest data and allocations since
-	// the last census, not cumulative allocation traffic or process RSS.
-	MaxAllocatedBytes     int64
-	MaxStringBytes        int
-	MaxCollectionElements int
-	MaxPendingEvents      int
-	MaxBoundaryDepth      int
-	MaxBoundaryBytes      int64
-	MaxRetainedRevisions  int
+	// MaxGuestBytes bounds the managed heap's occupied and reserved logical
+	// payload. MaxResidentBytes bounds admitted managed pages and metadata;
+	// zero leaves resident capacity uncapped. Resident accounting covers
+	// runtime-owned storage and intentionally does not claim to cap arbitrary
+	// host allocations made by providers.
+	MaxGuestBytes        int64
+	MaxResidentBytes     int64
+	MaxPendingEvents     int
+	MaxBoundaryDepth     int
+	MaxBoundaryBytes     int64
+	MaxRetainedRevisions int
 	// Dynamic reflection metadata is retained for the Instance lifetime.
 	MaxDynamicTypes     int
 	MaxDynamicTypeBytes int64
@@ -291,7 +315,27 @@ func newVMWithOptions(executable *executable, options InstanceOptions) (*vm, err
 		clock:          clock,
 		entropy:        entropy,
 		timers:         make(map[*waitableResource]*runtimeTimer),
+		heap:           newManagedHeap(),
+		valueLayouts:   newPreparedLayoutRegistry(),
 	}
+	if limits.MaxGuestBytes > 0 {
+		machine.heap.maxGuestBytes = uint64(limits.MaxGuestBytes)
+		// Keep nursery growth proportional to the guest budget. The default
+		// nursery is intentionally larger than one compiler/stdlib image so a
+		// normal execution does not exhaust its worker lease before the next
+		// owner safepoint; resident limits still cap physical page admission.
+		machine.heap.nurseryLimit = max(uint64(4<<20), min(uint64(64<<20), uint64(limits.MaxGuestBytes)))
+	} else {
+		machine.heap.nurseryLimit = 64 << 20
+	}
+	if limits.MaxResidentBytes > 0 {
+		machine.heap.maxResidentBytes = uint64(limits.MaxResidentBytes)
+	}
+	machine.heap.onReclaim = machine.reclaimManagedMetadata
+	machine.valueLayouts.heap = machine.heap
+	machine.valueLayouts.owner = machine
+	machine.heap.onType = machine.valueLayouts.mark
+	machine.heap.onMajor = machine.reclaimManagedLayouts
 	if machine.debugger == nil {
 		machine.debugger = NewDebugger()
 	}
@@ -321,6 +365,19 @@ func (vm *vm) rootModule() *moduleInstance {
 		return nil
 	}
 	return revision.root
+}
+
+// runtimeModule resolves semantics against the installed revision. A bare VM
+// used by focused runtime tests has no revision; its detached module is only a
+// transient resolver and is never retained by managed storage.
+func (vm *vm) runtimeModule() *moduleInstance {
+	if module := vm.rootModule(); module != nil {
+		return module
+	}
+	if vm == nil {
+		return nil
+	}
+	return &moduleInstance{vm: vm}
 }
 
 func (vm *vm) moduleRegistry() *moduleRegistry {

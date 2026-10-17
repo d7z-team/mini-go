@@ -58,7 +58,7 @@ fn selected_task_steps_after_its_own_instruction() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(2).unwrap(), PollStatus::Running);
     instance.request_pause();
     assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Paused);
@@ -106,7 +106,7 @@ fn panic_stop_preserves_the_frame_before_resuming_unwinding() {
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
     instance.set_break_on_panic(true).unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(2).unwrap(), PollStatus::Paused);
     assert_eq!(instance.steps(), 2);
     let event = instance.debug_events().pop().unwrap();
@@ -127,7 +127,7 @@ fn paged_variables_borrow_only_requested_children_and_expire_on_resume() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     instance.request_pause();
     assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Paused);
     let frame = instance.debug_stack().unwrap().remove(0).reference;
@@ -254,7 +254,7 @@ fn source_stops_and_steps_preserve_budget_and_expire_frame_references() {
         vec![3]
     );
     instance.start_profile(1, 2).unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Paused);
     assert_eq!(instance.steps(), 2);
     let frame = instance.debug_stack().unwrap().remove(0);
@@ -264,7 +264,10 @@ fn source_stops_and_steps_preserve_budget_and_expire_frame_references() {
         .debug_bindings(&frame.reference, SnapshotLimits::default())
         .unwrap();
     assert_eq!(values.names, vec!["number"]);
-    assert!(matches!(values.values.roots[0].data, HostData::Integer(20)));
+    assert!(matches!(
+        &values.values.roots[0].data,
+        HostData::Integer(20)
+    ));
     instance.debug_resume(StepMode::Into).unwrap();
     assert_eq!(
         instance
@@ -281,7 +284,12 @@ fn source_stops_and_steps_preserve_budget_and_expire_frame_references() {
     assert_eq!((&*frame.function, frame.pc), ("fn.Main", 4));
     instance.debug_resume(StepMode::Continue).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
     let profile = instance.profile();
     assert_eq!(
         profile
@@ -294,7 +302,10 @@ fn source_stops_and_steps_preserve_budget_and_expire_frame_references() {
     );
     assert!(profile.dropped > 0);
     instance.close().unwrap();
-    assert!(matches!(values.values.roots[0].data, HostData::Integer(20)));
+    assert!(matches!(
+        &values.values.roots[0].data,
+        HostData::Integer(20)
+    ));
 }
 
 #[test]
@@ -312,7 +323,7 @@ fn waiting_task_pauses_without_consuming_a_step_and_cancels_cleanly() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     instance.poll_steps(2).unwrap();
     assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Pending);
     let steps = instance.steps();
@@ -341,7 +352,7 @@ fn shared_pause_is_observed_before_an_instruction_and_cancellation_releases_it()
     let debugger = instance.debugger();
     debugger.pause();
     let execution = loop {
-        match instance.start("default", Vec::new()) {
+        match instance.start("default", &[]) {
             Ok(execution) => break execution,
             Err(error) if error.code == "busy" => std::thread::yield_now(),
             Err(error) => panic!("{error}"),
@@ -369,7 +380,7 @@ fn patch_rebinds_breakpoints_and_expires_inspection_without_rewriting_old_frames
     let mut instance = Instance::new(program(20), ExecutionLimits::default()).unwrap();
     instance.start_profile(1, 128).unwrap();
     instance.set_breakpoints("test", "main.mgo", &[3]).unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Paused);
     let frame = instance.debug_stack().unwrap().remove(0);
     let plan = instance.prepare_patch(program(40)).unwrap();
@@ -386,8 +397,13 @@ fn patch_rebinds_breakpoints_and_expires_inspection_without_rewriting_old_frames
     assert_eq!(retained.program_hash, frame.program_hash);
     instance.debug_resume(StepMode::Continue).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
-    instance.start("default", vec![]).unwrap();
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Paused);
     let current = instance.debug_stack().unwrap().remove(0);
     assert_eq!(current.generation, 2);
@@ -395,10 +411,18 @@ fn patch_rebinds_breakpoints_and_expires_inspection_without_rewriting_old_frames
     let values = instance
         .debug_bindings(&current.reference, Default::default())
         .unwrap();
-    assert!(matches!(values.values.roots[0].data, HostData::Integer(40)));
+    assert!(matches!(
+        &values.values.roots[0].data,
+        HostData::Integer(40)
+    ));
     instance.debug_resume(StepMode::Continue).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 62);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        62
+    );
     let profile = instance.profile();
     assert_eq!(profile.dropped, 0);
     assert_eq!(

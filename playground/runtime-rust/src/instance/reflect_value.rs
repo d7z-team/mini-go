@@ -9,42 +9,46 @@ pub(super) struct ReflectedValue {
     settable: bool,
     interfaceable: bool,
     embedded_read_only: bool,
+    /// ValueOf starts from an erased argument and may recover a concrete map
+    /// owner. Views produced by Field/Elem must retain the interface type.
+    normalize_any_map: bool,
 }
 
 impl Instance {
     fn reflect_deep_equal(&mut self, left: Value, right: Value) -> Result<bool, RuntimeError> {
         let mut pending = vec![(left, right)];
-        // Address equality/hash use only immutable root/path, never the lazy
-        // census identity contained in the address.
+        // Address equality/hash use the immutable numeric location or boundary
+        // path, independent of lazily materialized snapshot identity.
         #[allow(clippy::mutable_key_type)]
         let mut pointers = HashSet::new();
         let mut maps = HashSet::new();
         #[allow(clippy::mutable_key_type)]
         let mut slices = HashSet::new();
         while let Some((left, right)) = pending.pop() {
+            let left_type = left.typ.clone();
+            let right_type = right.typ.clone();
             if !self.types.identical(&left.typ, &right.typ)? {
                 return Ok(false);
+            }
+            if let (Some(left_shape), Some(right_shape)) =
+                (left.data.aggregate_shape(), right.data.aggregate_shape())
+            {
+                if left_shape != right_shape {
+                    return Ok(false);
+                }
+                for index in 0..left_shape.1 {
+                    let other = if left_shape.0 {
+                        right.element(index)?
+                    } else {
+                        right.field(left.data.field_name(index).unwrap())?
+                    };
+                    pending.push((left.element(index)?, other));
+                }
+                continue;
             }
             match (left.data, right.data) {
                 (Data::Interface(left), Data::Interface(right)) => {
                     pending.push((Arc::unwrap_or_clone(left), Arc::unwrap_or_clone(right)))
-                }
-                (Data::Array(left), Data::Array(right)) => {
-                    if left.len() != right.len() {
-                        return Ok(false);
-                    }
-                    pending.extend(left.iter().cloned().zip(right.iter().cloned()));
-                }
-                (Data::Struct(left), Data::Struct(right)) => {
-                    if left.len() != right.len() {
-                        return Ok(false);
-                    }
-                    for (name, value) in &left {
-                        let Some(other) = right.get(name) else {
-                            return Ok(false);
-                        };
-                        pending.push((value.clone(), other.clone()));
-                    }
                 }
                 (Data::Pointer(left), Data::Pointer(right)) => {
                     if left != right && pointers.insert((left.clone(), right.clone())) {
@@ -55,19 +59,18 @@ impl Instance {
                     if left == right || !maps.insert((left, right)) {
                         continue;
                     }
-                    let (Data::MapEntries(left), Data::MapEntries(right)) =
-                        (&self.heap.get(left)?.data, &self.heap.get(right)?.data)
-                    else {
-                        unreachable!()
-                    };
-                    if left.len() != right.len() {
+                    let left_entries = self.materialize_managed_map(left, &left_type)?;
+                    let right_entries = self.materialize_managed_map(right, &right_type)?;
+                    if left_entries.len() != right_entries.len() {
                         return Ok(false);
                     }
-                    for (key, value) in left.iter() {
-                        let Some(index) = right.find(key, &self.types)? else {
+                    for (key, value) in left_entries {
+                        let Some((_, other)) = right_entries.iter().find(|(candidate, _)| {
+                            crate::operators::equal(candidate, &key, &self.types).unwrap_or(false)
+                        }) else {
                             return Ok(false);
                         };
-                        pending.push((value.clone(), right[index].1.clone()));
+                        pending.push((value, other.clone()));
                     }
                 }
                 (Data::Slice(left), Data::Slice(right)) => {
@@ -155,13 +158,17 @@ impl Instance {
                 "reflect: expected Value",
             ));
         }
-        let Data::Struct(fields) = &value.data else {
+        if !value
+            .data
+            .aggregate_shape()
+            .is_some_and(|(array, _)| !array)
+        {
             return Err(RuntimeError::new(
                 "reflect",
                 "Value",
                 "reflect: invalid Value",
             ));
-        };
+        }
         for (name, primitive) in [
             ("valid", wire::PrimitiveBool),
             ("addressable", wire::PrimitiveBool),
@@ -179,10 +186,7 @@ impl Instance {
             ("complexValue", wire::PrimitiveComplex128),
             ("stringValue", wire::PrimitiveString),
         ] {
-            if fields
-                .get(name)
-                .is_some_and(|value| value.typ != TypeIdentity::Primitive(primitive))
-            {
+            if value.field(name)?.typ != TypeIdentity::Primitive(primitive) {
                 return Err(RuntimeError::new(
                     "reflect",
                     "Value",
@@ -190,22 +194,16 @@ impl Instance {
                 ));
             }
         }
-        if fields
-            .get("data")
-            .is_none_or(|value| value.typ != TypeIdentity::Any)
-            || fields
-                .get("target")
-                .is_some_and(|value| value.typ != TypeIdentity::Any)
-        {
+        let data_value = value.field("data")?;
+        let target_value = value.field("target")?;
+        if data_value.typ != TypeIdentity::Any || target_value.typ != TypeIdentity::Any {
             return Err(RuntimeError::new(
                 "reflect",
                 "Value",
                 "reflect: invalid interface payload",
             ));
         }
-        let type_value = fields
-            .get("valueType")
-            .ok_or_else(|| RuntimeError::new("reflect", "Value", "reflect: missing valueType"))?;
+        let type_value = value.field("valueType")?;
         if !matches!(&type_value.typ, TypeIdentity::Named(key) if key.module_path == "reflect" && key.decl_id == "Type")
             && !self
                 .types
@@ -218,8 +216,17 @@ impl Instance {
                 "reflect: invalid valueType",
             ));
         }
-        if let Some(entries) = fields.get("mapEntries")
-            && !matches!(entries.typ, TypeIdentity::Slice(_))
+        // `valueType` describes the value represented by this snapshot.  In
+        // particular, an interface field has an erased payload in `data`,
+        // while ValueOf has already unwrapped its argument and records the
+        // concrete payload type.  Use this authoritative type to decide
+        // whether the interface boundary must be retained below.
+        let valid = matches!(value.field("valid")?.data, Data::Bool(true));
+        let reflected_type = valid
+            .then(|| self.reflected_type(&type_value))
+            .transpose()?;
+        let entries = value.field("mapEntries")?;
+        if !matches!(entries.typ, TypeIdentity::Slice(_))
             && !self
                 .types
                 .node(&entries.typ)?
@@ -231,13 +238,11 @@ impl Instance {
                 "reflect: invalid mapEntries",
             ));
         }
-        let flag = |name: &str| {
-            fields
-                .get(name)
-                .is_some_and(|value| matches!(value.data, Data::Bool(true)))
+        let flag = |name: &str| -> Result<bool, RuntimeError> {
+            Ok(matches!(value.field(name)?.data, Data::Bool(true)))
         };
-        let target = match fields.get("target").map(|value| &value.data) {
-            Some(Data::Interface(value)) => match &value.data {
+        let target = match &target_value.data {
+            Data::Interface(value) => match &value.data {
                 Data::Pointer(address) => Some((**address).clone()),
                 _ => {
                     return Err(RuntimeError::new(
@@ -249,14 +254,55 @@ impl Instance {
             },
             _ => None,
         };
-        let current = if !flag("valid") {
+        let current = if !valid {
             None
         } else if let Some(target) = &target {
             Some(self.read_address(target)?)
         } else {
-            match fields.get("data").map(|value| &value.data) {
-                Some(Data::Interface(value)) => Some((**value).clone()),
-                Some(Data::Nil) => Some(self.zero(&self.reflected_type(&fields["valueType"])?, 0)?),
+            match &data_value.data {
+                Data::Interface(value) => {
+                    let mut value = Arc::unwrap_or_clone(value.clone());
+                    let reflected_type = reflected_type.as_ref().ok_or_else(|| {
+                        RuntimeError::new("reflect", "Value", "reflect: invalid Value")
+                    })?;
+                    if self.types.is_interface(reflected_type)? {
+                        // Coercing the snapshot's erased `data` lane can
+                        // leave one redundant interface wrapper around the
+                        // concrete payload.  Collapse exactly that wrapper,
+                        // preserving the interface described by valueType so
+                        // Elem can unwrap it later.
+                        if let Data::Interface(inner) = &value.data {
+                            value = Value {
+                                typ: reflected_type.clone(),
+                                data: Data::Interface(inner.clone()),
+                            };
+                        } else {
+                            value = Value {
+                                typ: reflected_type.clone(),
+                                data: Data::Interface(Arc::new(value)),
+                            };
+                        }
+                    } else {
+                        // ValueOf strips argument interface boxes before
+                        // snapshotting.  A non-interface value can still
+                        // acquire an erased wrapper while crossing a nested
+                        // reflection operation; remove those wrappers before
+                        // dispatching Kind, Call, and the scalar accessors.
+                        while let Data::Interface(inner) = &value.data {
+                            value = Arc::unwrap_or_clone(inner.clone());
+                        }
+                    }
+                    Some(value)
+                }
+                Data::Nil => Some(self.zero(&self.reflected_type(&type_value)?)?),
+                _ if data_value.typ == TypeIdentity::Any => {
+                    // Managed dynamic records may decode directly into the
+                    // erased Any lane (function/method/resource records do
+                    // not need an additional interface box).  The concrete
+                    // runtime type is recovered from valueType/function
+                    // metadata by the reflection operations below.
+                    Some(data_value)
+                }
                 _ => {
                     return Err(RuntimeError::new(
                         "reflect",
@@ -266,13 +312,29 @@ impl Instance {
                 }
             }
         };
+        let current = current.map(|mut current| {
+            // Managed dynamic records may decode directly into the
+            // erased Any lane.  The snapshot's valueType is the
+            // authoritative outer function/interface identity; restore
+            // it before an intrinsic asks the type registry for a
+            // callable node (MakeFunc in particular needs this before
+            // it can start the callback).
+            if current.typ == TypeIdentity::Any
+                && let Some(reflected_type) = &reflected_type
+                && *reflected_type != TypeIdentity::Void
+            {
+                current.typ = reflected_type.clone();
+            }
+            current
+        });
         Ok(ReflectedValue {
             current,
             target,
-            addressable: flag("addressable"),
-            settable: flag("settable"),
-            interfaceable: flag("interfaceable"),
-            embedded_read_only: flag("embeddedReadOnly"),
+            addressable: flag("addressable")?,
+            settable: flag("settable")?,
+            interfaceable: flag("interfaceable")?,
+            embedded_read_only: flag("embeddedReadOnly")?,
+            normalize_any_map: false,
         })
     }
 
@@ -284,14 +346,24 @@ impl Instance {
         let Some(value) = view.current else {
             return self.reflect_struct("Value", []);
         };
-        if depth >= self.limits.max_value_depth {
+        let value = match (&value.typ, &value.data) {
+            (TypeIdentity::Any, Data::Map(handle)) if depth == 0 && view.normalize_any_map => self
+                .managed_maps
+                .type_of(*handle)
+                .map_or(value.clone(), |typ| Value {
+                    typ,
+                    data: value.data.clone(),
+                }),
+            _ => value,
+        };
+        if depth >= self.types.traversal_limit(self.limits.max_dynamic_types) {
             return Err(RuntimeError::new(
                 "value_limit",
                 "reflect",
                 "snapshot depth exceeded",
             ));
         }
-        let mut pending = vec![&value];
+        let mut pending = vec![value.clone()];
         let mut zero = true;
         while let Some(value) = pending.pop() {
             match &value.data {
@@ -302,13 +374,20 @@ impl Instance {
                 Data::Float(value) => zero &= *value == 0.0,
                 Data::Complex { real, imag } => zero &= *real == 0.0 && *imag == 0.0,
                 Data::String(value) => zero &= value.is_empty(),
-                Data::Array(values) => pending.extend(values.iter()),
+                Data::Array(values) => pending.extend(values.iter().cloned()),
                 Data::Struct(fields) => pending.extend(
                     fields
                         .iter()
                         .filter(|(name, _)| *name != "_")
-                        .map(|(_, value)| value),
+                        .map(|(_, value)| value.clone()),
                 ),
+                Data::Aggregate(aggregate) => {
+                    for index in 0..aggregate.len() {
+                        if aggregate.field_name(index) != Some("_") {
+                            pending.push(aggregate.get(index)?);
+                        }
+                    }
+                }
                 _ => zero = false,
             }
             if !zero {
@@ -319,20 +398,47 @@ impl Instance {
             Data::String(value) => (value.len(), 0),
             Data::Array(value) => (value.len(), value.len()),
             Data::Struct(value) => (value.len(), 0),
+            Data::Aggregate(value) => (value.len(), if value.is_array() { value.len() } else { 0 }),
             Data::Slice(value) => (value.length, value.capacity),
-            Data::Map(handle) => match &self.heap.get(*handle)?.data {
-                Data::MapEntries(entries) => (entries.len(), 0),
-                _ => unreachable!(),
-            },
+            Data::Map(handle) => (
+                self.managed_maps
+                    .get(*handle)
+                    .ok_or_else(|| {
+                        RuntimeError::new("invalid_map", "reflect", "map owner is missing")
+                    })?
+                    .len()? as usize,
+                0,
+            ),
             _ => (0, 0),
         };
         let mut entries = Vec::new();
         if let Data::Map(handle) = &value.data {
-            let Data::MapEntries(map) = self.heap.get(*handle)?.data.clone() else {
-                unreachable!()
+            // A map stored behind an interface keeps `Any` as the reflected
+            // value type so callers can use Elem.  Its managed owner still
+            // carries the concrete map node required to decode key/value
+            // lanes.
+            let map_type = if value.typ == TypeIdentity::Any {
+                self.managed_maps
+                    .type_of(*handle)
+                    .unwrap_or_else(|| value.typ.clone())
+            } else {
+                value.typ.clone()
             };
-            for (key, value) in *map {
+            let map_element_type = self.types.node(&map_type)?.and_then(|(module, node)| {
+                (node.kind == wire::Map)
+                    .then(|| self.types.resolve(module, &node.elem).ok())
+                    .flatten()
+            });
+            for (key, value) in self.materialize_managed_map(*handle, &map_type)? {
                 let key = self.reflect_snapshot(ReflectedValue::owned(key), depth + 1)?;
+                let value = if map_element_type == Some(TypeIdentity::Any) {
+                    Value {
+                        typ: TypeIdentity::Any,
+                        data: Data::Interface(std::sync::Arc::new(value)),
+                    }
+                } else {
+                    value
+                };
                 let value = self.reflect_snapshot(ReflectedValue::owned(value), depth + 1)?;
                 entries
                     .push(self.reflect_struct("valueMapEntry", [("Key", key), ("Value", value)])?);
@@ -348,7 +454,7 @@ impl Instance {
                     data: Data::Pointer(std::sync::Arc::new(address)),
                 })),
             },
-            None => self.zero(&TypeIdentity::Any, 0)?,
+            None => self.zero(&TypeIdentity::Any)?,
         };
         let mut fields = vec![
             ("valid", Value::boolean(true)),
@@ -356,7 +462,12 @@ impl Instance {
             (
                 "data",
                 Value {
-                    typ: TypeIdentity::Any,
+                    // Keep the concrete dynamic type on the value that is
+                    // boxed into the erased interface.  Marking this inner
+                    // value as Any makes the managed codec classify methods
+                    // as the primitive function lane and loses the receiver
+                    // signature after a heap round trip.
+                    typ: value.typ.clone(),
                     data: Data::Interface(std::sync::Arc::new(value.clone())),
                 },
             ),
@@ -477,7 +588,7 @@ impl Instance {
                     ..ReflectedValue::owned(value)
                 }
             } else {
-                ReflectedValue::owned(value)
+                ReflectedValue::direct(value)
             };
             return Ok(vec![self.reflect_snapshot(view, 0)?]);
         }
@@ -507,7 +618,7 @@ impl Instance {
                 "reflect.zero" | "reflect.new" | "reflect.make_slice" | "reflect.make_map"
             ) {
                 let typ = self.reflected_type(&arguments[0])?;
-                let mut value = self.zero(&typ, 0)?;
+                let mut value = self.zero(&typ)?;
                 let mut target = None;
                 if id == "reflect.make_slice" {
                     let length = usize::try_from(arguments[1].integer()?).map_err(|_| {
@@ -516,14 +627,13 @@ impl Instance {
                     let capacity = usize::try_from(arguments[2].integer()?).map_err(|_| {
                         RuntimeError::new("reflect", id, "reflect: negative capacity")
                     })?;
-                    if length > capacity || capacity > self.limits.max_sequence_elements {
+                    if length > capacity {
                         return Err(RuntimeError::new(
                             "value_limit",
                             id,
                             "invalid slice dimensions",
                         ));
                     }
-                    self.charge_guest_object(capacity, 0)?;
                     value = self.make_slot_slice(typ.clone(), length, capacity, Vec::new())?;
                     target = Some(Address {
                         identity: std::sync::Arc::default(),
@@ -542,14 +652,7 @@ impl Instance {
                             "reflect: MakeMap of non-map type",
                         ));
                     }
-                    self.charge_guest_object(0, 0)?;
-                    value = Value {
-                        typ,
-                        data: Data::Map(self.allocate(Value {
-                            typ: TypeIdentity::Any,
-                            data: Data::MapEntries(Default::default()),
-                        })?),
-                    };
+                    value = self.make_empty_map(typ)?;
                     target = Some(Address {
                         identity: std::sync::Arc::default(),
                         root: self.allocate(value.clone())?,
@@ -582,7 +685,11 @@ impl Instance {
                     let mut current = view.current.take().ok_or_else(|| {
                         RuntimeError::new("reflect", id, "reflect: Slice of invalid Value")
                     })?;
-                    if matches!(current.data, Data::Array(_)) {
+                    if current
+                        .data
+                        .aggregate_shape()
+                        .is_some_and(|(array, _)| array)
+                    {
                         let address = view.target.take().ok_or_else(|| {
                             RuntimeError::new(
                                 "reflect",
@@ -673,18 +780,16 @@ impl Instance {
                     if count > capacity - length {
                         let new_capacity = length
                             .checked_add(count)
-                            .map(|needed| needed.max(capacity.saturating_mul(2)))
+                            .and_then(|needed| {
+                                capacity.checked_mul(2).map(|doubled| needed.max(doubled))
+                            })
                             .ok_or_else(|| {
-                                RuntimeError::new("value_limit", id, "slice capacity overflow")
+                                RuntimeError::new(
+                                    "allocation_limit",
+                                    id,
+                                    "slice capacity overflows",
+                                )
                             })?;
-                        if new_capacity > self.limits.max_sequence_elements {
-                            return Err(RuntimeError::new(
-                                "value_limit",
-                                id,
-                                "slice capacity exceeds limit",
-                            ));
-                        }
-                        self.charge_guest((new_capacity - capacity) as u64 * 16)?;
                         let compact = match &current.data {
                             Data::Slice(slice) => {
                                 matches!(
@@ -793,7 +898,7 @@ impl Instance {
                         let index = usize::try_from(index.integer()?).map_err(|_| {
                             RuntimeError::new("reflect", id, "reflect: negative field index")
                         })?;
-                        let (_, node) = self
+                        let (module, node) = self
                             .types
                             .node(&current.typ)?
                             .filter(|(_, node)| node.kind == wire::Struct)
@@ -811,12 +916,19 @@ impl Instance {
                         view.interfaceable = accessible && exported;
                         view.embedded_read_only = accessible && !exported && field.embedded;
                         accessible &= exported || field.embedded;
-                        let Data::Struct(fields) = current.data else {
-                            unreachable!()
+                        let field_value = current.field(&field.name)?;
+                        let field_type = self.types.resolve(module, &field.r#type)?;
+                        current = if (field_type == TypeIdentity::Any
+                            || self.types.is_interface(&field_type)?)
+                            && !matches!(field_value.data, Data::Interface(_) | Data::Nil)
+                        {
+                            Value {
+                                typ: field_type,
+                                data: Data::Interface(Arc::new(field_value)),
+                            }
+                        } else {
+                            field_value
                         };
-                        current = fields.get(&field.name).cloned().ok_or_else(|| {
-                            RuntimeError::new("reflect", id, "reflect: missing field storage")
-                        })?;
                         if let Some(target) = &mut view.target {
                             target.path.push(PathElement::Field(field.name.clone()));
                         }
@@ -833,7 +945,7 @@ impl Instance {
                         .map_err(|_| RuntimeError::new("reflect", id, "reflect: negative index"))?;
                     if !matches!(
                         current.data,
-                        Data::Array(_) | Data::Slice(_) | Data::String(_)
+                        Data::Array(_) | Data::Aggregate(_) | Data::Slice(_) | Data::String(_)
                     ) {
                         return Err(RuntimeError::new(
                             "reflect",
@@ -848,7 +960,7 @@ impl Instance {
                             target.path.push(PathElement::Index(slice.start + index));
                             view.target = Some(target);
                         }
-                        Data::Array(_) => {
+                        Data::Array(_) | Data::Aggregate(_) => {
                             if let Some(target) = &mut view.target {
                                 target.path.push(PathElement::Index(index));
                             }
@@ -1051,6 +1163,14 @@ impl ReflectedValue {
             settable: false,
             interfaceable: true,
             embedded_read_only: false,
+            normalize_any_map: false,
+        }
+    }
+
+    pub(super) fn direct(value: Value) -> Self {
+        Self {
+            normalize_any_map: true,
+            ..Self::owned(value)
         }
     }
 }

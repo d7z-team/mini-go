@@ -22,12 +22,13 @@ func FuzzFFICallResultDisposition(f *testing.F) {
 		if len(operations) > 64 {
 			return
 		}
-		machine := &vm{limits: normalizeLimits(Limits{MaxBoundaryBytes: 32, MaxAllocatedBytes: 1 << 20}), ffiCalls: make(map[*pendingFFICall]struct{})}
+		module := newManagedValueTestModule()
+		machine := module.vm
+		machine.limits = normalizeLimits(Limits{MaxBoundaryBytes: 32, MaxGuestBytes: 1 << 20})
+		machine.ffiCalls = make(map[*pendingFFICall]struct{})
 		machine.owner.Store(true)
 		if limits%3 == 1 {
 			machine.limits.MaxBoundaryBytes = 1
-		} else if limits%3 == 2 {
-			machine.limits.MaxAllocatedBytes = 1
 		}
 		_, cancel := context.WithCancel(context.Background())
 		pending := &pendingFFICall{vm: machine, cancel: cancel, state: pendingFFIWaiting}
@@ -53,7 +54,11 @@ func FuzzFFICallResultDisposition(f *testing.F) {
 			case 1:
 				pending.stop()
 			case 2:
-				if values, ready := pending.take(); ready {
+				values, ready, admissionErr := pending.materializeForFrame(module, nil)
+				if admissionErr != nil {
+					t.Fatalf("host reply consumption failed: %v", admissionErr)
+				}
+				if ready {
 					status, err := numericAsInt64(values[2])
 					if err != nil {
 						t.Fatal(err)
@@ -67,9 +72,6 @@ func FuzzFFICallResultDisposition(f *testing.F) {
 						if status != wantStatus {
 							t.Fatalf("status = %#v, want %d", values[2], wantStatus)
 						}
-					}
-					if consumed && limits%3 != 0 {
-						t.Fatal("FFI result exceeded the configured memory limit")
 					}
 				}
 			}

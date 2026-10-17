@@ -98,30 +98,16 @@ func TestLowerStoreResultsPreservesResultAndDestinationOrder(t *testing.T) {
 		t.Fatalf("Lower failed: %v", err)
 	}
 	instructions := functionOperations(t, artifact.Functions[1])
-	if len(instructions) != 3 {
-		t.Fatalf("expected call and two stores, got %#v", instructions)
+	if len(instructions) != 1 {
+		t.Fatalf("expected direct multi-result call, got %#v", instructions)
 	}
-	if instructions[0].Op != ir.OpCallDirect || instructions[1].Op != ir.OpStoreLocal || instructions[2].Op != ir.OpStoreLocal {
-		t.Fatalf("expected call_direct/store_local/store_local, got %#v", instructions)
-	}
-	var firstStore ir.LocalPayload
-	if err := ir.ReadInstructionPayload(instructions[1].Payload, &firstStore); err != nil {
-		t.Fatalf("unmarshal first store failed: %v", err)
-	}
-	var secondStore ir.LocalPayload
-	if err := ir.ReadInstructionPayload(instructions[2].Payload, &secondStore); err != nil {
-		t.Fatalf("unmarshal second store failed: %v", err)
-	}
-	if firstStore.Local != "local.a" || secondStore.Local != "local.b" {
-		t.Fatalf("expected source store order a,b, got %q,%q", firstStore.Local, secondStore.Local)
+	if instructions[0].Op != ir.OpCallDirect {
+		t.Fatalf("expected call_direct, got %#v", instructions)
 	}
 	code := artifact.Functions[1].Code
 	results := code.Operands[code.Instructions[0].Operands].Outputs
-	for i := range results {
-		input := code.Operands[code.Instructions[i+1].Operands].Inputs[0]
-		if input.Kind != ir.OperandSlot || input.Index != results[i] {
-			t.Fatalf("result %d routed to the wrong destination: %v", i, input)
-		}
+	if len(results) != 2 || results[0] != ir.LocalOutput || results[1] != ir.LocalOutput|1 {
+		t.Fatalf("results were not routed to private locals: %v", results)
 	}
 }
 

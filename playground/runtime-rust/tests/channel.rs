@@ -4,11 +4,87 @@ use mini_go::{
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
-    value::Data,
+    snapshot::HostData,
 };
 use serde_json::json;
 use std::sync::Arc;
 use support::slot_code;
+
+#[test]
+fn buffered_zero_sized_elements_preserve_type_through_ring_wrap() {
+    let channel = json!({"kind":9,"node":"channel"});
+    let integer = json!({"kind":3,"primitive":3});
+    for (element, node) in [
+        (
+            json!({"kind":12,"node":"element"}),
+            json!({"id":"element","kind":12}),
+        ),
+        (
+            json!({"kind":6,"node":"element"}),
+            json!({"id":"element","kind":6,"length":0,"elem":integer}),
+        ),
+    ] {
+        let mut instructions = vec![
+            (
+                "const",
+                json!({"constant":"capacity"}),
+                json!({"outputs":[0]}),
+            ),
+            (
+                "make_waitable",
+                json!({"type":channel}),
+                json!({"inputs":[[0,0]],"outputs":[1],"release":[0]}),
+            ),
+        ];
+        for _ in 0..3 {
+            instructions.extend([
+                ("zero", json!({"type":element}), json!({"outputs":[2]})),
+                (
+                    "waitable_send",
+                    json!({}),
+                    json!({"inputs":[[0,1],[0,2]],"release":[2]}),
+                ),
+                (
+                    "waitable_recv",
+                    json!({}),
+                    json!({"inputs":[[0,1]],"outputs":[2]}),
+                ),
+            ]);
+        }
+        instructions.push((
+            "return",
+            json!({"result_count":1}),
+            json!({"inputs":[[0,2]],"release":[1,2]}),
+        ));
+        let image = support::image(json!({
+            "type_table":{"nodes":[node,{"id":"channel","kind":9,"direction":1,"elem":element}]},
+            "constants":[{"id":"capacity","type":integer,"value":1}],
+            "functions":[{"id":"fn.Main","signature":{"results":[element]},
+                "code":slot_code(json!([integer,channel,element]), &instructions)}]
+        }));
+        let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", &[]).unwrap();
+        for step in 1..=12 {
+            let status = vm.poll_steps(1).unwrap();
+            assert_eq!(
+                status,
+                if step == 12 {
+                    PollStatus::Ready
+                } else {
+                    PollStatus::Running
+                }
+            );
+        }
+        let result = vm.snapshot_results(Default::default()).unwrap();
+        match (&result.roots[0].data, element["kind"].as_u64()) {
+            (HostData::Array(values), Some(6)) => assert!(values.is_empty()),
+            (HostData::Struct(fields), Some(12)) => assert!(fields.is_empty()),
+            (data, kind) => panic!("channel changed element shape: {kind:?} -> {data:?}"),
+        }
+        vm.close().unwrap();
+    }
+}
 
 #[test]
 fn unbuffered_try_send_delivers_to_waiting_task_without_buffering() {
@@ -58,7 +134,7 @@ fn unbuffered_try_send_delivers_to_waiting_task_without_buffering() {
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     for quantum in [1, 64, 1024] {
         let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         let mut status = PollStatus::Running;
         for _ in 0..256 {
             status = vm.poll_steps(quantum).unwrap();
@@ -73,9 +149,22 @@ fn unbuffered_try_send_delivers_to_waiting_task_without_buffering() {
             vm.steps(),
             vm.stats()
         );
-        assert_eq!(vm.results()[0].integer().unwrap(), 0);
-        assert_eq!(vm.results()[1].integer().unwrap(), 42);
-        assert!(matches!(vm.results()[2].data(), Data::Bool(true)));
+        assert_eq!(
+            vm.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            vm.snapshot_results(Default::default()).unwrap().roots[1]
+                .integer()
+                .unwrap(),
+            42
+        );
+        assert!(matches!(
+            &vm.snapshot_results(Default::default()).unwrap().roots[2].data,
+            HostData::Bool(true)
+        ));
         vm.close().unwrap();
         assert_eq!(vm.heap_stats().live_objects, 0);
     }

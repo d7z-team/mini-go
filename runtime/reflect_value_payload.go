@@ -13,19 +13,21 @@ func reflectDynamicValue(ctx intrinsicContext, value vmValue) (vmValue, bool, er
 	for {
 		switch {
 		case value.Type.Ref.Kind == types.Any:
-			if value.Data == nil {
+			payload := value.payload()
+			if payload == nil {
 				return vmValue{}, false, nil
 			}
-			inner, ok := value.Data.(vmValue)
+			inner, ok := payload.(vmValue)
 			if !ok {
 				return vmValue{}, false, errors.New("reflect.value_of invalid Any value")
 			}
 			value = inner
 		case module != nil && module.isInterfaceType(value.Type):
-			if value.Data == nil {
+			payload := value.payload()
+			if payload == nil {
 				return vmValue{}, false, nil
 			}
-			inner, ok := value.Data.(vmValue)
+			inner, ok := payload.(vmValue)
 			if !ok {
 				return vmValue{}, false, errors.New("reflect.value_of invalid interface value")
 			}
@@ -53,11 +55,21 @@ func reflectValuePayload(value vmValue) (reflectValueFields, error) {
 	if !isReflectValueTypeName(value.Type.String()) {
 		return reflectValueFields{}, fmt.Errorf("reflect: expected Value, got %s", value.Type)
 	}
-	payload, ok := value.Data.(*vmStruct)
+	payload, ok := value.payload().(*vmStruct)
 	if !ok || payload == nil || payload.schema == nil {
 		return reflectValueFields{}, errors.New("reflect: invalid Value payload")
 	}
 	fields := reflectValueFields{value: payload}
+	// Typed storage fixes field types at publication. Validate its schema
+	// without decoding unrelated strings, dynamic values or slice headers.
+	fieldType := func(name string) (vmType, bool) {
+		if payload.inlineRaw != nil || payload.managedRef.valid() {
+			_, field, exists := payload.schema.field(name)
+			return field.RuntimeType, exists
+		}
+		field, exists := fields.lookup(name)
+		return field.Type, exists
+	}
 	for _, field := range []struct {
 		name      string
 		primitive types.PrimitiveKind
@@ -78,22 +90,22 @@ func reflectValuePayload(value vmValue) (reflectValueFields, error) {
 		{"complexValue", types.PrimitiveComplex128},
 		{"stringValue", types.PrimitiveString},
 	} {
-		item, exists := fields.lookup(field.name)
-		if exists && !item.Type.Primitive(field.primitive) {
+		item, exists := fieldType(field.name)
+		if exists && !item.Primitive(field.primitive) {
 			return reflectValueFields{}, fmt.Errorf("reflect: Value payload field %s has invalid type", field.name)
 		}
 	}
-	data, exists := fields.lookup("data")
-	if !exists || data.Type.Ref.Kind != types.Any {
+	data, exists := fieldType("data")
+	if !exists || data.Ref.Kind != types.Any {
 		return reflectValueFields{}, errors.New("reflect: Value payload field data has invalid type")
 	}
-	if target, exists := fields.lookup("target"); exists && target.Type.Ref.Kind != types.Any {
+	if target, exists := fieldType("target"); exists && target.Ref.Kind != types.Any {
 		return reflectValueFields{}, errors.New("reflect: Value payload field target has invalid type")
 	}
-	if typ, exists := fields.lookup("valueType"); !exists || (!typ.Type.Is(types.Interface) && typ.Type.String() != "reflect.Type") {
+	if typ, exists := fieldType("valueType"); !exists || (!typ.Is(types.Interface) && typ.String() != "reflect.Type") {
 		return reflectValueFields{}, errors.New("reflect: Value payload field valueType has invalid type")
 	}
-	if entries, exists := fields.lookup("mapEntries"); exists && !entries.Type.Is(types.Slice) {
+	if entries, exists := fieldType("mapEntries"); exists && !entries.Is(types.Slice) {
 		return reflectValueFields{}, errors.New("reflect: Value payload field mapEntries has invalid type")
 	}
 	return fields, nil
@@ -108,10 +120,7 @@ func reflectAnyPayload(value vmValue) (vmValue, bool) {
 	if value.Type.Ref.Kind != types.Any {
 		return vmValue{}, false
 	}
-	if value.Data == nil {
-		return vmValue{}, false
-	}
-	inner, ok := value.Data.(vmValue)
+	inner, ok := value.payload().(vmValue)
 	if !ok {
 		return vmValue{}, false
 	}
@@ -130,6 +139,24 @@ func reflectCurrentValue(fields reflectValueFields) (vmValue, bool, error) {
 		return current, true, nil
 	}
 	value, ok := reflectAnyPayload(fields.get("data"))
+	// Dynamic slots store the concrete interface payload. A reflected Value
+	// also has a declared type, which can itself be an interface (for example
+	// a struct field). Reconstruct that view from its existing type descriptor
+	// instead of treating the concrete value as the field's declared type.
+	if key, err := reflectTypeKeyFromValue(fields.get("valueType")); err == nil {
+		typ := runtimeTypeFromText(key)
+		if fields.value.owner != nil {
+			typ = fields.value.owner.rootModule().resolvedRuntimeType(typ)
+		}
+		if typ.Ref.Kind == types.Any || typ.ShapeKind() == types.Interface {
+			if !ok {
+				return newVMValue(typ, nil), true, nil
+			}
+			if !value.Type.Equal(typ) {
+				value = newVMValue(typ, value)
+			}
+		}
+	}
 	return value, ok, nil
 }
 
@@ -206,21 +233,21 @@ func reflectFieldPointerByIndex(module *moduleInstance, rootPtr vmValue, index [
 }
 
 func reflectTypeKeyFromValue(value vmValue) (string, error) {
-	if value.Data == nil {
+	payload := value.payload()
+	if payload == nil {
 		return "", errors.New("reflect: nil Type")
 	}
-	if inner, ok := value.Data.(vmValue); ok {
-		value = inner
+	if inner, ok := payload.(vmValue); ok {
+		payload = inner.payload()
 	}
-	fields, ok := materializeStructValue(value.Data)
-	if !ok {
+	if !isStructValue(payload) {
 		return "", errors.New("reflect: invalid Type payload")
 	}
-	key, ok := fields["key"]
+	key, ok := structValueField(payload, "key")
 	if !ok || !key.Type.Primitive(types.PrimitiveString) {
 		return "", errors.New("reflect: Type payload is missing its canonical key")
 	}
-	text, ok := key.Data.(string)
+	text, ok := key.payload().(string)
 	text = strings.TrimSpace(text)
 	if !ok || text == "" {
 		return "", errors.New("reflect: Type payload has an invalid canonical key")
@@ -232,14 +259,14 @@ func reflectMethodInfoFromValue(ctx intrinsicContext, value vmValue) (TypeMethod
 	if strings.TrimSpace(value.Type.String()) != "Method" && strings.TrimSpace(value.Type.String()) != "reflect.Method" {
 		return TypeMethodInfo{}, fmt.Errorf("reflect: expected Method, got %s", value.Type)
 	}
-	fields, ok := materializeStructValue(value.Data)
+	fields, ok := materializeStructValue(value.payload())
 	if !ok {
 		return TypeMethodInfo{}, errors.New("reflect: invalid Method payload")
 	}
 	stringsByName := make(map[string]string, 4)
 	for _, name := range []string{"modulePath", "Name", "PkgPath", "functionID"} {
 		field, exists := fields[name]
-		text, valid := field.Data.(string)
+		text, valid := field.payload().(string)
 		if !exists || !field.Type.Primitive(types.PrimitiveString) || !valid {
 			return TypeMethodInfo{}, fmt.Errorf("reflect: Method payload field %s has invalid type", name)
 		}
@@ -257,8 +284,8 @@ func reflectMethodInfoFromValue(ctx intrinsicContext, value vmValue) (TypeMethod
 	if module == nil {
 		return TypeMethodInfo{}, errors.New("reflect: Method payload requires module context")
 	}
-	variadic, variadicOK := fields["variadic"].Data.(bool)
-	exported, exportedOK := fields["exported"].Data.(bool)
+	variadic, variadicOK := fields["variadic"].boolValue()
+	exported, exportedOK := fields["exported"].boolValue()
 	if !variadicOK || !fields["variadic"].Type.Primitive(types.PrimitiveBool) ||
 		!exportedOK || !fields["exported"].Type.Primitive(types.PrimitiveBool) {
 		return TypeMethodInfo{}, errors.New("reflect: Method payload flags have invalid type")
@@ -273,7 +300,7 @@ func reflectMethodInfoFromValue(ctx intrinsicContext, value vmValue) (TypeMethod
 }
 
 func reflectBoolField(value vmValue) bool {
-	flag, _ := value.Data.(bool)
+	flag, _ := value.boolValue()
 	return flag
 }
 
@@ -303,7 +330,7 @@ func reflectIndexPointer(module *moduleInstance, parentPtr vmValue, index int64)
 	if _, err := indexValue(module, parent, indexArg); err != nil {
 		return vmValue{}, err
 	}
-	if _, ok := parent.Data.(*vmArray); ok {
+	if _, ok := parent.payload().(*vmArray); ok {
 		// A zero array field may still be implicit in its enclosing struct.
 		// Attach it before capturing a stable element address.
 		if err := commitPointerMutation(parentPtr, parent); err != nil {
@@ -319,14 +346,14 @@ func reflectIndexPointer(module *moduleInstance, parentPtr vmValue, index int64)
 		identity = fmt.Sprintf("%s.index:%d", pointer.Identity, index)
 	}
 	var slice *vmSlice
-	switch data := parent.Data.(type) {
+	switch data := parent.payload().(type) {
 	case *vmSlice:
 		slice = data
 	case *vmArray:
 		slice = &data.vmSlice
 	}
 	if slice != nil {
-		identity = fmt.Sprintf("slice:%p.index:%d", slice.vmSliceStorage, int64(slice.Start)+index)
+		identity = slice.elementIdentity(index)
 		parentPtr = parent
 	}
 	return newTargetPointer(&vmPointer{Type: coerceRuntimeType(elemType), Identity: identity, target: pointerIndex, module: module, parent: parentPtr, index: index}), nil

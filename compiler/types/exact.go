@@ -14,7 +14,7 @@ func (t *TypeTable) TypeExact(ref TypeRef) bool {
 		return false
 	}
 	if t.byID == nil || t.indexOwner != t {
-		if err := t.index(); err != nil {
+		if err := t.rebuildIndexes(); err != nil {
 			return false
 		}
 	}

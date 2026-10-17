@@ -128,12 +128,12 @@ func (m *moduleInstance) resolveInterfaceMethod(receiver vmValue, interfaceType,
 	}
 	dynamic := asserted
 	for m.isInterfaceType(dynamic.Type) {
-		if dynamic.Data == nil {
+		if dynamic.payload() == nil {
 			return vmValue{}, nil, "", fmt.Errorf("nil interface method call: %s.%s", interfaceType, method)
 		}
-		inner, ok := dynamic.Data.(vmValue)
+		inner, ok := dynamic.payload().(vmValue)
 		if !ok {
-			return vmValue{}, nil, "", fmt.Errorf("invalid interface value: type=%s data=%T", dynamic.Type, dynamic.Data)
+			return vmValue{}, nil, "", fmt.Errorf("invalid interface value: type=%s data=%T", dynamic.Type, dynamic.payload())
 		}
 		dynamic = inner
 	}
@@ -333,7 +333,7 @@ func (m *moduleInstance) collectPromotedMethodFunctionCandidates(value vmValue, 
 		}
 		container = loaded
 	}
-	if _, ok := container.Data.(*vmStruct); !ok {
+	if _, ok := container.payload().(*vmStruct); !ok {
 		return
 	}
 	decl, ok := module.executable.Types[typeName]
@@ -403,7 +403,7 @@ func (m *moduleInstance) methodSetOwner(valueType any) (*moduleInstance, string,
 func embeddedFieldPointer(module *moduleInstance, container vmValue, fieldName, fieldType string) vmValue {
 	identity := ""
 	if container.Type.ShapeKind() == types.Pointer {
-		identity = fmt.Sprintf("field:%v:%s", referenceComparableIdentity(container.Data), fieldName)
+		identity = fmt.Sprintf("field:%v:%s", referenceComparableIdentity(container.payload()), fieldName)
 	}
 	return newTargetPointer(&vmPointer{Type: coerceRuntimeType(fieldType), Identity: identity, target: pointerField, module: module, parent: container, field: fieldName})
 }

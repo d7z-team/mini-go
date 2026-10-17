@@ -119,6 +119,7 @@ func (machine *executionMachine) settleScope(scope *executionScope) {
 		scope.execution.notify()
 	}
 	if machine.vm != nil {
+		machine.vm.retentionCollectionRequested.Store(true)
 		machine.vm.sweepRetiredRevisions()
 	}
 }

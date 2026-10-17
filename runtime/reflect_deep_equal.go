@@ -8,11 +8,18 @@ import (
 )
 
 type reflectDeepVisit struct {
-	pointers map[[2]*vmPointer]bool
-	slices   map[[2]*vmSlice]bool
-	maps     map[[2]*vmMap]bool
-	ctx      intrinsicContext
-	count    int
+	storage map[[2]reflectStorageIdentity]bool
+	ctx     intrinsicContext
+	count   int
+}
+
+type reflectStorageIdentity struct {
+	heap   *managedHeap
+	ref    guestRef
+	offset uint32
+	length int
+	host   any
+	kind   uint8
 }
 
 func reflectDeepEqual(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
@@ -32,10 +39,8 @@ func reflectDeepEqual(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		return []vmValue{newVMValue("Bool", leftOK == rightOK)}, nil
 	}
 	equal, err := reflectDeepValues(module, left, right, &reflectDeepVisit{
-		pointers: make(map[[2]*vmPointer]bool),
-		slices:   make(map[[2]*vmSlice]bool),
-		maps:     make(map[[2]*vmMap]bool),
-		ctx:      ctx,
+		storage: make(map[[2]reflectStorageIdentity]bool),
+		ctx:     ctx,
 	})
 	if err != nil {
 		return nil, err
@@ -48,10 +53,10 @@ func reflectDeepDynamic(module *moduleInstance, value vmValue) (vmValue, bool, e
 		if value.Type.Ref.Kind != types.Any && (module == nil || !module.isInterfaceType(value.Type)) {
 			return value, true, nil
 		}
-		if value.Data == nil {
+		if value.payload() == nil {
 			return vmValue{}, false, nil
 		}
-		inner, ok := value.Data.(vmValue)
+		inner, ok := value.payload().(vmValue)
 		if !ok {
 			return vmValue{}, false, errors.New("reflect: invalid interface value")
 		}
@@ -97,21 +102,33 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		rightData, ok := right.materializedData().(float64)
 		return ok && leftData == rightData, nil
 	case complex128:
-		rightData, ok := right.Data.(complex128)
+		rightData, ok := right.payload().(complex128)
 		return ok && leftData == rightData, nil
 	case *vmPointer:
-		rightData, ok := right.Data.(*vmPointer)
+		rightData, ok := right.payload().(*vmPointer)
 		if !ok || leftData == nil || rightData == nil {
 			return ok && leftData == nil && rightData == nil, nil
 		}
 		if leftData == rightData || leftData.Identity != "" && leftData.Identity == rightData.Identity {
 			return true, nil
 		}
-		pair := [2]*vmPointer{leftData, rightData}
-		if visited.pointers[pair] {
+		pair := [2]reflectStorageIdentity{}
+		for index, pointer := range []*vmPointer{leftData, rightData} {
+			pair[index].kind = 1
+			if pointer.owner != nil && pointer.storage.valid() {
+				pair[index].heap = pointer.owner.heap
+				pair[index].ref = pointer.storage
+				pair[index].offset = pointer.offset
+			} else if pointer.Identity != "" {
+				pair[index].host = pointer.Identity
+			} else {
+				pair[index].host = pointer
+			}
+		}
+		if pair[0] == pair[1] || visited.storage[pair] {
 			return true, nil
 		}
-		visited.pointers[pair] = true
+		visited.storage[pair] = true
 		leftElem, err := derefPointer(left)
 		if err != nil {
 			return false, err
@@ -122,7 +139,7 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		}
 		return reflectDeepValues(module, leftElem, rightElem, visited)
 	case *vmSlice:
-		rightData, ok := right.Data.(*vmSlice)
+		rightData, ok := right.payload().(*vmSlice)
 		if !ok || leftData == nil || rightData == nil {
 			return ok && leftData == nil && rightData == nil, nil
 		}
@@ -132,11 +149,20 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		if reflectSameSliceStart(leftData, rightData) {
 			return true, nil
 		}
-		pair := [2]*vmSlice{leftData, rightData}
-		if visited.slices[pair] {
+		pair := [2]reflectStorageIdentity{}
+		for index, slice := range []*vmSlice{leftData, rightData} {
+			pair[index] = reflectStorageIdentity{
+				heap: slice.managedHeap, ref: slice.managedRef,
+				offset: slice.managedBase + uint32(slice.Start)*slice.managedElem.Stride, length: slice.Len,
+			}
+			if slice.managedHeap == nil {
+				pair[index].host = slice.vmSliceStorage
+			}
+		}
+		if pair[0] == pair[1] || visited.storage[pair] {
 			return true, nil
 		}
-		visited.slices[pair] = true
+		visited.storage[pair] = true
 		for i := 0; i < leftData.Len; i++ {
 			equal, err := reflectDeepValues(module, leftData.valueAt(i), rightData.valueAt(i), visited)
 			if err != nil || !equal {
@@ -145,18 +171,25 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		}
 		return true, nil
 	case *vmMap:
-		rightData, ok := right.Data.(*vmMap)
+		rightData, ok := right.payload().(*vmMap)
 		if !ok || leftData == nil || rightData == nil {
 			return ok && leftData == nil && rightData == nil, nil
 		}
 		if leftData == rightData {
 			return true, nil
 		}
-		pair := [2]*vmMap{leftData, rightData}
-		if visited.maps[pair] {
+		pair := [2]reflectStorageIdentity{}
+		for index, data := range []*vmMap{leftData, rightData} {
+			if data.managed != nil {
+				pair[index] = reflectStorageIdentity{heap: data.managed.heap, ref: data.managed.identity}
+			} else {
+				pair[index].host = data
+			}
+		}
+		if pair[0] == pair[1] || visited.storage[pair] {
 			return true, nil
 		}
-		visited.maps[pair] = true
+		visited.storage[pair] = true
 		leftEntries, rightEntries := leftData.snapshot(), rightData.snapshot()
 		if len(leftEntries) != len(rightEntries) {
 			return false, nil
@@ -173,7 +206,7 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		}
 		return true, nil
 	case *vmArray:
-		rightArray, ok := right.Data.(*vmArray)
+		rightArray, ok := right.payload().(*vmArray)
 		if !ok || leftData.Len != rightArray.Len {
 			return false, nil
 		}
@@ -186,7 +219,7 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		}
 		return true, nil
 	case *vmStruct:
-		rightData, ok := right.Data.(*vmStruct)
+		rightData, ok := right.payload().(*vmStruct)
 		if !ok || leftData == nil || rightData == nil || leftData.schema == nil || rightData.schema == nil ||
 			len(leftData.schema.fields) != len(rightData.schema.fields) {
 			return false, nil
@@ -207,15 +240,15 @@ func reflectDeepValues(module *moduleInstance, left, right vmValue, visited *ref
 		}
 		return true, nil
 	case *mutexResource:
-		rightData, ok := right.Data.(*mutexResource)
+		rightData, ok := right.payload().(*mutexResource)
 		return ok && leftData == rightData, nil
 	case *waitableResource:
-		rightData, ok := right.Data.(*waitableResource)
+		rightData, ok := right.payload().(*waitableResource)
 		return ok && leftData == rightData, nil
 	case functionRef, reflectMethodTarget, reflectUnboundMethodTarget, reflectMakeFuncTarget:
-		return left.Data == nil && right.Data == nil, nil
+		return left.payload() == nil && right.payload() == nil, nil
 	case nil:
-		return right.Data == nil, nil
+		return right.payload() == nil, nil
 	default:
 		rightData := right.materializedData()
 		return fmt.Sprintf("%T:%v", leftData, leftData) == fmt.Sprintf("%T:%v", rightData, rightData), nil
@@ -226,13 +259,19 @@ func reflectSameSliceStart(left, right *vmSlice) bool {
 	if left == right {
 		return true
 	}
-	if left == nil || right == nil || left.ByteBacked != right.ByteBacked || left.Start != right.Start {
+	if left != nil && right != nil && left.managedHeap != nil && right.managedHeap != nil {
+		return left.managedHeap == right.managedHeap && left.managedRef == right.managedRef &&
+			left.managedBase+uint32(left.Start)*left.managedElem.Stride == right.managedBase+uint32(right.Start)*right.managedElem.Stride
+	}
+	if left == nil || right == nil || left.byteBacked() != right.byteBacked() || left.Start != right.Start {
 		return false
 	}
-	if left.ByteBacked {
-		return left.Start < len(left.ByteBacking) && right.Start < len(right.ByteBacking) &&
-			&left.ByteBacking[left.Start] == &right.ByteBacking[right.Start]
+	if left.byteBacked() {
+		return left.vmSliceStorage != nil && right.vmSliceStorage != nil &&
+			left.Start < left.vmSliceStorage.capacity && right.Start < right.vmSliceStorage.capacity &&
+			left.vmSliceStorage == right.vmSliceStorage
 	}
-	return left.Start < len(left.Backing) && right.Start < len(right.Backing) &&
-		&left.Backing[left.Start] == &right.Backing[right.Start]
+	return left.vmSliceStorage != nil && right.vmSliceStorage != nil &&
+		left.Start < left.vmSliceStorage.capacity && right.Start < right.vmSliceStorage.capacity &&
+		left.vmSliceStorage == right.vmSliceStorage
 }

@@ -186,3 +186,46 @@ func TestFusionAcceptsTypedConstantOperands(t *testing.T) {
 		t.Fatal("did not fuse a typed constant string/index pair")
 	}
 }
+
+func TestDirectLocalResultsFusesMapIteratorOutputs(t *testing.T) {
+	integer := types.Builtin(types.PrimitiveInt)
+	boolean := types.Builtin(types.PrimitiveBool)
+	code := ir.SlotCode{
+		Types: []types.TypeRef{integer, integer, boolean},
+		Operands: []ir.SlotOperands{
+			{Outputs: []uint32{0, 1, 2}},
+			{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}},
+			{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 1}}},
+			{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 2}}},
+		},
+	}
+	mapNext, err := code.Descriptors.Append(ir.LocalPayload{Local: "iter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeKey, _ := code.Descriptors.Append(ir.LocalPayload{Local: "key"})
+	storeValue, _ := code.Descriptors.Append(ir.LocalPayload{Local: "value"})
+	storeOK, _ := code.Descriptors.Append(ir.LocalPayload{Local: "ok"})
+	code.Instructions = []ir.SlotInstruction{
+		{Op: ir.OpMapIterNext, Descriptor: mapNext, Operands: 0},
+		{Op: ir.OpStoreLocal, Descriptor: storeKey, Operands: 1},
+		{Op: ir.OpStoreLocal, Descriptor: storeValue, Operands: 2},
+		{Op: ir.OpStoreLocal, Descriptor: storeOK, Operands: 3},
+	}
+	function := hir.Function{Locals: []hir.Local{
+		{ID: "iter", Type: integer},
+		{ID: "key", Type: integer},
+		{ID: "value", Type: integer},
+		{ID: "ok", Type: boolean},
+	}}
+	if err := directLocalResults(&code, &function, &types.TypeTable{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(code.Instructions) != 1 {
+		t.Fatalf("expected one map iterator instruction, got %#v", code.Instructions)
+	}
+	outputs := code.Operands[code.Instructions[0].Operands].Outputs
+	if len(outputs) != 3 || outputs[0] != ir.LocalOutput|1 || outputs[1] != ir.LocalOutput|2 || outputs[2] != ir.LocalOutput|3 {
+		t.Fatalf("map iterator outputs were not routed to locals: %v", outputs)
+	}
+}

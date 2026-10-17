@@ -3,6 +3,70 @@
 use super::*;
 
 impl Instance {
+    pub(super) fn construct_aggregate(
+        &mut self,
+        typ: TypeIdentity,
+        fields: Vec<(usize, Value)>,
+    ) -> Result<Value, RuntimeError> {
+        let zero = self.zero(&typ)?;
+        let Data::Aggregate(aggregate) = zero.data else {
+            return Err(RuntimeError::new(
+                "type_error",
+                "aggregate",
+                "expected aggregate type",
+            ));
+        };
+        let roots = self.running.allocation_roots.len();
+        self.running.allocation_roots.push(Value {
+            typ: typ.clone(),
+            data: Data::Aggregate(aggregate.clone()),
+        });
+        self.running
+            .allocation_roots
+            .extend(fields.iter().map(|(_, value)| value.clone()));
+        let mut minor_attempted = false;
+        let mut major_attempted = false;
+        let outcome = (|| loop {
+            match aggregate.with_values(fields.iter().cloned()) {
+                Ok(aggregate) => {
+                    self.sync_heap_type_registry();
+                    let value = Value {
+                        typ: typ.clone(),
+                        data: Data::Aggregate(aggregate),
+                    };
+                    value.trace(&mut |handle| self.running.transient_roots.push(handle));
+                    return Ok(value);
+                }
+                Err(error) if matches!(error.code, "collection_required" | "allocation_limit") => {
+                    self.frame_pool.clear();
+                    if !minor_attempted
+                        && !major_attempted
+                        && self.allocation_failure_prefers_minor()?
+                    {
+                        minor_attempted = true;
+                        self.collect_minor_rooted()?;
+                    } else if !major_attempted {
+                        major_attempted = true;
+                        self.collect_rooted()?;
+                    } else {
+                        return Err(if error.code == "collection_required" {
+                            RuntimeError::new(
+                                "allocation_limit",
+                                "aggregate",
+                                "guest allocation byte limit exceeded",
+                            )
+                        } else {
+                            error
+                        });
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        })();
+        self.running.allocation_roots.truncate(roots);
+        outcome
+    }
+
     pub(super) fn coerce(
         &self,
         mut value: Value,
@@ -60,13 +124,13 @@ impl Instance {
             && matches!(value.data, Data::Nil)
             && registry.nil_assignable(typ)?
         {
-            return self.zero(typ, 0);
+            return self.zero(typ);
         }
-        if let Data::Function(callee) = &value.data {
+        if let Data::Function(callee) = &value.data
+            && !matches!(typ, TypeIdentity::Named(_))
+        {
             let revision = callee.revision.as_ref().unwrap_or(&self.revision);
-            let function = revision
-                .program
-                .function(&callee.module, &callee.function)?;
+            let function = self.resolve_function_binding(callee, revision)?;
             if let Some((module, node)) = registry.node(typ)?
                 && let Some(signature) = &node.signature
                 && registry.signature_identical_from(
@@ -74,7 +138,7 @@ impl Instance {
                     module,
                     signature,
                     revision.program.decoded.types(),
-                    &callee.module,
+                    &function.module,
                     &function.declaration.signature,
                 )?
             {
@@ -97,16 +161,71 @@ impl Instance {
         ))
     }
 
-    pub(super) fn zero(&self, typ: &TypeIdentity, depth: usize) -> Result<Value, RuntimeError> {
-        let mut remaining = self.limits.max_heap_bytes;
-        Value::zero_with_budget(
-            &self.types,
-            typ,
-            depth,
-            self.limits.max_value_depth,
-            self.limits.max_sequence_elements,
-            &mut remaining,
-        )
+    pub(super) fn zero(&self, typ: &TypeIdentity) -> Result<Value, RuntimeError> {
+        let layout = self.heap.layout_for_type(typ)?;
+        if matches!(layout.kind, wire::Array | wire::Struct) {
+            let logical = self.types.storage_logical_bytes(typ)?;
+            if logical > self.limits.max_guest_bytes {
+                return Err(RuntimeError::new(
+                    "allocation_limit",
+                    "zero",
+                    "zero aggregate exceeds guest allocation limit",
+                ));
+            }
+            let physical = u64::from(layout.stride);
+            if self.limits.max_resident_bytes != 0 && physical > self.limits.max_resident_bytes {
+                return Err(RuntimeError::new(
+                    "allocation_limit",
+                    "zero",
+                    "zero aggregate exceeds resident limit",
+                ));
+            }
+            return Ok(Value {
+                typ: typ.clone(),
+                data: Data::Aggregate(crate::value::PreparedAggregate::zero(
+                    self.heap.clone(),
+                    typ.clone(),
+                    layout,
+                )?),
+            });
+        }
+        let logical = self.types.storage_logical_bytes(typ)?;
+        if logical > self.limits.max_guest_bytes {
+            return Err(RuntimeError::new(
+                "allocation_limit",
+                "zero",
+                "zero value exceeds guest allocation limit",
+            ));
+        }
+        let underlying = self.types.underlying(typ)?;
+        let data = match underlying {
+            TypeIdentity::Primitive(wire::PrimitiveBool) => Data::Bool(false),
+            TypeIdentity::Primitive(wire::PrimitiveString) => Data::String((&[][..]).into()),
+            TypeIdentity::Primitive(primitive)
+                if (wire::PrimitiveInt..=wire::PrimitiveInt64).contains(&primitive) =>
+            {
+                Data::Integer(0)
+            }
+            TypeIdentity::Primitive(primitive)
+                if (wire::PrimitiveUint..=wire::PrimitiveUintptr).contains(&primitive) =>
+            {
+                Data::Unsigned(0)
+            }
+            TypeIdentity::Primitive(wire::PrimitiveFloat32 | wire::PrimitiveFloat64) => {
+                Data::Float(0.0)
+            }
+            TypeIdentity::Primitive(wire::PrimitiveComplex64 | wire::PrimitiveComplex128) => {
+                Data::Complex {
+                    real: 0.0,
+                    imag: 0.0,
+                }
+            }
+            _ => Data::Nil,
+        };
+        Ok(Value {
+            typ: typ.clone(),
+            data,
+        })
     }
 
     pub(super) fn retype_value(
@@ -119,7 +238,7 @@ impl Instance {
             value.typ = typ.clone();
             return Ok(value);
         }
-        if depth >= self.limits.max_value_depth {
+        if depth >= self.types.traversal_limit(self.limits.max_dynamic_types) {
             return Err(RuntimeError::new(
                 "value_limit",
                 "convert",
@@ -127,6 +246,7 @@ impl Instance {
             ));
         }
         match &mut value.data {
+            Data::Aggregate(aggregate) => *aggregate = aggregate.retype(typ)?,
             Data::Struct(fields) => {
                 let (module, node) = self
                     .types
@@ -178,10 +298,12 @@ impl Instance {
                     .types
                     .identical(original.pointee.as_ref().unwrap(), &element)?
                 {
+                    let numeric = address.identity.numeric;
                     address.identity = Arc::new(crate::value::PointerIdentity {
                         key: std::sync::OnceLock::from(original.key),
                         path_root: original.root.map(|root| (root, original.slots)),
                         array_capacity: original.array.map(|(_, _, capacity)| capacity),
+                        numeric,
                         ..Default::default()
                     });
                 } else {
@@ -218,7 +340,7 @@ impl Instance {
                 return self.retype_value(value, &typ, 0);
             }
         }
-        if matches!(value.data, Data::Struct(_) | Data::Array(_))
+        if value.data.aggregate_shape().is_some()
             && self
                 .types
                 .conversion_underlying_identical(&value.typ, &typ)?
@@ -248,6 +370,7 @@ impl Instance {
                     let capacity = match &self.snapshot_address(&slice.storage)?.data {
                         Data::Bytes(_) => length,
                         Data::Array(values) => values.len() - slice.start,
+                        Data::Aggregate(values) if values.is_array() => values.len() - slice.start,
                         _ => unreachable!("validated slice backing"),
                     };
                     let mut address = slice.storage.clone();
@@ -349,7 +472,6 @@ impl Instance {
                         self.check_string_size(slice.length)?;
                     }
                     let bytes = self.slice_bytes(&value)?;
-                    self.charge_guest(bytes.len() as u64)?;
                     return Ok(Value {
                         typ,
                         data: Data::String(bytes.into()),
@@ -378,7 +500,6 @@ impl Instance {
                         }
                     }
                 }
-                self.charge_guest(bytes.len() as u64)?;
                 Value {
                     typ,
                     data: Data::String(bytes.into()),

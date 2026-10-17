@@ -90,13 +90,13 @@ func GenerateStateVectors(ctx context.Context, inputs map[string][]byte) ([]byte
 		if err != nil {
 			return nil, err
 		}
-		for _, limit := range []int64{128, 159, 160, 512, 600, 640, 1024, 1536, 2048, 4096} {
+		for _, limit := range []int64{127, 128, 159, 160, 512, 600, 640, 1024, 1536, 2048, 4096} {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 			vector := StateVector{Name: name, Image: image, Limit: limit, Actions: []StateAction{}}
 			if err := func() error {
-				instance, err := program.Instantiate(ctx, runtime.InstanceOptions{Limits: runtime.Limits{MaxAllocatedBytes: limit, MaxSteps: 1000}})
+				instance, err := program.Instantiate(ctx, runtime.InstanceOptions{Limits: runtime.Limits{MaxGuestBytes: limit, MaxSteps: 1000}})
 				if err != nil {
 					if err := ctx.Err(); err != nil {
 						return err
@@ -114,7 +114,7 @@ func GenerateStateVectors(ctx context.Context, inputs map[string][]byte) ([]byte
 					return err
 				}
 				vector.InitializationSteps = initial.ExecutedSteps
-				vector.InitializationMemory = [4]int64{initial.LiveGuestBytes, initial.AllocatedSinceSweep, initial.TotalAllocatedBytes, initial.PeakGuestBytes}
+				vector.InitializationMemory = [4]int64{initial.OccupiedGuestBytes, initial.ReservedGuestBytes, initial.TotalGuestAllocatedBytes, initial.ResidentPageBytes}
 				observe := func(action StateAction, operationErr error) error {
 					if operationErr != nil {
 						projected, err := runtime.ProjectExecutionError(operationErr)
@@ -127,7 +127,7 @@ func GenerateStateVectors(ctx context.Context, inputs map[string][]byte) ([]byte
 					if err != nil {
 						return err
 					}
-					action.Memory = [4]int64{stats.LiveGuestBytes, stats.AllocatedSinceSweep, stats.TotalAllocatedBytes, stats.PeakGuestBytes}
+					action.Memory = [4]int64{stats.OccupiedGuestBytes, stats.ReservedGuestBytes, stats.TotalGuestAllocatedBytes, stats.ResidentPageBytes}
 					vector.Actions = append(vector.Actions, action)
 					return nil
 				}

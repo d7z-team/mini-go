@@ -1,7 +1,7 @@
 {
   "format": "mini-go-ir",
-  "version": 31,
-  "opcode_set": "minigo.ir.v16",
+  "version": 33,
+  "opcode_set": "minigo.ir.v18",
   "symbols_format": "mini-go-program-symbols",
   "symbols_version": 1,
   "symbols_contract": "minigo.symbols.v1",
@@ -22,7 +22,7 @@
       "name": "opcode_set",
       "type": "string",
       "required": true,
-      "rule": "must be \"minigo.ir.v16\""
+      "rule": "must be \"minigo.ir.v18\""
     },
     {
       "name": "module",
@@ -345,7 +345,7 @@
       "name": "0",
       "type": "uint8",
       "required": true,
-      "rule": "0: temporary slot; 1: package constant; 2: private scalar or pointer local; tuple has exactly two elements"
+      "rule": "0: temporary slot; 1: package constant; 2: private local value; tuple has exactly two elements"
     },
     {
       "name": "1",
@@ -363,7 +363,7 @@
     {
       "name": "outputs",
       "type": "[]uint32",
-      "rule": "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len, cap, string-next-rune-index, index-convert, get-path, or a single-result direct call"
+      "rule": "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private local value by the low 31 bits. Unary, binary, zero, len, cap, string-next-rune-index, index-convert, get-path and single-result producers require one output; call_direct and map_iter_next may write multiple results directly to distinct private locals"
     },
     {
       "name": "release",
@@ -898,6 +898,28 @@
       ]
     },
     {
+      "name": "minmax",
+      "fields": [
+        {
+          "name": "type",
+          "type": "TypeRef",
+          "required": true
+        },
+        {
+          "name": "operator",
+          "type": "string",
+          "required": true,
+          "rule": "min or max"
+        },
+        {
+          "name": "arg_count",
+          "type": "int",
+          "required": true,
+          "rule": "at least one"
+        }
+      ]
+    },
+    {
       "name": "make_sequence",
       "fields": [
         {
@@ -1417,7 +1439,7 @@
       "op": "call_direct",
       "category": "call",
       "payload": "call",
-      "operands": "read args, write results; a single fixed scalar result may target a private local",
+      "operands": "read args, write results; results may target distinct private locals",
       "arity": {
         "kind": "payload",
         "inputs": 0,
@@ -1957,6 +1979,17 @@
         "outputs": 0
       },
       "notes": "length is the left comparison operand; compiler normalizes the operator when source length was on the right"
+    },
+    {
+      "op": "min_max",
+      "category": "value",
+      "payload": "minmax",
+      "operands": "read ordered values, write selected value",
+      "arity": {
+        "kind": "payload",
+        "inputs": 0,
+        "outputs": 0
+      }
     }
   ],
   "type_rules": [

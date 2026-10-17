@@ -7,7 +7,7 @@ import type {
   Stats,
   VMOptions,
 } from "./types";
-import { Kind, PrimitiveKind } from "./contract.generated";
+import { Kind, PrimitiveKind, STORAGE_COST } from "./contract.generated";
 import { VMError, fail } from "./json";
 import { binaryCode, compareCode, convert, unaryCode, OperatorCode } from "./operators";
 import {
@@ -18,21 +18,17 @@ import {
   type PreparedSelectCase,
 } from "./program";
 import {
+  advanceAddress,
   asIndex,
   assign,
   assertComparable,
   boolValue,
-  cell,
+  cellAccess,
   cloneValue,
   decodeRune,
   dereference,
   fieldValue,
   guestEqual,
-  guestMapClear,
-  guestMapDelete,
-  guestMapGet,
-  guestMapSet,
-  createGuestMap,
   importHostValue,
   indexValue,
   intValue,
@@ -42,79 +38,56 @@ import {
   setIndex,
   snapshot,
   stringValue,
+  storageAddress,
   zero,
+  detachTypeClosure,
   type Address,
   type AddressPath,
   type Cell,
   type Channel,
   type DynamicType,
   type FunctionValue,
-  type GuestMap,
   type RuntimeType,
   type SliceValue,
   type TypeNode,
+  type TypeRegistry,
   type Value,
 } from "./value";
-import { GUEST_COST, GuestMemory } from "./guest-memory";
+import { GuestMemory, type GuestControlLease, type GuestControlReservation } from "./guest-memory";
+import type { GuestHandle, ManagedLayout } from "./managed-heap";
+import { FrameStorage } from "./frame-storage";
+import { TypedMap } from "./typed-map";
+import { TypedChannel } from "./typed-channel";
+import {
+  decodeStorage,
+  encodeStorage,
+  layoutAtStorageOffset,
+  pathForStorageOffset,
+  aggregateKind,
+  packedAggregate,
+  packedFields,
+  packedItems,
+  packedLength,
+  prepareArrayStorageLayout,
+  prepareStorageLayout,
+  remapStorageLayout,
+  resolveStorageLocation,
+  storageReferences,
+  writePackedField,
+  type PackedAggregate,
+  type PackedStorage,
+  type StorageLayout,
+  type StorageOwner,
+} from "./aggregate-storage";
 
 const LOCAL_OUTPUT = 0x80000000;
 const DEFAULT_MAX_IMAGE_BYTES = 64 * 1024 * 1024;
 const FRAME_CACHE_ENTRY_BYTES = 64;
 const FRAME_CACHE_VALUE_BYTES = 16;
+const EMPTY_CAPTURES: Address[] = [];
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const strictTextDecoder = new TextDecoder("utf-8", { fatal: true });
-const MEMORY_EFFECT_OPCODES = new Set([
-  "make_closure",
-  "make_sequence",
-  "make_map",
-  "make_slice",
-  "make_waitable",
-  "delete",
-  "clear",
-  "waitable_close",
-  "init_module",
-  "spawn",
-  "call_ffi",
-  "call_intrinsic",
-  "select",
-]);
-
-const REFERENCE_VALUE_KINDS = new Set<Value["kind"]>([
-  "string",
-  "bytes",
-  "array",
-  "struct",
-  "slice",
-  "map",
-  "interface",
-  "function",
-  "dynamicFunction",
-  "method",
-  "channel",
-  "mutex",
-  "opaque",
-]);
-
-// cloneValue keeps these backing objects immutable or borrowed. A new root
-// Value is charged, but walking an already-owned map/slice/pointer is not
-// needed unless the operation also changes a graph edge.
-const BORROWED_VALUE_KINDS = new Set<Value["kind"]>([
-  "map",
-  "slice",
-  "pointer",
-  "string",
-  "channel",
-]);
-
-function requiresGuestCensus(value: Value): boolean {
-  return REFERENCE_VALUE_KINDS.has(value.kind) && !BORROWED_VALUE_KINDS.has(value.kind);
-}
-
-function hasGuestReference(value: Value): boolean {
-  return REFERENCE_VALUE_KINDS.has(value.kind) || value.kind === "pointer";
-}
-
 function isFreshScalar(value: Value): boolean {
   return (
     value.kind === "bool" ||
@@ -161,6 +134,39 @@ function compareLength(code: number, length: number, other: Value): boolean {
   }
 }
 
+function minMaxValues(values: readonly Value[], operator: string): Value {
+  if (!values.length) invalid("min/max requires at least one value", "min_max");
+  if (operator !== "min" && operator !== "max") invalid("invalid min/max operator", "min_max");
+  const chooseMin = operator === "min";
+  let best = values[0]!;
+  for (let index = 1; index < values.length; index++) {
+    const candidate = values[index]!;
+    let replace = false;
+    if (best.kind === "float" && candidate.kind === "float") {
+      const left = best.value as number;
+      const right = candidate.value as number;
+      if (Number.isNaN(left)) continue;
+      if (Number.isNaN(right)) {
+        best = candidate;
+        continue;
+      }
+      if (left === 0 && right === 0) {
+        const leftNegative = Object.is(left, -0);
+        const rightNegative = Object.is(right, -0);
+        replace = chooseMin ? rightNegative && !leftNegative : !rightNegative && leftNegative;
+      } else replace = chooseMin ? right < left : right > left;
+    } else if (best.kind === "string" && candidate.kind === "string") {
+      replace = compareCode(chooseMin ? OperatorCode.Less : OperatorCode.Greater, candidate, best);
+    } else if ((best.kind === "int" || best.kind === "uint") && best.kind === candidate.kind) {
+      const left = best.value as bigint;
+      const right = candidate.value as bigint;
+      replace = chooseMin ? right < left : right > left;
+    } else invalid("operand types do not support min/max", "min_max");
+    if (replace) best = candidate;
+  }
+  return best;
+}
+
 export type VMAction =
   | { kind: "call"; id: number; route: string; payload: number[] }
   | { kind: "cancel"; id: number }
@@ -180,26 +186,27 @@ interface Frame {
   readonly fn: PreparedFunction;
   readonly revision: Revision;
   readonly profileKey: string;
-  readonly locals: LocalSlot[];
+  readonly locals: (Cell | undefined)[];
+  readonly localBank: FrameStorage;
   readonly upvalues: Address[];
-  readonly slots: (Value | undefined)[];
+  readonly slotBank: FrameStorage;
+  readonly resultBank: FrameStorage;
   /** Reused only for the synchronous duration of one instruction. */
   readonly inputScratch: Value[];
-  mapIterators?: Map<
-    string,
-    { map: GuestMap; entries: { key: Value; value: Value }[]; offset: number }
-  >;
+  mapIterators?: (MapIteratorState | undefined)[];
   readonly returnOutputs: readonly number[];
   pc: number;
-  defers?: FunctionValue[];
-  returning?: Value[];
-  panic?: Value;
+  rootPC?: number;
+  defers?: Cell[];
+  deferMemory?: GuestControlLease[];
+  returning?: FrameStorage;
+  returningCount?: number;
+  panic?: Cell;
   recovered: boolean;
   deferred: boolean;
-  guestFrameBytes: bigint;
-  guestStorageUnknown: boolean;
-  /** One byte per slot tracks a still-reserved scalar/borrowed root. */
-  guestSlotRoots: Uint8Array;
+  memory: GuestControlLease;
+  readonly resident: { release(): void };
+  readonly storageBytes: number;
   scratchCapacity: number;
   initializing?: string;
   tailReturn?: boolean;
@@ -214,59 +221,36 @@ interface Frame {
 }
 
 interface ReusableFrameStorage {
-  locals: Value[];
-  slots: (Value | undefined)[];
+  fn: PreparedFunction;
+  locals: (Cell | undefined)[];
+  localBank: FrameStorage;
+  slotBank: FrameStorage;
+  resultBank: FrameStorage;
   inputScratch: Value[];
-  guestSlotRoots: Uint8Array;
   scratchCapacity: number;
-  localCount: number;
-  slotCount: number;
   bytes: number;
+  resident: { release(): void };
+  cacheIndex: number;
+}
+
+interface PreparedFrameLayout {
+  readonly locals: readonly StorageLayout[];
+  readonly slots: readonly StorageLayout[];
+  readonly results: readonly StorageLayout[];
+  readonly resultTypes: readonly RuntimeType[];
+  readonly logical: bigint;
 }
 
 type LocalSlot = Value | Cell;
 
 type MapIterators = NonNullable<Frame["mapIterators"]>;
 
-function isLocalCell(slot: LocalSlot): slot is Cell {
-  return "id" in slot;
+function isLocalCell(slot: LocalSlot | undefined): slot is Cell {
+  return Boolean(slot && "id" in slot);
 }
 
 function localValue(slot: LocalSlot): Value {
-  return isLocalCell(slot) ? slot.value : slot;
-}
-
-function borrowInput(value: Value): Value {
-  switch (value.kind) {
-    case "bool":
-    case "int":
-    case "uint":
-    case "float":
-    case "complex":
-    case "string":
-      return value;
-    default:
-      return cloneValue(value);
-  }
-}
-
-function isKnownFrameValue(value: Value): boolean {
-  switch (value.kind) {
-    case "uninitialized":
-    case "nil":
-    case "bool":
-    case "int":
-    case "uint":
-    case "float":
-    case "complex":
-    case "pointer":
-    case "string":
-    case "map":
-    case "slice":
-      return true;
-    default:
-      return false;
-  }
+  return isLocalCell(slot) ? slot.read() : slot;
 }
 
 interface Task {
@@ -275,7 +259,7 @@ interface Task {
   frames: Frame[];
   state: "runnable" | "blocked" | "done" | "failed" | "canceled";
   blocked?:
-    | { kind: "send"; channel: Channel; value: Value }
+    | { kind: "send"; channel: Channel; value: Cell }
     | {
         kind: "receive";
         channel: Channel;
@@ -284,10 +268,15 @@ interface Task {
         reflected?: boolean;
       }
     | { kind: "select" }
-    | { kind: "reflectSelect"; cases: ReflectedSelectCase[]; outputs: readonly number[] }
+    | {
+        kind: "reflectSelect";
+        cases: ReflectedSelectCase[];
+        outputs: readonly number[];
+        memory?: GuestControlLease;
+      }
     | { kind: "ffi"; id: number };
-  result?: Value[];
   error?: VMError;
+  memory?: GuestControlLease;
 }
 
 interface ExecutionRecord {
@@ -310,18 +299,24 @@ interface Scope {
 interface Revision {
   generation: number;
   program: Program;
+  constants?: GuestHandle;
 }
 
 interface PendingHostCall {
   task: number;
   outputs: readonly number[];
   resultType: RuntimeType;
+  memory: GuestControlLease;
+  reply?: { payload: Uint8Array; error?: string };
+  replyMemory?: GuestControlLease;
+  cancelSent?: boolean;
 }
 
 interface TimerRecord {
   readonly id: number;
   readonly channel: Channel;
   readonly deadline: number;
+  readonly memory: GuestControlLease;
   canceled: boolean;
 }
 
@@ -337,10 +332,18 @@ interface ReflectedView {
 
 interface ReflectedSelectCase {
   index: number;
-  channel?: Value;
-  send?: Value;
+  channel?: Cell;
+  send?: Cell;
   receive: boolean;
   default: boolean;
+}
+
+interface MapIteratorState {
+  map: TypedMap | undefined;
+  entries: Uint32Array;
+  offset: number;
+  memory?: GuestControlLease;
+  resident?: { release(): void };
 }
 
 interface DebugLocation {
@@ -360,23 +363,6 @@ interface DebugEvent {
   task: number;
 }
 
-interface MemoryCensus {
-  liveHeapBytes: bigint;
-  liveHeapObjects: bigint;
-  liveGuestBytes: bigint;
-  strings: number;
-  maxSequence: number;
-  scannedEdges: bigint;
-  revisions: Set<number>;
-}
-
-interface CensusWork {
-  value?: Value;
-  cell?: Cell;
-  channel?: Channel;
-  depth: number;
-}
-
 export class VirtualMachine {
   private revision: Revision;
   private readonly revisions = new Map<number, Revision>();
@@ -394,6 +380,7 @@ export class VirtualMachine {
   private readonly pendingActions: VMAction[] = [];
   private readonly timers = new Map<number, TimerRecord>();
   private readonly frameCache: ReusableFrameStorage[] = [];
+  private frameCacheByFunction = new WeakMap<PreparedFunction, ReusableFrameStorage[]>();
   private frameCacheBytes = 0;
   private readonly initialized = new Set<string>();
   private readonly initializing = new Set<string>();
@@ -412,19 +399,85 @@ export class VirtualMachine {
   private ffiBytes = 0n;
   private epoch = 1n;
   private readonly guestMemory: GuestMemory;
-  private gcCollections = 0n;
-  private gcScannedObjects = 0n;
-  private gcTracedObjects = 0n;
-  private gcScannedEdges = 0n;
-  private gcReclaimedBytes = 0n;
+  private readonly storageOwner: StorageOwner;
+  private readonly allocationRoots: GuestHandle[] = [];
   private gcNanos = 0n;
-  private guestDepthUpper = 0;
-  private censusStorage = new WeakSet<object>();
-  private readonly censusCells = new Set<Cell>();
-  private readonly censusObjects = new Set<object>();
-  private readonly censusPending: CensusWork[] = [];
+  private nextMajorBytes = 8n * 1024n * 1024n;
+  /** Cell-to-handle owner table used only to publish explicit GC roots. */
+  private readonly managedCells = new Map<Cell, NonNullable<Cell["managedHandle"]>>();
+  private managedCellsByHandle = new Map<string, Cell>();
+  private readonly managedStorageLayouts = new Map<
+    string,
+    { layout: StorageLayout; type: RuntimeType }
+  >();
+  private readonly channelHandles = new WeakMap<object, GuestHandle>();
+  private readonly mapHandles = new WeakMap<object, GuestHandle>();
+  private readonly managedValueHandles = new WeakMap<object, GuestHandle>();
+  private readonly stringStorage = new WeakMap<
+    Uint8Array,
+    { handle: GuestHandle; offset: number }
+  >();
+  /**
+   * Storage payloads use a numeric type id. Intern by registry and canonical
+   * shape rather than RuntimeType object identity: registry.runtime() creates
+   * fresh wrappers for the same type, and identity-only interning otherwise
+   * retains one metadata entry per encode/decode cycle.
+   */
+  private readonly storageTypeIDs = new Map<string, number>();
+  private readonly ownedTypes = new WeakMap<TypeRegistry, Map<string, RuntimeType>>();
+  /** Type descriptors held by an in-progress reserve/build/publish operation. */
+  private readonly storageConstructionPins = new Map<number, number>();
+  private readonly storageDataPins = new Map<number, number>();
+  private readonly storageConstructionOwners: Map<number, number>[] = [];
+  private storageConstructionDepth = 0;
+  private readonly storageAllocationScopes: {
+    handles: GuestHandle[];
+    done: boolean;
+  }[] = [];
+  private readonly storageRegistryIDs = new WeakMap<TypeRegistry, number>();
+  private nextStorageRegistryID = 1;
+  // Type descriptors belong to loaded programs/revisions; payload ids remain
+  // stable for the VM lifetime and are released together with the VM ledger.
+  private readonly storageTypes: (RuntimeType | undefined)[] = [];
+  private readonly storageTypeKeys: (string | undefined)[] = [];
+  private readonly freeStorageTypeIDs: number[] = [];
+  private mapsByHandle = new Map<string, TypedMap>();
+  private channelsByHandle = new Map<string, Channel>();
+  private readonly functionHandles = new WeakMap<object, GuestHandle>();
+  private readonly functionsByHandle = new Map<
+    string,
+    {
+      module: string;
+      function: string;
+      revision: number;
+      kind: Value["kind"];
+      captures: RuntimeType[];
+      receiver: boolean;
+      dynamicType: RuntimeType;
+    }
+  >();
+  private readonly preparedFrameLayouts = new WeakMap<PreparedFunction, PreparedFrameLayout>();
+  private readonly storageLayouts = new WeakMap<RuntimeType, StorageLayout>();
   private referencedRevisions = new Set<number>();
   private readonly dynamicTypes = new Map<string, RuntimeType>();
+  private readonly dynamicTypeLeases = new Map<
+    string,
+    { memory: GuestControlLease; resident: { release(): void }; bytes: number }
+  >();
+  /** Test-only fault point; production options never expose allocation faults. */
+  private testAllocationFault?: {
+    phase: "reserve" | "build" | "publish";
+    remaining: number;
+  };
+  // Reflection keys refer to descriptors owned by the loaded revision set.
+  // The map is a lookup cache, not a guest root or a second storage ledger.
+  private readonly reflectedTypes = new Map<string, RuntimeType>();
+  private readonly reflectedTypeBytes = new WeakMap<Uint8Array, string>();
+  private readonly reflectedTypeOwners = new Map<string, Set<string>>();
+  /** A reflect.Type value can cross a frame boundary before its key string is
+   * published into managed storage. Ownership transfers to the key backing
+   * record when retainReflectedType observes that publication. */
+  private readonly pendingReflectedTypes = new Set<string>();
   private dynamicTypeBytes = 0;
   private readonly debugFunctions = new Map<string, FunctionDebugInfo>();
   private symbolProgramHash = "";
@@ -457,6 +510,70 @@ export class VirtualMachine {
     this.options = options;
     this.profileTiming = options.profile === true && options.profileTiming === true;
     this.guestMemory = new GuestMemory(options.limits);
+    this.guestMemory.managedHeap.onReclaim = (slot, generation) => {
+      const key = `${slot}:${generation}`;
+      this.reflectedTypeOwners.delete(key);
+      const cell = this.managedCellsByHandle.get(key);
+      if (cell) this.managedCells.delete(cell);
+      this.managedCellsByHandle.delete(key);
+      this.managedStorageLayouts.delete(key);
+      const map = this.mapsByHandle.get(key);
+      if (map) map.close();
+      this.mapsByHandle.delete(key);
+      const channel = this.channelsByHandle.get(key);
+      if (channel) channel.close();
+      this.channelsByHandle.delete(key);
+      this.functionsByHandle.delete(key);
+    };
+    this.storageOwner = {
+      heap: this.guestMemory.managedHeap,
+      // Collection-owned containers pin their layouts after construction has
+      // registered all descriptors. Keep registration itself unpinned so a
+      // failed reserve/build/publish sequence can release every lease.
+      registerLayout: (layout) => this.guestMemory.managedHeap.registerLayout(layout),
+      retainLayout: (layout) => this.guestMemory.managedHeap.pinLayout(layout),
+      releaseLayout: (layout) => this.guestMemory.managedHeap.unpinLayout(layout),
+      allocate: (layout, count, logical) => this.allocatePayload(layout, count, logical),
+      release: (handle) => {
+        for (let index = this.allocationRoots.length - 1; index >= 0; index--) {
+          const candidate = this.allocationRoots[index]!;
+          if (candidate.slot === handle.slot && candidate.generation === handle.generation)
+            this.allocationRoots.splice(index, 1);
+        }
+        this.guestMemory.managedHeap.release(handle);
+      },
+      beginAllocation: () => this.beginStorageAllocation(),
+      encode: (value, layout, type) => {
+        const releaseConstruction = this.beginStorageConstruction();
+        try {
+          return this.encodePayload(value, layout, type);
+        } finally {
+          releaseConstruction();
+        }
+      },
+      encodeInto: (value, layout, type, target) => {
+        const releaseConstruction = this.beginStorageConstruction();
+        try {
+          return this.encodePayload(value, layout, type, target);
+        } finally {
+          releaseConstruction();
+        }
+      },
+      decode: (type, layout, bytes) => this.decodePayload(type, layout, bytes),
+      copyAggregate: (value) => {
+        this.allocationRoots.push(...this.referencesInValue(value));
+        return this.managedCell(value).read();
+      },
+      beginConstruction: () => this.beginStorageConstruction(),
+      retainDynamic: (layout, bytes) => this.retainStorageDynamic(layout, bytes),
+      retain: (layout, bytes) =>
+        this.allocationRoots.push(
+          ...storageReferences(
+            layout,
+            new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          ),
+        ),
+    };
     const limits = options.limits;
     const configuredMaxSteps = limits?.maxSteps;
     this.maxSteps =
@@ -477,8 +594,9 @@ export class VirtualMachine {
     this.maxInputBytes = options.limits?.maxFfiBytes ?? 8 * 1024 * 1024;
     this.maxHostResultBytes = options.limits?.maxFfiResultBytes ?? 8 * 1024 * 1024;
     this.maxImageBytes = options.load?.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
+    this.attachManagedGlobals();
     this.initializeRoot();
-    this.updateMemoryCensus(false);
+    this.collectHeap(true);
   }
 
   static async create(image: Uint8Array, options: VMOptions): Promise<VirtualMachine> {
@@ -512,6 +630,40 @@ export class VirtualMachine {
     this.initializing.add(root);
     const task = this.createTask(0, initializer, [], []);
     task.frames[0]!.initializing = root;
+  }
+
+  private attachManagedGlobals(revision = this.revision): void {
+    let count = 0;
+    for (const module of revision.program.modules.values())
+      count +=
+        module.globals.length + module.constants.filter((value) => value.kind === "slice").length;
+    const heap = this.guestMemory.managedHeap;
+    const anchor = this.allocatePayload(
+      { stride: 8, references: [0] },
+      count,
+      BigInt(STORAGE_COST.record_header + count * 8),
+    );
+    revision.constants = anchor;
+    let offset = 0;
+    for (const module of revision.program.modules.values()) {
+      for (const constant of module.constants) {
+        if (constant.kind !== "slice") continue;
+        const slice = constant.value as SliceValue;
+        if (!slice.storage.root.managedHandle)
+          slice.storage = {
+            root: this.managedCell(slice.storage.root.read()),
+            path: slice.storage.path,
+          };
+        heap.writeReference(anchor, offset, slice.storage.root.managedHandle!);
+        offset += 8;
+      }
+      for (let index = 0; index < module.globals.length; index++) {
+        const global = module.globals[index]!;
+        if (!global.managedHandle) module.globals[index] = this.managedCell(global.read());
+        heap.writeReference(anchor, offset, module.globals[index]!.managedHandle!);
+        offset += 8;
+      }
+    }
   }
 
   private async loadDebugSymbols(input: Uint8Array): Promise<void> {
@@ -641,7 +793,9 @@ export class VirtualMachine {
     const fn = this.revision.program.function(entry.module, entry.function);
     if (arguments_.length !== fn.signature.params.length)
       throw new VMError("entry argument count mismatch", "invalid_argument", "arguments");
-    const values = arguments_.map((value) => importHostValue(value, fn.module.registry));
+    const values = arguments_.map((value, index) =>
+      this.convertValue(importHostValue(value, fn.module.registry), fn.localTypes[index]!),
+    );
     const scopeID = this.nextScope++;
     const executionID = scopeID;
     this.scopes.set(scopeID, { tasks: new Set(), execution: executionID });
@@ -652,20 +806,21 @@ export class VirtualMachine {
       settled: false,
     });
     let task: Task;
+    const operationRootCount = this.allocationRoots.length;
+    this.allocationRoots.push(...values.flatMap((value) => [...this.referencesInValue(value)]));
     try {
       task = this.createTask(scopeID, fn, values, []);
     } catch (error) {
+      this.allocationRoots.length = operationRootCount;
       this.scopes.delete(scopeID);
       this.executions.delete(executionID);
-      this.updateMemoryCensus(false);
+      this.collectHeap(true);
+      if (error instanceof VMError && error.code === "collection_required")
+        throw new VMError("guest memory budget exceeded", "allocation_limit", "memory");
       throw error;
     }
+    this.allocationRoots.length = operationRootCount;
     this.scopes.get(scopeID)!.rootTask = task.id;
-    try {
-      this.updateMemoryCensus(true);
-    } catch (error) {
-      this.failTask(task, toVMError(error));
-    }
     return executionID;
   }
 
@@ -674,207 +829,781 @@ export class VirtualMachine {
     fn: PreparedFunction,
     arguments_: Value[],
     captures: Address[],
+    revision: Revision = this.revision,
   ): Task {
     const maxTasks = this.options.limits?.maxTasks ?? 4096;
     if (this.tasks.size >= maxTasks)
       throw new VMError("task limit exceeded", "task_limit", "scheduler");
+    const taskMemory = this.reserveControl(BigInt(STORAGE_COST.control_record));
     const task: Task = {
       id: this.nextTask++,
       scope,
       frames: [],
       state: "runnable",
     };
-    this.pushFrame(task, this.createFrame(fn, this.revision, arguments_, captures, [], false));
-    this.tasks.set(task.id, task);
-    this.scopes.get(scope)!.tasks.add(task.id);
-    this.runnable.push(task.id);
-    return task;
+    try {
+      this.pushFrame(task, this.createFrame(fn, revision, arguments_, captures, [], false));
+      task.memory = taskMemory.commit();
+      this.tasks.set(task.id, task);
+      this.scopes.get(scope)!.tasks.add(task.id);
+      this.runnable.push(task.id);
+      return task;
+    } catch (error) {
+      taskMemory.abort();
+      task.memory?.release();
+      throw error;
+    }
   }
 
   private localCell(frame: Frame, index: number): Cell {
-    const slot = frame.locals[index];
-    if (!slot) invalid("local index is invalid", frame.fn.id);
+    const type = frame.fn.localTypes[index];
+    if (!type) invalid("local index is invalid", frame.fn.id);
+    const slot = frame.locals[index] ?? frame.localBank.read(index) ?? zero(type);
     if (isLocalCell(slot)) return slot;
-    const root = cell(slot);
+    const root = this.managedCell(slot);
     frame.locals[index] = root;
-    frame.guestStorageUnknown = true;
-    this.guestMemory.markDirty();
+
     return root;
   }
 
-  private setLocal(frame: Frame, index: number, value: Value): void {
+  private frameLocal(frame: Frame, index: number): LocalSlot {
     const slot = frame.locals[index];
-    if (!slot) invalid("local index is invalid", frame.fn.id);
-    this.checkBorrowedStorage(value);
-    if (value.kind === "string") this.reserveStringRoot(value);
-    const flatStorage =
-      (value.kind === "struct" || value.kind === "interface") &&
-      this.reserveFlatStorage(value, false, isLocalCell(slot));
-    if (!isKnownFrameValue(value)) {
-      frame.guestStorageUnknown = true;
-      if (!flatStorage) this.guestMemory.markDirty();
+    if (slot) return slot;
+    if (frame.fn.cellLocals.has(index)) return this.localCell(frame, index);
+    const value = frame.localBank.read(index);
+    if (!value) invalid("local index is invalid", frame.fn.id);
+    return value;
+  }
+
+  private frameSlot(frame: Frame, index: number): Value {
+    const value = frame.slotBank.read(index);
+    if (!value) invalid("temporary is not initialized", "operand");
+    return value;
+  }
+
+  /** Create a stable cell and publish its backing payload in the managed
+   * directory. Bytes/string data are read from the managed page. */
+  private managedCell(
+    value: Value,
+    storageLayout = this.storageLayoutForManagedValue(value),
+  ): Cell {
+    if (storageLayout.dynamics.length === 0) return this.createManagedCell(value, storageLayout);
+    const releaseConstruction = this.beginStorageConstruction();
+    try {
+      return this.createManagedCell(value, storageLayout);
+    } finally {
+      releaseConstruction();
     }
-    if (isLocalCell(slot)) {
-      if (hasGuestReference(value) && !flatStorage) {
-        if (
-          value.kind === "slice" &&
-          (value.value as SliceValue).storage.root.value.kind === "bytes"
-        ) {
-          // A cell may also be reached through a deeper alias. Bound the new
-          // cell -> slice -> backing -> bytes path until the next exact trace.
-          this.guestDepthUpper += 3;
-          if (this.guestDepthUpper > (this.options.limits?.maxValueDepth ?? 128))
-            this.guestMemory.markDirty();
-        } else this.guestMemory.markDirty();
-      }
-      slot.value = value;
-    } else frame.locals[index] = value;
   }
 
-  private reserveStringRoot(value: Value): void {
-    const length = (value.value as Uint8Array).byteLength;
-    this.checkSequence(length, "string");
-    const bytes = BigInt(length) * GUEST_COST.byte;
-    if (this.guestMemory.reservationNeedsCensus(bytes, BigInt(length)))
-      this.updateMemoryCensus(true);
-    this.guestMemory.reserve(bytes, BigInt(length));
-  }
-
-  private checkBorrowedStorage(value: Value): void {
-    const storage =
-      value.kind === "map" || value.kind === "channel"
-        ? (value.value as GuestMap | Channel)
-        : value.kind === "pointer"
-          ? (value.value as Address).root
-          : value.kind === "slice"
-            ? (value.value as SliceValue).storage.root
-            : undefined;
-    if (storage && !this.censusStorage.has(storage)) this.guestMemory.markDirty();
-  }
-
-  /** Exact cost for scalar storage, flat structs and their interface wrapper.
-   * Reference-bearing values retain the graph census path. */
-  private reserveFlatStorage(value: Value, newCell: boolean, nested = false, copies = 1): boolean {
-    let bytes = GUEST_COST.node;
-    let strings = 0n;
-    let fields = 0;
-    const stored = value.kind === "interface" ? (value.value as Value) : value;
-    if (stored.kind === "struct") {
-      const facts = stored.type.registry.facts(stored.type);
-      if (!facts.flat || facts.containsReferences) return false;
-    }
-    if (value.kind === "interface") bytes += GUEST_COST.node;
-    const values =
-      stored.kind === "struct" ? (stored.value as Map<string, Value>).values() : [stored];
-    for (const item of values) {
-      if (
-        !isKnownFrameValue(item) ||
-        item.kind === "pointer" ||
-        item.kind === "map" ||
-        item.kind === "slice"
-      )
+  private createManagedCell(value: Value, storageLayout: StorageLayout): Cell {
+    const storedType = this.ownedType(value.type);
+    storageLayout = remapStorageLayout(storageLayout, (type) => this.ownedType(type));
+    const initial = value.kind === "bytes" ? (value.value as Uint8Array) : undefined;
+    const codec = value.kind !== "bytes";
+    const payload = codec ? this.encodePayload(value, storageLayout) : initial;
+    const bytes =
+      BigInt(STORAGE_COST.record_header) +
+      (initial ? BigInt(initial.length) : storageLayout.logical);
+    const payloadLength = payload?.byteLength ?? storageLayout.size;
+    const handle = this.allocatePayload(
+      {
+        stride: Math.max(8, payloadLength),
+        references: codec ? storageLayout.references : [],
+        dynamics: codec ? storageLayout.dynamics : [],
+      },
+      1,
+      bytes,
+      payload,
+    );
+    const kind = value.kind;
+    const packedStorage: PackedStorage = {
+      handle,
+      read: (offset, length) => this.guestMemory.managedHeap.read(handle, offset, length),
+      write: (offset, bytes) => this.guestMemory.managedHeap.write(handle, bytes, offset),
+    };
+    let root: Cell;
+    root = cellAccess(
+      () => {
+        const aggregate =
+          codec && (aggregateKind(storedType) ?? (storageLayout.element ? "array" : undefined));
+        if (aggregate)
+          return {
+            type: storedType,
+            kind: aggregate,
+            value: {
+              storage: packedStorage,
+              offset: 0,
+              layout: storageLayout,
+              type: storedType,
+              owner: this.storageOwner,
+            } satisfies PackedAggregate,
+          };
+        if (codec)
+          return this.decodePayload(
+            storedType,
+            storageLayout,
+            this.guestMemory.managedHeap.read(handle, 0, payloadLength),
+          );
+        return {
+          type: storedType,
+          kind,
+          value: this.guestMemory.managedHeap.read(handle, 0, payloadLength),
+        };
+      },
+      (next) => {
+        const releaseConstruction = this.beginStorageConstruction();
+        try {
+          const encoded = codec
+            ? this.encodePayload(next, storageLayout, storedType)
+            : (next.value as Uint8Array);
+          if (encoded.byteLength !== payloadLength)
+            invalid("cell assignment changes its storage layout", "memory.cell");
+          this.guestMemory.managedHeap.write(handle, encoded);
+        } finally {
+          releaseConstruction();
+        }
+      },
+    );
+    root.managedHandle = handle;
+    root.managedLocation = { handle, offset: 0, type: storedType, layout: storageLayout };
+    root.readLocation = (location) => {
+      if (location.handle.slot !== handle.slot || location.handle.generation !== handle.generation)
+        return undefined;
+      const aggregate =
+        aggregateKind(location.type) ?? (location.layout.element ? "array" : undefined);
+      if (aggregate)
+        return {
+          type: location.type,
+          kind: aggregate,
+          value: {
+            storage: packedStorage,
+            offset: location.offset,
+            layout: location.layout,
+            type: location.type,
+            owner: this.storageOwner,
+          } satisfies PackedAggregate,
+        };
+      return this.decodePayload(
+        location.type,
+        location.layout,
+        this.guestMemory.managedHeap.read(handle, location.offset, location.layout.size),
+      );
+    };
+    root.writeLocation = (location, next) => {
+      if (location.handle.slot !== handle.slot || location.handle.generation !== handle.generation)
         return false;
-      if (stored.kind === "struct") {
-        fields++;
-        bytes += GUEST_COST.mapEntry + GUEST_COST.node;
+      const releaseConstruction = this.beginStorageConstruction();
+      try {
+        const encoded = this.encodePayload(next, location.layout, location.type);
+        this.guestMemory.managedHeap.write(handle, encoded, location.offset);
+        return true;
+      } finally {
+        releaseConstruction();
       }
-      if (item.kind === "string") {
-        const length = (item.value as Uint8Array).byteLength;
-        this.checkSequence(length, "string");
-        strings += BigInt(length);
-        bytes += BigInt(length) * GUEST_COST.byte;
+    };
+    const locatePath = (path: readonly AddressPath[]) => {
+      let layout = storageLayout;
+      for (const part of path) {
+        if (part.kind === "typeView") continue;
+        if (part.kind === "field") {
+          const field = layout.fields.find((field) => field.name === part.name);
+          if (!field) return undefined;
+          layout = field.layout;
+        } else if (part.kind === "index") {
+          if (!layout.element) return undefined;
+          layout = layout.element;
+        } else {
+          if (!layout.elementType) return undefined;
+          layout = prepareArrayStorageLayout(layout.elementType, part.length);
+        }
       }
+      const location = resolveStorageLocation(
+        { handle, offset: 0, type: storedType },
+        storageLayout,
+        path,
+      );
+      return { location, layout };
+    };
+    {
+      root.readPath = (path) => {
+        if (path.length === 0) return root.read();
+        const target = locatePath(path);
+        if (!target) return undefined;
+        return this.decodePayload(
+          target.location.type,
+          target.layout,
+          this.guestMemory.managedHeap.read(handle, target.location.offset, target.layout.size),
+        );
+      };
+      root.writePath = (path, value) => {
+        if (path.length === 0) {
+          root.write(value);
+          return true;
+        }
+        const target = locatePath(path);
+        if (!target) return false;
+        const releaseConstruction = this.beginStorageConstruction();
+        try {
+          const encoded = this.encodePayload(value, target.layout, target.location.type);
+          this.guestMemory.managedHeap.write(handle, encoded, target.location.offset);
+          return true;
+        } finally {
+          releaseConstruction();
+        }
+      };
     }
-    const heap = newCell
-      ? GUEST_COST.node + (value.kind === "struct" ? BigInt(fields) * GUEST_COST.mapEntry : 0n)
-      : 0n;
-    bytes = (bytes + heap) * BigInt(copies);
-    strings *= BigInt(copies);
-    const depth =
-      (value.kind === "interface" ? 1 : 0) + (stored.kind === "struct" ? 1 : 0) + (newCell ? 1 : 0);
-    const maxDepth = this.options.limits?.maxValueDepth ?? 128;
-    if (this.guestMemory.reservationNeedsCensus(bytes, strings, heap, newCell ? 1n : 0n))
-      this.updateMemoryCensus(true);
-    this.guestMemory.reserve(bytes, strings, heap, newCell ? 1n : 0n);
-    // Insertion into an existing container can deepen a path. Accumulate a
-    // conservative bound until a trace determines the exact depth again.
-    this.guestDepthUpper = nested
-      ? this.guestDepthUpper + depth + 1
-      : Math.max(this.guestDepthUpper, depth);
-    if (this.guestDepthUpper > maxDepth) this.guestMemory.markDirty();
-    return true;
+    this.managedStorageLayouts.set(`${handle.slot}:${handle.generation}`, {
+      layout: remapStorageLayout(storageLayout, (type) => this.ownedType(type)),
+      type: this.ownedType(value.type),
+    });
+    (this.managedCellsByHandle ?? (this.managedCellsByHandle = new Map())).set(
+      `${handle.slot}:${handle.generation}`,
+      root,
+    );
+    if (this.managedCells) this.managedCells.set(root, root.managedHandle);
+    return root;
   }
 
-  private reserveKnownGuest(bytes: bigint): void {
-    if (bytes <= 0n) return;
-    if (this.guestMemory.reservationNeedsCensus(bytes)) this.updateMemoryCensus(true);
-    this.guestMemory.reserve(bytes);
+  private storageLayoutForManagedValue(value: Value): StorageLayout {
+    if (value.kind === "bytes")
+      return prepareArrayStorageLayout(
+        primitive(value.type.registry, PrimitiveKind.PrimitiveUint8),
+        (value.value as Uint8Array).length,
+      );
+    if (
+      value.kind === "array" &&
+      value.type.registry.underlying(value.type).ref.kind === Kind.Slice
+    )
+      return prepareArrayStorageLayout(
+        this.elementType(value.type),
+        packedLength(value) ?? (value.value as Value[]).length,
+      );
+    const cached = this.storageLayouts.get(value.type);
+    if (cached) return cached;
+    const layout = prepareStorageLayout(value.type);
+    this.storageLayouts.set(value.type, layout);
+    return layout;
   }
 
-  private reserveKnownFrame(bytes: bigint, strings = 0n): void {
-    const total = bytes + strings * GUEST_COST.byte;
-    if (total <= 0n) return;
-    if (this.guestMemory.reservationNeedsCensus(total, strings)) this.updateMemoryCensus(true);
-    this.guestMemory.reserveFrame(bytes, strings);
+  private storageLayout(type: RuntimeType): StorageLayout {
+    const cached = this.storageLayouts.get(type);
+    if (cached) return cached;
+    const layout = prepareStorageLayout(type);
+    this.storageLayouts.set(type, layout);
+    return layout;
+  }
+
+  private ownedType(type: RuntimeType): RuntimeType {
+    let entries = this.ownedTypes.get(type.registry);
+    const key = type.registry.key(type);
+    const known = entries?.get(key);
+    if (known) return known;
+    const closure = detachTypeClosure(type);
+    for (const [source, detached] of closure.entries) {
+      let sourceEntries = this.ownedTypes.get(source.registry);
+      if (!sourceEntries) this.ownedTypes.set(source.registry, (sourceEntries = new Map()));
+      sourceEntries.set(source.registry.key(source), detached);
+      let detachedEntries = this.ownedTypes.get(detached.registry);
+      if (!detachedEntries) this.ownedTypes.set(detached.registry, (detachedEntries = new Map()));
+      detachedEntries.set(detached.registry.key(detached), detached);
+    }
+    entries = this.ownedTypes.get(type.registry);
+    return entries?.get(key) ?? closure.root;
+  }
+
+  private storageTypeID(type: RuntimeType): number {
+    type = this.ownedType(type);
+    let registryID = this.storageRegistryIDs.get(type.registry);
+    if (registryID === undefined) {
+      registryID = this.nextStorageRegistryID++;
+      this.storageRegistryIDs.set(type.registry, registryID);
+    }
+    const key = `${registryID}:${type.registry.key(type)}`;
+    const known = this.storageTypeIDs.get(key);
+    if (known !== undefined) {
+      if (this.storageConstructionDepth > 0) {
+        this.storageConstructionPins.set(known, (this.storageConstructionPins.get(known) ?? 0) + 1);
+        const owner = this.storageConstructionOwners[this.storageConstructionOwners.length - 1];
+        if (owner) owner.set(known, (owner.get(known) ?? 0) + 1);
+      }
+      return known;
+    }
+    const id = this.freeStorageTypeIDs.pop() ?? this.storageTypes.length + 1;
+    if (id > 0xffff_ffff) fail("storage type index overflow", "memory.type", "allocation_limit");
+    this.storageTypes[id - 1] = type;
+    this.storageTypeKeys[id - 1] = key;
+    this.storageTypeIDs.set(key, id);
+    if (this.storageConstructionDepth > 0) {
+      this.storageConstructionPins.set(id, (this.storageConstructionPins.get(id) ?? 0) + 1);
+      const owner = this.storageConstructionOwners[this.storageConstructionOwners.length - 1];
+      if (owner) owner.set(id, (owner.get(id) ?? 0) + 1);
+    }
+    return id;
+  }
+
+  private beginStorageConstruction(): () => void {
+    this.storageConstructionDepth++;
+    const owned = new Map<number, number>();
+    this.storageConstructionOwners.push(owned);
+    return () => {
+      const owner = this.storageConstructionOwners.pop();
+      if (owner)
+        for (const [id, ownedCount] of owner) {
+          const count = this.storageConstructionPins.get(id) ?? 0;
+          if (count <= ownedCount) this.storageConstructionPins.delete(id);
+          else this.storageConstructionPins.set(id, count - ownedCount);
+        }
+      this.storageConstructionDepth--;
+    };
+  }
+
+  /**
+   * Container mutation scope for allocations made while encoding a pending
+   * entry. Nested allocations are merged into the parent on commit; aborting
+   * releases only handles created by this scope, so borrowed input roots stay
+   * untouched.
+   */
+  private beginStorageAllocation(): { commit(): void; abort(): void } {
+    const scope = { handles: [] as GuestHandle[], done: false };
+    this.storageAllocationScopes.push(scope);
+    const finish = (commit: boolean): void => {
+      if (scope.done) return;
+      scope.done = true;
+      const current = this.storageAllocationScopes.pop();
+      if (current !== scope) invalid("storage allocation scopes are unbalanced", "memory.scope");
+      if (commit) {
+        const parent = this.storageAllocationScopes[this.storageAllocationScopes.length - 1];
+        parent?.handles.push(...scope.handles);
+        return;
+      }
+      for (let index = scope.handles.length - 1; index >= 0; index--) {
+        const handle = scope.handles[index]!;
+        if (this.guestMemory.managedHeap.has(handle)) this.storageOwner.release(handle);
+      }
+    };
+    return { commit: () => finish(true), abort: () => finish(false) };
+  }
+
+  private retainStorageDynamic(layout: StorageLayout, bytes: Uint8Array): () => void {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const ids = new Map<number, number>();
+    for (const offset of layout.dynamics) {
+      const id = view.getUint32(offset, true);
+      if (!id) continue;
+      ids.set(id, (ids.get(id) ?? 0) + 1);
+      this.storageDataPins.set(id, (this.storageDataPins.get(id) ?? 0) + 1);
+    }
+    return () => {
+      for (const [id, count] of ids) {
+        const current = this.storageDataPins.get(id) ?? 0;
+        if (current <= count) this.storageDataPins.delete(id);
+        else this.storageDataPins.set(id, current - count);
+      }
+    };
+  }
+
+  private storageType(id: number): RuntimeType {
+    const type = this.storageTypes[id - 1];
+    if (!type) invalid("dynamic storage type is unavailable", "memory.type");
+    return type;
+  }
+
+  private storageBox(handle: GuestHandle): Value {
+    const cell = this.managedCellsByHandle.get(`${handle.slot}:${handle.generation}`);
+    if (!cell) invalid("dynamic storage box is unavailable", "memory.handle");
+    return cell.read();
+  }
+
+  private collectionReferenceHandle(value: Value | undefined): GuestHandle | undefined {
+    if (!value) return undefined;
+    switch (value.kind) {
+      case "pointer":
+        return (value.value as Address).root.managedHandle;
+      case "slice":
+        return (value.value as SliceValue).storage.root.managedHandle;
+      case "map":
+        return this.mapHandles.get(value.value as object);
+      case "channel":
+        return this.channelHandles.get(value.value as object);
+      case "function":
+      case "method":
+      case "dynamicFunction":
+        return this.storeFunction(value);
+      case "string":
+      case "bytes":
+      case "bool":
+      case "int":
+      case "uint":
+      case "float":
+      case "complex":
+      case "array":
+      case "struct": {
+        const object = value as object;
+        const existing = this.managedValueHandles.get(object);
+        if (existing && this.guestMemory.managedHeap.has(existing)) return existing;
+        const handle = this.managedCell(value).managedHandle;
+        if (handle) this.managedValueHandles.set(object, handle);
+        return handle;
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  private *referencesInValue(
+    value: Value,
+    seen = new Set<object>(),
+  ): IterableIterator<GuestHandle> {
+    const packed = packedAggregate(value);
+    if (packed) {
+      if (packed.storage.handle) {
+        yield packed.storage.handle;
+      } else {
+        const bytes = packed.storage.read(packed.offset, packed.layout.size);
+        yield* storageReferences(
+          packed.layout,
+          new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+        );
+      }
+      return;
+    }
+    const keep = (handle: GuestHandle | undefined): GuestHandle[] =>
+      handle && this.guestMemory.managedHeap.has(handle) ? [handle] : [];
+    switch (value.kind) {
+      case "pointer":
+        yield* keep((value.value as Address).root.managedHandle);
+        return;
+      case "slice":
+        yield* keep((value.value as SliceValue).storage.root.managedHandle);
+        return;
+      case "map": {
+        const handle = this.mapHandles.get(value.value as object);
+        yield* keep(handle);
+        return;
+      }
+      case "channel": {
+        const handle = this.channelHandles.get(value.value as object);
+        yield* keep(handle);
+        return;
+      }
+      case "function":
+      case "dynamicFunction":
+      case "method": {
+        const handle = this.functionHandles.get(value.value as object);
+        yield* keep(handle);
+        if (value.kind === "method") {
+          const method = value.value as { function: Value; receiver?: Value };
+          yield* this.referencesInValue(method.function, seen);
+          if (method.receiver) yield* this.referencesInValue(method.receiver, seen);
+        }
+        return;
+      }
+      case "string":
+      case "bytes": {
+        const storage = this.stringStorage.get(value.value as Uint8Array);
+        yield* keep(storage?.handle);
+        return;
+      }
+      case "interface":
+        yield* this.referencesInValue(value.value as Value, seen);
+        return;
+      case "array":
+        if (seen.has(value.value as object)) return;
+        seen.add(value.value as object);
+        for (const item of packedItems(value) ?? (value.value as Value[]))
+          yield* this.referencesInValue(item, seen);
+        return;
+      case "struct":
+        if (seen.has(value.value as object)) return;
+        seen.add(value.value as object);
+        for (const [, item] of packedFields(value) ?? (value.value as Map<string, Value>))
+          yield* this.referencesInValue(item, seen);
+        return;
+      default:
+        return;
+    }
+  }
+
+  private storeFunction(value: Value): GuestHandle {
+    const releaseConstruction = this.beginStorageConstruction();
+    try {
+      return this.createFunctionRecord(value);
+    } finally {
+      releaseConstruction();
+    }
+  }
+
+  private createFunctionRecord(value: Value): GuestHandle {
+    const fn =
+      value.kind === "dynamicFunction"
+        ? (value.value as { callback: FunctionValue }).callback
+        : (value.value as FunctionValue);
+    const identity = value.value as object;
+    const existing = this.functionHandles.get(identity);
+    if (existing && this.guestMemory.managedHeap.has(existing)) return existing;
+    const registry = value.type.registry;
+    const dynamicType = this.ownedType(
+      registry.runtime({
+        kind: Kind.Any,
+        primitive: 0,
+        named: emptyKey(),
+        node: "",
+      }),
+    );
+    const captures = fn.captures.map((address) =>
+      this.ownedType(
+        this.dynamicType(registry, {
+          kind: Kind.Pointer,
+          elem: dereference(address).type,
+        }),
+      ),
+    );
+    const size = captures.length * 24 + 32;
+    const bytes = new Uint8Array(size);
+    for (let index = 0; index < captures.length; index++) {
+      const type = captures[index]!;
+      bytes.set(
+        this.encodePayload(
+          { type, kind: "pointer", value: fn.captures[index] },
+          this.storageLayout(type),
+        ),
+        index * 24,
+      );
+    }
+    if (fn.receiver)
+      bytes.set(
+        this.encodePayload(
+          { type: dynamicType, kind: "interface", value: fn.receiver },
+          this.storageLayout(dynamicType),
+        ),
+        captures.length * 24,
+      );
+    const constants = fn.revision ? this.revisions.get(fn.revision)?.constants : undefined;
+    if (constants) {
+      const view = new DataView(bytes.buffer);
+      view.setUint32(size - 8, constants.slot, true);
+      view.setUint32(size - 4, constants.generation, true);
+    }
+    const handle = this.allocatePayload(
+      {
+        stride: size,
+        references: [...captures.map((_, index) => index * 24), size - 8],
+        dynamics: [captures.length * 24],
+      },
+      1,
+      BigInt(STORAGE_COST.record_header + STORAGE_COST.reference) +
+        BigInt(captures.length) * BigInt(STORAGE_COST.reference) +
+        BigInt(fn.receiver ? STORAGE_COST.dynamic : 0),
+      bytes,
+    );
+    this.functionsByHandle.set(`${handle.slot}:${handle.generation}`, {
+      module: fn.module,
+      function: fn.function,
+      revision: fn.revision,
+      kind: value.kind,
+      captures,
+      receiver: fn.receiver !== undefined,
+      dynamicType,
+    });
+    this.functionHandles.set(identity, handle);
+    return handle;
+  }
+
+  private loadFunction(handle: GuestHandle, type: RuntimeType): Value {
+    const record = this.functionsByHandle.get(`${handle.slot}:${handle.generation}`);
+    if (!record) invalid("function record is unavailable", "memory.handle");
+    const heap = this.guestMemory.managedHeap;
+    const captures = record.captures.map(
+      (type, index) =>
+        this.decodePayload(type, this.storageLayout(type), heap.read(handle, index * 24, 24))
+          .value as Address,
+    );
+    const fn: FunctionValue = {
+      module: record.module,
+      function: record.function,
+      revision: record.revision,
+      captures,
+    };
+    if (record.receiver)
+      fn.receiver = this.decodePayload(
+        record.dynamicType,
+        this.storageLayout(record.dynamicType),
+        heap.read(handle, captures.length * 24, 24),
+      ).value as Value;
+    const payload = record.kind === "dynamicFunction" ? { callback: fn } : fn;
+    this.functionHandles.set(payload, handle);
+    return { type, kind: record.kind, value: payload };
+  }
+
+  private setLocal(frame: Frame, index: number, value: Value): void {
+    if (index < 0 || index >= frame.locals.length) invalid("local index is invalid", frame.fn.id);
+    const slot = frame.locals[index];
+    if (slot) slot.write(this.coerceForStorage(value, frame.fn.localTypes[index]!));
+    else if (frame.fn.cellLocals.has(index)) frame.locals[index] = this.managedCell(value);
+    else if (
+      !frame.localBank.write(index, this.coerceForStorage(value, frame.fn.localTypes[index]!))
+    )
+      invalid("local storage type mismatch", frame.fn.id);
   }
 
   private clearFrameSlot(frame: Frame, slot: number): void {
-    // Dropping a root cannot increase a limit. Keep its backing in the
-    // conservative census until allocation pressure or a public boundary.
-    if (frame.guestSlotRoots[slot]) {
-      frame.guestSlotRoots[slot] = 0;
-      frame.guestFrameBytes -= GUEST_COST.node;
-      this.guestMemory.releaseFrame(GUEST_COST.node);
-    }
-    frame.slots[slot] = undefined;
+    frame.slotBank.clear(slot);
   }
 
   private mapIterators(frame: Frame): MapIterators {
-    return (frame.mapIterators ??= new Map());
+    return (frame.mapIterators ??= []);
+  }
+
+  private reserveControl(bytes: bigint): GuestControlReservation {
+    try {
+      this.injectAllocationFault("reserve");
+      return this.guestMemory.reserveControl(bytes);
+    } catch (error) {
+      if (!(error instanceof VMError) || error.code !== "collection_required") throw error;
+      this.collectHeap(true);
+      try {
+        return this.guestMemory.reserveControl(bytes);
+      } catch (retryError) {
+        if (retryError instanceof VMError && retryError.code === "collection_required")
+          throw new VMError("guest memory budget exceeded", "allocation_limit", "memory");
+        throw retryError;
+      }
+    }
+  }
+
+  private reserveResident(bytes: bigint): { release(): void } {
+    try {
+      return this.guestMemory.managedHeap.reserveResident(bytes);
+    } catch (error) {
+      if (!(error instanceof VMError) || error.code !== "allocation_limit") throw error;
+      this.collectHeap(true);
+      return this.guestMemory.managedHeap.reserveResident(bytes);
+    }
+  }
+
+  private setReturning(frame: Frame, values: readonly Value[]): void {
+    this.releaseReturning(frame);
+    const types = this.preparedFrameLayout(frame.fn).resultTypes;
+    if (values.length > types.length) invalid("return count exceeds signature", frame.fn.id);
+    // The result region belongs to this frame activation and stays rooted
+    // through deferred calls. Only its payload is reset between activations.
+    frame.returning = frame.resultBank;
+    frame.returningCount = values.length;
+    for (let index = 0; index < values.length; index++) {
+      const value = this.coerceForStorage(values[index]!, types[index]!);
+      if (!frame.resultBank.write(index, value)) invalid("return storage mismatch", frame.fn.id);
+    }
+  }
+
+  private releaseReturning(frame: Frame): void {
+    frame.resultBank.reset();
+    delete frame.returning;
+    delete frame.returningCount;
+  }
+
+  private releaseMapIterator(iterator: MapIteratorState): void {
+    iterator.memory?.release();
+    delete iterator.memory;
+    iterator.resident?.release();
+    delete iterator.resident;
+  }
+
+  private releaseMapIterators(frame: Frame): void {
+    for (const iterator of frame.mapIterators ?? [])
+      if (iterator) this.releaseMapIterator(iterator);
+    frame.mapIterators?.splice(0);
+  }
+
+  private preparedFrameLayout(fn: PreparedFunction): PreparedFrameLayout {
+    const cached = this.preparedFrameLayouts.get(fn);
+    if (cached) return cached;
+    const locals = fn.localTypes.map((type) => this.storageLayout(type));
+    const slots = fn.slotTypes.map((type) => this.storageLayout(type));
+    const resultTypes = fn.signature.results.map((type) => fn.module.registry.runtime(type));
+    const results = resultTypes.map((type) => this.storageLayout(type));
+    const logical =
+      locals.reduce(
+        (bytes, layout, index) =>
+          bytes + (fn.cellLocals.has(index) ? 8n : FrameStorage.logicalByteLength([layout])),
+        0n,
+      ) +
+      FrameStorage.logicalByteLength(slots) +
+      FrameStorage.logicalByteLength(results);
+    const prepared = { locals, slots, results, resultTypes, logical } satisfies PreparedFrameLayout;
+    this.preparedFrameLayouts.set(fn, prepared);
+    return prepared;
   }
 
   private acquireFrameStorage(fn: PreparedFunction): ReusableFrameStorage | undefined {
-    if (fn.cellLocals.size) return undefined;
-    const index = this.frameCache.findIndex(
-      (entry) =>
-        entry.localCount === fn.localTypes.length && entry.slotCount === fn.slotTypes.length,
-    );
-    if (index < 0) return undefined;
-    const [storage] = this.frameCache.splice(index, 1);
-    this.frameCacheBytes -= storage!.bytes;
+    const bucket = this.frameCacheByFunction.get(fn);
+    const storage = bucket?.pop();
+    if (!storage) return undefined;
+    if (bucket?.length === 0) this.frameCacheByFunction.delete(fn);
+    const index = storage.cacheIndex;
+    const last = this.frameCache.pop()!;
+    if (last !== storage) {
+      this.frameCache[index] = last;
+      last.cacheIndex = index;
+    }
+    this.frameCacheBytes -= storage.bytes;
     return storage;
   }
 
   private recycleFrame(frame: Frame): void {
-    if (this.closing || this.closed) return;
-    if (frame.fn.cellLocals.size || frame.locals.some(isLocalCell)) return;
-    const limit = this.options.limits?.maxFrameCacheBytes ?? 0;
-    if (limit <= 0) return;
-    frame.slots.fill(undefined);
+    this.releaseReturning(frame);
+    this.releaseMapIterators(frame);
+    for (const memory of frame.deferMemory ?? []) memory.release();
+    frame.deferMemory?.splice(0);
+    frame.defers?.splice(0);
+    frame.memory.release();
     frame.inputScratch.length = 0;
-    frame.guestSlotRoots.fill(0);
     frame.locals.length = 0;
     frame.upvalues.length = 0;
-    const bytes =
-      FRAME_CACHE_ENTRY_BYTES +
-      (frame.fn.localTypes.length + frame.fn.slotTypes.length + frame.scratchCapacity) *
-        FRAME_CACHE_VALUE_BYTES +
-      frame.guestSlotRoots.byteLength;
-    if (bytes > limit || this.frameCacheBytes + bytes > limit) return;
-    this.frameCache.push({
-      locals: frame.locals as Value[],
-      slots: frame.slots,
+    frame.localBank.reset();
+    frame.slotBank.reset();
+    const limit = this.options.limits?.maxFrameCacheBytes ?? 8 * 1024 * 1024;
+    const bytes = frame.storageBytes;
+    if (this.closing || this.closed || bytes > limit || this.frameCacheBytes + bytes > limit) {
+      frame.resident.release();
+      return;
+    }
+    const storage: ReusableFrameStorage = {
+      fn: frame.fn,
+      locals: frame.locals,
+      localBank: frame.localBank,
+      slotBank: frame.slotBank,
+      resultBank: frame.resultBank,
       inputScratch: frame.inputScratch,
-      guestSlotRoots: frame.guestSlotRoots,
       scratchCapacity: frame.scratchCapacity,
-      localCount: frame.fn.localTypes.length,
-      slotCount: frame.fn.slotTypes.length,
       bytes,
-    });
+      resident: frame.resident,
+      cacheIndex: this.frameCache.length,
+    };
+    this.frameCache.push(storage);
+    let bucket = this.frameCacheByFunction.get(frame.fn);
+    if (!bucket) this.frameCacheByFunction.set(frame.fn, (bucket = []));
+    bucket.push(storage);
     this.frameCacheBytes += bytes;
   }
 
   private createFrame(
+    fn: PreparedFunction,
+    revision: Revision,
+    arguments_: Value[],
+    captures: Address[],
+    returnOutputs: readonly number[],
+    deferred: boolean,
+  ): Frame {
+    const releaseConstruction = this.beginStorageConstruction();
+    try {
+      return this.createFrameInternal(fn, revision, arguments_, captures, returnOutputs, deferred);
+    } finally {
+      releaseConstruction();
+    }
+  }
+
+  private createFrameInternal(
     fn: PreparedFunction,
     revision: Revision,
     arguments_: Value[],
@@ -887,83 +1616,80 @@ export class VirtualMachine {
     if (captures.length !== fn.upvalueTypes.length)
       throw new VMError("closure capture count mismatch", "invalid_call", fn.id);
     const profileKey = this.options.profile ? `${fn.module.path}.${fn.id}` : "";
+    const prepared = this.preparedFrameLayout(fn);
+    const guestFrameBytes = BigInt(STORAGE_COST.frame_header) + prepared.logical;
+    const reservation = this.reserveControl(guestFrameBytes);
     const storage = this.acquireFrameStorage(fn);
-    const locals: LocalSlot[] = storage
-      ? storage.locals
-      : fn.localTypes.map((type, index) =>
-          fn.cellLocals.has(index) ? cell(zero(type)) : zero(type),
-        );
-    if (storage) for (const type of fn.localTypes) locals.push(zero(type));
-    for (let index = 0; index < arguments_.length; index++) {
-      const value = this.coerce(arguments_[index]!, fn.localTypes[index]!);
-      const slot = locals[index]!;
-      if (isLocalCell(slot)) slot.value = value;
-      else locals[index] = value;
+    const storageBytes =
+      storage?.bytes ??
+      FRAME_CACHE_ENTRY_BYTES +
+        FrameStorage.byteLength(fn.localTypes, prepared.locals) +
+        FrameStorage.byteLength(fn.slotTypes, prepared.slots) +
+        FrameStorage.byteLength(prepared.resultTypes, prepared.results) +
+        (fn.localTypes.length + fn.upvalueTypes.length + fn.maxInputArity) *
+          FRAME_CACHE_VALUE_BYTES;
+    let resident;
+    try {
+      resident = storage?.resident ?? this.reserveResident(BigInt(storageBytes));
+    } catch (error) {
+      reservation.abort();
+      throw error;
     }
-    let guestStorageUnknown = fn.cellLocals.size > 0;
-    let guestFrameBytes = BigInt(fn.localTypes.length) * GUEST_COST.node;
-    let stringBytes = 0n;
-    for (const slot of locals) {
-      const value = localValue(slot);
-      this.checkBorrowedStorage(value);
-      if (value.kind === "struct") {
-        const facts = value.type.registry.facts(value.type);
-        if (!facts.flat || facts.containsReferences) guestStorageUnknown = true;
-        const fields = value.value as Map<string, Value>;
-        for (const field of fields.values()) {
-          if (
-            !isKnownFrameValue(field) ||
-            field.kind === "pointer" ||
-            field.kind === "map" ||
-            field.kind === "slice"
-          )
-            guestStorageUnknown = true;
-          if (field.kind === "string") {
-            const length = (field.value as Uint8Array).byteLength;
-            this.checkSequence(length, "string");
-            stringBytes += BigInt(length);
-          }
-        }
-        guestFrameBytes += BigInt(fields.size) * (GUEST_COST.mapEntry + GUEST_COST.node);
-        this.guestDepthUpper = Math.max(this.guestDepthUpper, 1);
-        if ((this.options.limits?.maxValueDepth ?? 128) < 1) this.guestMemory.markDirty();
-      } else if (!isKnownFrameValue(value)) guestStorageUnknown = true;
-      if (value.kind === "string") {
-        const length = (value.value as Uint8Array).byteLength;
-        this.checkSequence(length, "string");
-        stringBytes += BigInt(length);
+    let localBank: FrameStorage | undefined;
+    let slotBank: FrameStorage | undefined;
+    let resultBank: FrameStorage | undefined;
+    try {
+      const locals: (Cell | undefined)[] = storage?.locals ?? new Array(fn.localTypes.length);
+      localBank =
+        storage?.localBank ?? new FrameStorage(fn.localTypes, this.storageOwner, prepared.locals);
+      slotBank =
+        storage?.slotBank ?? new FrameStorage(fn.slotTypes, this.storageOwner, prepared.slots);
+      resultBank =
+        storage?.resultBank ??
+        new FrameStorage(prepared.resultTypes, this.storageOwner, prepared.results);
+      for (let index = 0; index < fn.localTypes.length; index++) {
+        locals[index] = undefined;
+        if (!fn.cellLocals.has(index)) localBank.initializeZero(index);
       }
+      for (let index = 0; index < arguments_.length; index++) {
+        const value = this.coerceForStorage(arguments_[index]!, fn.localTypes[index]!);
+        if (fn.cellLocals.has(index)) locals[index] = this.managedCell(value);
+        else if (!localBank.write(index, value)) invalid("frame argument storage mismatch", fn.id);
+      }
+      const memory = reservation.commit();
+      const frame: Frame = {
+        fn,
+        revision,
+        profileKey,
+        locals,
+        localBank,
+        upvalues: captures.slice(),
+        slotBank,
+        resultBank,
+        inputScratch: storage?.inputScratch ?? [],
+        returnOutputs,
+        pc: 0,
+        recovered: false,
+        deferred,
+        memory,
+        resident,
+        storageBytes,
+        scratchCapacity: Math.max(storage?.scratchCapacity ?? 0, fn.maxInputArity),
+      };
+      return frame;
+    } catch (error) {
+      localBank?.reset();
+      slotBank?.reset();
+      resultBank?.reset();
+      reservation.abort();
+      resident.release();
+      throw error;
     }
-    if (guestStorageUnknown) {
-      guestFrameBytes = 0n;
-      this.guestMemory.markDirty();
-    }
-    // Reserve the complete shallow frame atomically. A pressure census must
-    // not observe a partially reserved frame before pushFrame publishes it.
-    this.reserveKnownFrame(guestFrameBytes, stringBytes);
-    const frame: Frame = {
-      fn,
-      revision,
-      profileKey,
-      locals,
-      upvalues: captures.slice(),
-      slots: storage?.slots ?? new Array(fn.slotTypes.length),
-      inputScratch: storage?.inputScratch ?? [],
-      returnOutputs,
-      pc: 0,
-      recovered: false,
-      deferred,
-      guestFrameBytes,
-      guestStorageUnknown,
-      guestSlotRoots: storage?.guestSlotRoots ?? new Uint8Array(fn.slotTypes.length),
-      scratchCapacity: Math.max(storage?.scratchCapacity ?? 0, fn.maxInputArity),
-    };
-    return frame;
   }
 
   private pushFrame(task: Task, frame: Frame): void {
     if (task.frames.length >= (this.options.limits?.maxFrames ?? 1024)) {
-      this.guestMemory.releaseFrame(frame.guestFrameBytes);
+      this.recycleFrame(frame);
       throw new VMError("frame limit exceeded", "frame_limit", frame.fn.id);
     }
     task.frames.push(frame);
@@ -979,16 +1705,14 @@ export class VirtualMachine {
   }
 
   private checkSequence(length: number, path: string): void {
-    if (
-      !Number.isSafeInteger(length) ||
-      length < 0 ||
-      length > (this.options.limits?.maxSequenceElements ?? 1_000_000)
-    )
-      throw new VMError("sequence element limit exceeded", "allocation_limit", path);
+    if (!Number.isSafeInteger(length) || length < 0 || length > 0xffff_ffff)
+      throw new VMError("sequence length exceeds representation range", "allocation_limit", path);
   }
 
   pump(budget: number): VMPumpState {
     if (this.closed) return this.pumpState(false);
+    for (const [id, pending] of this.pendingHost)
+      if (pending.reply) this.processHostReply(id, pending);
     this.fireTimers();
     if (this.paused) return this.pumpState(false);
     for (let count = 0; count < budget && this.runnableHead < this.runnable.length; count++) {
@@ -1001,7 +1725,6 @@ export class VirtualMachine {
       }
       try {
         const frame = task.frames[task.frames.length - 1];
-        const instruction = frame?.fn.instructions[frame.pc];
         const profileKey = frame?.profileKey ?? "";
         const profileStarted = this.profileTiming && profileKey ? performance.now() : 0;
         try {
@@ -1014,18 +1737,14 @@ export class VirtualMachine {
             );
           }
         }
-        if (instruction && MEMORY_EFFECT_OPCODES.has(instruction.name))
-          this.guestMemory.markDirty();
-        if (this.guestMemory.needsCensus()) this.updateMemoryCensus(true);
       } catch (error) {
         const runtimeError = toVMError(error);
         if (runtimeError.code === "panic" && task.frames.length) {
           const frame = task.frames[task.frames.length - 1]!;
-          frame.panic = stringValue(
-            frame.fn.module.registry,
-            textEncoder.encode(runtimeError.message),
+          frame.panic = this.managedCell(
+            stringValue(frame.fn.module.registry, textEncoder.encode(runtimeError.message)),
           );
-          frame.returning = [];
+          this.setReturning(frame, []);
         } else {
           this.failTask(task, runtimeError);
         }
@@ -1034,6 +1753,7 @@ export class VirtualMachine {
         this.debugStepTask = undefined;
         this.stopForDebugging("step", task);
       }
+      this.allocationRoots.length = 0;
       if (task.state === "runnable") this.runnable.push(id);
       if (this.paused) break;
     }
@@ -1042,9 +1762,7 @@ export class VirtualMachine {
       this.runnableHead = 0;
     }
     if (this.closing && this.tasks.size === 0 && this.pendingHost.size === 0) {
-      this.closed = true;
-      this.guestMemory.release();
-      this.pendingActions.push({ kind: "close" });
+      this.finishClose();
     }
     return this.pumpState(this.runnable.length > 0);
   }
@@ -1126,10 +1844,11 @@ export class VirtualMachine {
       return;
     }
     if (frame.pc >= frame.fn.instructions.length) {
-      frame.returning = this.namedResults(frame);
+      this.setReturning(frame, this.namedResults(frame));
       this.finishFrame(task, frame);
       return;
     }
+    frame.rootPC = frame.pc;
     const instruction = frame.fn.instructions[frame.pc++]!;
     if (this.stepsOverflow !== undefined) this.stepsOverflow++;
     else if (this.steps === Number.MAX_SAFE_INTEGER) this.stepsOverflow = BigInt(this.steps) + 1n;
@@ -1147,6 +1866,8 @@ export class VirtualMachine {
       this.execute(task, frame, instruction);
     } finally {
       frame.inputScratch.length = 0;
+      if (task.state === "runnable" && task.frames[task.frames.length - 1] === frame)
+        delete frame.rootPC;
     }
     for (const slot of instruction.operands.release) this.clearFrameSlot(frame, slot);
   }
@@ -1156,11 +1877,20 @@ export class VirtualMachine {
   }
 
   private execute(task: Task, frame: Frame, instruction: PreparedInstruction): void {
-    const input0 = instruction.input0 ? this.readOperand(frame, instruction.input0) : undefined;
-    const input1 = instruction.input1 ? this.readOperand(frame, instruction.input1) : undefined;
-    // Variable-arity operations retain the frame scratch buffer. Fixed arity
-    // operations below consume input0/input1 directly and do not populate it.
-    const inputs = instruction.arity[0] > 2 ? this.inputs(frame, instruction) : undefined;
+    // Variable-arity operations and min_max retain the frame scratch buffer.
+    // Read their operands once so input0/input1 do not clone the first two
+    // values again. The scratch buffer is only valid for this instruction.
+    let inputs: Value[] | undefined;
+    let input0: Value | undefined;
+    let input1: Value | undefined;
+    if (instruction.inputScratch) {
+      inputs = this.inputs(frame, instruction);
+      input0 = inputs[0];
+      input1 = inputs[1];
+    } else {
+      input0 = instruction.input0 ? this.readOperand(frame, instruction.input0) : undefined;
+      input1 = instruction.input1 ? this.readOperand(frame, instruction.input1) : undefined;
+    }
     const descriptor = instruction.descriptor ?? {};
     switch (instruction.opcode) {
       case 1:
@@ -1171,7 +1901,7 @@ export class VirtualMachine {
         return;
       case 3: {
         const constant = instruction.constant!;
-        this.outputOne(frame, instruction, cloneValue(frame.fn.module.constants[constant]!));
+        this.outputOne(frame, instruction, frame.fn.module.constants[constant]!);
         return;
       }
       case 4:
@@ -1193,13 +1923,13 @@ export class VirtualMachine {
       case 9: {
         const index = instruction.local!;
         if (instruction.opcode === 8)
-          this.outputOne(frame, instruction, cloneValue(localValue(frame.locals[index]!)));
+          this.outputOne(frame, instruction, localValue(this.frameLocal(frame, index)));
         else if (descriptor.rebind === true && frame.fn.cellLocals.has(index)) {
-          const value = this.coerce(input0!, frame.fn.localTypes[index]!);
-          if (!this.reserveFlatStorage(value, true)) this.guestMemory.markDirty();
-          frame.locals[index] = cell(value);
+          const value = this.coerceForStorage(input0!, frame.fn.localTypes[index]!);
+
+          frame.locals[index] = this.managedCell(value);
         } else {
-          this.setLocal(frame, index, this.coerce(input0!, frame.fn.localTypes[index]!));
+          this.setLocal(frame, index, this.coerceForStorage(input0!, frame.fn.localTypes[index]!));
         }
         return;
       }
@@ -1207,12 +1937,9 @@ export class VirtualMachine {
       case 11: {
         const index = instruction.upvalue!;
         const address = frame.upvalues[index]!;
-        if (instruction.opcode === 10)
-          this.outputOne(frame, instruction, cloneValue(dereference(address)));
+        if (instruction.opcode === 10) this.outputOne(frame, instruction, dereference(address));
         else {
-          assign(address, this.coerce(input0!, frame.fn.upvalueTypes[index]!));
-          if (REFERENCE_VALUE_KINDS.has(input0!.kind) || input0!.kind === "pointer")
-            this.guestMemory.markDirty();
+          assign(address, this.coerceForStorage(input0!, frame.fn.upvalueTypes[index]!));
         }
         return;
       }
@@ -1220,14 +1947,11 @@ export class VirtualMachine {
       case 13: {
         const index = instruction.global!;
         if (instruction.opcode === 12)
-          this.outputOne(frame, instruction, cloneValue(frame.fn.module.globals[index]!.value));
+          this.outputOne(frame, instruction, frame.fn.module.globals[index]!.read());
         else {
-          frame.fn.module.globals[index]!.value = this.coerce(
-            input0!,
-            frame.fn.module.globals[index]!.value.type,
+          frame.fn.module.globals[index]!.write(
+            this.coerceForStorage(input0!, frame.fn.module.globals[index]!.read().type),
           );
-          if (REFERENCE_VALUE_KINDS.has(input0!.kind) || input0!.kind === "pointer")
-            this.guestMemory.markDirty();
         }
         return;
       }
@@ -1244,17 +1968,18 @@ export class VirtualMachine {
         return;
       }
       case 17:
-        frame.returning = this.inputs(frame, instruction).map(cloneValue);
+        this.setReturning(frame, inputs!);
         return;
       case 18:
-        frame.panic =
+        frame.panic = this.managedCell(
           input0!.kind === "nil"
             ? stringValue(
                 frame.fn.module.registry,
                 textEncoder.encode("panic called with nil argument"),
               )
-            : cloneValue(input0!);
-        frame.returning = [];
+            : input0!,
+        );
+        this.setReturning(frame, []);
         return;
       case 19:
         this.outputOne(frame, instruction, this.recover(task, frame));
@@ -1265,47 +1990,38 @@ export class VirtualMachine {
         const ownerDepth = descriptorInteger(descriptor.owner_depth, 0);
         const owner = task.frames[task.frames.length - ownerDepth - 1];
         if (!owner) invalid("defer owner depth exceeds stack", "defer");
-        (owner.defers ??= []).push(value.value as FunctionValue);
+        const memory = this.reserveControl(BigInt(STORAGE_COST.control_record)).commit();
+        try {
+          (owner.defers ??= []).push(this.managedCell(value));
+          (owner.deferMemory ??= []).push(memory);
+        } catch (error) {
+          memory.release();
+          throw error;
+        }
         return;
       }
       case 21:
       case 22:
       case 23:
-        this.call(task, frame, instruction, this.inputs(frame, instruction), descriptor);
+        this.call(task, frame, instruction, inputs!);
         return;
       case 24:
-        this.callInterface(task, frame, instruction, this.inputs(frame, instruction), descriptor);
+        this.callInterface(task, frame, instruction, inputs!, descriptor);
         return;
       case 25:
         this.outputOne(frame, instruction, this.makeClosure(frame, instruction, descriptor));
         return;
       case 26:
-        this.outputOne(
-          frame,
-          instruction,
-          this.makeSequence(frame, descriptor, this.inputs(frame, instruction)),
-        );
+        this.outputOne(frame, instruction, this.makeSequence(frame, descriptor, inputs!));
         return;
       case 27:
-        this.outputOne(
-          frame,
-          instruction,
-          this.makeMap(frame, descriptor, this.inputs(frame, instruction)),
-        );
+        this.outputOne(frame, instruction, this.makeMap(frame, descriptor, inputs!));
         return;
       case 28:
-        this.outputOne(
-          frame,
-          instruction,
-          this.makeStruct(frame, descriptor, this.inputs(frame, instruction)),
-        );
+        this.outputOne(frame, instruction, this.makeStruct(frame, descriptor, inputs!));
         return;
       case 29:
-        this.outputOne(
-          frame,
-          instruction,
-          this.makeSlice(frame, descriptor, this.inputs(frame, instruction)),
-        );
+        this.outputOne(frame, instruction, this.makeSlice(frame, descriptor, inputs!));
         return;
       case 30:
         this.outputOne(frame, instruction, this.makeChannel(frame, descriptor, input0!));
@@ -1343,7 +2059,7 @@ export class VirtualMachine {
         return;
       }
       case 35:
-        this.outputOne(frame, instruction, this.slice(frame, this.inputs(frame, instruction)));
+        this.outputOne(frame, instruction, this.slice(frame, inputs!));
         return;
       case 36:
       case 37:
@@ -1357,16 +2073,13 @@ export class VirtualMachine {
         );
         return;
       case 38: {
-        const values = this.inputs(frame, instruction);
+        const values = inputs!;
         const target = instruction.output0!;
-        if (frame.slots[target] === undefined) {
+        if ((target & LOCAL_OUTPUT) === 0 && frame.slotBank.read(target) === undefined) {
           // Publish the existing slice as the temporary output root before an
           // append can mutate shared backing. A pressure trace then sees both
           // the reserved root and the source throughout backing allocation.
-          this.reserveKnownFrame(GUEST_COST.node);
-          frame.guestFrameBytes += GUEST_COST.node;
-          frame.guestSlotRoots[target] = 1;
-          frame.slots[target] = values[0]!;
+          this.writeOutput(frame, target, values[0]!);
         }
         this.outputOne(frame, instruction, this.append(descriptor, values));
         return;
@@ -1388,36 +2101,33 @@ export class VirtualMachine {
         this.outputOne(frame, instruction, this.mapKeys(frame, input0!));
         return;
       case 43:
-        this.mapIterInit(frame, descriptor, input0!);
+        if (instruction.iteratorLocal === undefined)
+          invalid("map iterator local is unavailable", "map_iter_init");
+        this.mapIterInit(frame, instruction.iteratorLocal, input0!);
         return;
       case 44:
-        this.outputs(frame, instruction.operands.outputs, this.mapIterNext(frame, descriptor));
+        this.outputs(frame, instruction.operands.outputs, this.mapIterNext(frame, instruction));
         return;
       case 45:
-        frame.mapIterators?.delete(descriptorText(descriptor.local));
+        {
+          const local = instruction.iteratorLocal;
+          if (local === undefined) invalid("map iterator local is unavailable", "map_iter_close");
+          const iterator = frame.mapIterators?.[local];
+          if (iterator) this.releaseMapIterator(iterator);
+          if (frame.mapIterators) frame.mapIterators[local] = undefined;
+        }
         return;
       case 46:
         this.outputOne(
           frame,
           instruction,
-          cloneValue(fieldValue(input0!, instruction.field ?? descriptorText(descriptor.field))),
+          fieldValue(input0!, instruction.field ?? descriptorText(descriptor.field)),
         );
         return;
       case 47:
-        if (
-          input0!.kind === "map" ||
-          ((REFERENCE_VALUE_KINDS.has(inputs![2]!.kind) || inputs![2]!.kind === "pointer") &&
-            !this.reserveFlatStorage(inputs![2]!, false, true))
-        )
-          this.guestMemory.markDirty();
         this.storeIndex(input0!, input1!, inputs![2]!);
         return;
       case 48:
-        if (
-          (REFERENCE_VALUE_KINDS.has(input1!.kind) || input1!.kind === "pointer") &&
-          !this.reserveFlatStorage(input1!, false, true)
-        )
-          this.guestMemory.markDirty();
         this.storeField(input0!, instruction.field ?? descriptorText(descriptor.field), input1!);
         return;
       case 49:
@@ -1448,20 +2158,13 @@ export class VirtualMachine {
         return;
       case 53: {
         if (input0!.kind !== "pointer") fail("nil pointer dereference", "load_indirect", "panic");
-        this.outputOne(frame, instruction, cloneValue(dereference(input0!.value as Address)));
+        this.outputOne(frame, instruction, dereference(input0!.value as Address));
         return;
       }
       case 54: {
         if (input0!.kind !== "pointer") fail("nil pointer dereference", "store_indirect", "panic");
         const address = input0!.value as Address;
-        if (
-          (REFERENCE_VALUE_KINDS.has(input1!.kind) || input1!.kind === "pointer") &&
-          !(
-            address.path.some((part) => part.kind !== "typeView") &&
-            this.reserveFlatStorage(input1!, false, true)
-          )
-        )
-          this.guestMemory.markDirty();
+
         assign(address, input1!);
         return;
       }
@@ -1514,10 +2217,10 @@ export class VirtualMachine {
         this.outputOne(frame, instruction, this.loadExport(frame, descriptor));
         return;
       case 65:
-        this.spawn(task, frame, this.inputs(frame, instruction), descriptor);
+        this.spawn(task, frame, inputs!, descriptor);
         return;
       case 66:
-        this.callFFI(task, frame, instruction, this.inputs(frame, instruction));
+        this.callFFI(task, frame, instruction, inputs!);
         return;
       case 67:
         this.intrinsic(
@@ -1525,7 +2228,7 @@ export class VirtualMachine {
           frame,
           instruction,
           instruction.intrinsic ?? descriptorText(descriptor.id),
-          this.inputs(frame, instruction),
+          inputs!,
         );
         return;
       case 68: {
@@ -1552,6 +2255,9 @@ export class VirtualMachine {
           frame.pc = instruction.target!;
         return;
       }
+      case 72:
+        this.outputOne(frame, instruction, minMaxValues(inputs!, String(descriptor.operator)));
+        return;
       default:
         invalid("unknown opcode", String(instruction.opcode));
     }
@@ -1562,22 +2268,17 @@ export class VirtualMachine {
     values.length = 0;
     for (const [kind, index] of instruction.operands.inputs) {
       if (kind === 0) {
-        const value = frame.slots[index];
-        if (!value) invalid("temporary is not initialized", "operand");
-        values.push(borrowInput(value));
+        values.push(this.frameSlot(frame, index));
         continue;
       }
       if (kind === 1) {
         const value = frame.fn.module.constants[index];
         if (!value) invalid("constant index is invalid", "operand");
-        values.push(borrowInput(value));
+        values.push(value);
         continue;
       }
       if (kind === 2) {
-        const slot = frame.locals[index];
-        const value = slot && localValue(slot);
-        if (!value) invalid("local index is invalid", "operand");
-        values.push(borrowInput(value));
+        values.push(localValue(this.frameLocal(frame, index)));
         continue;
       }
       invalid("unknown operand kind", "operand");
@@ -1588,20 +2289,15 @@ export class VirtualMachine {
   private readOperand(frame: Frame, operand: readonly [number, number]): Value {
     const [kind, index] = operand;
     if (kind === 0) {
-      const value = frame.slots[index];
-      if (!value) invalid("temporary is not initialized", "operand");
-      return borrowInput(value);
+      return this.frameSlot(frame, index);
     }
     if (kind === 1) {
       const value = frame.fn.module.constants[index];
       if (!value) invalid("constant index is invalid", "operand");
-      return borrowInput(value);
+      return value;
     }
     if (kind === 2) {
-      const slot = frame.locals[index];
-      const value = slot && localValue(slot);
-      if (!value) invalid("local index is invalid", "operand");
-      return borrowInput(value);
+      return localValue(this.frameLocal(frame, index));
     }
     invalid("unknown operand kind", "operand");
   }
@@ -1612,6 +2308,11 @@ export class VirtualMachine {
         `result count mismatch: expected ${targets.length}, received ${values.length}`,
         frame.fn.id,
       );
+    // Producers materialize all values before this loop. Direct targets are
+    // verifier-checked as distinct private locals, while call results and map
+    // entries retain their own child/map owner. The per-write overlap scratch
+    // in FrameStorage therefore covers the only aliasing case: a value that
+    // already points into its target bank.
     for (let index = 0; index < targets.length; index++)
       this.writeOutput(frame, targets[index]!, values[index]!);
   }
@@ -1644,38 +2345,25 @@ export class VirtualMachine {
   private writeOutput(frame: Frame, target: number, value: Value, fresh = false): void {
     if ((target & LOCAL_OUTPUT) !== 0) {
       const local = target & ~LOCAL_OUTPUT;
-      if (!frame.locals[local]) invalid("local output index is invalid", frame.fn.id);
       const type = frame.fn.localTypes[local]!;
       this.setLocal(
         frame,
         local,
-        fresh && value.type === type && isFreshScalar(value) ? value : this.coerce(value, type),
+        fresh && value.type === type && isFreshScalar(value)
+          ? value
+          : this.coerceForStorage(value, type),
       );
       return;
     }
-    if (target >= frame.slots.length) invalid("slot output index is invalid", frame.fn.id);
-    const previous = frame.slots[target];
-    this.checkBorrowedStorage(value);
-    if (
-      requiresGuestCensus(value) &&
-      !(
-        (value.kind === "struct" || value.kind === "interface") &&
-        this.reserveFlatStorage(value, false)
-      )
-    )
-      this.guestMemory.markDirty();
-    if (value.kind === "string") this.reserveStringRoot(value);
-    if (
-      previous === undefined &&
-      (!REFERENCE_VALUE_KINDS.has(value.kind) || BORROWED_VALUE_KINDS.has(value.kind))
-    ) {
-      this.reserveKnownFrame(GUEST_COST.node);
-      frame.guestFrameBytes += GUEST_COST.node;
-      frame.guestSlotRoots[target] = 1;
-    }
+    if (target >= frame.fn.slotTypes.length) invalid("slot output index is invalid", frame.fn.id);
+
     const type = frame.fn.slotTypes[target]!;
-    frame.slots[target] =
-      fresh && value.type === type && isFreshScalar(value) ? value : this.coerce(value, type);
+    const stored =
+      fresh && value.type === type && isFreshScalar(value)
+        ? value
+        : this.coerceForStorage(value, type);
+    if (!frame.slotBank.write(target, stored))
+      invalid("temporary storage type mismatch", frame.fn.id);
   }
 
   private outputType(frame: Frame, target: number): RuntimeType {
@@ -1686,21 +2374,27 @@ export class VirtualMachine {
   }
 
   private namedResults(frame: Frame): Value[] {
-    return frame.fn.resultLocals.map((index) => cloneValue(localValue(frame.locals[index]!)));
+    return frame.fn.resultLocals.map((index) => localValue(this.frameLocal(frame, index)));
   }
 
   private finishFrame(task: Task, frame: Frame): void {
     if (frame.defers?.length) {
-      const deferred = frame.defers.pop()!;
+      const deferredCell = frame.defers.pop()!;
+      const memory = frame.deferMemory?.pop();
+      memory?.release();
+      this.allocationRoots.push(deferredCell.managedHandle!);
+      const deferred = deferredCell.read().value as FunctionValue;
       const revision = this.functionRevision(deferred);
       const fn = revision.program.function(deferred.module, deferred.function);
       this.pushFrame(task, this.createFrame(fn, revision, [], deferred.captures, [], true));
       return;
     }
-    let results = frame.returning ?? this.namedResults(frame);
-    if (!frame.guestStorageUnknown) {
-      this.guestMemory.releaseFrame(frame.guestFrameBytes);
-    }
+    if (!frame.returning) this.setReturning(frame, this.namedResults(frame));
+    const returning = frame.returning!;
+    this.allocationRoots.push(...returning.allReferences());
+    let results = returning.values(frame.returningCount);
+
+    frame.memory.release();
     task.frames.pop();
     if (frame.initializing) {
       this.initializing.delete(frame.initializing);
@@ -1708,13 +2402,13 @@ export class VirtualMachine {
     }
     if (frame.panic && !frame.recovered) {
       if (!task.frames.length) {
-        this.failTask(task, new VMError(formatPanic(frame.panic), "panic", "panic"));
+        this.failTask(task, new VMError(formatPanic(frame.panic.read()), "panic", "panic"));
         this.recycleFrame(frame);
         return;
       }
       const caller = task.frames[task.frames.length - 1]!;
       caller.panic = frame.panic;
-      caller.returning = [];
+      this.setReturning(caller, []);
       this.recycleFrame(frame);
       return;
     }
@@ -1782,8 +2476,9 @@ export class VirtualMachine {
           boolValue(caller.fn.module.registry, true),
         ]);
       } else this.outputs(caller, frame.completion.outputs, values);
-    } else if (frame.tailReturn) caller.returning = results;
+    } else if (frame.tailReturn) this.setReturning(caller, results);
     else this.outputs(caller, frame.returnOutputs, results);
+    delete caller.rootPC;
     this.recycleFrame(frame);
   }
 
@@ -1819,21 +2514,17 @@ export class VirtualMachine {
         node: "",
       }),
       kind: "interface",
-      value: cloneValue(owner.panic),
+      value: cloneValue(owner.panic.read()),
     };
   }
 
-  private call(
-    task: Task,
-    frame: Frame,
-    instruction: PreparedInstruction,
-    inputs: Value[],
-    descriptor: Record<string, unknown>,
-  ): void {
+  private call(task: Task, frame: Frame, instruction: PreparedInstruction, inputs: Value[]): void {
     const indirect = instruction.opcode === 21;
     const tail = instruction.opcode === 23;
-    let fnValue: FunctionValue;
     let arguments_ = inputs;
+    let revision: Revision;
+    let fn: PreparedFunction;
+    let captures: Address[] = EMPTY_CAPTURES;
     if (indirect) {
       const callee = inputs[0];
       arguments_ = inputs.slice(1);
@@ -1848,24 +2539,25 @@ export class VirtualMachine {
         this.callDynamicFunction(task, frame, instruction, callee, arguments_);
         return;
       }
-      fnValue = callee.value as FunctionValue;
+      const fnValue = callee.value as FunctionValue;
       if (callee.kind === "method" && fnValue.receiver)
         arguments_ = [cloneValue(fnValue.receiver), ...arguments_];
+      revision = this.functionRevision(fnValue);
+      fn = revision.program.function(fnValue.module, fnValue.function);
+      captures = fnValue.captures;
     } else {
-      fnValue = {
-        module: instruction.callModule || frame.fn.module.path,
-        function: instruction.callFunction ?? descriptorText(descriptor.function),
-        captures: [],
-        revision: frame.revision.generation,
-      };
+      const source = instruction.callTarget!;
+      revision = source.revisionLocal ? frame.revision : this.revision;
+      fn =
+        revision === frame.revision
+          ? source
+          : revision.program.function(source.module.path, source.id);
     }
-    const revision = this.functionRevision(fnValue);
-    const fn = revision.program.function(fnValue.module, fnValue.function);
     const child = this.createFrame(
       fn,
       revision,
       arguments_,
-      fnValue.captures,
+      captures,
       tail && !frame.defers?.length ? frame.returnOutputs : instruction.operands.outputs,
       false,
     );
@@ -1963,7 +2655,7 @@ export class VirtualMachine {
     const type = this.descriptorType(frame, descriptor);
     const kind = type.registry.underlying(type).ref.kind;
     if (kind === Kind.Slice) {
-      const storage = cell({ type, kind: "array", value: inputs.map(cloneValue) });
+      const storage = this.managedCell({ type, kind: "array", value: inputs.map(cloneValue) });
       return {
         type,
         kind: "slice",
@@ -1990,16 +2682,232 @@ export class VirtualMachine {
     return { type, kind: "struct", value: values };
   }
 
+  private allocatePayload(
+    layout: number | ManagedLayout,
+    count: number,
+    logical: bigint,
+    bytes?: Uint8Array,
+  ): GuestHandle {
+    const heap = this.guestMemory.managedHeap;
+    const layoutID = typeof layout === "number" ? layout : heap.registerLayout(layout);
+    // This operation owns its pin through every reserve/collection retry.
+    // Container owners retain separate pins for future backing allocations.
+    heap.pinLayout(layoutID);
+    try {
+      if (heap.oldGuestBytes > this.nextMajorBytes) this.collectHeap(true);
+      let reservation;
+      try {
+        this.injectAllocationFault("reserve");
+        reservation = heap.reserve(layoutID, count, logical);
+      } catch (error) {
+        if (
+          !(error instanceof VMError) ||
+          !["collection_required", "allocation_limit"].includes(error.code)
+        )
+          throw error;
+        this.collectHeap(false);
+        try {
+          reservation = heap.reserve(layoutID, count, logical);
+        } catch (retryError) {
+          if (
+            !(retryError instanceof VMError) ||
+            !["collection_required", "allocation_limit"].includes(retryError.code)
+          )
+            throw retryError;
+          this.collectHeap(true);
+          try {
+            reservation = heap.reserve(layoutID, count, logical);
+          } catch (finalError) {
+            if (finalError instanceof VMError && finalError.code === "collection_required")
+              throw new VMError("guest memory budget exceeded", "allocation_limit", "memory");
+            throw finalError;
+          }
+        }
+      }
+      try {
+        this.injectAllocationFault("build");
+        if (bytes) reservation.bytes().set(bytes);
+        this.injectAllocationFault("publish");
+        const handle = reservation.commit();
+        this.allocationRoots.push(handle);
+        const scope = this.storageAllocationScopes[this.storageAllocationScopes.length - 1];
+        scope?.handles.push(handle);
+        return handle;
+      } catch (error) {
+        reservation.abort();
+        throw error;
+      }
+    } finally {
+      heap.unpinLayout(layoutID);
+    }
+  }
+
+  private injectAllocationFault(phase: "reserve" | "build" | "publish"): void {
+    const fault = this.testAllocationFault;
+    if (!fault || fault.phase !== phase || fault.remaining <= 0) return;
+    fault.remaining--;
+    if (fault.remaining === 0)
+      throw new VMError(`injected ${phase} allocation failure`, "injected_fault", "memory");
+  }
+
+  private encodePayload(
+    value: Value,
+    layout: StorageLayout,
+    expectedType: RuntimeType = value.type,
+    target?: Uint8Array,
+  ): Uint8Array {
+    const heap = this.guestMemory.managedHeap;
+    const bytes = target ?? new Uint8Array(layout.size);
+    if (bytes.byteLength < layout.size) invalid("storage target is too small", "memory.layout");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    encodeStorage(
+      value,
+      layout,
+      bytes,
+      0,
+      {
+        typeID: (type) => this.storageTypeID(type),
+        encodeBox: (value) => this.managedCell(value).managedHandle!,
+        writeReference: (offset, handle) => {
+          if (!handle) return;
+          view.setUint32(offset, handle.slot, true);
+          view.setUint32(offset + 4, handle.generation, true);
+        },
+        readReference: () => undefined,
+        encodeReference: (nested) => this.collectionReferenceHandle(nested),
+        encodeBytes: (payload) => {
+          const reflectedKey = this.reflectedTypeBytes.get(payload);
+          const existing = this.stringStorage.get(payload);
+          if (existing && heap.has(existing.handle)) {
+            if (reflectedKey) this.retainReflectedType(existing.handle, reflectedKey);
+            return { ...existing, type: value.type };
+          }
+          const handle = this.allocatePayload(
+            { stride: 1 },
+            payload.length,
+            BigInt(STORAGE_COST.record_header + payload.length),
+            payload,
+          );
+          this.stringStorage.set(payload, { handle, offset: 0 });
+          if (reflectedKey) this.retainReflectedType(handle, reflectedKey);
+          return { handle, offset: 0, type: value.type };
+        },
+        encodeAddress: (address) => {
+          const location = storageAddress(address);
+          if (location) return location;
+          const handle = address.root.managedHandle;
+          if (!handle) invalid("address has no managed owner", "memory.handle");
+          const storage = this.managedStorageLayouts.get(`${handle.slot}:${handle.generation}`);
+          if (!storage) invalid("address layout is unavailable", "memory.handle");
+          return resolveStorageLocation(
+            { handle, offset: 0, type: storage.type },
+            storage.layout,
+            address.path,
+          );
+        },
+      },
+      expectedType,
+    );
+    return bytes;
+  }
+
+  private decodePayload(valueType: RuntimeType, layout: StorageLayout, bytes: Uint8Array): Value {
+    const heap = this.guestMemory.managedHeap;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return decodeStorage(valueType, layout, bytes, 0, {
+      typeByID: (id) => this.storageType(id),
+      decodeBox: (handle) => this.storageBox(handle),
+      writeReference: () => undefined,
+      readReference: (offset) => ({
+        slot: view.getUint32(offset, true),
+        generation: view.getUint32(offset + 4, true),
+      }),
+      decodeBytes: (location, length) => {
+        const bytes = heap.read(location.handle, location.offset, length);
+        this.stringStorage.set(bytes, { handle: location.handle, offset: location.offset });
+        return bytes;
+      },
+      decodeAddress: (location) => {
+        const key = `${location.handle.slot}:${location.handle.generation}`;
+        const root = this.managedCellsByHandle.get(key);
+        const storage = this.managedStorageLayouts.get(key);
+        if (!root || !storage) invalid("address owner is unavailable", "memory.handle");
+        const layout = layoutAtStorageOffset(
+          storage.layout,
+          storage.type,
+          location.type,
+          location.offset,
+        );
+        const targetKind = location.type.registry.underlying(location.type).ref.kind;
+        if (targetKind === Kind.Slice || targetKind === Kind.Array) {
+          const path = pathForStorageOffset(
+            storage.layout,
+            storage.type,
+            location.type,
+            location.offset,
+          );
+          if (path) return { root, path };
+        }
+        if (!layout)
+          invalid(
+            `address offset ${location.offset} is invalid for ${storage.type.registry.key(storage.type)} (${storage.layout.size} bytes) targeting ${location.type.registry.key(location.type)}`,
+            "memory.handle",
+          );
+        return {
+          root,
+          path: [],
+          location: {
+            handle: location.handle,
+            offset: location.offset,
+            type: location.type,
+            layout,
+          },
+        };
+      },
+      resolveValue: (handle, type) => {
+        const key = `${handle.slot}:${handle.generation}`;
+        const map = this.mapsByHandle.get(key);
+        if (map) return { type, kind: "map", value: map };
+        const channel = this.channelsByHandle.get(key);
+        if (channel) return { type, kind: "channel", value: channel };
+        if (this.functionsByHandle.has(key)) return this.loadFunction(handle, type);
+        invalid("reference owner is unavailable", "memory.handle");
+      },
+    });
+  }
+
+  private createMap(type: RuntimeType): TypedMap {
+    const underlying = type.registry.underlying(type);
+    const node = underlying.registry.node(underlying);
+    const keyType =
+      underlying.dynamic?.key ?? (node?.key ? underlying.registry.runtime(node.key) : undefined);
+    const valueType =
+      underlying.dynamic?.elem ?? (node?.elem ? underlying.registry.runtime(node.elem) : undefined);
+    if (!keyType || !valueType) invalid("map type is missing key or element", "map");
+    const ownedKeyType = this.ownedType(keyType);
+    const ownedValueType = this.ownedType(valueType);
+    const map = new TypedMap(
+      this.storageOwner,
+      ownedKeyType,
+      ownedValueType,
+      remapStorageLayout(this.storageLayout(keyType), (item) => this.ownedType(item)),
+      remapStorageLayout(this.storageLayout(valueType), (item) => this.ownedType(item)),
+    );
+    this.mapHandles.set(map, map.handle);
+    this.mapsByHandle.set(`${map.handle.slot}:${map.handle.generation}`, map);
+    return map;
+  }
+
   private makeMap(frame: Frame, descriptor: Record<string, unknown>, inputs: Value[]): Value {
     const type = this.descriptorType(frame, descriptor);
-    const map = createGuestMap();
+    const map = this.createMap(type);
     const count = descriptorInteger(descriptor.entry_count);
     this.checkSequence(count, "make_map");
     for (let index = 0; index < count; index++) {
       const key = inputs[index * 2]!;
       const value = inputs[index * 2 + 1]!;
       assertComparable(key);
-      guestMapSet(map, cloneValue(key), cloneValue(value));
+      map.set(key, value);
     }
     return { type, kind: "map", value: map };
   }
@@ -2016,12 +2924,15 @@ export class VirtualMachine {
       element.registry.underlying(element).ref.primitive === PrimitiveKind.PrimitiveUint8;
     const backing: Value = byteSlice
       ? { type, kind: "bytes", value: new Uint8Array(capacity) }
-      : { type, kind: "array", value: Array.from({ length: capacity }, () => zero(element)) };
+      : { type, kind: "array", value: [] };
     return {
       type,
       kind: "slice",
       value: {
-        storage: { root: cell(backing), path: [] },
+        storage: {
+          root: this.managedCell(backing, prepareArrayStorageLayout(element, capacity)),
+          path: [],
+        },
         start: 0,
         length,
         capacity,
@@ -2029,20 +2940,24 @@ export class VirtualMachine {
     };
   }
 
+  private createChannel(type: RuntimeType, capacity: number): TypedChannel {
+    this.checkSequence(capacity, "make_waitable");
+    const element = this.channelElement(type);
+    const channel = new TypedChannel(this.storageOwner, this.ownedType(element), capacity);
+    this.channelHandles.set(channel, channel.handle);
+    this.channelsByHandle.set(`${channel.handle.slot}:${channel.handle.generation}`, channel);
+    return channel;
+  }
+
   private makeChannel(frame: Frame, descriptor: Record<string, unknown>, capacity: Value): Value {
     const type = this.descriptorType(frame, descriptor);
     const size = asIndex(capacity);
     this.checkSequence(size, "make_waitable");
+    const channel = this.createChannel(type, size);
     return {
       type,
       kind: "channel",
-      value: {
-        capacity: size,
-        closed: false,
-        queue: [],
-        senders: [],
-        receivers: [],
-      } satisfies Channel,
+      value: channel,
     };
   }
 
@@ -2060,11 +2975,8 @@ export class VirtualMachine {
   private loadIndex(object: Value, key: Value): [Value, boolean] {
     if (object.kind === "map") {
       assertComparable(key);
-      const entry = guestMapGet(object.value as GuestMap, key);
-      return [
-        entry ? cloneValue(entry.value) : zero(this.elementType(object.type)),
-        Boolean(entry),
-      ];
+      const entry = (object.value as TypedMap).get(key);
+      return [entry ? entry.value : zero(this.elementType(object.type)), Boolean(entry)];
     }
     if (
       object.kind === "nil" &&
@@ -2073,7 +2985,7 @@ export class VirtualMachine {
       assertComparable(key);
       return [zero(this.elementType(object.type)), false];
     }
-    return [cloneValue(indexValue(object, asIndex(key))), true];
+    return [indexValue(object, asIndex(key)), true];
   }
 
   private indexConvert(object: Value, key: Value, type: RuntimeType): Value {
@@ -2101,8 +3013,9 @@ export class VirtualMachine {
   private storeIndex(object: Value, key: Value, value: Value): void {
     if (object.kind === "map") {
       assertComparable(key);
-      const map = object.value as GuestMap;
-      guestMapSet(map, cloneValue(key), cloneValue(value));
+
+      const map = object.value as TypedMap;
+      map.set(key, value);
       return;
     }
     if (
@@ -2112,14 +3025,17 @@ export class VirtualMachine {
       assertComparable(key);
       fail("assignment to entry in nil map", "store_index", "panic");
     }
-    setIndex(object, asIndex(key), value);
+    const index = asIndex(key);
+    setIndex(object, index, value);
   }
 
   private storeField(object: Value, name: string, value: Value): void {
     if (object.kind === "pointer") object = dereference(object.value as Address);
     if (object.kind !== "struct") invalid("field store targets non-struct", "store_field");
+    if (writePackedField(object, name, value)) return;
     const fields = object.value as Map<string, Value>;
-    if (!fields.has(name)) invalid("unknown field", name);
+    const previous = fields.get(name);
+    if (!previous) invalid("unknown field", name);
     fields.set(name, cloneValue(value));
   }
 
@@ -2153,7 +3069,7 @@ export class VirtualMachine {
     if (object.kind === "array" || object.kind === "bytes") {
       const capacity =
         object.kind === "array"
-          ? (object.value as Value[]).length
+          ? (packedLength(object) ?? (object.value as Value[]).length)
           : (object.value as Uint8Array).length;
       if (low > high || high > (max ?? capacity) || (max ?? capacity) > capacity)
         fail("slice bounds out of range", "slice", "panic");
@@ -2165,7 +3081,7 @@ export class VirtualMachine {
         type,
         kind: "slice",
         value: {
-          storage: storage ?? { root: cell(object), path: [] },
+          storage: storage ?? { root: this.managedCell(object), path: [] },
           start: low,
           length: high - low,
           capacity: (max ?? capacity) - low,
@@ -2202,13 +3118,13 @@ export class VirtualMachine {
       return 0;
     }
     if (value.kind === "string" && !wantCapacity) return (value.value as Uint8Array).length;
-    if (value.kind === "array") return (value.value as Value[]).length;
+    if (value.kind === "array") return packedLength(value) ?? (value.value as Value[]).length;
     if (value.kind === "bytes") return (value.value as Uint8Array).length;
     if (value.kind === "slice")
       return wantCapacity
         ? (value.value as SliceValue).capacity
         : (value.value as SliceValue).length;
-    if (value.kind === "map" && !wantCapacity) return (value.value as GuestMap).entries.length;
+    if (value.kind === "map" && !wantCapacity) return (value.value as TypedMap).size;
     if (value.kind === "channel")
       return wantCapacity
         ? (value.value as Channel).capacity
@@ -2275,7 +3191,10 @@ export class VirtualMachine {
     let slice: SliceValue;
     if (original.kind === "nil") {
       slice = {
-        storage: { root: cell({ type: original.type, kind: "array", value: [] }), path: [] },
+        storage: {
+          root: this.managedCell({ type: original.type, kind: "array", value: [] }),
+          path: [],
+        },
         start: 0,
         length: 0,
         capacity: 0,
@@ -2291,7 +3210,7 @@ export class VirtualMachine {
           ? originalBytes
           : undefined;
       const old = oldBytes ? undefined : this.sliceValues(original);
-      if (appendedBytes || appendedByte !== undefined) this.reserveByteBacking(capacity);
+
       const backing: Value =
         appendedBytes || appendedByte !== undefined
           ? { type: original.type, kind: "bytes", value: new Uint8Array(capacity) }
@@ -2300,21 +3219,19 @@ export class VirtualMachine {
               kind: "array",
               value: Array.from({ length: capacity }, () => zero(element)),
             };
-      const root = cell(backing);
-      // A new backing changes reachability. Trace it after the output commits;
-      // content-only appends keep the existing graph and need no trace.
-      this.guestMemory.markDirty();
+      if (oldBytes)
+        (backing.value as Uint8Array).set(
+          oldBytes.bytes.subarray(oldBytes.offset, oldBytes.offset + oldBytes.length),
+        );
+      else for (let index = 0; index < old!.length; index++) setIndex(backing, index, old![index]!);
+      const root = this.managedCell(backing);
+
       slice = {
         storage: { root, path: [] },
         start: 0,
         length: oldBytes?.length ?? old!.length,
         capacity,
       };
-      if (oldBytes)
-        (backing.value as Uint8Array).set(
-          oldBytes.bytes.subarray(oldBytes.offset, oldBytes.offset + oldBytes.length),
-        );
-      else for (let index = 0; index < old!.length; index++) setIndex(backing, index, old![index]!);
     }
     const result: Value = {
       type: original.type,
@@ -2326,23 +3243,12 @@ export class VirtualMachine {
       if (!target) invalid("append byte backing is not addressable", "append");
       if (appendedBytes) target.bytes.set(appendedBytes, target.offset + slice.length);
       else target.bytes[target.offset + slice.length] = appendedByte!;
+      target.commit?.();
     } else
       for (let index = 0; index < values.length; index++)
         setIndex(result, slice.length + index, values[index]!);
-    if (!appendedBytes && appendedByte === undefined) this.guestMemory.markDirty();
-    return result;
-  }
 
-  private reserveByteBacking(capacity: number): void {
-    const payloadBytes = BigInt(capacity) * GUEST_COST.byte;
-    const heapBytes = GUEST_COST.node + payloadBytes;
-    // The backing is reachable through both the heap cell and the stored
-    // bytes value. Charge each representation; the slice wrapper is a frame
-    // root and is accounted by writeOutput.
-    const guestBytes = heapBytes + GUEST_COST.node + payloadBytes;
-    if (this.guestMemory.reservationNeedsCensus(guestBytes, 0n, heapBytes, 1n))
-      this.updateMemoryCensus(true);
-    this.guestMemory.reserve(guestBytes, 0n, heapBytes, 1n);
+    return result;
   }
 
   private sliceValues(value: Value): Value[] {
@@ -2353,7 +3259,8 @@ export class VirtualMachine {
         kind: "uint" as const,
         value: BigInt(byte),
       }));
-    if (value.kind === "array") return (value.value as Value[]).map(cloneValue);
+    if (value.kind === "array")
+      return [...(packedItems(value) ?? (value.value as Value[]))].map(cloneValue);
     if (value.kind !== "slice") invalid("expected slice", "slice");
     const slice = value.value as SliceValue;
     return Array.from({ length: slice.length }, (_, index) => cloneValue(indexValue(value, index)));
@@ -2361,7 +3268,7 @@ export class VirtualMachine {
 
   private byteSliceView(
     value: Value,
-  ): { bytes: Uint8Array; offset: number; length: number } | undefined {
+  ): { bytes: Uint8Array; offset: number; length: number; commit?: () => void } | undefined {
     if (value.kind === "string" || value.kind === "bytes")
       return {
         bytes: value.value as Uint8Array,
@@ -2377,18 +3284,22 @@ export class VirtualMachine {
     )
       return undefined;
     const slice = value.value as SliceValue;
-    let root = slice.storage.root.value;
-    let offset = slice.start;
-    for (const segment of slice.storage.path) {
-      if (segment.kind === "typeView") continue;
-      if (segment.kind === "arrayView") {
-        offset += segment.start;
-        continue;
-      }
-      return undefined;
-    }
-    if (root.kind !== "bytes") return undefined;
-    return { bytes: root.value as Uint8Array, offset, length: slice.length };
+    const handle = slice.storage.root.managedHandle;
+    if (!handle) invalid("byte slice has no managed backing", "memory.handle");
+    const storage = this.managedStorageLayouts.get(`${handle.slot}:${handle.generation}`)!;
+    const location = resolveStorageLocation(
+      { handle, offset: 0, type: storage.type },
+      storage.layout,
+      slice.storage.path,
+    );
+    const offset = location.offset + slice.start;
+    const bytes = this.guestMemory.managedHeap.read(handle, offset, slice.capacity);
+    return {
+      bytes,
+      offset: 0,
+      length: slice.length,
+      commit: () => this.guestMemory.managedHeap.write(handle, bytes, offset),
+    };
   }
 
   private copy(destination: Value, source: Value): number {
@@ -2407,11 +3318,12 @@ export class VirtualMachine {
         sourceBytes.bytes.subarray(sourceBytes.offset, sourceBytes.offset + count),
         destinationBytes.offset,
       );
+      destinationBytes.commit?.();
       return count;
     }
     const values = this.sliceValues(source);
     const count = Math.min(slice.length, values.length);
-    if (count > 0) this.guestMemory.markDirty();
+
     for (let index = 0; index < count; index++) setIndex(destination, index, values[index]!);
     return count;
   }
@@ -2420,13 +3332,14 @@ export class VirtualMachine {
     assertComparable(key);
     if (value.kind === "nil") return;
     if (value.kind !== "map") invalid("delete target is not map", "delete");
-    guestMapDelete(value.value as GuestMap, key);
+    (value.value as TypedMap).delete(key);
   }
 
   private clear(value: Value): void {
     if (value.kind === "nil") return;
-    if (value.kind === "map") guestMapClear(value.value as GuestMap);
-    else if (value.kind === "slice") {
+    if (value.kind === "map") {
+      (value.value as TypedMap).clear();
+    } else if (value.kind === "slice") {
       const slice = value.value as SliceValue;
       const element = this.elementType(value.type);
       for (let index = 0; index < slice.length; index++) setIndex(value, index, zero(element));
@@ -2437,37 +3350,53 @@ export class VirtualMachine {
     const keys =
       value.kind === "nil"
         ? []
-        : (value.value as GuestMap).entries.map((entry) => cloneValue(entry.key));
+        : [...(value.value as TypedMap).entries()].map((entry) => entry.key);
     const type = frame.fn.slotTypes[frame.fn.instructions[frame.pc - 1]!.operands.outputs[0]!]!;
     return { type, kind: "array", value: keys };
   }
 
-  private mapIterInit(frame: Frame, descriptor: Record<string, unknown>, value: Value): void {
-    const map: GuestMap = value.kind === "nil" ? createGuestMap() : (value.value as GuestMap);
-    this.mapIterators(frame).set(descriptorText(descriptor.local), {
+  private mapIterInit(frame: Frame, local: number, value: Value): void {
+    const map = value.kind === "nil" ? undefined : (value.value as TypedMap);
+    const iterators = this.mapIterators(frame);
+    const previous = iterators[local];
+    const bytes = BigInt(STORAGE_COST.control_record + (map?.size ?? 0) * 8);
+    const reservation = this.reserveControl(bytes);
+    let resident: { release(): void } | undefined;
+    let entries: Uint32Array;
+    try {
+      resident = this.reserveResident(bytes);
+      entries = map?.snapshot() ?? new Uint32Array();
+    } catch (error) {
+      resident?.release();
+      reservation.abort();
+      throw error;
+    }
+    const memory = reservation.commit();
+    if (previous) this.releaseMapIterator(previous);
+    iterators[local] = {
       map,
-      entries: [...map.entries],
+      entries,
       offset: 0,
-    });
+      memory,
+      resident,
+    };
   }
 
-  private mapIterNext(frame: Frame, descriptor: Record<string, unknown>): Value[] {
-    const iterator = frame.mapIterators?.get(descriptorText(descriptor.local));
+  private mapIterNext(frame: Frame, instruction: PreparedInstruction): Value[] {
+    const local = instruction.iteratorLocal;
+    if (local === undefined) invalid("map iterator local is unavailable", "map_iter_next");
+    const iterator = frame.mapIterators?.[local];
     if (!iterator) invalid("map iterator is not initialized", "map_iter_next");
     while (iterator.offset < iterator.entries.length) {
-      const entry = iterator.entries[iterator.offset++]!;
-      const current = iterator.map.entries.includes(entry) ? entry : undefined;
-      if (current)
-        return [
-          cloneValue(current.key),
-          cloneValue(current.value),
-          boolValue(frame.fn.module.registry, true),
-        ];
+      const index = iterator.entries[iterator.offset++]!;
+      const generation = iterator.entries[iterator.offset++]!;
+      const current = iterator.map?.entry(index, generation);
+      if (current) return [current.key, current.value, boolValue(frame.fn.module.registry, true)];
     }
-    const instruction = frame.fn.instructions[frame.pc - 1]!;
+    const currentInstruction = frame.fn.instructions[frame.pc - 1]!;
     return [
-      zero(this.outputType(frame, instruction.operands.outputs[0]!)),
-      zero(this.outputType(frame, instruction.operands.outputs[1]!)),
+      zero(this.outputType(frame, currentInstruction.operands.outputs[0]!)),
+      zero(this.outputType(frame, currentInstruction.operands.outputs[1]!)),
       boolValue(frame.fn.module.registry, false),
     ];
   }
@@ -2475,12 +3404,7 @@ export class VirtualMachine {
   private addressOf(frame: Frame, descriptor: Record<string, unknown>): Value {
     const address = this.resolveAddress(frame, descriptor);
     const target = dereference(address).type;
-    const type: RuntimeType = {
-      module: frame.fn.module.path,
-      registry: frame.fn.module.registry,
-      ref: { kind: Kind.Pointer, primitive: 0, named: emptyKey(), node: "" },
-    };
-    void target;
+    const type = this.dynamicType(frame.fn.module.registry, { kind: Kind.Pointer, elem: target });
     return { type, kind: "pointer", value: address };
   }
 
@@ -2492,7 +3416,7 @@ export class VirtualMachine {
       address = { root: this.localCell(frame, index), path: [] };
     } else if (kind === "upvalue") {
       const index = descriptorInteger(descriptor.$index);
-      address = { root: frame.upvalues[index]!.root, path: [...frame.upvalues[index]!.path] };
+      address = frame.upvalues[index]!;
     } else if (kind === "global") {
       const index = descriptorInteger(descriptor.$index);
       address = { root: frame.fn.module.globals[index]!, path: [] };
@@ -2504,24 +3428,43 @@ export class VirtualMachine {
       if (index === undefined) invalid("export address is invalid", "address_of");
       address = { root: module!.globals[index]!, path: [] };
     } else invalid("unknown address kind", "address_of");
-    const path: AddressPath[] = [...address!.path];
     for (const segmentValue of descriptorList(descriptor.path)) {
       const segment = descriptorRecord(segmentValue);
       const segmentKind = descriptorText(segment.kind);
-      if (segmentKind === "field")
-        path.push({ kind: "field", name: descriptorText(segment.field) });
-      else if (segmentKind === "index") {
+      if (segmentKind === "field") {
+        let current = dereference(address!);
+        if (current.kind === "interface") current = current.value as Value;
+        if (
+          current.kind === "nil" &&
+          current.type.registry.underlying(current.type).ref.kind === Kind.Pointer
+        )
+          fail("nil pointer dereference", "address", "panic");
+        if (current.kind === "pointer") {
+          address = current.value as Address;
+        }
+        address = advanceAddress(address!, { kind: "field", name: descriptorText(segment.field) });
+      } else if (segmentKind === "index") {
         const local = descriptorInteger(segment.$index);
-        path.push({ kind: "index", index: asIndex(localValue(frame.locals[local]!)) });
+        let index = asIndex(localValue(this.frameLocal(frame, local)));
+        let current = dereference(address!);
+        if (current.kind === "pointer") {
+          address = current.value as Address;
+          current = dereference(address);
+        }
+        if (current.kind === "slice") {
+          const slice = current.value as SliceValue;
+          if (index >= slice.length) fail("slice index out of range", "address", "panic");
+          address = slice.storage;
+          index += slice.start;
+        }
+        address = advanceAddress(address!, { kind: "index", index });
       } else if (segmentKind === "indirect") {
-        const current = dereference({ root: address!.root, path });
+        const current = dereference(address!);
         if (current.kind !== "pointer") fail("nil pointer dereference", "address", "panic");
         address = current.value as Address;
-        path.length = 0;
-        path.push(...address.path);
       } else invalid("unknown address path", "address_of");
     }
-    return { root: address!.root, path };
+    return address!;
   }
 
   private assertType(value: Value, type: RuntimeType): Value | undefined {
@@ -2558,6 +3501,14 @@ export class VirtualMachine {
     invalid("value is not assignable", "assignment");
   }
 
+  /**
+   * Storage writers already establish value ownership. Avoid materializing an
+   * intermediate clone when the prepared destination has the exact type.
+   */
+  private coerceForStorage(value: Value, type: RuntimeType): Value {
+    return value.type.registry.identical(value.type, type) ? value : this.coerce(value, type);
+  }
+
   private convertValue(value: Value, type: RuntimeType): Value {
     if (this.isInterface(type) || value.kind === "function") return this.coerce(value, type);
     const target = type.registry.underlying(type);
@@ -2578,18 +3529,12 @@ export class VirtualMachine {
         return {
           type,
           kind: "pointer",
-          value: {
-            root: slice.storage.root,
-            path: [
-              ...slice.storage.path,
-              {
-                kind: "arrayView",
-                start: slice.start,
-                length: targetNode.length,
-                type: targetElement,
-              },
-            ],
-          } satisfies Address,
+          value: advanceAddress(slice.storage, {
+            kind: "arrayView",
+            start: slice.start,
+            length: targetNode.length,
+            type: targetElement,
+          }),
         };
       }
     }
@@ -2605,7 +3550,7 @@ export class VirtualMachine {
       if (targetNode?.kind === Kind.Array && targetNode.length === 0) return nilValue(type);
       fail("slice is too short for array pointer conversion", "convert", "panic");
     }
-    return convert(value, type);
+    return convert(value, type, (backing) => this.managedCell(backing));
   }
 
   private isInterface(type: RuntimeType): boolean {
@@ -2637,7 +3582,7 @@ export class VirtualMachine {
 
   private typeDispatch(frame: Frame, descriptor: Record<string, unknown>): void {
     const subject = descriptorInteger(descriptor.$subject);
-    const value = localValue(frame.locals[subject]!);
+    const value = localValue(this.frameLocal(frame, subject));
     const dynamic = value.kind === "interface" ? (value.value as Value) : value;
     for (const item of descriptorList(descriptor.cases)) {
       const candidate = descriptorRecord(item);
@@ -2701,7 +3646,7 @@ export class VirtualMachine {
       );
     if (exported.kind === "global")
       return cloneValue(
-        module.globals[requiredIndex(module.globalIndexes, exported.id, "global")]!.value,
+        module.globals[requiredIndex(module.globalIndexes, exported.id, "global")]!.read(),
       );
     if (exported.kind === "function")
       return {
@@ -2767,16 +3712,7 @@ export class VirtualMachine {
     }
     const revision = this.functionRevision(fnValue);
     const fn = revision.program.function(fnValue.module, fnValue.function);
-    const child: Task = {
-      id: this.nextTask++,
-      scope: task.scope,
-      frames: [],
-      state: "runnable",
-    };
-    this.pushFrame(child, this.createFrame(fn, revision, args, fnValue.captures, [], false));
-    this.tasks.set(child.id, child);
-    this.scopes.get(task.scope)!.tasks.add(child.id);
-    this.runnable.push(child.id);
+    this.createTask(task.scope, fn, args, fnValue.captures, revision);
   }
 
   private send(task: Task, channelValue: Value, value: Value): void {
@@ -2786,7 +3722,7 @@ export class VirtualMachine {
       (id) => this.tasks.get(id)?.state === "blocked",
     );
     if (receiverIndex >= 0) {
-      const receiver = this.tasks.get(channel.receivers.splice(receiverIndex, 1)[0]!)!;
+      const receiver = this.tasks.get(channel.receivers[receiverIndex]!)!;
       const blocked = receiver.blocked;
       if (blocked?.kind === "receive") {
         const frame = receiver.frames[receiver.frames.length - 1]!;
@@ -2805,22 +3741,24 @@ export class VirtualMachine {
         if (blocked.receiveOK && !blocked.reflected)
           values.push(boolValue(frame.fn.module.registry, true));
         this.outputs(frame, blocked.outputs, values);
+        channel.receivers.splice(receiverIndex, 1);
         this.unblock(receiver);
       }
       this.wakeSelects();
       return;
     }
     if (channel.queue.length < channel.capacity) {
-      if (!this.reserveFlatStorage(value, false, true)) this.guestMemory.markDirty();
-      channel.queue.push(cloneValue(value));
+      const queued = cloneValue(value);
+      channel.queue.push(queued);
+
       this.wakeSelects();
       return;
     }
-    // A blocked sender is rooted by both the channel and the task. Reserve
-    // both copies atomically before publishing either reference.
-    if (!this.reserveFlatStorage(value, false, true, 2)) this.guestMemory.markDirty();
-    channel.senders.push({ task: task.id, value: cloneValue(value) });
-    this.block(task, { kind: "send", channel, value: cloneValue(value) });
+
+    const queued = this.managedCell(value);
+    channel.senders.push({ task: task.id, value: queued });
+
+    this.block(task, { kind: "send", channel, value: queued });
   }
 
   private receive(
@@ -2856,22 +3794,29 @@ export class VirtualMachine {
   private tryReceive(channelValue: Value): [Value, boolean] | undefined {
     const channel = this.channel(channelValue);
     if (channel.queue.length) {
-      const value = channel.queue.shift()!;
-      const sender = channel.senders.shift();
+      const sender = channel.senders[0];
+      const value = channel.queue.shift(sender?.value.read())!;
       if (sender) {
-        channel.queue.push(sender.value);
+        channel.senders.shift();
         const task = this.tasks.get(sender.task);
-        if (task) this.unblock(task);
+        if (task) {
+          this.unblock(task);
+        }
       }
+
       this.wakeSelects();
       return [value, true];
     }
     const sender = channel.senders.shift();
     if (sender) {
+      this.allocationRoots.push(sender.value.managedHandle!);
       const task = this.tasks.get(sender.task);
-      if (task) this.unblock(task);
+      if (task) {
+        this.unblock(task);
+      }
+
       this.wakeSelects();
-      return [sender.value, true];
+      return [sender.value.read(), true];
     }
     if (channel.closed) return [zero(this.channelElement(channelValue.type)), false];
     return undefined;
@@ -2933,8 +3878,9 @@ export class VirtualMachine {
       }
     }
     for (const sender of channel.senders.splice(0)) {
-      const task = this.tasks.get(sender.task);
-      if (task) this.failTask(task, new VMError("send on closed channel", "panic", "send"));
+      const senderTask = this.tasks.get(sender.task);
+      if (senderTask)
+        this.failTask(senderTask, new VMError("send on closed channel", "panic", "send"));
     }
   }
 
@@ -2954,8 +3900,29 @@ export class VirtualMachine {
     task.blocked = blocked;
   }
 
+  private releaseBlocked(task: Task): void {
+    const blocked = task.blocked;
+    if (!blocked) return;
+    if (blocked.kind === "reflectSelect") blocked.memory?.release();
+    if (blocked.kind === "ffi") {
+      const pending = this.pendingHost.get(blocked.id);
+      if (pending && !pending.cancelSent) {
+        pending.cancelSent = true;
+        this.pendingActions.push({ kind: "cancel", id: blocked.id });
+      }
+    }
+    delete task.blocked;
+  }
+
+  private releaseTimers(): void {
+    for (const timer of this.timers.values()) timer.memory.release();
+    this.timers.clear();
+  }
+
   private unblock(task: Task): void {
     if (task.state !== "blocked") return;
+    const frame = task.frames[task.frames.length - 1];
+    if (frame) delete frame.rootPC;
     task.state = "runnable";
     delete task.blocked;
     this.runnable.push(task.id);
@@ -2980,11 +3947,11 @@ export class VirtualMachine {
     for (let index = 0; index < cases.length; index++) {
       const selected = cases[index]!;
       const channelIndex = selected.channel;
-      const channelValue = localValue(frame.locals[channelIndex]!);
+      const channelValue = localValue(this.frameLocal(frame, channelIndex));
       if (selected.send !== undefined) {
         if (!this.canSend(channelValue)) continue;
         const sendIndex = selected.send;
-        this.send(task, channelValue, localValue(frame.locals[sendIndex]!));
+        this.send(task, channelValue, localValue(this.frameLocal(frame, sendIndex)));
       } else {
         if (!this.canReceive(channelValue)) continue;
         const received = this.tryReceive(channelValue)!;
@@ -3023,11 +3990,16 @@ export class VirtualMachine {
       else if (task.blocked?.kind === "reflectSelect") {
         const blocked = task.blocked;
         const frame = task.frames[task.frames.length - 1]!;
+        for (const item of blocked.cases) {
+          if (item.channel) this.allocationRoots.push(item.channel.managedHandle!);
+          if (item.send) this.allocationRoots.push(item.send.managedHandle!);
+        }
         delete task.blocked;
         task.state = "runnable";
-        if (this.completeReflectSelect(task, frame, blocked.outputs, blocked.cases))
+        if (this.completeReflectSelect(task, frame, blocked.outputs, blocked.cases)) {
+          blocked.memory?.release();
           this.runnable.push(task.id);
-        else {
+        } else {
           task.state = "blocked";
           task.blocked = blocked;
         }
@@ -3056,9 +4028,9 @@ export class VirtualMachine {
     for (const item of cases) {
       if (!item.channel || item.default) continue;
       if (item.receive) {
-        const received = this.tryReceive(item.channel);
+        const received = this.tryReceive(item.channel.read());
         if (received) return selected(item.index, received[0], received[1]);
-      } else if (item.send && this.trySend(item.channel, item.send, task)) {
+      } else if (item.send && this.trySend(item.channel.read(), item.send.read(), task)) {
         return selected(item.index, undefined, false);
       }
     }
@@ -3075,7 +4047,7 @@ export class VirtualMachine {
   ): boolean {
     for (let index = 0; index < cases.length; index++) {
       const selected = cases[index]!;
-      const channelValue = localValue(frame.locals[selected.channel]!);
+      const channelValue = localValue(this.frameLocal(frame, selected.channel));
       if (channelValue.kind !== "channel" || (channelValue.value as Channel).capacity !== 0)
         continue;
       for (const other of this.tasks.values()) {
@@ -3098,14 +4070,14 @@ export class VirtualMachine {
         for (let otherIndex = 0; otherIndex < otherCases.length; otherIndex++) {
           const candidate = otherCases[otherIndex]!;
           if ((selected.send !== undefined) === (candidate.send !== undefined)) continue;
-          const otherChannel = localValue(otherFrame.locals[candidate.channel]!);
+          const otherChannel = localValue(this.frameLocal(otherFrame, candidate.channel));
           if (otherChannel.kind !== "channel" || otherChannel.value !== channelValue.value)
             continue;
           const senderFrame = selected.send !== undefined ? frame : otherFrame;
           const sender = selected.send !== undefined ? selected : candidate;
           const receiverFrame = selected.send !== undefined ? otherFrame : frame;
           const receiver = selected.send !== undefined ? candidate : selected;
-          const sent = localValue(senderFrame.locals[sender.send!]!);
+          const sent = localValue(this.frameLocal(senderFrame, sender.send!));
           if (receiver.value !== undefined)
             this.setLocal(receiverFrame, receiver.value, cloneValue(sent));
           if (receiver.ok !== undefined)
@@ -3148,10 +4120,12 @@ export class VirtualMachine {
     const id = this.nextHostCall++;
     this.ffiCalls++;
     this.ffiBytes += BigInt(payload.length);
+    const memory = this.reserveControl(BigInt(STORAGE_COST.control_record)).commit();
     this.pendingHost.set(id, {
       task: task.id,
       outputs: instruction.operands.outputs,
       resultType: this.outputType(frame, instruction.operands.outputs[0]!),
+      memory,
     });
     this.pendingActions.push({ kind: "call", id, route, payload: [...payload] });
     this.block(task, { kind: "ffi", id });
@@ -3160,19 +4134,57 @@ export class VirtualMachine {
   complete(id: number, payload: Uint8Array, error?: string): void {
     const pending = this.pendingHost.get(id);
     if (!pending) return;
-    this.pendingHost.delete(id);
+    if (pending.reply) return;
+    pending.reply =
+      error === undefined
+        ? { payload: Uint8Array.from(payload) }
+        : { payload: Uint8Array.from(payload), error };
+    this.processHostReply(id, pending);
+  }
+
+  private processHostReply(id: number, pending: PendingHostCall): void {
+    const reply = pending.reply;
+    if (!reply) return;
     const task = this.tasks.get(pending.task);
-    if (!task || task.state !== "blocked") return;
-    const frame = task.frames[task.frames.length - 1]!;
-    const status = error ? (error.includes("route unavailable") ? 1n : 2n) : 0n;
-    const value = this.byteSlice(pending.resultType, payload);
-    this.outputs(frame, pending.outputs, [
-      value,
-      stringValue(frame.fn.module.registry, textEncoder.encode(error ?? "")),
-      intValue(frame.fn.module.registry, status),
-    ]);
-    this.pendingActions.push({ kind: "decision", id, accepted: !error });
-    this.unblock(task);
+    if (!task || task.state !== "blocked") {
+      this.pendingHost.delete(id);
+      pending.replyMemory?.release();
+      delete pending.replyMemory;
+      pending.memory.release();
+      this.pendingActions.push({ kind: "decision", id, accepted: false });
+      return;
+    }
+    let materializationError: VMError | undefined;
+    try {
+      if (!pending.replyMemory)
+        pending.replyMemory = this.reserveControl(BigInt(reply.payload.byteLength)).commit();
+      const frame = task.frames[task.frames.length - 1]!;
+      const status = reply.error ? (reply.error.includes("route unavailable") ? 1n : 2n) : 0n;
+      const value = this.byteSlice(pending.resultType, reply.payload);
+      this.outputs(frame, pending.outputs, [
+        value,
+        stringValue(frame.fn.module.registry, textEncoder.encode(reply.error ?? "")),
+        intValue(frame.fn.module.registry, status),
+      ]);
+    } catch (error) {
+      // Allocation helpers already collect and retry before returning a
+      // terminal failure. A ready reply must reach a decision even when its
+      // payload cannot fit; polling must not replay the host call or retry
+      // the same permanent quota failure indefinitely.
+      materializationError = toVMError(error);
+    }
+    this.pendingHost.delete(id);
+    pending.replyMemory?.release();
+    delete pending.replyMemory;
+    pending.memory.release();
+    this.pendingActions.push({
+      kind: "decision",
+      id,
+      accepted: materializationError === undefined && !reply.error,
+    });
+    if (materializationError) this.failTask(task, materializationError);
+    else this.unblock(task);
+    delete pending.reply;
   }
 
   decisionDone(_id: number): void {}
@@ -3183,7 +4195,7 @@ export class VirtualMachine {
   }
 
   private byteSlice(type: RuntimeType, bytes: Uint8Array): Value {
-    const storage = cell({ type, kind: "bytes", value: Uint8Array.from(bytes) });
+    const storage = this.managedCell({ type, kind: "bytes", value: Uint8Array.from(bytes) });
     return {
       type,
       kind: "slice",
@@ -3273,10 +4285,12 @@ export class VirtualMachine {
         const seconds = inputs[1]!.value as bigint;
         const nanos = inputs[2]!.value as bigint;
         const delay = Math.max(0, Number(seconds * 1000n + nanos / 1_000_000n));
+        const memory = this.reserveControl(BigInt(STORAGE_COST.control_record)).commit();
         const timer: TimerRecord = {
           id: this.nextTimer++,
           channel,
           deadline: performance.now() + delay,
+          memory,
           canceled: false,
         };
         this.timers.set(timer.id, timer);
@@ -3287,7 +4301,11 @@ export class VirtualMachine {
         const timer = [...this.timers.values()].find(
           (item) => item.channel === channel && !item.canceled,
         );
-        if (timer) timer.canceled = true;
+        if (timer) {
+          timer.canceled = true;
+          this.timers.delete(timer.id);
+          timer.memory.release();
+        }
         output(boolValue(frame.fn.module.registry, Boolean(timer)));
         return;
       }
@@ -3296,21 +4314,22 @@ export class VirtualMachine {
         return;
       case "sync.mutex_try_lock": {
         const mutex = this.mutex(inputs[0]!);
-        const acquired = !mutex.locked;
-        if (acquired) mutex.locked = true;
+        const acquired = mutex.length === 0;
+        if (acquired) mutex.push(boolValue(frame.fn.module.registry, true));
         output(boolValue(frame.fn.module.registry, acquired));
         return;
       }
       case "sync.mutex_unlock": {
         const mutex = this.mutex(inputs[0]!);
-        if (!mutex.locked) fail("unlock of unlocked mutex", id, "panic");
-        mutex.locked = false;
+        if (mutex.length === 0) fail("unlock of unlocked mutex", id, "panic");
+        mutex.shift();
+        this.wakeSelects();
         return;
       }
       case "sync.mutex_lock": {
         const mutex = this.mutex(inputs[0]!);
-        if (!mutex.locked) {
-          mutex.locked = true;
+        if (mutex.length === 0) {
+          mutex.push(boolValue(frame.fn.module.registry, true));
           return;
         }
         frame.pc--;
@@ -3321,19 +4340,14 @@ export class VirtualMachine {
         output(sha256Block(inputs[0]!, this.bytesFromSlice(inputs[1]!)));
         return;
       case "crypto.rand.read": {
-        const bytes = this.bytesFromSlice(inputs[0]!);
+        const destination = this.byteSliceView(inputs[0]!);
+        if (!destination) invalid("random destination is not a byte slice", id);
+        const bytes = destination.bytes.subarray(
+          destination.offset,
+          destination.offset + destination.length,
+        );
         crypto.getRandomValues(bytes);
-        const destination = inputs[0]!;
-        if (destination.kind === "slice") {
-          const slice = destination.value as SliceValue;
-          const backing = dereference(slice.storage);
-          for (let index = 0; index < bytes.length; index++)
-            setIndex(backing, slice.start + index, {
-              type: primitive(frame.fn.module.registry, PrimitiveKind.PrimitiveUint8),
-              kind: "uint",
-              value: BigInt(bytes[index]!),
-            });
-        }
+        destination.commit?.();
         output(
           intValue(frame.fn.module.registry, BigInt(bytes.length)),
           stringValue(frame.fn.module.registry, new Uint8Array()),
@@ -3350,14 +4364,15 @@ export class VirtualMachine {
     }
   }
 
-  private mutex(value: Value): { locked: boolean; waiting: number; granted: boolean } {
-    if (value.kind === "pointer") value = dereference(value.value as Address);
-    if (value.kind === "nil") {
-      value.kind = "mutex";
-      value.value = { locked: false, waiting: 0, granted: false };
+  private mutex(value: Value): TypedChannel {
+    if (value.kind !== "pointer") invalid("mutex state requires an address", "mutex");
+    const address = value.value as Address;
+    let state = dereference(address);
+    if (state.kind === "nil") {
+      state = { type: state.type, kind: "channel", value: this.createChannel(state.type, 1) };
+      assign(address, state);
     }
-    if (value.kind !== "mutex") invalid("expected mutex", "mutex");
-    return value.value as { locked: boolean; waiting: number; granted: boolean };
+    return this.channel(state);
   }
 
   private reflectIntrinsic(
@@ -3499,7 +4514,7 @@ export class VirtualMachine {
         const type = this.reflectedType(inputs[0]!);
         let value: Value;
         if (id === "reflect.new") {
-          const root = cell(zero(type));
+          const root = this.managedCell(zero(type));
           value = {
             type: this.dynamicType(type.registry, { kind: Kind.Pointer, elem: type }),
             kind: "pointer",
@@ -3510,18 +4525,14 @@ export class VirtualMachine {
             fail("reflect.MakeSlice: length exceeds capacity", id, "reflect");
           value = this.makeSlice(frame, { $type: type, has_capacity: true }, inputs.slice(1));
         } else if (id === "reflect.make_map") {
-          value = { type, kind: "map", value: createGuestMap() };
+          const map = this.createMap(type);
+          value = { type, kind: "map", value: map };
         } else if (id === "reflect.make_chan") {
+          const channel = this.createChannel(type, asIndex(inputs[1]!));
           value = {
             type,
             kind: "channel",
-            value: {
-              capacity: asIndex(inputs[1]!),
-              closed: false,
-              queue: [],
-              senders: [],
-              receivers: [],
-            } satisfies Channel,
+            value: channel,
           };
         } else value = zero(type);
         success(
@@ -3684,10 +4695,18 @@ export class VirtualMachine {
       }
       if (id === "reflect.value_method") {
         const receiver = this.reflectedView(inputs[0]!).current;
-        const method = inputs[1]!.metadata as
-          | { function: FunctionValue; type: RuntimeType }
-          | undefined;
-        if (!receiver || !method) fail("reflect: invalid Method", id, "reflect");
+        const methodValue = inputs[1]!;
+        if (!receiver || methodValue.kind !== "struct")
+          fail("reflect: invalid Method", id, "reflect");
+        const callableValue = fieldValue(methodValue, "Func");
+        const callableView = callableValue ? this.reflectedView(callableValue).current : undefined;
+        const signature = fieldValue(methodValue, "Type");
+        if (!callableView || callableView.kind !== "function" || !signature)
+          fail("reflect: invalid Method", id, "reflect");
+        const method = {
+          function: callableView.value as FunctionValue,
+          type: this.reflectedType(signature),
+        };
         let boundType = method.type;
         if (method.type.dynamic) {
           const dynamic: DynamicType = { ...method.type.dynamic };
@@ -3786,26 +4805,32 @@ export class VirtualMachine {
       if (id === "reflect.select") {
         const cases = this.sliceValues(inputs[0]!).map((value, index): ReflectedSelectCase => {
           if (value.kind !== "struct") fail("reflect.Select: invalid case", id, "reflect");
-          const fields = value.value as Map<string, Value>;
-          const direction = asIndex(fields.get("Dir")!);
+          const direction = asIndex(fieldValue(value, "Dir"));
           if (direction === 3) return { index, receive: false, default: true };
           if (direction !== 1 && direction !== 2)
             fail("reflect.Select: invalid direction", id, "reflect");
-          const channel = this.reflectedView(fields.get("Chan")!).current;
+          const channel = this.reflectedView(fieldValue(value, "Chan")).current;
           const selected: ReflectedSelectCase = {
             index,
             receive: direction === 2,
             default: false,
           };
-          if (channel) selected.channel = channel;
+          if (channel) selected.channel = this.managedCell(channel);
           if (direction === 1) {
-            const send = this.reflectedView(fields.get("Send")!).current;
-            if (send) selected.send = send;
+            const send = this.reflectedView(fieldValue(value, "Send")).current;
+            if (send) selected.send = this.managedCell(send);
           }
           return selected;
         });
-        if (!this.completeReflectSelect(task, frame, instruction.operands.outputs, cases))
-          this.block(task, { kind: "reflectSelect", cases, outputs: instruction.operands.outputs });
+        if (!this.completeReflectSelect(task, frame, instruction.operands.outputs, cases)) {
+          const memory = this.reserveControl(BigInt(STORAGE_COST.control_record)).commit();
+          this.block(task, {
+            kind: "reflectSelect",
+            cases,
+            outputs: instruction.operands.outputs,
+            memory,
+          });
+        }
         return;
       }
       if (id === "reflect.value_call") {
@@ -3832,9 +4857,13 @@ export class VirtualMachine {
   }
 
   private ownedView(value: Value): ReflectedView {
-    const refresh = cell(cloneValue(value));
+    // managedCell encodes the value into stable storage, so cloning before
+    // publication only creates a second aggregate graph. The view is
+    // non-addressable; callers that need a mutable/addressable value go
+    // through reflectedView/reflectValue and their explicit target path.
+    const refresh = this.managedCell(value);
     return {
-      current: cloneValue(refresh.value),
+      current: refresh.read(),
       refresh,
       addressable: false,
       settable: false,
@@ -3852,34 +4881,53 @@ export class VirtualMachine {
   }
 
   private reflectedView(value: Value): ReflectedView {
-    const view = value.metadata as ReflectedView | undefined;
-    if (!view) {
-      if (
-        value.type.ref.kind === Kind.Named &&
-        value.type.ref.named.module_path === "reflect" &&
-        value.type.ref.named.decl_id === "Value"
-      )
-        return this.invalidView();
-      fail("reflect: invalid Value", "reflect", "reflect");
-    }
-    const result: ReflectedView = { ...view };
-    if (view.target) {
-      result.current = cloneValue(dereference(view.target));
-      result.target = { root: view.target.root, path: [...view.target.path] };
+    if (value.kind !== "struct") fail("reflect: invalid Value", "reflect", "reflect");
+    if (!fieldValue(value, "valid").value) return this.invalidView();
+    const result: ReflectedView = {
+      addressable: Boolean(fieldValue(value, "addressable").value),
+      settable: Boolean(fieldValue(value, "settable").value),
+      interfaceable: Boolean(fieldValue(value, "interfaceable").value),
+      embeddedReadOnly: Boolean(fieldValue(value, "embeddedReadOnly").value),
+    };
+    const target = fieldValue(value, "target");
+    const pointer = target ? valueFromInterface(target) : undefined;
+    if (pointer?.kind === "pointer") {
+      const address = pointer.value as Address;
+      result.current = cloneValue(dereference(address));
+      if (result.addressable) result.target = address;
+      else if (address.path.length === 0) result.refresh = address.root;
     } else {
-      delete result.target;
-      if (view.refresh) result.current = cloneValue(view.refresh.value);
-      else if (view.current) result.current = cloneValue(view.current);
-      else delete result.current;
+      const data = fieldValue(value, "data");
+      if (data) result.current = cloneValue(valueFromInterface(data));
     }
     return result;
   }
 
   private reflectedType(value: Value): RuntimeType {
     if (value.kind === "interface") value = value.value as Value;
-    const type = value.metadata as RuntimeType | undefined;
+    const key = value.kind === "struct" ? fieldValue(value, "key") : undefined;
+    const type =
+      key?.kind === "string"
+        ? this.reflectedTypes.get(textDecoder.decode(key.value as Uint8Array))
+        : undefined;
     if (!type) fail("reflect: invalid Type", "reflect", "reflect");
+    if (key?.kind === "string") {
+      const storage = this.stringStorage.get(key.value as Uint8Array);
+      if (storage && this.guestMemory.managedHeap.has(storage.handle))
+        this.retainReflectedType(storage.handle, textDecoder.decode(key.value as Uint8Array));
+    }
     return type;
+  }
+
+  private retainReflectedType(handle: GuestHandle, key: string): void {
+    this.pendingReflectedTypes.delete(key);
+    const owner = `${handle.slot}:${handle.generation}`;
+    let keys = this.reflectedTypeOwners.get(owner);
+    if (!keys) {
+      keys = new Set();
+      this.reflectedTypeOwners.set(owner, keys);
+    }
+    keys.add(key);
   }
 
   private namedReflectType(frame: Frame, name: string): RuntimeType {
@@ -3914,11 +4962,20 @@ export class VirtualMachine {
       Number(this.options.limits?.maxDynamicTypeBytes ?? 16 * 1024 * 1024)
     )
       fail("dynamic type bytes exceed limit", "type", "allocation_limit");
-    this.reserveKnownGuest(BigInt(bytes) * GUEST_COST.byte);
-    this.guestMemory.markDirty();
-    this.dynamicTypes.set(canonical, candidate);
+    const metadataBytes = BigInt(STORAGE_COST.control_record + bytes);
+    const memory = this.reserveControl(metadataBytes).commit();
+    let resident: { release(): void };
+    try {
+      resident = this.reserveResident(metadataBytes);
+    } catch (error) {
+      memory.release();
+      throw error;
+    }
+    const owned = this.ownedType(candidate);
+    this.dynamicTypes.set(canonical, owned);
+    this.dynamicTypeLeases.set(canonical, { memory, resident, bytes });
     this.dynamicTypeBytes += bytes;
-    return candidate;
+    return owned;
   }
 
   private reflectStruct(frame: Frame, name: string, fields: Record<string, Value>): Value {
@@ -3935,10 +4992,15 @@ export class VirtualMachine {
   }
 
   private reflectType(frame: Frame, interfaceType: RuntimeType, type: RuntimeType): Value {
+    type = this.ownedType(type);
+    const key = type.registry.key(type);
+    this.pendingReflectedTypes.add(key);
+    this.reflectedTypes.set(key, type);
+    const keyBytes = textEncoder.encode(key);
+    this.reflectedTypeBytes.set(keyBytes, key);
     const concrete = this.reflectStruct(frame, "runtimeType", {
-      key: stringValue(frame.fn.module.registry, textEncoder.encode(type.registry.key(type))),
+      key: stringValue(frame.fn.module.registry, keyBytes),
     });
-    concrete.metadata = type;
     return { type: interfaceType, kind: "interface", value: concrete };
   }
 
@@ -3946,15 +5008,9 @@ export class VirtualMachine {
     const view = source.target
       ? { ...source, current: cloneValue(dereference(source.target)) }
       : source.refresh
-        ? { ...source, current: cloneValue(source.refresh.value) }
+        ? { ...source, current: cloneValue(source.refresh.read()) }
         : source;
     const result = zero(type);
-    const metadata: ReflectedView = { ...view };
-    if (view.current) metadata.current = cloneValue(view.current);
-    else delete metadata.current;
-    if (view.target) metadata.target = { root: view.target.root, path: [...view.target.path] };
-    else delete metadata.target;
-    result.metadata = metadata;
     if (!view.current || result.kind !== "struct") return result;
     const current = view.current;
     const fields = result.value as Map<string, Value>;
@@ -3971,7 +5027,7 @@ export class VirtualMachine {
       put("target", {
         type: this.dynamicType(current.type.registry, { kind: Kind.Pointer, elem: current.type }),
         kind: "pointer",
-        value: { root: address.root, path: [...address.path] } satisfies Address,
+        value: address,
       });
     }
     put("addressable", boolValue(frame.fn.module.registry, view.addressable));
@@ -3984,19 +5040,19 @@ export class VirtualMachine {
       current.kind === "string"
         ? (current.value as Uint8Array).length
         : current.kind === "array"
-          ? (current.value as Value[]).length
+          ? (packedLength(current) ?? (current.value as Value[]).length)
           : current.kind === "slice"
             ? (current.value as SliceValue).length
             : current.kind === "map"
-              ? (current.value as GuestMap).entries.length
+              ? (current.value as TypedMap).size
               : current.kind === "channel"
                 ? (current.value as Channel).queue.length
                 : current.kind === "struct"
-                  ? (current.value as Map<string, Value>).size
+                  ? (packedLength(current) ?? (current.value as Map<string, Value>).size)
                   : 0;
     const capacity =
       current.kind === "array"
-        ? (current.value as Value[]).length
+        ? (packedLength(current) ?? (current.value as Value[]).length)
         : current.kind === "slice"
           ? (current.value as SliceValue).capacity
           : current.kind === "channel"
@@ -4030,7 +5086,7 @@ export class VirtualMachine {
       const destination = fields.get("mapEntries");
       if (destination) {
         const entryType = this.elementType(destination.type);
-        const entries = (current.value as GuestMap).entries.map((entry) => {
+        const entries = [...(current.value as TypedMap).entries()].map((entry) => {
           const reflected = zero(entryType);
           if (reflected.kind !== "struct") return reflected;
           const values = reflected.value as Map<string, Value>;
@@ -4065,9 +5121,11 @@ export class VirtualMachine {
       return false;
     }
     if (value.kind === "array")
-      return (value.value as Value[]).every((item) => this.isZeroValue(item, seen));
+      return [...(packedItems(value) ?? (value.value as Value[]))].every((item) =>
+        this.isZeroValue(item, seen),
+      );
     if (value.kind === "struct")
-      return [...(value.value as Map<string, Value>)].every(
+      return [...(packedFields(value) ?? (value.value as Map<string, Value>))].every(
         ([name, item]) => name === "_" || this.isZeroValue(item, seen),
       );
     return false;
@@ -4382,12 +5440,11 @@ export class VirtualMachine {
     } else {
       const fields = this.sliceValues(inputs[0]!).map((field) => {
         if (field.kind !== "struct") fail("reflect.StructOf: invalid field", id, "reflect");
-        const values = field.value as Map<string, Value>;
         return {
-          name: textDecoder.decode(expectBytes(values.get("Name")!, id)),
-          type: this.reflectedType(values.get("Type")!),
-          tag: textDecoder.decode(expectBytes(values.get("Tag")!, id)),
-          embedded: Boolean(values.get("Anonymous")?.value),
+          name: textDecoder.decode(expectBytes(fieldValue(field, "Name"), id)),
+          type: this.reflectedType(fieldValue(field, "Type")),
+          tag: textDecoder.decode(expectBytes(fieldValue(field, "Tag"), id)),
+          embedded: Boolean(fieldValue(field, "Anonymous").value),
         };
       });
       type = this.dynamicType(registry, { kind: Kind.Struct, fields });
@@ -4460,7 +5517,6 @@ export class VirtualMachine {
       Index: intValue(frame.fn.module.registry, BigInt(index)),
     });
     value.type = outputType;
-    value.metadata = { function: functionValue, type: callableType };
     return value;
   }
 
@@ -4501,12 +5557,9 @@ export class VirtualMachine {
       let target: Address | undefined;
       if (view.current.kind === "slice") {
         const slice = view.current.value as SliceValue;
-        target = {
-          root: slice.storage.root,
-          path: [...slice.storage.path, { kind: "index", index: slice.start + index }],
-        };
+        target = advanceAddress(slice.storage, { kind: "index", index: slice.start + index });
       } else if (view.target && view.current.kind === "array") {
-        target = { root: view.target.root, path: [...view.target.path, { kind: "index", index }] };
+        target = advanceAddress(view.target, { kind: "index", index });
       }
       const result: ReflectedView = {
         current: cloneValue(current),
@@ -4528,10 +5581,7 @@ export class VirtualMachine {
           fail("reflect: Field index out of range", id, "reflect");
         view.current = fieldValue(view.current, field.name);
         if (view.target)
-          view.target = {
-            root: view.target.root,
-            path: [...view.target.path, { kind: "field", name: field.name }],
-          };
+          view.target = advanceAddress(view.target, { kind: "field", name: field.name });
         const exported = /^[A-Z]/.test(field.name);
         view.interfaceable = accessible && exported;
         view.embeddedReadOnly = accessible && !exported && field.embedded;
@@ -4564,15 +5614,15 @@ export class VirtualMachine {
         fail("reflect: slice bounds out of range", id, "reflect");
       return this.ownedView({ ...current, value: bytes.slice(low, high) });
     }
-    const values = current.value as Value[];
-    const limit = max ?? values.length;
-    if (low > high || high > limit || limit > values.length)
+    const length = packedLength(current) ?? (current.value as Value[]).length;
+    const limit = max ?? length;
+    if (low > high || high > limit || limit > length)
       fail("reflect: slice bounds out of range", id, "reflect");
     const sliceType = this.dynamicType(current.type.registry, {
       kind: Kind.Slice,
       elem: this.elementType(current.type),
     });
-    const storage = view.target ?? { root: cell(current), path: [] };
+    const storage = view.target ?? { root: this.managedCell(current), path: [] };
     return this.ownedView({
       type: sliceType,
       kind: "slice",
@@ -4607,7 +5657,7 @@ export class VirtualMachine {
     }
     const updated = { ...view.current, value: slice };
     if (view.target) assign(view.target, updated);
-    else if (view.refresh) view.refresh.value = updated;
+    else if (view.refresh) view.refresh.write(updated);
     else Object.assign(original, slice);
   }
 
@@ -4625,7 +5675,10 @@ export class VirtualMachine {
         type,
         kind: "slice",
         value: {
-          storage: { root: cell({ type, kind: "bytes", value: bytes }), path: [] },
+          storage: {
+            root: this.managedCell({ type, kind: "bytes", value: bytes }),
+            path: [],
+          },
           start: 0,
           length,
           capacity: values.length,
@@ -4636,7 +5689,10 @@ export class VirtualMachine {
       type,
       kind: "slice",
       value: {
-        storage: { root: cell({ type, kind: "array", value: values.map(cloneValue) }), path: [] },
+        storage: {
+          root: this.managedCell({ type, kind: "array", value: values.map(cloneValue) }),
+          path: [],
+        },
         start: 0,
         length,
         capacity: values.length,
@@ -4680,16 +5736,19 @@ export class VirtualMachine {
           pending.push([dereference(aa), dereference(bb)]);
         }
       } else if (a.kind === "array") {
-        const av = a.value as Value[];
-        const bv = b.value as Value[];
-        if (av.length !== bv.length) return false;
-        for (let index = 0; index < av.length; index++) pending.push([av[index]!, bv[index]!]);
+        const alength = packedLength(a) ?? (a.value as Value[]).length;
+        const blength = packedLength(b) ?? (b.value as Value[]).length;
+        if (alength !== blength) return false;
+        for (let index = 0; index < alength; index++)
+          pending.push([indexValue(a, index), indexValue(b, index)]);
       } else if (a.kind === "struct") {
-        const av = a.value as Map<string, Value>;
-        const bv = b.value as Map<string, Value>;
-        if (av.size !== bv.size) return false;
-        for (const [name, value] of av) {
-          const other = bv.get(name);
+        const av = packedFields(a) ?? (a.value as Map<string, Value>);
+        const bv = packedFields(b) ?? (b.value as Map<string, Value>);
+        const left = [...av];
+        const right = new Map(bv);
+        if (left.length !== right.size) return false;
+        for (const [name, value] of left) {
+          const other = right.get(name);
           if (!other) return false;
           pending.push([value, other]);
         }
@@ -4713,11 +5772,11 @@ export class VirtualMachine {
         )
           continue;
         seenObjects.push([ao, bo]);
-        const av = (a.value as GuestMap).entries;
-        const bv = (b.value as GuestMap).entries;
-        if (av.length !== bv.length) return false;
-        for (const entry of av) {
-          const other = guestMapGet(b.value as GuestMap, entry.key);
+        const av = a.value as TypedMap;
+        const bv = b.value as TypedMap;
+        if (av.size !== bv.size) return false;
+        for (const entry of av.entries()) {
+          const other = bv.get(entry.key);
           if (!other) return false;
           pending.push([entry.value, other.value]);
         }
@@ -4773,212 +5832,164 @@ export class VirtualMachine {
     this.pushFrame(task, child);
   }
 
-  private updateMemoryCensus(enforce: boolean): void {
-    const started = performance.now();
-    const census: MemoryCensus = {
-      liveHeapBytes: 0n,
-      liveHeapObjects: 0n,
-      liveGuestBytes: 0n,
-      strings: 0,
-      maxSequence: 0,
-      scannedEdges: 0n,
-      revisions: new Set([this.generation]),
-    };
-    const seenCells = this.censusCells;
-    const seenObjects = this.censusObjects;
-    const storage = new WeakSet<object>();
-    const pending = this.censusPending;
-    const pushValue = (value: Value | undefined, depth: number): void => {
-      if (value) pending.push({ value, depth });
-    };
-    const pushCell = (root: Cell | undefined, depth: number): void => {
-      if (root) pending.push({ cell: root, depth });
-    };
-    const pushChannel = (channel: Channel | undefined, depth: number): void => {
-      if (channel) pending.push({ channel, depth });
-    };
-
-    try {
-      for (const module of this.revision.program.modules.values())
-        for (const root of module.globals) pushCell(root, 0);
-      for (const task of this.tasks.values()) {
-        for (const frame of task.frames) {
-          census.revisions.add(frame.revision.generation);
-          for (const root of frame.locals)
-            if (isLocalCell(root)) pushCell(root, 0);
-            else pushValue(root, 0);
-          for (const address of frame.upvalues) pushCell(address.root, 0);
-          for (const value of frame.slots) pushValue(value, 0);
-          for (const deferred of frame.defers ?? []) {
-            census.revisions.add(deferred.revision);
-            for (const address of deferred.captures) pushCell(address.root, 0);
-            pushValue(deferred.receiver, 0);
-          }
-          for (const value of frame.returning ?? []) pushValue(value, 0);
-          pushValue(frame.panic, 0);
-          for (const iterator of frame.mapIterators?.values() ?? [])
-            for (const entry of iterator.entries) {
-              pushValue(entry.key, 0);
-              pushValue(entry.value, 0);
-            }
+  /** Owner roots contain typed slots and stable cells; payload edges belong to the heap. */
+  private *heapRoots(): IterableIterator<GuestHandle> {
+    yield* this.allocationRoots;
+    if (this.revision.constants) yield this.revision.constants;
+    for (const task of this.tasks.values()) {
+      for (const frame of task.frames) {
+        if (frame.revision.constants) yield frame.revision.constants;
+        for (const value of frame.inputScratch) yield* this.referencesInValue(value);
+        const plan = frame.fn.references!;
+        const pc = frame.returning
+          ? plan.atPC.length - 1
+          : Math.min(frame.rootPC ?? frame.pc, plan.atPC.length - 1);
+        const map = plan.maps[plan.atPC[pc]!]!;
+        const live = (index: number): boolean => Boolean(map[index >>> 5]! & (1 << (index & 31)));
+        for (let index = 0; index < frame.locals.length; index++) {
+          if (!live(index)) continue;
+          const local = frame.locals[index];
+          if (local) yield local.managedHandle!;
+          else yield* frame.localBank.references(index);
         }
-        if (task.blocked?.kind === "send") pushValue(task.blocked.value, 0);
-        if (task.blocked?.kind === "send" || task.blocked?.kind === "receive")
-          pushChannel(task.blocked.channel, 0);
-        if (task.blocked?.kind === "reflectSelect")
-          for (const selected of task.blocked.cases) {
-            pushValue(selected.channel, 0);
-            pushValue(selected.send, 0);
-          }
-        for (const value of task.result ?? []) pushValue(value, 0);
+        const temporaryOffset = frame.locals.length;
+        for (let index = 0; index < frame.fn.slotTypes.length; index++)
+          if (live(temporaryOffset + index)) yield* frame.slotBank.references(index);
+        const upvalueOffset = temporaryOffset + frame.fn.slotTypes.length;
+        for (let index = 0; index < frame.upvalues.length; index++)
+          if (live(upvalueOffset + index)) yield frame.upvalues[index]!.root.managedHandle!;
+        for (const deferred of frame.defers ?? []) yield deferred.managedHandle!;
+        if (frame.returning) yield* frame.returning.allReferences();
+        if (frame.panic) yield frame.panic.managedHandle!;
+        for (const iterator of frame.mapIterators ?? [])
+          if (iterator?.map) yield iterator.map.handle;
       }
-      for (const timer of this.timers.values()) if (!timer.canceled) pushChannel(timer.channel, 0);
-
-      const maxDepth = this.options.limits?.maxValueDepth ?? 128;
-      let observedDepth = 0;
-      while (pending.length) {
-        const item = pending.pop()!;
-        observedDepth = Math.max(observedDepth, item.depth);
-        if (item.depth > maxDepth)
-          throw new VMError("value depth exceeds limit", "allocation_limit", "value");
-        if (item.cell) {
-          if (seenCells.has(item.cell)) continue;
-          seenCells.add(item.cell);
-          storage.add(item.cell);
-          census.liveHeapObjects++;
-          census.liveHeapBytes += GUEST_COST.node;
-          const stored = item.cell.value;
-          if (stored.kind === "bytes")
-            census.liveHeapBytes +=
-              BigInt((stored.value as Uint8Array).byteLength) * GUEST_COST.byte;
-          else if (stored.kind === "array")
-            census.liveHeapBytes += BigInt((stored.value as Value[]).length) * GUEST_COST.slot;
-          else if (stored.kind === "struct")
-            census.liveHeapBytes +=
-              BigInt((stored.value as Map<string, Value>).size) * GUEST_COST.mapEntry;
-          pushValue(stored, item.depth + 1);
-          continue;
+      const blocked = task.blocked;
+      if (blocked?.kind === "send") yield blocked.value.managedHandle!;
+      if (blocked?.kind === "send" || blocked?.kind === "receive") yield blocked.channel.handle;
+      if (blocked?.kind === "reflectSelect")
+        for (const selected of blocked.cases) {
+          if (selected.channel) yield selected.channel.managedHandle!;
+          if (selected.send) yield selected.send.managedHandle!;
         }
-        if (item.channel) {
-          if (seenObjects.has(item.channel)) continue;
-          seenObjects.add(item.channel);
-          storage.add(item.channel);
-          census.liveGuestBytes +=
-            GUEST_COST.node + BigInt(item.channel.capacity) * GUEST_COST.slot;
-          census.maxSequence = Math.max(census.maxSequence, item.channel.capacity);
-          census.scannedEdges += BigInt(item.channel.queue.length + item.channel.senders.length);
-          for (const value of item.channel.queue) pushValue(value, item.depth + 1);
-          for (const sender of item.channel.senders) pushValue(sender.value, item.depth + 1);
-          continue;
-        }
-        const value = item.value!;
-        census.liveGuestBytes += GUEST_COST.node;
-        switch (value.kind) {
-          case "string":
-          case "bytes": {
-            const length = (value.value as Uint8Array).byteLength;
-            census.liveGuestBytes += BigInt(length) * GUEST_COST.byte;
-            census.maxSequence = Math.max(census.maxSequence, length);
-            if (value.kind === "string") census.strings += length;
-            break;
-          }
-          case "array": {
-            const values = value.value as Value[];
-            if (seenObjects.has(values)) break;
-            seenObjects.add(values);
-            census.liveGuestBytes += BigInt(values.length) * GUEST_COST.slot;
-            census.maxSequence = Math.max(census.maxSequence, values.length);
-            census.scannedEdges += BigInt(values.length);
-            for (const nested of values) pushValue(nested, item.depth + 1);
-            break;
-          }
-          case "struct": {
-            const fields = value.value as Map<string, Value>;
-            if (seenObjects.has(fields)) break;
-            seenObjects.add(fields);
-            census.liveGuestBytes += BigInt(fields.size) * GUEST_COST.mapEntry;
-            census.scannedEdges += BigInt(fields.size);
-            for (const nested of fields.values()) pushValue(nested, item.depth + 1);
-            break;
-          }
-          case "interface":
-            census.scannedEdges++;
-            pushValue(value.value as Value, item.depth + 1);
-            break;
-          case "pointer":
-            census.scannedEdges++;
-            pushCell((value.value as Address).root, item.depth + 1);
-            break;
-          case "slice": {
-            const slice = value.value as SliceValue;
-            census.maxSequence = Math.max(census.maxSequence, slice.capacity);
-            census.scannedEdges++;
-            pushCell(slice.storage.root, item.depth + 1);
-            break;
-          }
-          case "map": {
-            const map = value.value as GuestMap;
-            storage.add(map);
-            if (seenObjects.has(map)) break;
-            seenObjects.add(map);
-            census.liveGuestBytes += BigInt(map.entries.length) * GUEST_COST.mapEntry;
-            census.maxSequence = Math.max(census.maxSequence, map.entries.length);
-            census.scannedEdges += BigInt(map.entries.length * 2);
-            for (const entry of map.entries) {
-              pushValue(entry.key, item.depth + 1);
-              pushValue(entry.value, item.depth + 1);
-            }
-            break;
-          }
-          case "channel":
-            census.scannedEdges++;
-            pushChannel(value.value as Channel, item.depth + 1);
-            break;
-          case "function":
-          case "method": {
-            const fn = value.value as FunctionValue;
-            census.revisions.add(fn.revision);
-            census.scannedEdges += BigInt(fn.captures.length + (fn.receiver ? 1 : 0));
-            for (const address of fn.captures) pushCell(address.root, item.depth + 1);
-            pushValue(fn.receiver, item.depth + 1);
-            break;
-          }
-          case "dynamicFunction": {
-            const callback = (value.value as { callback: FunctionValue }).callback;
-            census.revisions.add(callback.revision);
-            census.scannedEdges += BigInt(callback.captures.length);
-            for (const address of callback.captures) pushCell(address.root, item.depth + 1);
-            break;
-          }
-        }
-      }
-
-      census.liveGuestBytes +=
-        census.liveHeapBytes + BigInt(this.dynamicTypeBytes) * GUEST_COST.byte;
-      if (enforce) {
-        if (census.strings > (this.options.limits?.maxStringBytes ?? 64 * 1024 * 1024))
-          throw new VMError("string byte limit exceeded", "string_limit", "string");
-        this.checkSequence(census.maxSequence, "value");
-      }
-      this.gcReclaimedBytes += this.guestMemory.publish(
-        { ...census, stringBytes: BigInt(census.strings) },
-        enforce,
-      );
-      this.referencedRevisions = census.revisions;
-      this.censusStorage = storage;
-      this.guestDepthUpper = observedDepth;
-      this.gcCollections++;
-      this.gcScannedObjects += census.liveHeapObjects;
-      this.gcTracedObjects += census.liveHeapObjects;
-      this.gcScannedEdges += census.scannedEdges;
-      this.gcNanos += BigInt(Math.max(0, Math.floor((performance.now() - started) * 1_000_000)));
-    } finally {
-      seenCells.clear();
-      seenObjects.clear();
-      pending.length = 0;
     }
+    for (const timer of this.timers.values()) if (!timer.canceled) yield timer.channel.handle;
   }
 
+  private collectHeap(major: boolean): void {
+    const started = performance.now();
+    const heap = this.guestMemory.managedHeap;
+    if (major) heap.collectMajor(this.heapRoots());
+    else heap.collectMinor(this.heapRoots());
+    if (major) {
+      this.nextMajorBytes = heap.stats().occupiedBytes * 2n + 8n * 1024n * 1024n;
+      this.referencedRevisions = new Set([this.generation]);
+      for (const [owner, record] of this.functionsByHandle) {
+        const separator = owner.indexOf(":");
+        if (separator < 1) continue;
+        const handle = {
+          slot: Number(owner.slice(0, separator)),
+          generation: Number(owner.slice(separator + 1)),
+        };
+        if (heap.has(handle)) this.referencedRevisions.add(record.revision);
+      }
+      for (const [generation, revision] of this.revisions) {
+        if (revision.constants && heap.has(revision.constants))
+          this.referencedRevisions.add(generation);
+        else if (generation !== this.generation) this.revisions.delete(generation);
+      }
+      this.reclaimStorageMetadata();
+    }
+    this.gcNanos += BigInt(Math.max(0, Math.floor((performance.now() - started) * 1_000_000)));
+  }
+
+  /**
+   * Drop storage type wrappers that no live managed payload or frame bank can
+   * decode. The numeric id slot becomes reusable; no host object graph is
+   * walked and no metadata is charged as a hidden guest allocation.
+   */
+  private reclaimStorageMetadata(): void {
+    const liveIDs = new Set<number>();
+    const liveTypes = new Set<RuntimeType>();
+    const heap = this.guestMemory.managedHeap;
+    heap.forEachPublishedRecord((handle, stride, dynamics, count) => {
+      for (let element = 0; element < count; element++) {
+        const base = element * stride;
+        for (const offset of dynamics) liveIDs.add(heap.readU32(handle, base + offset));
+      }
+    });
+    for (const id of this.storageConstructionPins.keys()) liveIDs.add(id);
+    for (const id of this.storageDataPins.keys()) liveIDs.add(id);
+    for (const task of this.tasks.values())
+      for (const frame of task.frames) {
+        frame.localBank.collectDynamicTypeIDs(liveIDs);
+        frame.slotBank.collectDynamicTypeIDs(liveIDs);
+        frame.returning?.collectDynamicTypeIDs(liveIDs);
+        frame.localBank.collectRuntimeTypes(liveTypes);
+        frame.slotBank.collectRuntimeTypes(liveTypes);
+        frame.returning?.collectRuntimeTypes(liveTypes);
+        for (const type of frame.fn.localTypes) liveTypes.add(type);
+        for (const type of frame.fn.slotTypes) liveTypes.add(type);
+        for (const type of frame.fn.upvalueTypes) liveTypes.add(type);
+      }
+    for (const cached of this.frameCache) {
+      cached.localBank.collectDynamicTypeIDs(liveIDs);
+      cached.slotBank.collectDynamicTypeIDs(liveIDs);
+    }
+    for (const map of this.mapsByHandle.values()) map.collectRuntimeTypes(liveTypes);
+    for (const channel of this.channelsByHandle.values()) channel.collectRuntimeTypes(liveTypes);
+    for (const record of this.functionsByHandle.values()) {
+      liveTypes.add(record.dynamicType);
+      for (const type of record.captures) liveTypes.add(type);
+    }
+    for (const storage of this.managedStorageLayouts.values()) liveTypes.add(storage.type);
+    for (const index of liveIDs) {
+      const type = this.storageTypes[index - 1];
+      if (type) liveTypes.add(type);
+    }
+    for (const [owner, keys] of this.reflectedTypeOwners) {
+      const separator = owner.indexOf(":");
+      const slot = Number(owner.slice(0, separator));
+      const generation = Number(owner.slice(separator + 1));
+      if (separator < 1 || !Number.isSafeInteger(slot) || !Number.isSafeInteger(generation))
+        continue;
+      const handle = { slot, generation };
+      if (!heap.has(handle)) continue;
+      for (const key of keys) {
+        const type = this.reflectedTypes.get(key);
+        if (type) liveTypes.add(type);
+      }
+    }
+    for (let index = 0; index < this.storageTypes.length; index++) {
+      const id = index + 1;
+      const type = this.storageTypes[index];
+      if (!type || liveIDs.has(id)) continue;
+      const key = this.storageTypeKeys[index];
+      if (key !== undefined) this.storageTypeIDs.delete(key);
+      this.storageTypes[index] = undefined;
+      this.storageTypeKeys[index] = undefined;
+      this.freeStorageTypeIDs.push(id);
+    }
+
+    const liveRegistries = new Set<TypeRegistry>();
+    for (const revision of this.revisions.values())
+      for (const module of revision.program.modules.values()) liveRegistries.add(module.registry);
+    for (const type of liveTypes) liveRegistries.add(type.registry);
+    for (const [key, type] of this.reflectedTypes) {
+      if (this.pendingReflectedTypes.has(key)) continue;
+      if (type.dynamic && !liveTypes.has(type)) this.reflectedTypes.delete(key);
+      else if (!liveRegistries.has(type.registry)) this.reflectedTypes.delete(key);
+    }
+    for (const [canonical, type] of this.dynamicTypes) {
+      if (liveTypes.has(type)) continue;
+      const lease = this.dynamicTypeLeases.get(canonical);
+      lease?.memory.release();
+      lease?.resident.release();
+      if (lease) this.dynamicTypeBytes -= lease.bytes;
+      this.dynamicTypeLeases.delete(canonical);
+      this.dynamicTypes.delete(canonical);
+    }
+  }
   private reflectFailure(frame: Frame, instruction: PreparedInstruction, message: string): void {
     const values = instruction.operands.outputs.map((target, index) => {
       const type = this.outputType(frame, target);
@@ -5033,6 +6044,7 @@ export class VirtualMachine {
     for (const timer of [...this.timers.values()]) {
       if (timer.canceled || timer.deadline > now) continue;
       this.timers.delete(timer.id);
+      timer.memory.release();
       if (!timer.channel.closed && timer.channel.queue.length < Math.max(1, timer.channel.capacity))
         timer.channel.queue.push(
           boolValue(this.revision.program.modules.values().next().value!.registry, true),
@@ -5042,9 +6054,7 @@ export class VirtualMachine {
   }
 
   private completeTask(task: Task, values: Value[]): void {
-    this.guestMemory.markDirty();
     task.state = "done";
-    task.result = values;
     const scope = this.scopes.get(task.scope)!;
     scope.tasks.delete(task.id);
     this.tasks.delete(task.id);
@@ -5064,10 +6074,11 @@ export class VirtualMachine {
         else delete execution.scopeError;
       }
     }
+    task.memory?.release();
+    delete task.memory;
   }
 
   private failTask(task: Task, error: VMError): void {
-    this.guestMemory.markDirty();
     task.state = error.code === "canceled" ? "canceled" : "failed";
     task.error = error;
     const initialization = task.frames.find((frame) => frame.initializing)?.initializing;
@@ -5079,6 +6090,9 @@ export class VirtualMachine {
     const scope = this.scopes.get(task.scope);
     scope?.tasks.delete(task.id);
     this.tasks.delete(task.id);
+    this.releaseBlocked(task);
+    for (const frame of task.frames) this.recycleFrame(frame);
+    task.frames.length = 0;
     if (task.scope === 0 && scope?.tasks.size === 0) this.scopes.delete(0);
     if (scope?.execution !== undefined) {
       const execution = this.executions.get(scope.execution)!;
@@ -5092,6 +6106,8 @@ export class VirtualMachine {
         else delete execution.scopeError;
       }
     }
+    task.memory?.release();
+    delete task.memory;
   }
 
   result(id: number): Snapshot {
@@ -5129,7 +6145,7 @@ export class VirtualMachine {
   async patch(image: Uint8Array): Promise<void> {
     if (this.initializing.size)
       throw new VMError("module initialization is active", "initialization_active", "patch");
-    this.updateMemoryCensus(false);
+    this.collectHeap(true);
     const retainedLimit = this.options.limits?.maxRetainedRevisions ?? 16;
     const retained = [...this.referencedRevisions].filter(
       (generation) => generation !== this.generation && this.revisions.has(generation),
@@ -5162,9 +6178,9 @@ export class VirtualMachine {
         const index = module.globalIndexes.get(id);
         if (
           index === undefined ||
-          !oldModule.globals[oldIndex]!.value.type.registry.identical(
-            oldModule.globals[oldIndex]!.value.type,
-            module.globals[index]!.value.type,
+          !oldModule.globals[oldIndex]!.read().type.registry.identical(
+            oldModule.globals[oldIndex]!.read().type,
+            module.globals[index]!.read().type,
           )
         )
           throw new VMError("global declaration changed", "global_shape_changed", modulePath);
@@ -5227,8 +6243,7 @@ export class VirtualMachine {
     }
     if (this.generation >= Number.MAX_SAFE_INTEGER)
       throw new VMError("revision generation exhausted", "revision_limit", "patch");
-    this.generation++;
-    const revision = { generation: this.generation, program };
+    const revision: Revision = { generation: this.generation + 1, program };
     // Preserve global cells whose identity and layout match. New code binds to
     // these cells while active frames keep their old revision.
     for (const [modulePath, module] of program.modules) {
@@ -5239,9 +6254,11 @@ export class VirtualMachine {
         if (prior !== undefined) module.globals[index] = old.globals[prior]!;
       }
     }
+    this.attachManagedGlobals(revision);
+    this.generation = revision.generation;
     this.revision = revision;
     this.revisions.set(this.generation, revision);
-    this.updateMemoryCensus(false);
+    this.collectHeap(true);
     for (const generation of this.revisions.keys())
       if (!this.referencedRevisions.has(generation)) this.revisions.delete(generation);
     this.epoch++;
@@ -5289,7 +6306,14 @@ export class VirtualMachine {
     const names = [...frame.fn.localIndexes.keys()].map(
       (name) => symbols?.localNames.get(name) ?? name,
     );
-    return { ...snapshot(frame.locals.map((local) => cloneValue(localValue(local)))), names };
+    return {
+      ...snapshot(
+        frame.locals.map((local, index) =>
+          cloneValue(localValue(local ?? frame.localBank.read(index)!)),
+        ),
+      ),
+      names,
+    };
   }
 
   breakpoints(module: string, file: string, lines: (number | bigint)[]): bigint[] {
@@ -5469,27 +6493,13 @@ export class VirtualMachine {
   }
 
   stats(): Stats {
-    if (this.closed) this.guestMemory.release();
-    else this.updateMemoryCensus(false);
+    if (this.closed) this.guestMemory.close();
     const memory = this.guestMemory.stats();
     const stats: Stats = {
       state: this.closed ? "Closed" : this.closing ? "Closing" : this.paused ? "Paused" : "Running",
       steps: this.stepCount(),
-      liveHeapBytes: memory.liveHeapBytes,
-      liveHeapObjects: memory.liveHeapObjects,
-      peakHeapBytes: memory.peakHeapBytes,
-      totalHeapAllocatedBytes: memory.totalHeapAllocatedBytes,
-      gcCollections: this.gcCollections,
-      gcScannedObjects: this.gcScannedObjects,
-      gcTracedObjects: this.gcTracedObjects,
-      gcScannedEdges: this.gcScannedEdges,
-      gcReclaimedBytes: this.gcReclaimedBytes,
+      ...memory,
       gcNanos: this.gcNanos,
-      liveGuestBytes: memory.liveGuestBytes,
-      peakGuestBytes: memory.peakGuestBytes,
-      totalGuestAllocatedBytes: memory.totalGuestAllocatedBytes,
-      guestAllocatedSinceCensusBytes: memory.guestAllocatedSinceCensusBytes,
-      guestAllocations: memory.guestAllocations,
       activeScopes: BigInt(this.scopes.size),
       tasks: BigInt(this.tasks.size),
       timers: BigInt([...this.timers.values()].filter((timer) => !timer.canceled).length),
@@ -5500,23 +6510,63 @@ export class VirtualMachine {
     if (this.options.profile)
       stats.profile = {
         opcodes: Object.fromEntries(this.opcodeProfile),
-        functions: Object.fromEntries(this.functionProfile),
+        functions: Object.fromEntries(
+          Array.from(this.functionProfile, ([key, value]) => [key, { ...value }]),
+        ),
       };
     return stats;
+  }
+
+  private finishClose(): void {
+    if (this.closed) return;
+    this.releaseTimers();
+    for (const lease of this.dynamicTypeLeases.values()) {
+      lease.memory.release();
+      lease.resident.release();
+    }
+    this.dynamicTypeLeases.clear();
+    this.dynamicTypes.clear();
+    this.dynamicTypeBytes = 0;
+    this.reflectedTypes.clear();
+    this.reflectedTypeOwners.clear();
+    this.pendingReflectedTypes.clear();
+    this.storageTypeIDs.clear();
+    this.storageConstructionPins.clear();
+    this.storageDataPins.clear();
+    this.storageConstructionOwners.length = 0;
+    this.storageConstructionDepth = 0;
+    this.storageTypes.length = 0;
+    this.storageTypeKeys.length = 0;
+    this.freeStorageTypeIDs.length = 0;
+    this.managedCells.clear();
+    this.managedCellsByHandle.clear();
+    this.managedStorageLayouts.clear();
+    this.mapsByHandle.clear();
+    this.channelsByHandle.clear();
+    this.functionsByHandle.clear();
+    this.allocationRoots.length = 0;
+    this.closed = true;
+    this.guestMemory.close();
+    this.pendingActions.push({ kind: "close" });
   }
 
   close(): void {
     if (this.closing) return;
     this.closing = true;
+    for (const storage of this.frameCache) storage.resident.release();
     this.frameCache.length = 0;
     this.frameCacheBytes = 0;
+    // WeakMap entries retain their bucket arrays while the VM is retained by
+    // a caller. Drop the whole index so cached frame payloads cannot survive
+    // close through a PreparedFunction key held by the caller.
+    this.frameCacheByFunction = new WeakMap();
     for (const execution of this.executions.values()) this.cancel(execution.id);
-    for (const id of this.pendingHost.keys()) this.pendingActions.push({ kind: "cancel", id });
-    if (!this.tasks.size && !this.pendingHost.size) {
-      this.closed = true;
-      this.guestMemory.release();
-      this.pendingActions.push({ kind: "close" });
+    for (const [id, pending] of this.pendingHost) {
+      if (pending.cancelSent) continue;
+      pending.cancelSent = true;
+      this.pendingActions.push({ kind: "cancel", id });
     }
+    if (!this.tasks.size && !this.pendingHost.size) this.finishClose();
   }
 }
 
@@ -5593,6 +6643,8 @@ function valueFromInterface(value: Value): Value {
 }
 
 function addressKey(address: Address): string {
+  const location = storageAddress(address);
+  if (location) return `${location.handle.slot}:${location.handle.generation}:${location.offset}`;
   return `${address.root.id}:${address.path
     .map((segment) => {
       if (segment.kind === "field") return `f:${segment.name}`;
@@ -5615,7 +6667,11 @@ function formatPanic(value: Value): string {
 
 function toVMError(error: unknown): VMError {
   if (error instanceof VMError) return error;
-  if (error instanceof Error) return new VMError(error.message, "internal", "runtime");
+  if (error instanceof Error) {
+    const wrapped = new VMError(error.message, "internal", "runtime");
+    wrapped.cause = error;
+    return wrapped;
+  }
   return new VMError(String(error), "internal", "runtime");
 }
 
@@ -5642,9 +6698,13 @@ function bitsFloat(value: bigint, width: 32 | 64): number {
 }
 
 function sha256Block(state: Value, bytes: Uint8Array): Value {
-  if (state.kind !== "array" || (state.value as Value[]).length !== 8 || bytes.length % 64 !== 0)
+  if (
+    state.kind !== "array" ||
+    (packedLength(state) ?? (state.value as Value[]).length) !== 8 ||
+    bytes.length % 64 !== 0
+  )
     invalid("sha256 state layout is invalid", "crypto.sha256.block");
-  const stateValues = state.value as Value[];
+  const stateValues = Array.from({ length: 8 }, (_, index) => indexValue(state, index));
   const hash = stateValues.map((word) => {
     if (word.kind !== "uint") invalid("sha256 state word is invalid", "crypto.sha256.block");
     return Number(BigInt.asUintN(32, word.value as bigint));

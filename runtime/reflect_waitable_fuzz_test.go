@@ -9,12 +9,15 @@ func FuzzReflectWaitableLifecycle(f *testing.F) {
 		if len(operations) > 4096 {
 			t.Skip()
 		}
-		module := &moduleInstance{}
+		module := newManagedValueTestModule()
 		channel, err := makeWaitableValue(module, "Waitable<Int>", newVMValue("Int", int64(capacity%16)))
 		if err != nil {
 			t.Fatal(err)
 		}
-		resource := channel.Data.(*waitableResource)
+		resource, ok := materializeManagedWaitable(channel)
+		if !ok {
+			t.Fatalf("managed channel did not materialize")
+		}
 		for index, operation := range operations {
 			switch operation % 5 {
 			case 0:
@@ -36,8 +39,8 @@ func FuzzReflectWaitableLifecycle(f *testing.F) {
 			case 4:
 				_ = waitableCloseValue(module, channel)
 			}
-			if len(resource.Buffer) > resource.Capacity {
-				t.Fatalf("buffer length %d exceeds capacity %d", len(resource.Buffer), resource.Capacity)
+			if resource.bufferLen() > resource.Capacity {
+				t.Fatalf("buffer length %d exceeds capacity %d", resource.bufferLen(), resource.Capacity)
 			}
 		}
 	})

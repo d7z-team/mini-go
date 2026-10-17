@@ -2,44 +2,129 @@
 
 use super::*;
 
+const POINTER_COMPACT_BYTES: u32 = 1;
+
 impl Instance {
     pub(super) fn read_address(&mut self, address: &Address) -> Result<Value, RuntimeError> {
+        self.heap.initialize_zero(address.root)?;
+        if let Some((offset, type_id, flags)) = self.numeric_location(address)?
+            && let Some(value) =
+                self.heap
+                    .read_prepared_location(address.root, offset, type_id, flags)?
+        {
+            return Ok(value);
+        }
         if address.path.is_empty() {
             return self.load_slot(address.root);
         }
-        if matches!(self.heap.get(address.root)?.data, Data::Uninitialized) {
-            self.load_slot(address.root)?;
+        if let Some(value) = self.read_prepared_scalar_address(address)? {
+            return Ok(value);
         }
-        Ok(self.snapshot_address(address)?.into_owned())
+        self.snapshot_address(address)
     }
 
-    pub(super) fn snapshot_address(
+    fn read_prepared_scalar_address(
         &self,
         address: &Address,
-    ) -> Result<crate::value::ValueRead<'static>, RuntimeError> {
-        let value = self.heap.get(address.root)?;
-        if address.path.is_empty() && !matches!(value.data, Data::Uninitialized) {
-            return Ok(crate::value::ValueRead::Shared(value));
+    ) -> Result<Option<Value>, RuntimeError> {
+        let Some(root_type) = self.heap.payload_type(address.root)? else {
+            return Ok(None);
+        };
+        if !self.heap.payload_initialized(address.root)? {
+            return Ok(None);
         }
-        Ok(crate::value::ValueRead::Owned(
-            self.project_address(&value, &address.path)?.into_owned(),
-        ))
+        if self.types.storage_fixed_words(&root_type)?.is_none() {
+            return Ok(None);
+        }
+        let Some(indices) = self.prepared_numeric_path(&root_type, &address.path)? else {
+            return Ok(None);
+        };
+        self.heap
+            .read_prepared_path(address.root, &root_type, &indices)
     }
 
-    fn project_address<'a>(
+    fn prepared_numeric_path(
         &self,
-        mut value: &'a Value,
+        root_type: &TypeIdentity,
         path: &[PathElement],
-    ) -> Result<std::borrow::Cow<'a, Value>, RuntimeError> {
-        if matches!(value.data, Data::Uninitialized) {
-            let zero = self.zero(&value.typ, 0)?;
-            return Ok(std::borrow::Cow::Owned(
-                self.project_address(&zero, path)?.into_owned(),
-            ));
+    ) -> Result<Option<Vec<usize>>, RuntimeError> {
+        let mut current = root_type.clone();
+        let mut indices = Vec::with_capacity(path.len());
+        for segment in path {
+            let layout_type = self.types.underlying(&current)?;
+            match segment {
+                PathElement::Field(name) => {
+                    let Some(crate::types::StorageTypeLayout::Struct { fields }) =
+                        self.types.storage_layout(&layout_type)?
+                    else {
+                        return Ok(None);
+                    };
+                    let Some((index, (_, field_type))) = fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (field, _))| field == name)
+                    else {
+                        return Ok(None);
+                    };
+                    indices.push(index);
+                    current = field_type.clone();
+                }
+                PathElement::Index(index) => match self.types.storage_layout(&layout_type)? {
+                    Some(crate::types::StorageTypeLayout::Array { element, length }) => {
+                        if *index >= length {
+                            return Ok(None);
+                        }
+                        indices.push(*index);
+                        current = element;
+                    }
+                    Some(crate::types::StorageTypeLayout::Struct { fields }) => {
+                        let Some((_, (_, field_type))) = fields
+                            .iter()
+                            .enumerate()
+                            .find(|(field_index, _)| *field_index == *index)
+                        else {
+                            return Ok(None);
+                        };
+                        indices.push(*index);
+                        current = field_type.clone();
+                    }
+                    _ => return Ok(None),
+                },
+                PathElement::ArrayView { .. } | PathElement::TypeView(_) => return Ok(None),
+            }
         }
+        Ok(Some(indices))
+    }
+
+    pub(super) fn snapshot_address(&self, address: &Address) -> Result<Value, RuntimeError> {
+        if let Some((offset, type_id, flags)) = self.numeric_location(address)? {
+            let prepared =
+                self.heap
+                    .read_prepared_location(address.root, offset, type_id, flags)?;
+            if let Some(value) = prepared {
+                return Ok(value);
+            }
+        }
+        let value = self.heap.read_typed_value(address.root)?;
+        if address.path.is_empty() && !matches!(value.data, Data::Uninitialized) {
+            return Ok(value);
+        }
+        self.project_address(&value, &address.path)
+    }
+
+    fn project_address(
+        &self,
+        original: &Value,
+        path: &[PathElement],
+    ) -> Result<Value, RuntimeError> {
+        let mut value = if matches!(original.data, Data::Uninitialized) {
+            self.zero(&original.typ)?
+        } else {
+            original.clone()
+        };
         if let Data::Bytes(bytes) = &value.data {
             if path.is_empty() {
-                return Ok(std::borrow::Cow::Borrowed(value));
+                return Ok(value);
             }
             let (range, typ, scalar) = crate::value::byte_projection(path, bytes.len(), &value.typ)
                 .ok_or_else(|| {
@@ -59,93 +144,132 @@ impl Instance {
                         .into(),
                 )
             };
-            return Ok(std::borrow::Cow::Owned(Value { typ, data }));
+            return Ok(Value { typ, data });
         }
         let mut window: Option<(usize, usize, &TypeIdentity)> = None;
-        for (index, element) in path.iter().enumerate() {
-            if let PathElement::TypeView(typ) = element {
-                let value = if let Some((start, length, typ)) = window {
-                    let Data::Array(values) = &value.data else {
-                        unreachable!()
+        for element in path {
+            match element {
+                PathElement::TypeView(typ) => {
+                    if let Some((start, length, view_type)) = window.take() {
+                        value = value.array_range(start, length, view_type)?;
+                    }
+                    value = self.retype_value(value, typ, 0)?;
+                }
+                PathElement::ArrayView { start, length, typ } => {
+                    let Some((true, count)) = value.data.aggregate_shape() else {
+                        return Err(RuntimeError::new(
+                            "invalid_address",
+                            "pointer",
+                            "array view requires backing array",
+                        ));
                     };
-                    Value {
-                        typ: typ.clone(),
-                        data: Data::Array(values[start..start + length].to_vec().into()),
+                    let (offset, available, _) = window.unwrap_or((0, count, &value.typ));
+                    if *start > available || *length > available - start {
+                        return Err(RuntimeError::new(
+                            "invalid_address",
+                            "pointer",
+                            "array view exceeds backing array",
+                        ));
                     }
-                } else {
-                    value.clone()
-                };
-                let value = self.retype_value(value, typ, 0)?;
-                return Ok(std::borrow::Cow::Owned(
-                    self.project_address(&value, &path[index + 1..])?
-                        .into_owned(),
-                ));
-            }
-            if let PathElement::ArrayView { start, length, typ } = element {
-                let Data::Array(values) = &value.data else {
-                    return Err(RuntimeError::new(
-                        "invalid_address",
-                        "pointer",
-                        "array view requires backing array",
-                    ));
-                };
-                let (offset, available, _) = window.unwrap_or((0, values.len(), &value.typ));
-                if *start > available || *length > available - start {
-                    return Err(RuntimeError::new(
-                        "invalid_address",
-                        "pointer",
-                        "array view exceeds backing array",
-                    ));
+                    window = Some((offset + start, *length, typ));
                 }
-                window = Some((offset + start, *length, typ));
-                continue;
-            }
-            value = match (element, &value.data) {
-                (PathElement::Field(name), Data::Struct(fields)) => fields.get(name),
-                (PathElement::Index(index), Data::Array(values)) => {
-                    let (start, length, _) = window.take().unwrap_or((0, values.len(), &value.typ));
-                    if *index < length {
-                        values.get(start + index)
+                PathElement::Field(name) => value = value.field(name)?,
+                PathElement::Index(index) => {
+                    let index = if let Some((start, length, _)) = window.take() {
+                        if *index >= length {
+                            return Err(RuntimeError::new(
+                                "invalid_address",
+                                "pointer",
+                                "index exceeds array view",
+                            ));
+                        }
+                        start + index
                     } else {
-                        None
-                    }
+                        *index
+                    };
+                    value = value.element(index)?;
                 }
-                _ => None,
             }
-            .ok_or_else(|| {
-                RuntimeError::new("invalid_address", "pointer", "path does not resolve")
-            })?;
         }
         if let Some((start, length, typ)) = window {
-            let Data::Array(values) = &value.data else {
-                unreachable!()
+            value = value.array_range(start, length, typ)?;
+        }
+        Ok(value)
+    }
+
+    fn replace_projected_value(
+        object: &Value,
+        path: &[PathElement],
+        value: Value,
+    ) -> Result<Value, RuntimeError> {
+        let mut window = None;
+        for (position, element) in path.iter().enumerate() {
+            let index = match element {
+                PathElement::TypeView(_) => continue,
+                PathElement::ArrayView { start, length, .. } => {
+                    let offset = window.map_or(0, |(offset, _)| offset);
+                    window = Some((offset + start, *length));
+                    continue;
+                }
+                PathElement::Field(name) => {
+                    let count = object.data.aggregate_shape().map_or(0, |(_, count)| count);
+                    (0..count)
+                        .find(|index| object.data.field_name(*index) == Some(name.as_str()))
+                        .ok_or_else(|| {
+                            RuntimeError::new(
+                                "invalid_address",
+                                "pointer",
+                                "field does not resolve",
+                            )
+                        })?
+                }
+                PathElement::Index(index) => {
+                    window.take().map_or(*index, |(offset, _)| offset + index)
+                }
             };
-            Ok(std::borrow::Cow::Owned(Value {
-                typ: typ.clone(),
-                data: Data::Array(values[start..start + length].to_vec().into()),
-            }))
+            let child = object.element(index)?;
+            let replacement = Self::replace_projected_value(&child, &path[position + 1..], value)?;
+            return object.with_element(index, replacement);
+        }
+        if let Some((start, length)) = window {
+            if value.data.aggregate_shape() != Some((true, length)) {
+                return Err(RuntimeError::new(
+                    "type_error",
+                    "pointer",
+                    "array replacement has a different length",
+                ));
+            }
+            if let (Data::Aggregate(aggregate_object), Data::Aggregate(replacement)) =
+                (&object.data, &value.data)
+            {
+                return Ok(Value {
+                    typ: object.typ.clone(),
+                    data: Data::Aggregate(aggregate_object.with_array_range(start, replacement)?),
+                });
+            }
+            if let (Data::Array(object_values), Data::Array(replacement_values)) =
+                (&object.data, &value.data)
+            {
+                let mut values = (**object_values).clone();
+                values[start..start + length].clone_from_slice(replacement_values);
+                return Ok(Value {
+                    typ: object.typ.clone(),
+                    data: Data::Array(values.into()),
+                });
+            }
+            let mut result = object.clone();
+            for index in 0..length {
+                result = result.with_element(start + index, value.element(index)?)?;
+            }
+            Ok(result)
         } else {
-            Ok(std::borrow::Cow::Borrowed(value))
+            Ok(value)
         }
     }
 
     pub(super) fn load_slot(&mut self, root: Handle) -> Result<Value, RuntimeError> {
-        loop {
-            let snapshot = self.heap.get(root)?;
-            if !matches!(snapshot.data, Data::Uninitialized) {
-                return Ok(Arc::unwrap_or_clone(snapshot));
-            }
-            let value = self.zero(&snapshot.typ, 0)?;
-            let bytes = value.logical_bytes()?.checked_add(128).ok_or_else(|| {
-                RuntimeError::new("allocation_limit", "slot", "slot size overflow")
-            })?;
-            value.trace(&mut |handle| self.running.transient_roots.push(handle));
-            self.prepare_heap_replacements(&[(root, bytes)])?;
-            if let Some(mutation) = self.heap.prepare_mutation(root, &snapshot, value, bytes)? {
-                drop(snapshot);
-                mutation.commit();
-            }
-        }
+        self.heap.initialize_zero(root)?;
+        self.heap.read_typed_value(root)
     }
 
     pub(super) fn store_slot(&mut self, root: Handle, value: Value) -> Result<(), RuntimeError> {
@@ -157,11 +281,13 @@ impl Instance {
         address: &Address,
         value: Value,
     ) -> Result<(), RuntimeError> {
-        if address.path.is_empty() {
-            self.store_slot(address.root, value)
-        } else {
-            self.write_storage(address.root, &address.path, value)
-        }
+        let mut write = mutation::PendingWrite::Address {
+            address: address.clone(),
+            value,
+        };
+        let mut collection = mutation::WriteCollection::IMMEDIATE;
+        while !self.attempt_write(&mut write, &mut collection)? {}
+        Ok(())
     }
 
     fn write_storage(
@@ -185,8 +311,7 @@ impl Instance {
         value: Value,
         collection: &mut mutation::WriteCollection,
     ) -> Result<bool, RuntimeError> {
-        let (snapshot, stored_bytes) = self.heap.read_mutation_base(root)?;
-        let expected = Arc::downgrade(&snapshot);
+        let (snapshot, stored_bytes, version) = self.heap.read_typed_mutation_base(root)?;
         if path.is_empty()
             && snapshot.typ == value.typ
             && matches!(
@@ -210,27 +335,38 @@ impl Instance {
             drop(snapshot);
             return self
                 .heap
-                .update(root, expected, stored_bytes, true, |slot| *slot = value);
+                .update_typed(root, version, stored_bytes, true, |slot| *slot = value);
+        }
+        if !path.is_empty()
+            && !matches!(snapshot.data, Data::Uninitialized)
+            && self.types.storage_fixed_words(&snapshot.typ)?.is_some()
+            && let Some(indices) = self.prepared_numeric_path(&snapshot.typ, path)?
+            && let Some(previous) = self
+                .heap
+                .read_prepared_path(root, &snapshot.typ, &indices)?
+        {
+            let value = self.coerce(value.clone(), &previous.typ)?;
+            if self
+                .heap
+                .update_prepared_scalar_path_typed(root, &snapshot.typ, &indices, &value)?
+            {
+                return Ok(true);
+            }
         }
         if path.is_empty() && matches!(snapshot.data, Data::Uninitialized) {
             let value = self.coerce(value.clone(), &snapshot.typ)?;
-            let bytes = value.logical_bytes()?.checked_add(128).ok_or_else(|| {
-                RuntimeError::new("allocation_limit", "slot", "slot size overflow")
-            })?;
+            let bytes = self.prepared_allocation_bytes(&value)?;
             value.trace(&mut |handle| self.running.transient_roots.push(handle));
             if !self.prepare_write_replacements(&[(root, bytes)], collection)? {
                 return Ok(false);
             }
-            if let Some(mutation) = self.heap.prepare_mutation(root, &snapshot, value, bytes)? {
-                drop(snapshot);
-                if mutation.commit() {
-                    return Ok(true);
-                }
-            }
-            return Ok(false);
+            drop(snapshot);
+            return self
+                .heap
+                .update_typed(root, version, bytes, false, |slot| *slot = value);
         }
         let materialized = if matches!(snapshot.data, Data::Uninitialized) {
-            Some(self.zero(&snapshot.typ, 0)?)
+            Some(self.zero(&snapshot.typ)?)
         } else {
             None
         };
@@ -257,12 +393,52 @@ impl Instance {
             previous
         };
         if matches!(snapshot.data, Data::Bytes(_)) {
-            let replacement = match &value.data {
-                Data::Unsigned(byte) => vec![*byte as u8],
+            let replacement_data = match &value.data {
+                Data::Interface(inner) => &inner.data,
+                data => data,
+            };
+            let replacement = match replacement_data {
+                Data::Unsigned(byte) if *byte <= u64::from(u8::MAX) => vec![*byte as u8],
+                Data::Unsigned(_) => {
+                    return Err(RuntimeError::new(
+                        "type_error",
+                        "pointer",
+                        "byte value is outside uint8 range",
+                    ));
+                }
+                // A zero value for an array declared with an unsigned byte
+                // type can still arrive as the interpreter's signed integer
+                // representation after aggregate construction.  The type
+                // coercion above has already checked the destination lane;
+                // accept the canonical byte range here while retaining the
+                // explicit bounds check for malformed host values.
+                Data::Integer(byte) if (0..=i64::from(u8::MAX)).contains(byte) => {
+                    vec![*byte as u8]
+                }
+                Data::Integer(_) => {
+                    return Err(RuntimeError::new(
+                        "type_error",
+                        "pointer",
+                        "byte value is outside uint8 range",
+                    ));
+                }
                 Data::Array(values) => values
                     .iter()
                     .map(|value| match value.data {
-                        Data::Unsigned(byte) => Ok(byte as u8),
+                        Data::Unsigned(byte) if byte <= u64::from(u8::MAX) => Ok(byte as u8),
+                        Data::Unsigned(_) => Err(RuntimeError::new(
+                            "type_error",
+                            "pointer",
+                            "byte value is outside uint8 range",
+                        )),
+                        Data::Integer(byte) if (0..=i64::from(u8::MAX)).contains(&byte) => {
+                            Ok(byte as u8)
+                        }
+                        Data::Integer(_) => Err(RuntimeError::new(
+                            "type_error",
+                            "pointer",
+                            "byte value is outside uint8 range",
+                        )),
                         _ => Err(RuntimeError::new(
                             "type_error",
                             "pointer",
@@ -286,16 +462,21 @@ impl Instance {
                     _ => {}
                 }
             }
+            let end = start.checked_add(replacement.len()).ok_or_else(|| {
+                RuntimeError::new("invalid_address", "pointer", "byte replacement overflows")
+            })?;
+            if u64::try_from(end).map_or(true, |end| end > stored_bytes) {
+                return Err(RuntimeError::new(
+                    "invalid_address",
+                    "pointer",
+                    "byte replacement is outside backing storage",
+                ));
+            }
             drop(previous);
             drop(snapshot);
             if self
                 .heap
-                .update(root, expected, stored_bytes, true, |object| {
-                    let Data::Bytes(bytes) = &mut object.data else {
-                        unreachable!()
-                    };
-                    bytes[start..start + replacement.len()].copy_from_slice(&replacement);
-                })?
+                .write_byte_storage_range_if_version(root, start, &replacement, version)?
             {
                 return Ok(true);
             }
@@ -305,17 +486,25 @@ impl Instance {
         let mut new_edges = Vec::new();
         previous.trace(&mut |handle| old_edges.push(handle));
         value.trace(&mut |handle| new_edges.push(handle));
-        let replacement_bytes = value.logical_bytes()?;
+        let replacement_bytes = self.prepared_allocation_bytes(&value)?;
         let base_bytes = match &materialized {
-            Some(value) => value.logical_bytes()?.saturating_add(128),
+            Some(value) => self.prepared_allocation_bytes(value)?,
             None => stored_bytes,
         };
         let bytes = base_bytes
-            .checked_sub(previous.logical_bytes()?)
+            .checked_sub(self.prepared_allocation_bytes(&previous)?)
             .and_then(|bytes| bytes.checked_add(replacement_bytes))
             .ok_or_else(|| {
                 RuntimeError::new("allocation_limit", "value", "logical size overflow")
             })?;
+        let heap = self.heap.clone();
+        let allocations = heap.begin_allocation_scope();
+        let replacement = Self::replace_projected_value(
+            materialized.as_ref().unwrap_or(&snapshot),
+            &storage_path,
+            value,
+        )?;
+        replacement.trace(&mut |handle| self.running.transient_roots.push(handle));
         drop(previous);
         drop(snapshot);
         self.running
@@ -326,50 +515,223 @@ impl Instance {
         }
         if self
             .heap
-            .update(root, expected, bytes, old_edges == new_edges, |object| {
-                if let Some(value) = materialized {
-                    *object = value;
-                }
-                let mut destination = object;
-                let mut window = None;
-                for element in storage_path.iter() {
-                    if let PathElement::ArrayView { start, length, .. } = element {
-                        let offset = window.map_or(0, |(offset, _)| offset);
-                        window = Some((offset + start, *length));
-                        continue;
-                    }
-                    destination = match (element, &mut destination.data) {
-                        (PathElement::Field(name), Data::Struct(fields)) => {
-                            fields.get_mut(name).unwrap()
-                        }
-                        (PathElement::Index(index), Data::Array(values)) => {
-                            let offset = window.take().map_or(0, |(offset, _)| offset);
-                            Arc::make_mut(values).get_mut(offset + index).unwrap()
-                        }
-                        _ => unreachable!("path was validated before mutation"),
-                    };
-                }
-                if let Some((start, length)) = window {
-                    let (Data::Array(destination), Data::Array(values)) =
-                        (&mut destination.data, value.data)
-                    else {
-                        unreachable!()
-                    };
-                    Arc::make_mut(destination)[start..start + length].clone_from_slice(&values);
-                } else {
-                    *destination = value;
-                }
+            .update_typed(root, version, bytes, old_edges == new_edges, |object| {
+                *object = replacement;
             })?
         {
+            allocations.commit();
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Extends a prepared numeric pointer through a view path without
+    /// materializing its backing aggregate. The base descriptor is relative
+    /// to the root storage object; every aggregate segment advances by the
+    /// compiler-owned physical lane stride and changes the view type ID.
+    pub(super) fn numeric_location(
+        &self,
+        address: &Address,
+    ) -> Result<Option<(u64, u32, u32)>, RuntimeError> {
+        let (mut offset, mut type_id, flags) = if let Some(numeric) = address.identity.numeric {
+            // A decoded pointer may already carry a base descriptor while a
+            // later address operation appends a field/index path.  Continue
+            // projecting that path from the descriptor; returning the base
+            // location here would make `&mutex.state` read the Mutex object.
+            numeric
+        } else if address.identity.path_root.is_some()
+            || address.identity.original.is_some()
+            || !address.path.is_empty()
+        {
+            // Converted pointers can retain only `original` (a TypeView),
+            // while slice-to-array views deliberately carry a fresh identity
+            // with just `array_capacity`.  Both still designate the same
+            // managed root and can be prepared without reconstructing the
+            // host aggregate.  The previous implementation required
+            // `path_root`, sending these legitimate views to project_address.
+            // After an indirect pointer segment, `address.root` is the
+            // pointee's backing object while `path_root` still identifies the
+            // slot that held the pointer.  Computing offsets from path_root
+            // can therefore apply the pointer slot's layout to the pointee
+            // (notably Mutex.state becomes a projection of the parent
+            // struct).  The current root is authoritative; retain the
+            // original pointee metadata only for descriptor-backed views
+            // whose root has no typed payload of its own.
+            let root_type = self
+                .heap
+                .payload_type(address.root)?
+                .or_else(|| {
+                    address
+                        .identity
+                        .original
+                        .as_ref()
+                        .and_then(|origin| origin.pointee.clone())
+                })
+                .or_else(|| {
+                    address
+                        .identity
+                        .path_root
+                        .map(|(root, _)| root)
+                        .or_else(|| {
+                            address
+                                .identity
+                                .original
+                                .as_ref()
+                                .and_then(|origin| origin.root)
+                        })
+                        .and_then(|root| self.heap.payload_type(root).ok().flatten())
+                });
+            let Some(mut root_type) = root_type else {
+                return Ok(None);
+            };
+            if let Some(element) = self.types.pointer_element(&root_type)? {
+                root_type = element;
+            }
+            let type_id = self.types.storage_type_id(&root_type)?;
+            (0, type_id, 0)
+        } else {
+            return Ok(None);
+        };
+        if address.path.is_empty() {
+            return Ok(Some((offset, type_id, flags)));
+        }
+        let mut current = self
+            .types
+            .identity_for_storage_type_id(type_id)
+            .ok_or_else(|| {
+                RuntimeError::new("unknown_type", "pointer", "unknown numeric view type")
+            })?;
+        for segment in &address.path {
+            let layout_type = self.types.underlying(&current)?;
+            match segment {
+                PathElement::Field(name) => {
+                    let Some(crate::types::StorageTypeLayout::Struct { fields }) =
+                        self.types.storage_layout(&layout_type)?
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(index) = fields.iter().position(|(field, _)| field == name) else {
+                        return Ok(None);
+                    };
+                    for (_, field_type) in &fields[..index] {
+                        offset = offset
+                            .checked_add(u64::from(
+                                self.types.storage_lane_layout(field_type)?.stride,
+                            ))
+                            .ok_or_else(|| {
+                                RuntimeError::new(
+                                    "allocation_limit",
+                                    "pointer",
+                                    "pointer offset overflows",
+                                )
+                            })?;
+                    }
+                    current = fields[index].1.clone();
+                }
+                PathElement::Index(index) => match self.types.storage_layout(&layout_type)? {
+                    Some(crate::types::StorageTypeLayout::Array { element, length }) => {
+                        if *index >= length {
+                            return Ok(None);
+                        }
+                        let stride = if flags == POINTER_COMPACT_BYTES {
+                            Heap::compact_byte_width(&element, &self.types)? as u64
+                        } else {
+                            u64::from(self.types.storage_lane_layout(&element)?.stride)
+                        };
+                        offset = offset
+                            .checked_add((*index as u64).checked_mul(stride).ok_or_else(|| {
+                                RuntimeError::new(
+                                    "allocation_limit",
+                                    "pointer",
+                                    "pointer offset overflows",
+                                )
+                            })?)
+                            .ok_or_else(|| {
+                                RuntimeError::new(
+                                    "allocation_limit",
+                                    "pointer",
+                                    "pointer offset overflows",
+                                )
+                            })?;
+                        current = element;
+                    }
+                    Some(crate::types::StorageTypeLayout::Struct { fields }) => {
+                        let Some((_, field_type)) = fields.get(*index) else {
+                            return Ok(None);
+                        };
+                        for (_, preceding) in &fields[..*index] {
+                            offset = offset
+                                .checked_add(u64::from(
+                                    self.types.storage_lane_layout(preceding)?.stride,
+                                ))
+                                .ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "allocation_limit",
+                                        "pointer",
+                                        "pointer offset overflows",
+                                    )
+                                })?;
+                        }
+                        current = field_type.clone();
+                    }
+                    _ => {
+                        return Ok(None);
+                    }
+                },
+                PathElement::ArrayView { start, typ, .. } => {
+                    let element = match self.types.storage_layout(&layout_type)? {
+                        Some(crate::types::StorageTypeLayout::Array { element, .. }) => element,
+                        _ => match layout_type {
+                            TypeIdentity::Slice(element) => (*element).clone(),
+                            _ => current.clone(),
+                        },
+                    };
+                    let stride = if flags == POINTER_COMPACT_BYTES {
+                        Heap::compact_byte_width(&element, &self.types)? as u64
+                    } else {
+                        u64::from(self.types.storage_lane_layout(&element)?.stride)
+                    };
+                    offset = offset
+                        .checked_add((*start as u64).checked_mul(stride).ok_or_else(|| {
+                            RuntimeError::new(
+                                "allocation_limit",
+                                "pointer",
+                                "pointer offset overflows",
+                            )
+                        })?)
+                        .ok_or_else(|| {
+                            RuntimeError::new(
+                                "allocation_limit",
+                                "pointer",
+                                "pointer offset overflows",
+                            )
+                        })?;
+                    current = typ.clone();
+                }
+                PathElement::TypeView(typ) => current = typ.clone(),
+            }
+            type_id = self.types.storage_type_id(&current)?;
+        }
+        Ok(Some((offset, type_id, flags)))
     }
 
     pub(super) fn resolve_address(
         &mut self,
         payload: &wire::AddressPayload,
     ) -> Result<Address, RuntimeError> {
+        if payload.kind == "local" {
+            let local = {
+                let frame = self.running.frames.last().unwrap();
+                frame.prepared.locals[&payload.local]
+            };
+            if matches!(
+                self.running.frames.last().unwrap().locals[local],
+                frame::Local::Uninitialized
+            ) {
+                let typ = self.running.frames.last().unwrap().prepared.local_types[local].clone();
+                self.store_local(local, self.zero(&typ)?, false)?;
+            }
+        }
         let frame = self.running.frames.last().unwrap();
         let function = frame.prepared.clone();
         let mut address = match payload.kind.as_str() {
@@ -466,11 +828,8 @@ impl Instance {
                 }
             }
         }
-        if !address.path.is_empty() {
-            self.snapshot_address(&address)?;
-        }
         if !payload.path.is_empty() {
-            address.reset_identity(Some((
+            let path_root = Some((
                 path_root,
                 payload.path.len()
                     + payload
@@ -478,7 +837,36 @@ impl Instance {
                         .iter()
                         .filter(|segment| segment.kind == "index")
                         .count(),
-            )));
+            ));
+            Arc::make_mut(&mut address.identity).path_root = path_root;
+            // A pointer can designate a field of an as-yet unmaterialized
+            // aggregate. Numeric reads decline to decode such a payload;
+            // materialize its zero value before publishing the field
+            // descriptor so the descriptor cannot later decode as the parent.
+            self.heap.initialize_zero(address.root)?;
+            let numeric = self.numeric_location(&address)?;
+            address.reset_identity(path_root);
+            // A dynamic field can remain represented by its aggregate parent
+            // until its prepared payload is published. Keep the logical path
+            // in that case; clearing it would make AddressOf point at the
+            // parent and change the pointer's declared type.
+            let readable = numeric
+                .map(|(offset, type_id, flags)| {
+                    self.heap
+                        .read_prepared_location(address.root, offset, type_id, flags)
+                        .map(|value| value.is_some())
+                })
+                .transpose()?
+                .unwrap_or(false);
+            if readable && let Some(numeric) = numeric {
+                Arc::make_mut(&mut address.identity).numeric = Some(numeric);
+                // The descriptor now includes this path. Further projections
+                // append only new segments relative to its pointee type.
+                address.path.clear();
+            }
+        }
+        if !address.path.is_empty() {
+            self.snapshot_address(&address)?;
         }
         Ok(address)
     }

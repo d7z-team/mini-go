@@ -65,9 +65,22 @@ make doc
 `docs/reference/`。仅补齐未随 Git 分发且 identity 已匹配的镜像时使用 `make artifacts`。
 派生物从事实源生成；改变 schema、envelope 或缓存格式时同步更新所属版本或 identity，并核对 Git 差异。
 
+Rust 与 TypeScript 的类型枚举共用 `tooling/runtimecheck` 对 `compiler/types/model.go` 的解析，
+保持同一组 iota 序号与生成诊断；各语言声明由各自的输出器生成。
+
 新增 opcode 从 [opcode_contract.go](runtime/bytecode/opcode_contract.go) 更新契约，生成各 runtime
 描述，并补充共享语料的有效与无效输入。指令融合还需核对 compiler 的 slot 生命周期、三端类型校验
 和调试位置映射。
+
+slot 契约的验证规则也是格式的一部分。扩展 private local 输入或直接结果目标时，同步更新三个
+loader、引用活跃性和 compiler 的求值顺序证明，并升级对应版本；wire 字段不变也不能省略此步骤。
+`call_direct` 和 `map_iter_next` 可将多个结果直接写入不同的 private local，融合仍保留原控制流。
+直接结果复用受管 local 时，目标存储身份在结果发布前仍参与根集合；多结果的首次分配与替换按整组
+提交，配额不足时保留来源并重试发布。验证同时覆盖空聚合值、大聚合值和逐指令强制回收。
+复用 frame 或编码目标时同时验证非零值写回零值、nil 描述符和缺省字段，确保旧长度、引用与数据不会残留。
+
+`min_max` 的 descriptor 记录类型、方向和输入数量。测试同时覆盖参数按源码顺序求值、命名类型、
+整数位宽、浮点 NaN 与有符号零，以及字符串字节序。三端的执行与加载校验必须一起更新。
 
 ### 外部参考
 
@@ -165,15 +178,34 @@ TypeScript 的 `profile: true` 统计 opcode、函数调用和步数；`profileT
 计时。宿主成本使用 CPU/heap sampling 分析；guest allocation count、JavaScript heap 差值和采样次数
 均不能代表 V8 的精确对象分配次数。正确性测试验证结果与精确预算，不以执行耗时作为通过条件。
 
+运行时内部消融使用同一镜像，核对结果、steps、opcode 与计费规则。固定表示的结构整理还应核对
+逻辑分配量；回收策略改变元数据重建次数时，单列实际分配变化。编译优化和 ISA 调整使用等价源码，
+记录指令与临时分配变化。初始化密集的负载应分开记录 load、initialize、首次调用和
+热调用，另报 minor/major collection 次数、扫描量与耗时，避免把准备成本转移误认为执行收益。
+
+借用读取和直接写入的消融同时核对复制流量、宿主临时分配及最终存储归属。受管 GC 计时之外还包含
+编码、句柄访问、分配与宿主 GC，不能用该计时占比推算整个内存路径的收益上限。完整执行器改动使用
+Go、Rust、Node、Chromium 和 Firefox 相同源码负载，原始结果保留每个平台的入口与采样配置。
+
 ### 观测口径
 
 | 指标 | 含义 |
 | --- | --- |
 | scope steps / opcode | guest 工作量与指令构成 |
 | PC profile | 函数、revision 和源码热点 |
-| guest live bytes / heap | guest 逻辑存储 |
-| 累计分配与 GC | 分配压力和回收成本 |
+| occupied / reserved bytes | 当前逻辑存储占用与尚未提交的预留；占用包含尚未回收的垃圾 |
+| last major reachable bytes | 上次 major 回收时的可达快照 |
+| total allocated bytes / allocations | 已成功建立的逻辑存储累计量，GC 搬迁不增加该量 |
+| minor / major、roots / cards / references、copy / promote | 回收频率、扫描和搬迁工作量 |
+| resident page bytes | 受管页、目录、frame 与回收工作空间等实际接纳容量 |
 | RSS / JavaScript heap / WASM 线性内存 | 宿主资源，不属于 guest 计费 |
+
+逻辑存储成本由 `runtime/bytecode/storage_cost.go` 生成到三端契约。每个独立 record/backing
+计一次 header 和实际容量；内联值计其逻辑宽度，物理 padding 不参与 guest 成本。函数记录计
+代码引用、capture 引用和实际存在的 receiver；map/channel 的逻辑控制字段与后端物理布局分开。
+三端 frame 的 aggregate 内联分类按 prepared logical width 判断；物理布局大小只用于实际
+存储容量、偏移和复制，不能用物理 padding 改变内联分类或截断临时写入缓冲。
+共享分配向量见 `testdata/runtime/storage_cost.json`，应通过执行分配后的账本增量验证。
 
 ## 协议维护
 

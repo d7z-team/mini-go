@@ -36,7 +36,7 @@ fn run_image(image: &[u8], host: &Host, stop: Cancellation) -> Option<i64> {
         host,
     )
     .unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     let wake = instance.wake();
     let value = loop {
@@ -46,7 +46,13 @@ fn run_image(image: &[u8], host: &Host, stop: Cancellation) -> Option<i64> {
         }
         let epoch = wake.epoch();
         match instance.poll_steps(4096).unwrap() {
-            PollStatus::Ready => break Some(instance.results()[0].integer().unwrap()),
+            PollStatus::Ready => {
+                break Some(
+                    instance.snapshot_results(Default::default()).unwrap().roots[0]
+                        .integer()
+                        .unwrap(),
+                );
+            }
             PollStatus::Pending => wake.wait(epoch, Duration::from_millis(10)),
             PollStatus::Running => {}
             PollStatus::Paused => panic!("unexpected debugger pause"),

@@ -132,40 +132,35 @@ pub(super) fn verify_types(
             .filter(|output| **output & LOCAL_OUTPUT != 0)
         {
             let index = (output & !LOCAL_OUTPUT) as usize;
-            let typ = registry.underlying(&function.local_types[index])?;
-            if function.addressable_locals[index]
-                || !matches!(typ, TypeIdentity::Primitive(kind) if kind == wire::PrimitiveBool || (wire::PrimitiveInt..=wire::PrimitiveComplex128).contains(&kind))
-            {
+            if index >= function.local_types.len() {
                 return Err(RuntimeError::new(
                     "invalid_operand",
                     path,
-                    "direct local output requires private fixed-size scalar storage",
+                    "direct local output index is out of range",
+                ));
+            }
+            if function.addressable_locals[index] || function.result_locals.contains(&index) {
+                return Err(RuntimeError::new(
+                    "invalid_operand",
+                    path,
+                    "direct local output requires private local storage",
                 ));
             }
         }
         for operand in operands.inputs.iter().filter(|operand| operand.kind == 2) {
             let index = operand.index as usize;
-            let primitive = registry.underlying(&function.local_types[index])?;
-            let direct = matches!(primitive, TypeIdentity::Primitive(kind) if (wire::PrimitiveBool..=wire::PrimitiveComplex128).contains(&kind))
-                || registry.pointer_element(&primitive)?.is_some();
-            let field_read = if matches!(instruction, Instruction::GetPath(_)) {
-                let output = operands.outputs[0];
-                let typ = if output & LOCAL_OUTPUT != 0 {
-                    &function.local_types[(output & !LOCAL_OUTPUT) as usize]
-                } else {
-                    &function.slot_types[output as usize]
-                };
-                let result = registry.underlying(typ)?;
-                matches!(result, TypeIdentity::Primitive(kind) if (wire::PrimitiveBool..=wire::PrimitiveComplex128).contains(&kind))
-                    || registry.pointer_element(&result)?.is_some()
-            } else {
-                false
-            };
-            if function.addressable_locals[index] || !(direct || field_read) {
+            if index >= function.local_types.len() {
                 return Err(RuntimeError::new(
                     "invalid_operand",
                     path,
-                    "direct local input requires private scalar, pointer or scalar field read",
+                    "direct local input index is out of range",
+                ));
+            }
+            if function.addressable_locals[index] || function.result_locals.contains(&index) {
+                return Err(RuntimeError::new(
+                    "invalid_operand",
+                    path,
+                    "direct local input requires private local storage",
                 ));
             }
         }
@@ -636,6 +631,51 @@ pub(super) fn verify_types(
                     &[input(0), input(1)],
                     path,
                 )?])
+            }
+            MinMax(payload) => {
+                let typ = resolve(&payload.r#type)?;
+                let count = usize::try_from(payload.arg_count).map_err(|_| {
+                    RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "min/max argument count is out of range",
+                    )
+                })?;
+                if count == 0
+                    || count != operands.inputs.len()
+                    || operands.outputs.len() != 1
+                    || !matches!(payload.operator.as_str(), "min" | "max")
+                {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "invalid min/max operands",
+                    ));
+                }
+                for index in 0..count {
+                    if !registry.identical(input(index), &typ)? {
+                        return Err(RuntimeError::new(
+                            "invalid_operand",
+                            path,
+                            "min/max input type mismatch",
+                        ));
+                    }
+                }
+                let output = operands.outputs[0];
+                let output_type = if output & LOCAL_OUTPUT != 0 {
+                    &function.local_types[(output & !LOCAL_OUTPUT) as usize]
+                } else {
+                    &function.slot_types[output as usize]
+                };
+                if !registry.identical(output_type, &typ)? {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "min/max output type mismatch",
+                    ));
+                }
+                inputs = Some(vec![typ.clone(); count]);
+                outputs = Some(vec![typ]);
             }
             GetPath(payload) => {
                 let mut typ = resolve(&payload.r#type)?;

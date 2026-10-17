@@ -78,6 +78,14 @@ func encodeFixedJSON(value any) ([]byte, error, bool) {
 		} else {
 			w.encodeOperatorPayload(v)
 		}
+	case MinMaxPayload:
+		w.encodeMinMaxPayload(&v)
+	case *MinMaxPayload:
+		if v == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.encodeMinMaxPayload(v)
+		}
 	case MakeSequencePayload:
 		w.encodeMakeSequencePayload(&v)
 	case *MakeSequencePayload:
@@ -960,6 +968,25 @@ func (w *canonicalBuffer) encodeDescriptorTables(v *DescriptorTables) {
 					w.data = append(w.data, ',')
 				}
 				w.encodeOperatorPayload(&v.Operator[i0])
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if len(v.MinMax) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"minmax\":"...)
+		if v.MinMax == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.MinMax {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.encodeMinMaxPayload(&v.MinMax[i0])
 			}
 			w.data = append(w.data, ']')
 		}
@@ -2177,6 +2204,30 @@ func (w *canonicalBuffer) encodeMakeWaitablePayload(v *MakeWaitablePayload) {
 	comma = true
 	w.data = append(w.data, "\"type\":"...)
 	w.encodeTypeRef(&v.Type)
+	w.data = append(w.data, '}')
+}
+func (w *canonicalBuffer) encodeMinMaxPayload(v *MinMaxPayload) {
+	w.data = append(w.data, '{')
+	comma := false
+	_ = comma
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"type\":"...)
+	w.encodeTypeRef(&v.Type)
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"operator\":"...)
+	w.string(string(v.Operator))
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"arg_count\":"...)
+	w.data = strconv.AppendInt(w.data, int64(v.ArgCount), 10)
 	w.data = append(w.data, '}')
 }
 func (w *canonicalBuffer) encodeModule(v *Module) {
@@ -3562,6 +3613,39 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 			}
 		}
 		return true, nil
+	case *MinMaxPayload:
+		if v == nil {
+			return false, nil
+		}
+		r := payloadObject{raw: raw, pos: 1}
+		for r.next() {
+			var err error
+			switch {
+			case r.name == "type":
+				err = DecodeInstructionPayload(r.value, &v.Type)
+			case r.name == "operator":
+				if text, plain := plainPayloadString(r.value); plain {
+					v.Operator = string(text)
+				} else {
+					err = json.Unmarshal(r.value, &v.Operator)
+				}
+			case r.name == "arg_count":
+				if text := string(bytes.TrimSpace(r.value)); text != "null" {
+					parsed, parseErr := strconv.ParseInt(text, 10, 0)
+					if parseErr == nil {
+						v.ArgCount = int(parsed)
+					} else {
+						err = json.Unmarshal(r.value, &v.ArgCount)
+					}
+				}
+			default:
+				return true, fmt.Errorf("json: unknown field %q", r.name)
+			}
+			if err != nil {
+				return true, err
+			}
+		}
+		return true, nil
 	case *MakeSequencePayload:
 		if v == nil {
 			return false, nil
@@ -4458,6 +4542,7 @@ func (GlobalPayload) instructionPayload()        {}
 func (AddressPayload) instructionPayload()       {}
 func (TypePayload) instructionPayload()          {}
 func (OperatorPayload) instructionPayload()      {}
+func (MinMaxPayload) instructionPayload()        {}
 func (MakeSequencePayload) instructionPayload()  {}
 func (MakeMapPayload) instructionPayload()       {}
 func (MakeStructPayload) instructionPayload()    {}
@@ -4530,6 +4615,17 @@ func (v TypePayload) descriptorBytes() int {
 func (v OperatorPayload) descriptorBytes() int {
 	n := 0
 	n += 16 + len(v.Operator)
+	return n
+}
+func (v MinMaxPayload) descriptorBytes() int {
+	n := 0
+	n++
+	n++
+	n += 16 + len(v.Type.Named.ModulePath)
+	n += 16 + len(v.Type.Named.DeclID)
+	n += 16 + len(v.Type.Node)
+	n += 16 + len(v.Operator)
+	n += 8
 	return n
 }
 func (v MakeSequencePayload) descriptorBytes() int {
@@ -4766,6 +4862,8 @@ func clonePayload(value Payload) Payload {
 		return v
 	case OperatorPayload:
 		return v
+	case MinMaxPayload:
+		return v
 	case MakeSequencePayload:
 		return v
 	case MakeMapPayload:
@@ -4860,6 +4958,8 @@ func descriptorBytes(value Payload) int {
 		return v.descriptorBytes()
 	case OperatorPayload:
 		return v.descriptorBytes()
+	case MinMaxPayload:
+		return v.descriptorBytes()
 	case MakeSequencePayload:
 		return v.descriptorBytes()
 	case MakeMapPayload:
@@ -4926,6 +5026,8 @@ func (w *canonicalBuffer) payload(value Payload) {
 		w.encodeTypePayload(&v)
 	case OperatorPayload:
 		w.encodeOperatorPayload(&v)
+	case MinMaxPayload:
+		w.encodeMinMaxPayload(&v)
 	case MakeSequencePayload:
 		w.encodeMakeSequencePayload(&v)
 	case MakeMapPayload:
@@ -5010,6 +5112,11 @@ func ReadInstructionPayload(value Payload, output any) error {
 		}
 	case *OperatorPayload:
 		if p, ok := value.(OperatorPayload); ok && v != nil {
+			*v = p
+			return nil
+		}
+	case *MinMaxPayload:
+		if p, ok := value.(MinMaxPayload); ok && v != nil {
 			*v = p
 			return nil
 		}
@@ -5403,6 +5510,12 @@ func decodePayload(op string, raw json.RawMessage) (Payload, error) {
 		return v, nil
 	case "len_compare_branch":
 		var v CompareBranchPayload
+		if err := DecodeInstructionPayload(raw, &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "min_max":
+		var v MinMaxPayload
 		if err := DecodeInstructionPayload(raw, &v); err != nil {
 			return nil, err
 		}

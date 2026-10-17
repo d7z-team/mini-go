@@ -2,7 +2,7 @@ import { serializeError, type WorkerPort } from "../worker-channel";
 import type { CompilerCommand, CompilerResponse } from "./protocol";
 
 export interface GoCompiler {
-  call(input: Uint8Array): Uint8Array;
+  call(input: Uint8Array): Uint8Array<ArrayBuffer>;
   readonly wasmBytes: number;
 }
 
@@ -58,7 +58,7 @@ export function runCompilerWorker(
       const value = compiler.call(message.input);
       requests++;
       callMilliseconds += performance.now() - started;
-      port.send({ kind: "compilerResponse", generation, id: message.id, value });
+      port.send({ kind: "compilerResponse", generation, id: message.id, value }, [value.buffer]);
     } catch (error) {
       port.send({
         kind: "compilerResponse",
@@ -70,24 +70,11 @@ export function runCompilerWorker(
   });
 }
 
-interface GoRuntime {
-  importObject: WebAssembly.Imports;
-  run(instance: WebAssembly.Instance): Promise<void>;
-}
-
-type GoGlobal = typeof globalThis & {
-  Go: new () => GoRuntime;
-  __miniGoToolsCall?: (input: Uint8Array) => Uint8Array;
-};
-
-export async function instantiateGoCompiler(bytes: Uint8Array): Promise<GoCompiler> {
-  const global = globalThis as GoGlobal;
+export async function instantiateGoCompiler(bytes: Uint8Array<ArrayBuffer>): Promise<GoCompiler> {
+  const global = globalThis;
   if (typeof global.Go !== "function") throw new Error("Go WebAssembly support is not loaded");
   const go = new global.Go();
-  const instantiated = await WebAssembly.instantiate(
-    Uint8Array.from(bytes).buffer,
-    go.importObject,
-  );
+  const instantiated = await WebAssembly.instantiate(bytes, go.importObject);
   const running = go.run(instantiated.instance);
   await Promise.resolve();
   if (!global.__miniGoToolsCall) {
@@ -113,8 +100,10 @@ export async function instantiateGoCompiler(bytes: Uint8Array): Promise<GoCompil
     wasmBytes: bytes.byteLength,
     call(input) {
       const output = call(input);
-      if (!(output instanceof Uint8Array)) throw new Error("Go compiler returned invalid bytes");
-      return Uint8Array.from(output);
+      if (!(output instanceof Uint8Array) || !(output.buffer instanceof ArrayBuffer))
+        throw new Error("Go compiler returned invalid bytes");
+      // CopyBytesToJS creates an independent result owned by this Worker.
+      return output;
     },
   };
 }

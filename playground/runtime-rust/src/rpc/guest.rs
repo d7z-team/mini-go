@@ -204,7 +204,7 @@ impl GuestProvider {
             .map_err(|_| Status::exhausted("RPC guest request limit exceeded"))?;
         let id = self
             .next_id
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
             .map_err(|_| Status::exhausted("RPC guest request IDs exhausted"))?;
         let (sender, reply) = oneshot::channel();
         let response = Arc::new(Mutex::new(GuestReply::default()));

@@ -76,7 +76,7 @@ func GenerateStdlibVectors() ([]byte, error) {
 		if err != nil {
 			cancel()
 			host.Close()
-			return nil, err
+			return nil, fmt.Errorf("stdlib %s initialization: %w", root, err)
 		}
 		execution, runErr := instance.StartEntry()
 		var report runtime.RunResult

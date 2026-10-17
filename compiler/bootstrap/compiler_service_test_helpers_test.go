@@ -49,9 +49,8 @@ func instantiateCompilerImage(t *testing.T, image artifact.ExecutionImage) *mini
 func compilerImageInstanceOptions() minigoruntime.InstanceOptions {
 	return minigoruntime.InstanceOptions{
 		Limits: minigoruntime.Limits{
-			MaxSteps:              2_000_000_000,
-			MaxAllocatedBytes:     8 << 30,
-			MaxCollectionElements: 4 << 20,
+			MaxSteps:      2_000_000_000,
+			MaxGuestBytes: 8 << 30,
 		},
 	}
 }

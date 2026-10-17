@@ -1,6 +1,23 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { bytesCodec, messageCodec, optionalCodec, rpcCodecs } from "@d7z-team/mini-go/rpc";
+import { decodeRPCWireValues, encodeRPCWireValues } from "../src/rpc/endpoint";
+
+test("RPC wire encoding owns large binary views and preserves every byte", () => {
+  const backing = new Uint8Array((1 << 20) + 8);
+  const source = backing.subarray(4, backing.length - 4);
+  source.fill(0x7f);
+  source[0] = 0;
+  source[source.length - 1] = 255;
+  const expected = Uint8Array.from(source);
+  const encoded = encodeRPCWireValues([
+    { type: "[]uint8", data: { kind: "bytes", value: source } },
+  ]);
+  source.fill(1);
+  const decoded = decodeRPCWireValues(encoded);
+  assert.deepEqual(decoded, [{ type: "[]uint8", data: { kind: "bytes", value: expected } }]);
+  assert.deepEqual(encodeRPCWireValues(decoded), encoded);
+});
 
 test("RPC codecs preserve exact numeric and nil states", () => {
   assert.throws(() => rpcCodecs.int64.encode(1), /bigint/);

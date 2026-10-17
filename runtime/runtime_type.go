@@ -190,29 +190,21 @@ func (t vmType) Is(kind types.Kind) bool {
 	if t.Ref.Kind == kind {
 		return true
 	}
-	if t.Table == nil || t.Ref.Kind != types.Named {
-		return false
-	}
-	return t.Table.Underlying(t.Ref).Kind == kind
+	return t.underlyingTypeRef().Kind == kind
 }
 
 func (t vmType) Primitive(kind types.PrimitiveKind) bool {
-	ref := t.Ref
-	if t.Table != nil && ref.Kind == types.Named {
-		ref = t.Table.Underlying(ref)
-	}
+	ref := t.underlyingTypeRef()
 	return ref.Kind == types.Primitive && ref.Primitive == kind
 }
 
 func (t vmType) NumericInfo() (types.NumericInfo, bool) {
-	if t.Ref.Kind == types.Primitive && t.Ref.Primitive <= types.PrimitiveFunction {
-		entry := runtimeNumericByPrimitive[t.Ref.Primitive]
+	ref := t.underlyingTypeRef()
+	if ref.Kind == types.Primitive && ref.Primitive <= types.PrimitiveFunction {
+		entry := runtimeNumericByPrimitive[ref.Primitive]
 		return entry.info, entry.ok
 	}
-	if t.Ref.Kind != types.Named {
-		return types.NumericInfo{}, false
-	}
-	return types.NumericTypeInfo(t.Table, t.Ref)
+	return types.NumericInfo{}, false
 }
 
 type runtimeWaitableInfo struct {
@@ -280,14 +272,11 @@ func (t vmType) InterfaceInfo() (runtimeInterfaceInfo, bool) {
 }
 
 func (t vmType) ShapeKind() types.Kind {
-	if t.Ref.Kind != types.Named {
-		return t.Ref.Kind
-	}
-	underlying := t.Underlying().Ref.Kind
-	if underlying == types.Any {
+	ref := t.underlyingTypeRef()
+	if ref.Kind == types.Any && t.Ref.Kind == types.Named || ref.Kind == types.Primitive && ref.Primitive == types.PrimitiveError {
 		return types.Interface
 	}
-	return underlying
+	return ref.Kind
 }
 
 func (t vmType) PointerElem() (vmType, bool) {
@@ -335,6 +324,29 @@ func (t vmType) StructFields() ([]types.Field, bool) {
 		return nil, false
 	}
 	return node.Fields, true
+}
+
+// runtimeTypeMayOwnStorage is the prepared storage classification used by
+// frame root enumeration. Numeric and boolean lanes are self-contained;
+// every other value may carry a backing, a pointer, or a nested reference.
+// This deliberately errs toward retaining a root when a type is unfamiliar.
+func runtimeTypeMayOwnStorage(t vmType) bool {
+	if t.Ref.Kind == types.Void {
+		return false
+	}
+	if t.Primitive(types.PrimitiveBool) {
+		return false
+	}
+	_, numeric := t.NumericInfo()
+	return !numeric
+}
+
+func runtimeTypeReferenceMask(refs []types.TypeRef, table *types.TypeTable) []bool {
+	out := make([]bool, len(refs))
+	for index, ref := range refs {
+		out[index] = runtimeTypeMayOwnStorage(runtimeTypeWithTable(ref, table))
+	}
+	return out
 }
 
 func runtimeStructFieldTypes(runtimeType vmType) ([]structFieldType, bool) {

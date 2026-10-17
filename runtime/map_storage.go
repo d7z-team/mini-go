@@ -12,6 +12,7 @@ type vmMap struct {
 	nextNonReflexiveID uint64
 	nextEntryID        uint64
 	entryKeys          map[uint64]vmMapKey
+	managed            *managedMapStorage
 }
 
 type vmMapKey struct {
@@ -58,6 +59,10 @@ type vmMapEntry struct {
 }
 
 func (data *vmMap) storeEntry(key vmMapKey, entry vmMapEntry) {
+	if data != nil && data.managed != nil {
+		_ = data.managed.storeEntry(key, entry)
+		return
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
 	data.storeEntryLocked(key, entry)
@@ -107,6 +112,10 @@ func (data *vmMap) snapshot() map[vmMapKey]vmMapEntry {
 	if data == nil {
 		return nil
 	}
+	if data.managed != nil {
+		entries, _ := data.managed.snapshot()
+		return entries
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
 	entries := make(map[vmMapKey]vmMapEntry, len(data.entries))
@@ -120,6 +129,9 @@ func (data *vmMap) length() int {
 	if data == nil {
 		return 0
 	}
+	if data.managed != nil {
+		return data.managed.length()
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
 	return len(data.entries)
@@ -129,6 +141,9 @@ func (data *vmMap) loadEntry(key vmMapKey) (vmMapEntry, bool) {
 	if data == nil {
 		return vmMapEntry{}, false
 	}
+	if data.managed != nil {
+		return data.managed.loadEntry(key)
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
 	entry, exists := data.entries[key]
@@ -136,22 +151,47 @@ func (data *vmMap) loadEntry(key vmMapKey) (vmMapEntry, bool) {
 }
 
 func (data *vmMap) deleteEntry(key vmMapKey) {
+	_ = data.deleteEntryWithBatch(key, nil)
+}
+
+func (data *vmMap) deleteEntryWithBatch(key vmMapKey, batch *managedAllocationBatch) error {
+	if data != nil && data.managed != nil {
+		return data.managed.deleteEntryWithBatch(key, batch)
+	}
+	if data == nil {
+		return nil
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
 	delete(data.entryKeys, data.entries[key].identity)
 	delete(data.entries, key)
+	return nil
 }
 
 func (data *vmMap) clear() {
+	_ = data.clearWithBatch(nil)
+}
+
+func (data *vmMap) clearWithBatch(batch *managedAllocationBatch) error {
+	if data != nil && data.managed != nil {
+		return data.managed.clearWithBatch(batch)
+	}
+	if data == nil {
+		return nil
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
 	clear(data.entries)
 	clear(data.entryKeys)
+	return nil
 }
 
 func (data *vmMap) entryIdentities() []uint64 {
 	if data == nil {
 		return nil
+	}
+	if data.managed != nil {
+		return data.managed.entryIdentities()
 	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
@@ -163,18 +203,25 @@ func (data *vmMap) entryIdentities() []uint64 {
 }
 
 func (data *vmMap) loadIdentity(identity uint64) (vmMapEntry, bool) {
+	if data != nil && data.managed != nil {
+		return data.managed.loadIdentity(identity)
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
 	key, exists := data.entryKeys[identity]
 	return data.entries[key], exists
 }
 
-func (data *vmMap) storeWithinLimit(key vmMapKey, entry vmMapEntry, limit int) error {
+func (data *vmMap) store(key vmMapKey, entry vmMapEntry) error {
+	return data.storeWithBatch(key, entry, nil)
+}
+
+func (data *vmMap) storeWithBatch(key vmMapKey, entry vmMapEntry, batch *managedAllocationBatch) error {
+	if data != nil && data.managed != nil {
+		return data.managed.storeEntryWithBatch(key, entry, batch)
+	}
 	data.mu.Lock()
 	defer data.mu.Unlock()
-	if _, exists := data.entries[key]; !exists && limit > 0 && len(data.entries) >= limit {
-		return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", limit)}
-	}
 	data.storeEntryLocked(key, entry)
 	return nil
 }

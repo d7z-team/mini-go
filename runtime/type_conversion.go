@@ -10,7 +10,7 @@ import (
 )
 
 func convertToString(value vmValue) (vmValue, error) {
-	if out, ok := value.Data.(string); ok {
+	if out, ok := value.payload().(string); ok {
 		return newVMValue("String", out), nil
 	}
 	if !isIntegerValue(value) {
@@ -102,14 +102,14 @@ func convertPrimitiveValue(value vmValue, target vmType, metadata conversionMeta
 		if !value.Type.Primitive(types.PrimitiveBool) {
 			return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 		}
-		boolean, ok := value.Data.(bool)
+		boolean, ok := value.boolValue()
 		if !ok {
 			return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 		}
 		return newVMValue(target, boolean), true, nil
 	case types.PrimitiveString:
 		if value.Type.Primitive(types.PrimitiveString) {
-			text, ok := value.Data.(string)
+			text, ok := value.payload().(string)
 			if !ok {
 				return vmValue{}, true, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 			}
@@ -175,8 +175,8 @@ func (m *moduleInstance) convertValueWithVariadic(value vmValue, target any, tar
 	if sourceElem, sourcePointer := value.Type.PointerElem(); sourcePointer && value.Type.Ref.Kind != types.Named && targetType.Ref.Kind != types.Named {
 		if targetElem, targetPointer := targetType.PointerElem(); targetPointer &&
 			m.conversionUnderlyingIdentical(sourceElem, targetElem) {
-			pointer, ok := value.Data.(*vmPointer)
-			if !ok && value.Data != nil {
+			pointer, ok := value.payload().(*vmPointer)
+			if !ok && value.payload() != nil {
 				return vmValue{}, fmt.Errorf("invalid pointer payload for %s", value.Type)
 			}
 			if pointer == nil {
@@ -204,7 +204,7 @@ func (m *moduleInstance) convertValueWithVariadic(value vmValue, target any, tar
 			return value, nil
 		}
 	}
-	if _, ok := value.Data.(functionRef); ok && m.isFunctionType(targetText) {
+	if _, ok := value.payload().(functionRef); ok && m.isFunctionType(targetText) {
 		if !m.functionValueAssignable(value, targetText, &targetVariadic) {
 			return vmValue{}, fmt.Errorf("cannot convert %s to %s: function signatures differ", value.Type, targetText)
 		}
@@ -256,7 +256,7 @@ func (m *moduleInstance) convertSliceToArrayPointer(value vmValue, target vmType
 	if !m.sameRuntimeType(sourceElem, elemType) {
 		return vmValue{}, true, fmt.Errorf("cannot convert %s to %s: element types differ", value.Type, target)
 	}
-	slice, ok := value.Data.(*vmSlice)
+	slice, ok := value.payload().(*vmSlice)
 	if !ok {
 		return vmValue{}, true, fmt.Errorf("cannot convert %s to %s: invalid slice backing", value.Type, target)
 	}
@@ -271,18 +271,17 @@ func (m *moduleInstance) convertSliceToArrayPointer(value vmValue, target vmType
 		}
 		return vmValue{}, true, fmt.Errorf("cannot convert %s to %s: slice length %d is smaller than array length %d", value.Type, target, currentLen, n)
 	}
-	backingLen := len(slice.Backing)
-	if slice.ByteBacked {
-		backingLen = len(slice.ByteBacking)
+	backingLen := 0
+	if slice.vmSliceStorage != nil {
+		backingLen = slice.vmSliceStorage.capacity
+	}
+	if slice.managedHeap != nil && slice.managedRef.valid() {
+		backingLen = slice.Start + slice.Cap
 	}
 	if slice.Start < 0 || slice.Start+n > backingLen {
 		return vmValue{}, true, fmt.Errorf("cannot convert %s to %s: invalid slice backing", value.Type, target)
 	}
-	start := slice.Start
-	identity := fmt.Sprintf("slice-array:%p:%d", slice.Backing, start)
-	if slice.ByteBacked {
-		identity = fmt.Sprintf("slice-array:%p:%d", slice.ByteBacking, start)
-	}
+	identity := "slice-array:" + slice.elementIdentity(0)
 	pointer := newTargetPointer(&vmPointer{Type: arrayRuntimeType, Identity: identity, target: pointerArray, module: m, array: slice, arrayLen: n})
 	pointer.Type = target
 	return pointer, true, nil

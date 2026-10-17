@@ -45,10 +45,10 @@ function report(elapsed, stats) {
     elapsed_ms: elapsed,
     steps: stats.steps,
     steps_per_second: Number(stats.steps) / (elapsed / 1000),
-    guest_allocations: stats.guestAllocations,
-    live_guest_bytes: stats.liveGuestBytes,
-    total_guest_allocated_bytes: stats.totalGuestAllocatedBytes,
-    peak_guest_bytes: stats.peakGuestBytes,
+    guest_allocations: stats.totalAllocations,
+    occupied_bytes: stats.occupiedBytes,
+    total_allocated_bytes: stats.totalAllocatedBytes,
+    resident_page_bytes: stats.residentPageBytes,
     opcodes: stats.profile?.opcodes,
     functions: stats.profile?.functions,
   };
@@ -66,9 +66,9 @@ test("runtime accounting diagnostics", async ({ bench }) => {
         direct.stats.steps !== profiled.stats.steps ||
         direct.stats.steps !== worker.stats.steps ||
         direct.stats.steps !== profiledWorker.stats.steps ||
-        direct.stats.guestAllocations !== profiled.stats.guestAllocations ||
-        direct.stats.guestAllocations !== worker.stats.guestAllocations ||
-        direct.stats.guestAllocations !== profiledWorker.stats.guestAllocations ||
+        direct.stats.totalAllocations !== profiled.stats.totalAllocations ||
+        direct.stats.totalAllocations !== worker.stats.totalAllocations ||
+        direct.stats.totalAllocations !== profiledWorker.stats.totalAllocations ||
         snapshot(direct.result) !== snapshot(profiled.result) ||
         snapshot(direct.result) !== snapshot(worker.result) ||
         snapshot(direct.result) !== snapshot(profiledWorker.result) ||

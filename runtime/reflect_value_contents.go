@@ -14,7 +14,7 @@ func reflectValueMapEntries(ctx intrinsicContext, module *moduleInstance, value 
 		return nil, nil
 	}
 	var entries []vmMapEntry
-	switch data := value.Data.(type) {
+	switch data := value.payload().(type) {
 	case *vmMap:
 		snapshot := data.snapshot()
 		keys := sortedVMMapKeys(snapshot)
@@ -46,7 +46,7 @@ func reflectValueMapEntries(ctx intrinsicContext, module *moduleInstance, value 
 }
 
 func reflectValueLen(module *moduleInstance, value vmValue) int64 {
-	switch data := value.Data.(type) {
+	switch data := value.payload().(type) {
 	case string:
 		return int64(len(data))
 	case *vmSlice:
@@ -72,7 +72,7 @@ func reflectValueLen(module *moduleInstance, value vmValue) int64 {
 }
 
 func reflectValueCap(module *moduleInstance, value vmValue) int64 {
-	switch data := value.Data.(type) {
+	switch data := value.payload().(type) {
 	case *vmSlice:
 		if data == nil {
 			return 0
@@ -95,7 +95,7 @@ func reflectValueStructFieldNames(module *moduleInstance, value vmValue) []strin
 		}
 		return out
 	}
-	data, ok := value.Data.(*vmStruct)
+	data, ok := value.payload().(*vmStruct)
 	if !ok || data == nil || data.schema == nil {
 		return nil
 	}

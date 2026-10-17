@@ -120,6 +120,7 @@ func (machine *executionMachine) wakeBlocked() error {
 	if err := machine.vm.drainReadyTimers(); err != nil {
 		return err
 	}
+	collectionRetried := false
 	for {
 		progress := false
 		for i := 0; i < len(machine.blocked); {
@@ -127,6 +128,13 @@ func (machine *executionMachine) wakeBlocked() error {
 			op := task.blocked
 			ready, err := machine.resumeBlocked(task, op)
 			if err != nil {
+				if errors.Is(err, errManagedCollection) && !collectionRetried && machine.vm.owner.Load() {
+					collectionRetried = true
+					if collectErr := machine.vm.collectMajorManaged(); collectErr != nil {
+						return collectErr
+					}
+					continue
+				}
 				return err
 			}
 			if !ready {
@@ -200,6 +208,7 @@ func (machine *executionMachine) resumeBlocked(task *executionTask, op *blockedO
 		}
 		resource.grant = nil
 		resource.locked = true
+		op.mutex.waiter.release(resource.vm)
 		return true, nil
 	case "module":
 		if op.module.state.initState == moduleInitializing {
@@ -215,7 +224,10 @@ func (machine *executionMachine) resumeBlocked(task *executionTask, op *blockedO
 		if !task.ownership.notified(op.ticket) {
 			return false, nil
 		}
-		values, ready := op.ffi.take()
+		values, ready, err := op.ffi.materializeForFrame(callFrame.module, task.allocationBatch)
+		if err != nil {
+			return false, err
+		}
 		if !ready {
 			return false, nil
 		}

@@ -84,13 +84,13 @@ fn entry_admission_counts_background_tasks_after_root_completion() {
         },
     )
     .unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(1000).unwrap(), PollStatus::Ready);
     assert_eq!(instance.poll_background(1000).unwrap(), PollStatus::Pending);
     assert_eq!(instance.stats().blocked_tasks, 2);
     let before = instance.heap_stats();
     assert_eq!(
-        instance.start("default", vec![]).unwrap_err().code,
+        instance.start("default", &[]).unwrap_err().code,
         "task_limit"
     );
     assert_eq!(
@@ -130,21 +130,22 @@ fn backing_capacity_overflow_returns_a_resource_error() {
         let mut instance = Instance::new(
             program,
             ExecutionLimits {
-                max_heap_bytes: u64::MAX,
-                max_sequence_elements: usize::MAX,
+                max_guest_bytes: u64::MAX,
+                max_boundary_elements: usize::MAX,
                 ..ExecutionLimits::default()
             },
         )
         .unwrap();
-        instance.start("default", vec![]).unwrap();
+        let idle_bytes = instance.heap_stats().live_bytes;
+        instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(2).unwrap_err().code, "allocation_limit");
-        assert_eq!(instance.heap_stats().live_bytes, 0);
+        assert_eq!(instance.heap_stats().live_bytes, idle_bytes);
         instance.close().unwrap();
     }
 }
 
 #[test]
-fn concatenation_checks_the_complete_string_before_allocating() {
+fn concatenation_and_snapshot_use_their_own_storage_budgets() {
     let string = json!({"kind":3,"primitive":2});
     let code = support::slot_code(
         json!([string, string, string]),
@@ -169,27 +170,27 @@ fn concatenation_checks_the_complete_string_before_allocating() {
         "functions":[{"id":"fn.Main","signature":{"results":[string]},"code":code}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
-    for limit in [3, 4] {
-        let mut instance = Instance::new(
-            program.clone(),
-            ExecutionLimits {
-                max_string_bytes: limit,
-                ..ExecutionLimits::default()
-            },
-        )
-        .unwrap();
-        instance.start("default", vec![]).unwrap();
-        if limit == 4 {
-            assert_eq!(instance.poll_steps(4).unwrap(), PollStatus::Ready);
-            let snapshot = instance.snapshot_results(Default::default()).unwrap();
-            assert_eq!(snapshot.bytes(&snapshot.roots[0]).unwrap(), b"abcd");
-        } else {
-            assert_eq!(instance.poll_steps(4).unwrap_err().code, "string_limit");
-            assert!(instance.results().is_empty());
-        }
-        instance.close().unwrap();
-        assert_eq!(instance.heap_stats().live_bytes, 0);
-    }
+    let mut instance = Instance::new(
+        program,
+        ExecutionLimits {
+            max_boundary_bytes: 3,
+            ..ExecutionLimits::default()
+        },
+    )
+    .unwrap();
+    instance.start("default", &[]).unwrap();
+    assert_eq!(instance.poll_steps(4).unwrap(), PollStatus::Ready);
+    let error = instance
+        .snapshot_results(mini_go::snapshot::SnapshotLimits {
+            max_bytes: 3,
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "snapshot_limit");
+    let snapshot = instance.snapshot_results(Default::default()).unwrap();
+    assert_eq!(snapshot.bytes(&snapshot.roots[0]).unwrap(), b"abcd");
+    instance.close().unwrap();
+    assert_eq!(instance.heap_stats().live_bytes, 0);
 }
 
 #[test]
@@ -242,7 +243,8 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
             ),
         ],
     );
-    let failing_locals = (0..8)
+    // 128 prepared integer lanes alone consume the 1024-byte limit.
+    let failing_locals = (0..128)
         .map(|index| json!({"id":format!("slot{index}"),"type":{"kind":3,"primitive":3}}))
         .collect::<Vec<_>>();
     let image = support::image(json!({
@@ -278,29 +280,41 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
         program,
         ExecutionLimits {
             max_steps: 100,
-            max_heap_bytes: 1024,
+            max_guest_bytes: 1024,
             ..ExecutionLimits::default()
         },
     )
     .unwrap();
     for entry in ["default", "quick"] {
-        instance.start(entry, vec![]).unwrap();
+        instance.start(entry, &[]).unwrap();
         assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-        assert_eq!(instance.results()[0].integer().unwrap(), 42);
-        let before = instance.heap_stats();
+        assert_eq!(
+            instance.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            42
+        );
+        // Failed admission may collect garbage left by a completed call.
+        // Compare retained storage at the same explicit collection boundary.
+        let before = instance.collect_garbage().unwrap();
         assert_eq!(
             instance
-                .start("quick", vec![mini_go::value::Value::int(1)])
+                .start("quick", &[mini_go::HostValue::int(1)])
                 .unwrap_err()
                 .code,
             "invalid_call"
         );
         assert_eq!(
-            instance.start("large", vec![]).unwrap_err().code,
+            instance.start("large", &[]).unwrap_err().code,
             "allocation_limit"
         );
-        assert_eq!(instance.results()[0].integer().unwrap(), 42);
-        let after = instance.heap_stats();
+        assert_eq!(
+            instance.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            42
+        );
+        let after = instance.collect_garbage().unwrap();
         assert_eq!(after.live_objects, before.live_objects);
         assert_eq!(after.live_bytes, before.live_bytes);
         assert!(after.total_allocated_bytes >= before.total_allocated_bytes);
@@ -311,10 +325,18 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
     assert_eq!(instance.steps(), 64 + 4 + 2);
     assert_eq!(instance.poll_background(100).unwrap(), PollStatus::Ready);
     assert_eq!(instance.steps(), 102);
-    assert_eq!(instance.heap_stats().live_objects, 0);
-    instance.start("quick", vec![]).unwrap();
+    assert_eq!(
+        instance.heap_stats().live_bytes,
+        mini_go::contract_generated::STORAGE_RECORD_HEADER
+    );
+    instance.start("quick", &[]).unwrap();
     assert_eq!(instance.poll_steps(2).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
     instance.close().unwrap();
 }
 
@@ -357,8 +379,10 @@ fn named_string_conversion_preserves_binary_bytes_and_detached_results() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    let argument = mini_go::value::Value::string(vec![255, 0, 128]);
-    instance.start("default", vec![argument.clone()]).unwrap();
+    let argument = mini_go::HostValue::string(vec![255, 0, 128]);
+    instance
+        .start("default", std::slice::from_ref(&argument))
+        .unwrap();
     assert_eq!(instance.poll_steps(10).unwrap(), PollStatus::Ready);
     let result = instance.snapshot_results(Default::default()).unwrap();
     instance.close().unwrap();
@@ -366,8 +390,8 @@ fn named_string_conversion_preserves_binary_bytes_and_detached_results() {
         result.bytes(&result.roots[0]).unwrap(),
         vec![255, 0, 128, b'!']
     );
-    if let mini_go::value::Data::String(bytes) = argument.data() {
-        assert_eq!(&**bytes, &[255, 0, 128]);
+    if let mini_go::snapshot::HostData::String(bytes) = &argument.data {
+        assert_eq!(bytes, &[255, 0, 128]);
     } else {
         panic!("expected original string");
     }
@@ -378,8 +402,9 @@ fn invalid_binary_entry_reclaims_its_argument_and_closed_start_allocates_nothing
     let image = support::image(json!({"functions":[{"id":"fn.Main","code":{"descriptors":{}}}]}));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
+    let idle_bytes = instance.heap_stats().live_bytes;
     assert!(instance.start_bytes("missing", &[0, 255]).is_err());
-    assert_eq!(instance.heap_stats().live_bytes, 0);
+    assert_eq!(instance.heap_stats().live_bytes, idle_bytes);
     instance.close().unwrap();
     let allocated = instance.heap_stats().total_allocated_bytes;
     assert_eq!(
@@ -388,6 +413,40 @@ fn invalid_binary_entry_reclaims_its_argument_and_closed_start_allocates_nothing
     );
     assert_eq!(instance.heap_stats().total_allocated_bytes, allocated);
     assert_eq!(instance.heap_stats().live_objects, 0);
+}
+
+#[test]
+fn root_task_and_frame_admission_is_atomic() {
+    let code = support::slot_code(
+        json!([]),
+        &[("return", json!({"result_count": 0}), json!({}))],
+    );
+    let image = support::image(json!({
+        "functions": [{"id": "fn.Main", "code": code}]
+    }));
+    let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
+    let mut instance = Instance::new(
+        program,
+        ExecutionLimits {
+            // Current revision anchor + task + empty frame, one byte short.
+            max_guest_bytes: mini_go::contract_generated::STORAGE_RECORD_HEADER
+                + mini_go::contract_generated::STORAGE_CONTROL_RECORD
+                + mini_go::contract_generated::STORAGE_FRAME_HEADER
+                - 1,
+            ..ExecutionLimits::default()
+        },
+    )
+    .unwrap();
+    instance.collect_garbage().unwrap();
+    let before = instance.memory_stats();
+    for _ in 0..3 {
+        assert_eq!(
+            instance.start("default", &[]).unwrap_err().code,
+            "allocation_limit"
+        );
+        assert_eq!(instance.memory_stats(), before);
+    }
+    instance.close().unwrap();
 }
 
 #[test]
@@ -415,14 +474,15 @@ fn nested_array_layout_fails_within_budget_before_materialization() {
     let mut instance = Instance::new(
         program,
         ExecutionLimits {
-            max_heap_bytes: 1024,
+            max_guest_bytes: 1024,
             ..ExecutionLimits::default()
         },
     )
     .unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    let idle_bytes = instance.heap_stats().live_bytes;
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(1).unwrap_err().code, "allocation_limit");
-    assert_eq!(instance.heap_stats().live_bytes, 0);
+    assert_eq!(instance.heap_stats().live_bytes, idle_bytes);
     assert!(instance.heap_stats().peak_bytes <= 1024);
     instance.close().unwrap();
 }
@@ -454,14 +514,19 @@ fn unused_array_slots_do_not_materialize_their_layout() {
     let mut instance = Instance::new(
         program,
         ExecutionLimits {
-            max_heap_bytes: 1024,
+            max_guest_bytes: 1024,
             ..ExecutionLimits::default()
         },
     )
     .unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(2).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
     instance.close().unwrap();
     assert_eq!(instance.heap_stats().live_bytes, 0);
 }
@@ -486,16 +551,14 @@ fn unrecovered_guest_panic_faults_the_instance_and_releases_frames() {
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let entry = program.image().entries[0].name.clone();
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start(&entry, Vec::new()).unwrap();
+    let idle_bytes = instance.heap_stats().live_bytes;
+    instance.start(&entry, &[]).unwrap();
     assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Running);
     let error = instance.poll_steps(2).unwrap_err();
     assert_eq!(error.code, "panic");
     assert!(error.message.contains("failure"));
-    assert_eq!(instance.heap_stats().live_bytes, 0);
-    assert_eq!(
-        instance.start(&entry, Vec::new()).unwrap_err().code,
-        "faulted"
-    );
+    assert_eq!(instance.heap_stats().live_bytes, idle_bytes);
+    assert_eq!(instance.start(&entry, &[]).unwrap_err().code, "faulted");
     instance.close().unwrap();
     instance.close().unwrap();
 }

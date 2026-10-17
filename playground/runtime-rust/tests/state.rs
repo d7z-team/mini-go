@@ -41,7 +41,7 @@ fn owner_actions_and_memory_match_current_go_observations() {
         let mut instance = Instance::new(
             program,
             ExecutionLimits {
-                max_allocated_bytes: vector.limit,
+                max_guest_bytes: vector.limit,
                 max_steps: 1000,
                 ..ExecutionLimits::default()
             },
@@ -69,16 +69,18 @@ fn owner_actions_and_memory_match_current_go_observations() {
             "{} initialization steps",
             vector.name
         );
-        let initial = instance.memory_stats();
+        let initial_heap = instance.heap_stats();
+        // The first three counters are the cross-backend logical contract.
+        // resident_page_bytes is a backend-local physical measurement.
+        let initial_memory = [
+            initial_heap.guest_bytes,
+            initial_heap.reserved_bytes,
+            initial_heap.total_allocated_bytes,
+        ];
         assert_eq!(
-            [
-                initial.live_bytes,
-                initial.allocated_since_sweep,
-                initial.total_allocated_bytes,
-                initial.peak_bytes
-            ],
-            vector.initialization_memory,
-            "{} limit {} initialization memory",
+            &initial_memory,
+            &vector.initialization_memory[..3],
+            "{} limit {} initialization logical memory",
             vector.name,
             vector.limit
         );
@@ -89,7 +91,7 @@ fn owner_actions_and_memory_match_current_go_observations() {
             );
             let before = instance.steps();
             let result = match action.operation.as_str() {
-                "start" => instance.start("default", vec![]).map(|()| String::new()),
+                "start" => instance.start("default", &[]).map(|()| String::new()),
                 "cancel" => instance.cancel().map(|()| String::new()),
                 "poll" => instance.poll_steps(1).map(|state| {
                     match state {
@@ -125,21 +127,20 @@ fn owner_actions_and_memory_match_current_go_observations() {
                 action.steps,
                 "{context}: instruction count"
             );
-            let stats = instance.memory_stats();
+            let stats = instance.heap_stats();
             assert_eq!(
-                [
-                    stats.live_bytes,
-                    stats.allocated_since_sweep,
+                &[
+                    stats.guest_bytes,
+                    stats.reserved_bytes,
                     stats.total_allocated_bytes,
-                    stats.peak_bytes
                 ],
-                action.memory,
-                "{context}: memory"
+                &action.memory[..3],
+                "{context}: logical memory"
             );
         }
         instance.close().unwrap();
-        assert_eq!(instance.memory_stats().live_bytes, 0);
-        assert_eq!(instance.memory_stats().allocated_since_sweep, 0);
+        assert_eq!(instance.heap_stats().guest_bytes, 0);
+        assert_eq!(instance.heap_stats().reserved_bytes, 0);
         assert_eq!(instance.heap_stats().live_objects, 0);
     }
 }

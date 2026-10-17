@@ -8,8 +8,8 @@ import (
 
 const (
 	Format         = "mini-go-ir"
-	CurrentVersion = 31
-	OpcodeSet      = "minigo.ir.v16"
+	CurrentVersion = 33
+	OpcodeSet      = "minigo.ir.v18"
 )
 
 type Artifact struct {

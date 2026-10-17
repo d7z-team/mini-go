@@ -7,7 +7,34 @@ import type {
   TypeIdentity,
 } from "./types";
 import { Kind, PrimitiveKind, WIRE_FIELDS } from "./contract.generated";
-import { JsonNumber, type JsonValue, boolean, fail, integer, schemaObject, string } from "./json";
+import {
+  JsonNumber,
+  VMError,
+  type JsonValue,
+  boolean,
+  fail,
+  integer,
+  schemaObject,
+  string,
+} from "./json";
+import type { GuestHandle } from "./managed-heap";
+import type { TypedChannel as Channel } from "./typed-channel";
+import {
+  fieldLocation,
+  pathForStorageOffset,
+  prepareArrayStorageLayout,
+  prepareStorageLayout,
+  packedAggregate,
+  packedField,
+  packedFields,
+  packedIndex,
+  packedItems,
+  packedLength,
+  writePackedField,
+  writePackedIndex,
+} from "./aggregate-storage";
+import type { StorageLayout } from "./aggregate-storage";
+export type { TypedChannel as Channel } from "./typed-channel";
 
 const textEncoder = new TextEncoder();
 
@@ -79,6 +106,7 @@ export interface TypeFacts {
   readonly primitive: number;
   readonly containsReferences: boolean;
   readonly flat: boolean;
+  readonly fixedSize: boolean;
   readonly depth: number;
   readonly fieldCount: number;
 }
@@ -135,6 +163,21 @@ export class TypeRegistry {
     }
   }
 
+  /** Build a registry containing only the selected reachable nodes. */
+  static detached(module: string, nodes: readonly TypeNode[]): TypeRegistry {
+    const registry = new TypeRegistry(module, undefined);
+    for (const node of nodes) {
+      registry.nodes.set(node.id, node);
+      if (node.identity.module_path || node.identity.decl_id)
+        registry.named.set(`${node.identity.module_path}\0${node.identity.decl_id}`, node);
+    }
+    return registry;
+  }
+
+  nodeByID(id: string): TypeNode | undefined {
+    return this.nodes.get(id);
+  }
+
   runtime(ref: TypeRef): RuntimeType {
     if (ref.kind === Kind.Primitive && Number.isSafeInteger(ref.primitive) && ref.primitive >= 0) {
       const cached = this.primitiveTypes[ref.primitive];
@@ -167,6 +210,10 @@ export class TypeRegistry {
         primitive: primitiveKind,
         containsReferences: kind === Kind.Any,
         flat: kind === Kind.Primitive,
+        fixedSize:
+          kind === Kind.Primitive &&
+          primitiveKind !== PrimitiveKind.PrimitiveString &&
+          primitiveKind !== PrimitiveKind.PrimitiveFunction,
         depth: 0,
         fieldCount: 0,
       } satisfies TypeFacts;
@@ -180,6 +227,7 @@ export class TypeRegistry {
         primitive: primitiveKind,
         containsReferences: true,
         flat: false,
+        fixedSize: false,
         depth: 129,
         fieldCount: 0,
       };
@@ -197,10 +245,12 @@ export class TypeRegistry {
     let facts: TypeFacts;
     if (kind === Kind.Struct) {
       let containsReferences = false;
+      let fixedSize = true;
       let depth = 0;
       for (const field of fields) {
         const nested = this.computeFacts(field.type, active);
         containsReferences ||= nested.containsReferences;
+        fixedSize &&= nested.fixedSize;
         depth = Math.max(depth, nested.depth + 1);
       }
       facts = {
@@ -208,6 +258,7 @@ export class TypeRegistry {
         primitive: primitiveKind,
         containsReferences,
         flat: !containsReferences,
+        fixedSize,
         depth,
         fieldCount: fields.length,
       };
@@ -218,6 +269,7 @@ export class TypeRegistry {
         primitive: primitiveKind,
         containsReferences: nested.containsReferences,
         flat: false,
+        fixedSize: nested.fixedSize,
         depth: nested.depth + 1,
         fieldCount: 0,
       };
@@ -227,6 +279,7 @@ export class TypeRegistry {
         primitive: primitiveKind,
         containsReferences: true,
         flat: false,
+        fixedSize: false,
         depth: 1,
         fieldCount: 0,
       };
@@ -389,6 +442,132 @@ export class TypeRegistry {
   }
 }
 
+export interface DetachedTypeClosure {
+  readonly root: RuntimeType;
+  readonly entries: readonly (readonly [RuntimeType, RuntimeType])[];
+  readonly remap: (type: RuntimeType) => RuntimeType;
+}
+
+/**
+ * Copy only the type nodes reachable from a storage/data root. The detached
+ * registries deliberately contain no reference to the source Program table;
+ * recursive and cross-module refs are remapped through the copied registries.
+ */
+export function detachTypeClosure(root: RuntimeType): DetachedTypeClosure {
+  const selected = new Map<TypeRegistry, Set<string>>();
+  // Every closure, including primitive/Any/Void roots, receives a detached
+  // registry so a payload never keeps the source program table alive merely
+  // through a scalar descriptor.
+  selected.set(root.registry, new Set());
+  const registryIDs = new WeakMap<TypeRegistry, number>();
+  let nextRegistryID = 1;
+  const registryID = (registry: TypeRegistry): number => {
+    const existing = registryIDs.get(registry);
+    if (existing !== undefined) return existing;
+    const id = nextRegistryID++;
+    registryIDs.set(registry, id);
+    return id;
+  };
+  const visited = new Set<string>();
+  const visit = (type: RuntimeType): void => {
+    if (type.dynamic) {
+      if (!selected.has(type.registry)) selected.set(type.registry, new Set());
+      const dynamicKey = `dynamic:${registryID(type.registry)}\0${type.registry.key(type)}`;
+      if (visited.has(dynamicKey)) return;
+      visited.add(dynamicKey);
+      if (type.dynamic.elem) visit(type.dynamic.elem);
+      if (type.dynamic.key) visit(type.dynamic.key);
+      for (const parameter of type.dynamic.params ?? []) visit(parameter);
+      for (const result of type.dynamic.results ?? []) visit(result);
+      for (const field of type.dynamic.fields ?? []) visit(field.type);
+      return;
+    }
+    if (
+      type.ref.kind === Kind.Primitive ||
+      type.ref.kind === Kind.Any ||
+      type.ref.kind === Kind.Void
+    )
+      return;
+    const node = type.registry.node(type);
+    if (!node) return;
+    const key = `${registryID(type.registry)}\0${node.id}`;
+    if (visited.has(key)) return;
+    visited.add(key);
+    let nodes = selected.get(type.registry);
+    if (!nodes) selected.set(type.registry, (nodes = new Set()));
+    nodes.add(node.id);
+    const refs: TypeRef[] = [
+      ...node.tuple,
+      ...node.fields.map((field) => field.type),
+      ...(node.signature?.params.map((parameter) => parameter.type) ?? []),
+      ...(node.signature?.results ?? []),
+      ...node.methods.flatMap((method) => [
+        method.receiver,
+        ...method.signature.params.map((parameter) => parameter.type),
+        ...method.signature.results,
+      ]),
+    ];
+    if (node.alias_target) refs.push(node.alias_target);
+    if (node.underlying) refs.push(node.underlying);
+    if (node.elem) refs.push(node.elem);
+    if (node.key) refs.push(node.key);
+    for (const ref of refs) visit(type.registry.runtime(ref));
+  };
+  visit(root);
+
+  const registries = new Map<TypeRegistry, TypeRegistry>();
+  for (const [source, ids] of selected) {
+    const nodes = [...ids]
+      .map((id) => source.nodeByID(id))
+      .filter((node): node is TypeNode => node !== undefined);
+    registries.set(source, TypeRegistry.detached(source.module, nodes));
+  }
+  const cache = new Map<string, RuntimeType>();
+  const originals = new Map<string, RuntimeType>();
+  const sourceIDs = new Map<TypeRegistry, number>();
+  let nextSourceID = 1;
+  const remap = (type: RuntimeType): RuntimeType => {
+    let sourceID = sourceIDs.get(type.registry);
+    if (sourceID === undefined) {
+      sourceID = nextSourceID++;
+      sourceIDs.set(type.registry, sourceID);
+    }
+    const key = `${sourceID}:${type.registry.key(type)}`;
+    originals.set(key, type);
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const registry = registries.get(type.registry) ?? type.registry;
+    if (!type.dynamic) {
+      const result = registry.runtime({ ...type.ref, named: { ...type.ref.named } });
+      cache.set(key, result);
+      return result;
+    }
+    const result: RuntimeType = {
+      module: type.module,
+      ref: { ...type.ref, named: { ...type.ref.named } },
+      registry,
+    };
+    cache.set(key, result);
+    result.dynamic = {
+      ...type.dynamic,
+      ...(type.dynamic.elem ? { elem: remap(type.dynamic.elem) } : {}),
+      ...(type.dynamic.key ? { key: remap(type.dynamic.key) } : {}),
+      ...(type.dynamic.params ? { params: type.dynamic.params.map(remap) } : {}),
+      ...(type.dynamic.results ? { results: type.dynamic.results.map(remap) } : {}),
+      ...(type.dynamic.fields
+        ? { fields: type.dynamic.fields.map((field) => ({ ...field, type: remap(field.type) })) }
+        : {}),
+    };
+    return result;
+  };
+  const detachedRoot = remap(root);
+  return {
+    root: detachedRoot,
+    entries: [...cache].map(([key, type]) => [originals.get(key)!, type] as const),
+    remap,
+  };
+}
+
 export type ValueKind =
   | "uninitialized"
   | "nil"
@@ -416,12 +595,20 @@ export interface Value {
   type: RuntimeType;
   kind: ValueKind;
   value?: unknown;
-  metadata?: unknown;
 }
 
 export interface Cell {
   readonly id: number;
-  value: Value;
+  readonly read: () => Value;
+  readonly write: (value: Value) => void;
+  /** Typed inline paths can access only the addressed field or element. */
+  readPath?: (path: readonly AddressPath[]) => Value | undefined;
+  writePath?: (path: readonly AddressPath[], value: Value) => boolean;
+  readLocation?: (location: AddressLocation) => Value | undefined;
+  writeLocation?: (location: AddressLocation, value: Value) => boolean;
+  /** Stable managed identity for payloads owned by a VM heap. */
+  managedHandle?: GuestHandle;
+  managedLocation?: AddressLocation;
 }
 
 export type AddressPath =
@@ -433,6 +620,14 @@ export type AddressPath =
 export interface Address {
   readonly root: Cell;
   readonly path: AddressPath[];
+  readonly location?: AddressLocation;
+}
+
+export interface AddressLocation {
+  readonly handle: GuestHandle;
+  readonly offset: number;
+  readonly type: RuntimeType;
+  readonly layout: StorageLayout;
 }
 
 export interface SliceValue {
@@ -450,28 +645,23 @@ export interface FunctionValue {
   receiver?: Value;
 }
 
-export interface GuestMapEntry {
-  key: Value;
-  value: Value;
-}
-
-export interface GuestMap {
-  entries: GuestMapEntry[];
-  buckets: Map<string, Set<GuestMapEntry>>;
-}
-
-export interface Channel {
-  capacity: number;
-  closed: boolean;
-  queue: Value[];
-  senders: { task: number; value: Value }[];
-  receivers: number[];
-}
-
 let nextCell = 1;
 
 export function cell(value: Value): Cell {
-  return { id: nextCell++, value };
+  return cellAccess(
+    () => value,
+    (next) => {
+      value = next;
+    },
+  );
+}
+
+export function cellAccess(read: () => Value, write: (value: Value) => void): Cell {
+  return {
+    id: nextCell++,
+    read,
+    write,
+  };
 }
 
 export function primitive(registry: TypeRegistry, kind: number): RuntimeType {
@@ -584,6 +774,8 @@ export function zero(type: RuntimeType): Value {
 }
 
 export function cloneValue(value: Value): Value {
+  const packed = packedAggregate(value);
+  if (packed) return packed.owner.copyAggregate(value);
   switch (value.kind) {
     case "array":
       return { ...value, value: (value.value as Value[]).map(cloneValue) };
@@ -848,8 +1040,72 @@ const UNSIGNED_INTEGER_WIDTHS: Readonly<Record<number, number>> = Object.freeze(
   [PrimitiveKind.PrimitiveUint]: 64,
 });
 
+export function advanceAddress(address: Address, segment: AddressPath): Address {
+  const location = storageAddress(address);
+  if (!location) return { root: address.root, path: [...address.path, segment] };
+  let next: AddressLocation = location;
+  if (segment.kind === "typeView") {
+    next = { ...next, type: segment.type };
+  } else if (segment.kind === "field") {
+    const field = fieldLocation(next, next.layout, segment.name);
+    next = { ...field, layout: prepareStorageLayout(field.type) };
+  } else if (segment.kind === "index") {
+    if (!next.layout.element || !next.layout.elementType)
+      fail(
+        `value is not indexable (${next.type.registry.key(next.type)}; ${next.layout.kind})`,
+        "index",
+        "type_error",
+      );
+    if (segment.index < 0 || segment.index >= (next.layout.length ?? 0))
+      fail("index out of range", "index", "panic");
+    next = {
+      handle: next.handle,
+      offset: next.offset + segment.index * next.layout.element.size,
+      type: next.layout.elementType,
+      layout: next.layout.element,
+    };
+  } else {
+    if (!next.layout.element || !next.layout.elementType)
+      fail("array view targets non-array", "address", "type_error");
+    if (
+      segment.start < 0 ||
+      segment.length < 0 ||
+      segment.start + segment.length > (next.layout.length ?? 0)
+    )
+      fail("index out of range", "index", "panic");
+    next = {
+      handle: next.handle,
+      offset: next.offset + segment.start * next.layout.element.size,
+      type: segment.type,
+      layout: prepareArrayStorageLayout(next.layout.elementType, segment.length),
+    };
+  }
+  return { root: address.root, path: [...address.path, segment], location: next };
+}
+
+export function storageAddress(address: Address): AddressLocation | undefined {
+  if (address.location) return address.location;
+  const base = address.root.managedLocation;
+  if (!base) return undefined;
+  return advanceAddressPath({ root: address.root, path: [], location: base }, address.path)
+    .location;
+}
+
+function advanceAddressPath(address: Address, path: readonly AddressPath[]): Address {
+  let result = address;
+  for (const segment of path) result = advanceAddress(result, segment);
+  return result;
+}
+
 export function dereference(address: Address): Value {
-  let value = address.root.value;
+  const location = storageAddress(address);
+  if (location) {
+    const direct = address.root.readLocation?.(location);
+    if (direct) return direct;
+  }
+  const direct = address.root.readPath?.(address.path);
+  if (direct) return direct;
+  let value = address.root.read();
   for (const segment of address.path) {
     if (segment.kind === "typeView") continue;
     if (segment.kind === "arrayView") {
@@ -869,7 +1125,7 @@ export function dereference(address: Address): Value {
         fail("nil pointer dereference", "address", "panic");
       if (value.kind !== "struct")
         fail("field address targets non-struct", "address", "type_error");
-      const field = (value.value as Map<string, Value>).get(segment.name);
+      const field = fieldValue(value, segment.name);
       if (!field) fail("field address is invalid", "address", "type_error");
       value = field;
     } else {
@@ -880,47 +1136,126 @@ export function dereference(address: Address): Value {
 }
 
 export function assign(address: Address, assigned: Value): void {
+  const location = storageAddress(address);
+  if (location && address.root.writeLocation?.(location, assigned)) return;
+  if (address.root.writePath?.(address.path, assigned)) return;
   if (address.path.length === 0) {
-    address.root.value = cloneValue(assigned);
+    address.root.write(cloneValue(assigned));
     return;
   }
-  let value = address.root.value;
-  let arrayOffset = 0;
-  for (let index = 0; index < address.path.length - 1; index++) {
-    const segment = address.path[index]!;
-    if (segment.kind === "typeView") continue;
-    if (segment.kind === "arrayView") {
-      arrayOffset += segment.start;
-      continue;
-    }
-    value =
-      segment.kind === "field"
-        ? fieldValue(value, segment.name)
-        : indexValue(value, segment.index + arrayOffset);
-    arrayOffset = 0;
+  const result = updateAtAddress(address.root.read(), address.path, assigned);
+  if (result.writeRoot) address.root.write(result.value);
+}
+
+interface AddressUpdate {
+  value: Value;
+  /** False means the update was handed to a nested address owner. */
+  writeRoot: boolean;
+}
+
+/**
+ * Update a materialized value while preserving the owner of aliased storage.
+ * A pointer or slice is an address into another cell, so descending through
+ * one must call assign on that cell instead of modifying the temporary value
+ * returned by read().
+ */
+function updateAtAddress(
+  value: Value,
+  path: readonly AddressPath[],
+  assigned: Value,
+): AddressUpdate {
+  if (path.length === 0) return { value: cloneValue(assigned), writeRoot: true };
+  const segment: AddressPath = path[0]!;
+  const rest = path.slice(1);
+  if (segment.kind === "typeView") return updateAtAddress(value, rest, assigned);
+
+  if (value.kind === "interface") {
+    const inner = updateAtAddress(value.value as Value, path, assigned);
+    if (!inner.writeRoot) return { value, writeRoot: false };
+    return { value: { ...value, value: inner.value }, writeRoot: true };
   }
-  const leaf = address.path[address.path.length - 1]!;
-  if (leaf.kind === "field") {
-    if (value.kind === "pointer") value = dereference(value.value as Address);
-    const fields = value.value as Map<string, Value>;
-    if (!fields.has(leaf.name)) fail("field address is invalid", "address", "type_error");
-    fields.set(leaf.name, cloneValue(assigned));
-  } else if (leaf.kind === "index") {
-    setIndex(value, leaf.index + arrayOffset, assigned);
-  } else if (leaf.kind === "arrayView") {
+
+  if (value.kind === "pointer") {
+    const target = value.value as Address;
+    assign(advanceAddressPath(target, path), assigned);
+    return { value, writeRoot: false };
+  }
+
+  if (value.kind === "slice") {
+    const slice = value.value as SliceValue;
+    if (segment.kind === "index") {
+      if (segment.index < 0 || segment.index >= slice.length)
+        fail("index out of range", "index", "panic");
+      assign(
+        advanceAddressPath(slice.storage, [
+          { kind: "index", index: slice.start + segment.index },
+          ...rest,
+        ]),
+        assigned,
+      );
+      return { value, writeRoot: false };
+    }
+    if (segment.kind === "arrayView") {
+      const start = slice.start + segment.start;
+      if (start < slice.start || segment.start + segment.length > slice.length)
+        fail("index out of range", "index", "panic");
+      assign(advanceAddressPath(slice.storage, [{ ...segment, start }, ...rest]), assigned);
+      return { value, writeRoot: false };
+    }
+    fail("slice path is invalid", "address", "type_error");
+  }
+
+  if (segment.kind === "arrayView") {
+    if (value.kind !== "array") fail("array view targets non-array", "address", "type_error");
+    const values = value.value as Value[];
+    if (segment.start < 0 || segment.start + segment.length > values.length)
+      fail("index out of range", "index", "panic");
+    if (rest.length > 0) {
+      const next = rest[0]!;
+      if (next.kind !== "index") fail("array view path is invalid", "address", "type_error");
+      if (next.index < 0 || next.index >= segment.length)
+        fail("index out of range", "index", "panic");
+      const updated = updateAtAddress(values[segment.start + next.index]!, rest.slice(1), assigned);
+      if (updated.writeRoot) values[segment.start + next.index] = updated.value;
+      return { value, writeRoot: updated.writeRoot };
+    }
     if (assigned.kind !== "array")
       fail("array view assignment requires an array", "address", "type_error");
-    const values = assigned.value as Value[];
-    if (values.length !== leaf.length)
+    const replacements = assigned.value as Value[];
+    if (replacements.length !== segment.length)
       fail("array view assignment length mismatch", "address", "type_error");
-    for (let index = 0; index < values.length; index++)
-      setIndex(value, leaf.start + arrayOffset + index, values[index]!);
-  } else {
-    assign(
-      { root: address.root, path: address.path.slice(0, -1) },
-      { ...cloneValue(assigned), type: leaf.type },
-    );
+    for (let index = 0; index < replacements.length; index++)
+      values[segment.start + index] = cloneValue(replacements[index]!);
+    return { value, writeRoot: true };
   }
+
+  if (segment.kind === "field") {
+    if (value.kind !== "struct") fail("field address targets non-struct", "address", "type_error");
+    if (writePackedField(value, segment.name, assigned)) return { value, writeRoot: true };
+    const fields = value.value as Map<string, Value>;
+    const current = fields.get(segment.name);
+    if (!current) fail("field address is invalid", "address", "type_error");
+    const updated = updateAtAddress(current, rest, assigned);
+    if (updated.writeRoot) fields.set(segment.name, updated.value);
+    return { value, writeRoot: updated.writeRoot };
+  }
+
+  if (value.kind === "bytes") {
+    const bytes = value.value as Uint8Array;
+    if (segment.index < 0 || segment.index >= bytes.length)
+      fail("index out of range", "index", "panic");
+    if (rest.length > 0) fail("byte index path is invalid", "address", "type_error");
+    bytes[segment.index] = Number(assigned.value as bigint);
+    return { value, writeRoot: true };
+  }
+
+  if (value.kind !== "array") fail("value is not indexable", "index", "type_error");
+  const values = value.value as Value[];
+  if (segment.index < 0 || segment.index >= values.length)
+    fail("index out of range", "index", "panic");
+  const updated = updateAtAddress(values[segment.index]!, rest, assigned);
+  if (updated.writeRoot) values[segment.index] = updated.value;
+  return { value, writeRoot: updated.writeRoot };
 }
 
 export function fieldValue(value: Value, name: string): Value {
@@ -929,23 +1264,69 @@ export function fieldValue(value: Value, name: string): Value {
   if (value.kind === "nil" && value.type.registry.underlying(value.type).ref.kind === Kind.Pointer)
     fail("nil pointer dereference", "field", "panic");
   if (value.kind !== "struct") fail(`field access targets ${value.kind}`, "field", "type_error");
+  const packed = packedField(value, name);
+  if (packed) return packed;
+  const packedRoot = packedAggregate(value);
+  if (packedRoot) {
+    const decoded = packedRoot.owner.decode(
+      packedRoot.type,
+      packedRoot.layout,
+      packedRoot.storage.read(packedRoot.offset, packedRoot.layout.size),
+    );
+    if (decoded.kind === "struct" && decoded.value instanceof Map) return fieldValue(decoded, name);
+    fail(
+      `unknown field ${name} (${packedRoot.layout.fields.map((field) => field.name).join(",")})`,
+      name,
+      "type_error",
+    );
+  }
   const field = (value.value as Map<string, Value>).get(name);
-  if (!field) fail("unknown field", name, "type_error");
+  if (!field) {
+    const underlying = value.type.registry.underlying(value.type);
+    const node = underlying.registry.node(underlying);
+    const embedded =
+      underlying.dynamic?.fields?.filter((item) => item.embedded) ??
+      (node?.fields ?? [])
+        .filter((item) => item.embedded)
+        .map((item) => ({
+          name: item.name,
+          type: underlying.registry.runtime(item.type),
+        }));
+    for (const item of embedded) {
+      const nested = (value.value as Map<string, Value>).get(item.name);
+      if (nested) {
+        try {
+          return fieldValue(nested, name);
+        } catch (error) {
+          if (!(error instanceof VMError) || error.code !== "type_error") throw error;
+        }
+      }
+    }
+    fail(
+      `unknown field ${name} (${[...(value.value as Map<string, Value>).keys()].join(",")}; ${JSON.stringify(value.type.registry.identity(value.type))})`,
+      name,
+      "type_error",
+    );
+  }
   return field;
 }
 
 export function indexValue(value: Value, index: number): Value {
   if (!Number.isSafeInteger(index) || index < 0) fail("index out of range", "index", "panic");
-  if (value.kind === "pointer") return indexValue(dereference(value.value as Address), index);
+  if (value.kind === "pointer") {
+    const address = value.value as Address;
+    return dereference(advanceAddress(address, { kind: "index", index }));
+  }
   if (value.kind === "slice") {
     const slice = value.value as SliceValue;
     if (index >= slice.length) fail("index out of range", "index", "panic");
     return dereference({
-      root: slice.storage.root,
-      path: [...slice.storage.path, { kind: "index", index: slice.start + index }],
+      ...advanceAddress(slice.storage, { kind: "index", index: slice.start + index }),
     });
   }
   if (value.kind === "array") {
+    const packed = packedIndex(value, index);
+    if (packed) return packed;
     const item = (value.value as Value[])[index];
     if (!item) fail("index out of range", "index", "panic");
     return item;
@@ -975,22 +1356,17 @@ export function setIndex(value: Value, index: number, assigned: Value): void {
   if (!Number.isSafeInteger(index) || index < 0) fail("index out of range", "index", "panic");
   if (value.kind === "pointer") {
     const address = value.value as Address;
-    assign({ root: address.root, path: [...address.path, { kind: "index", index }] }, assigned);
+    assign(advanceAddress(address, { kind: "index", index }), assigned);
     return;
   }
   if (value.kind === "slice") {
     const slice = value.value as SliceValue;
     if (index >= slice.length) fail("index out of range", "index", "panic");
-    assign(
-      {
-        root: slice.storage.root,
-        path: [...slice.storage.path, { kind: "index", index: slice.start + index }],
-      },
-      assigned,
-    );
+    assign(advanceAddress(slice.storage, { kind: "index", index: slice.start + index }), assigned);
     return;
   }
   if (value.kind === "array") {
+    if (writePackedIndex(value, index, assigned)) return;
     const values = value.value as Value[];
     if (index >= values.length) fail("index out of range", "index", "panic");
     values[index] = cloneValue(assigned);
@@ -1046,11 +1422,29 @@ export function guestEqual(left: Value, right: Value): boolean {
     case "mutex":
       return left.value === right.value;
     case "array": {
+      const leftPacked = packedAggregate(left);
+      const rightPacked = packedAggregate(right);
+      if (leftPacked || rightPacked) {
+        const leftLength = leftPacked ? packedLength(left)! : (left.value as Value[]).length;
+        const rightLength = rightPacked ? packedLength(right)! : (right.value as Value[]).length;
+        if (leftLength !== rightLength) return false;
+        for (let index = 0; index < leftLength; index++)
+          if (!guestEqual(indexValue(left, index), indexValue(right, index))) return false;
+        return true;
+      }
       const a = left.value as Value[];
       const b = right.value as Value[];
       return a.length === b.length && a.every((item, index) => guestEqual(item, b[index]!));
     }
     case "struct": {
+      const leftPacked = packedAggregate(left);
+      const rightPacked = packedAggregate(right);
+      if (leftPacked || rightPacked) {
+        const leftFields = leftPacked ? packedFields(left)! : (left.value as Map<string, Value>);
+        for (const [name, item] of leftFields)
+          if (name !== "_" && !guestEqual(item, fieldValue(right, name))) return false;
+        return true;
+      }
       const a = left.value as Map<string, Value>;
       const b = right.value as Map<string, Value>;
       for (const [name, item] of a)
@@ -1084,6 +1478,9 @@ function hashText(value: string): string {
 }
 
 function hashAddress(address: Address): string {
+  const location = storageAddress(address);
+  if (location)
+    return hashText(`${location.handle.slot}:${location.handle.generation}:${location.offset}`);
   const path = address.path.filter((segment) => segment.kind !== "typeView");
   let text = `root:${address.root.id}/path:${path.length};`;
   for (const segment of path) {
@@ -1094,7 +1491,7 @@ function hashAddress(address: Address): string {
   return hashText(text);
 }
 
-function hashValue(value: Value, seen = new Set<object>()): string {
+export function hashValue(value: Value, seen = new Set<object>()): string {
   if (value.kind === "interface") return hashValue(value.value as Value, seen);
   let text = `${value.type.registry.key(value.type)}|${value.kind}|`;
   switch (value.kind) {
@@ -1131,6 +1528,18 @@ function hashValue(value: Value, seen = new Set<object>()): string {
     case "mutex":
       return `${value.kind}:${objectHashId(value.value as object)}`;
     case "array": {
+      const packed = packedAggregate(value);
+      if (packed) {
+        if (seen.has(packed)) return `${text}cycle`;
+        seen.add(packed);
+        let separator = "";
+        for (const item of packedItems(value)!) {
+          text += separator + hashValue(item, seen);
+          separator = ",";
+        }
+        seen.delete(packed);
+        break;
+      }
       const array = value.value as Value[];
       if (seen.has(array)) return `${text}cycle`;
       seen.add(array);
@@ -1139,6 +1548,17 @@ function hashValue(value: Value, seen = new Set<object>()): string {
       break;
     }
     case "struct": {
+      const packed = packedAggregate(value);
+      if (packed) {
+        if (seen.has(packed)) return `${text}cycle`;
+        seen.add(packed);
+        for (const [name, item] of [...packedFields(value)!].sort(([left], [right]) =>
+          left.localeCompare(right),
+        ))
+          if (name !== "_") text += `${name}:${hashValue(item, seen)};`;
+        seen.delete(packed);
+        break;
+      }
       const fields = value.value as Map<string, Value>;
       if (seen.has(fields)) return `${text}cycle`;
       seen.add(fields);
@@ -1153,56 +1573,6 @@ function hashValue(value: Value, seen = new Set<object>()): string {
   return hashText(text);
 }
 
-export function createGuestMap(): GuestMap {
-  return { entries: [], buckets: new Map() };
-}
-
-export function guestMapGet(map: GuestMap, key: Value): GuestMapEntry | undefined {
-  const bucket = map.buckets.get(hashValue(key));
-  if (!bucket) return undefined;
-  for (const entry of bucket) if (guestEqual(entry.key, key)) return entry;
-  return undefined;
-}
-
-export function guestMapSet(map: GuestMap, key: Value, value: Value): GuestMapEntry {
-  const hash = hashValue(key);
-  let bucket = map.buckets.get(hash);
-  if (!bucket) {
-    bucket = new Set();
-    map.buckets.set(hash, bucket);
-  }
-  for (const entry of bucket) {
-    if (guestEqual(entry.key, key)) {
-      entry.value = value;
-      return entry;
-    }
-  }
-  const entry = { key, value };
-  map.entries.push(entry);
-  bucket.add(entry);
-  return entry;
-}
-
-export function guestMapDelete(map: GuestMap, key: Value): boolean {
-  const hash = hashValue(key);
-  const bucket = map.buckets.get(hash);
-  if (!bucket) return false;
-  for (const entry of bucket) {
-    if (!guestEqual(entry.key, key)) continue;
-    bucket.delete(entry);
-    if (!bucket.size) map.buckets.delete(hash);
-    const index = map.entries.indexOf(entry);
-    if (index >= 0) map.entries.splice(index, 1);
-    return true;
-  }
-  return false;
-}
-
-export function guestMapClear(map: GuestMap): void {
-  map.entries.length = 0;
-  map.buckets.clear();
-}
-
 export function assertComparable(value: Value): void {
   if (value.kind === "interface") {
     assertComparable(value.value as Value);
@@ -1212,14 +1582,32 @@ export function assertComparable(value: Value): void {
   if (kind === Kind.Slice || kind === Kind.Map || kind === Kind.Function)
     fail("uncomparable dynamic value", "compare", "panic");
   if (value.kind === "array") {
+    if (packedAggregate(value)) {
+      for (const item of packedItems(value)!) assertComparable(item);
+      return;
+    }
     for (const item of value.value as Value[]) assertComparable(item);
   } else if (value.kind === "struct") {
+    if (packedAggregate(value)) {
+      for (const [name, item] of packedFields(value)!) if (name !== "_") assertComparable(item);
+      return;
+    }
     for (const [name, item] of value.value as Map<string, Value>)
       if (name !== "_") assertComparable(item);
   }
 }
 
 function addressEqual(left: Address, right: Address): boolean {
+  const leftLocation = storageAddress(left);
+  const rightLocation = storageAddress(right);
+  if (leftLocation || rightLocation) {
+    if (!leftLocation || !rightLocation) return false;
+    return (
+      leftLocation.handle.slot === rightLocation.handle.slot &&
+      leftLocation.handle.generation === rightLocation.handle.generation &&
+      leftLocation.offset === rightLocation.offset
+    );
+  }
   if (left.root !== right.root) return false;
   const leftPath = left.path.filter((segment) => segment.kind !== "typeView");
   const rightPath = right.path.filter((segment) => segment.kind !== "typeView");
@@ -1281,12 +1669,18 @@ export function hostValue(value: Value, objects: Cell[], indexes: Map<Cell, numb
       data = { String: Uint8Array.from(value.value as Uint8Array) };
       break;
     case "array":
-      data = { Array: (value.value as Value[]).map((item) => hostValue(item, objects, indexes)) };
+      data = {
+        Array: packedAggregate(value)
+          ? [...packedItems(value)!].map((item) => hostValue(item, objects, indexes))
+          : (value.value as Value[]).map((item) => hostValue(item, objects, indexes)),
+      };
       break;
     case "struct": {
       const fields: Record<string, HostValue> = {};
-      for (const [name, item] of value.value as Map<string, Value>)
-        fields[name] = hostValue(item, objects, indexes);
+      const entries = packedAggregate(value)
+        ? packedFields(value)!
+        : (value.value as Map<string, Value>);
+      for (const [name, item] of entries) fields[name] = hostValue(item, objects, indexes);
       data = { Struct: fields };
       break;
     }
@@ -1345,7 +1739,7 @@ export function hostValue(value: Value, objects: Cell[], indexes: Map<Cell, numb
         Channel: {
           capacity: BigInt(channel.capacity),
           closed: channel.closed,
-          queued: channel.queue.map((item) => hostValue(item, objects, indexes)),
+          queued: Array.from(channel.queue, (item) => hostValue(item, objects, indexes)),
         },
       };
       break;
@@ -1366,9 +1760,19 @@ export function hostValue(value: Value, objects: Cell[], indexes: Map<Cell, numb
 }
 
 function hostAddress(address: Address, objects: Cell[], indexes: Map<Cell, number>): HostAddress {
+  let path = address.path;
+  const location = storageAddress(address);
+  if (location) {
+    const base = address.root.managedLocation;
+    const resolved =
+      base && pathForStorageOffset(base.layout, base.type, location.type, location.offset);
+    if (!resolved)
+      fail("address cannot be represented in a host snapshot", "snapshot.address", "internal");
+    path = resolved;
+  }
   return {
     object: BigInt(ensureObject(address.root, objects, indexes)),
-    path: address.path.map((segment): PathElement => {
+    path: path.map((segment): PathElement => {
       switch (segment.kind) {
         case "field":
           return { Field: segment.name };
@@ -1405,7 +1809,7 @@ export function snapshot(roots: Value[]): Snapshot {
   const outputRoots = roots.map((value) => hostValue(value, objects, indexes));
   const outputObjects: HostValue[] = [];
   for (let index = 0; index < objects.length; index++)
-    outputObjects.push(hostValue(objects[index]!.value, objects, indexes));
+    outputObjects.push(hostValue(objects[index]!.read(), objects, indexes));
   return { roots: outputRoots, objects: outputObjects };
 }
 
@@ -1430,7 +1834,16 @@ export function importHostValue(value: HostValue, registry: TypeRegistry): Value
       kind: "complex",
       value: { real: bitsFloat(data.ComplexBits.real), imag: bitsFloat(data.ComplexBits.imag) },
     };
-  if ("String" in data) return { type, kind: "string", value: Uint8Array.from(data.String) };
+  if ("String" in data) {
+    const underlying = registry.underlying(type);
+    if (underlying.ref.kind === Kind.Slice)
+      return {
+        type: primitive(registry, PrimitiveKind.PrimitiveString),
+        kind: "string",
+        value: Uint8Array.from(data.String),
+      };
+    return { type, kind: "string", value: Uint8Array.from(data.String) };
+  }
   if ("Array" in data)
     return {
       type,
@@ -1460,6 +1873,28 @@ function importType(identity: TypeIdentity, registry: TypeRegistry): RuntimeType
       named: emptyKey(),
       node: "",
     });
+  if ("Pointer" in identity) {
+    const element = importType(identity.Pointer, registry);
+    const type = registry.runtime({
+      kind: Kind.Pointer,
+      primitive: 0,
+      named: emptyKey(),
+      node: "",
+    });
+    type.dynamic = { kind: Kind.Pointer, elem: element };
+    return type;
+  }
+  if ("Slice" in identity) {
+    const element = importType(identity.Slice, registry);
+    const type = registry.runtime({
+      kind: Kind.Slice,
+      primitive: 0,
+      named: emptyKey(),
+      node: "",
+    });
+    type.dynamic = { kind: Kind.Slice, elem: element };
+    return type;
+  }
   if ("Named" in identity)
     return registry.runtime({ kind: Kind.Named, primitive: 0, named: identity.Named, node: "" });
   fail("structural host type is not accepted as an argument", "arguments", "invalid_argument");

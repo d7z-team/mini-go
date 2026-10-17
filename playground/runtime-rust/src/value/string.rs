@@ -10,15 +10,35 @@ pub struct ByteString {
     storage: Arc<[u8]>,
     start: usize,
     length: usize,
+    // A decoded immutable string keeps its managed backing identity. Native
+    // operators use the byte snapshot; storing the result reuses the backing.
+    managed: Option<(u64, crate::heap::Handle, u64)>,
 }
 
 impl ByteString {
+    pub(crate) fn from_managed(
+        bytes: Vec<u8>,
+        owner: u64,
+        handle: crate::heap::Handle,
+        offset: u64,
+    ) -> Self {
+        let mut value = Self::from(bytes);
+        value.managed = Some((owner, handle, offset));
+        value
+    }
+
+    pub(crate) fn managed_backing(&self) -> Option<(u64, crate::heap::Handle, u64)> {
+        self.managed
+            .map(|(owner, handle, offset)| (owner, handle, offset + self.start as u64))
+    }
+
     pub(crate) fn slice(&self, range: Range<usize>) -> Self {
         assert!(range.start <= range.end && range.end <= self.length);
         Self {
             storage: self.storage.clone(),
             start: self.start + range.start,
             length: range.end - range.start,
+            managed: self.managed,
         }
     }
 }
@@ -36,6 +56,7 @@ impl From<Arc<[u8]>> for ByteString {
             length: storage.len(),
             storage,
             start: 0,
+            managed: None,
         }
     }
 }

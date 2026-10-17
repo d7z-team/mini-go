@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/d7z-team/mini-go/runtime"
 	"github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
@@ -29,21 +31,34 @@ func TestStateVectorsPreserveFailedStartAccountingAndDeterminism(t *testing.T) {
 	if err := json.Unmarshal(encoded, &vectors); err != nil {
 		t.Fatal(err)
 	}
-	for _, vector := range vectors {
-		if vector.Limit != 128 {
-			continue
+	var failed, exact *StateVector
+	for index := range vectors {
+		switch vectors[index].Limit {
+		case 127:
+			failed = &vectors[index]
+		case 128:
+			exact = &vectors[index]
 		}
-		if len(vector.Actions) != 4 {
-			t.Fatalf("constrained invocation actions: %+v", vector.Actions)
-		}
-		for _, action := range vector.Actions {
-			if action.Operation != "start" || action.Error != "execution.allocation_limit" || action.Memory != [4]int64{} {
-				t.Fatalf("failed frame charge reused or leaked memory: %+v", action)
-			}
-		}
-		return
 	}
-	t.Fatal("missing constrained invocation")
+	if failed == nil || exact == nil {
+		t.Fatalf("missing exact allocation boundary vectors: failed=%v exact=%v", failed != nil, exact != nil)
+	}
+	if len(failed.Actions) != 4 {
+		t.Fatalf("failed boundary actions: %+v", failed.Actions)
+	}
+	for _, action := range failed.Actions {
+		if action.Operation != "start" || action.Error != "execution.allocation_limit" || action.Memory != failed.InitializationMemory {
+			t.Fatalf("failed frame charge reused or leaked memory: %+v", action)
+		}
+	}
+	if len(exact.Actions) == 0 || exact.Actions[0].Operation != "start" || exact.Actions[0].Error != "" {
+		t.Fatalf("exact boundary did not admit the frame: %+v", exact.Actions)
+	}
+	for _, action := range exact.Actions[1:] {
+		if action.Error != "" {
+			t.Fatalf("exact boundary execution failed after admission: %+v", exact.Actions)
+		}
+	}
 }
 
 func TestStateVectorsRejectMalformedInputBeforePublication(t *testing.T) {
@@ -56,5 +71,59 @@ func TestStateVectorsRejectMalformedInputBeforePublication(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "broken") || encoded != nil {
 			t.Fatalf("input %q, data %q, error %v", input, encoded, err)
 		}
+	}
+}
+
+func TestCallBudgetFailureIsRetryableAndHighBudgetCompletes(t *testing.T) {
+	for _, name := range []string{"memory_call.json", "memory_tail_call.json"} {
+		t.Run(name, func(t *testing.T) {
+			input, err := os.ReadFile("../../testdata/runtime/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := GenerateStateVectors(context.Background(), map[string][]byte{name: input})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var vectors []StateVector
+			if err := json.Unmarshal(encoded, &vectors); err != nil {
+				t.Fatal(err)
+			}
+			var low, high *StateVector
+			for index := range vectors {
+				if vectors[index].Limit == 160 {
+					low = &vectors[index]
+				}
+				if vectors[index].Limit == 4096 {
+					high = &vectors[index]
+				}
+			}
+			if low == nil || high == nil {
+				t.Fatalf("missing budget vectors: low=%v high=%v", low != nil, high != nil)
+			}
+			if len(high.Actions) == 0 {
+				t.Fatal("high budget produced no actions")
+			}
+			completed := false
+			for _, action := range high.Actions {
+				if action.Error != "" {
+					t.Fatalf("high budget action failed: %+v", action)
+				}
+				if action.State == runtime.ExecutionCompleted {
+					completed = true
+				}
+			}
+			if !completed {
+				t.Fatalf("high budget did not complete: %+v", high.Actions)
+			}
+			for _, action := range low.Actions {
+				if action.Error != "" && action.Error != "execution.allocation_limit" {
+					t.Fatalf("low budget poisoned the execution after admission failure: %+v", action)
+				}
+				if action.Memory[1] != 0 {
+					t.Fatalf("low budget leaked a reservation: %+v", action)
+				}
+			}
+		})
 	}
 }

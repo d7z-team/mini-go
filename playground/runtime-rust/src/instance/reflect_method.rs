@@ -9,7 +9,7 @@ impl Instance {
         expected: &TypeIdentity,
     ) -> Result<Value, RuntimeError> {
         let mut level = vec![(receiver, None::<Address>, HashSet::new())];
-        for _ in 0..self.limits.max_value_depth {
+        for _ in 0..self.types.traversal_limit(self.limits.max_dynamic_types) {
             let mut next = Vec::new();
             let mut found = None;
             for (mut value, mut address, mut seen) in level {
@@ -55,17 +55,20 @@ impl Instance {
                         continue;
                     }
                 }
-                if let Data::Struct(fields) = &value.data
+                if value
+                    .data
+                    .aggregate_shape()
+                    .is_some_and(|(array, _)| !array)
                     && let Some((_, node)) = self.types.node(&value.typ)?
                 {
                     for field in node.fields.iter().filter(|field| field.embedded) {
-                        if let Some(value) = fields.get(&field.name) {
+                        if let Ok(value) = value.field(&field.name) {
                             let address = address.as_ref().map(|address| {
                                 let mut address = address.clone();
                                 address.path.push(PathElement::Field(field.name.clone()));
                                 address
                             });
-                            next.push((value.clone(), address, seen.clone()));
+                            next.push((value, address, seen.clone()));
                         }
                     }
                 }
@@ -99,13 +102,10 @@ impl Instance {
                         .ok_or_else(|| {
                             RuntimeError::new("reflect", id, "reflect: Method of invalid Value")
                         })?;
-                let Data::Struct(fields) = &arguments[1].data else {
-                    return Err(RuntimeError::new("reflect", id, "reflect: invalid Method"));
-                };
-                let Some(Value {
+                let Value {
                     data: Data::String(name),
                     ..
-                }) = fields.get("Name")
+                } = arguments[1].field("Name")?
                 else {
                     return Err(RuntimeError::new(
                         "reflect",
@@ -113,7 +113,7 @@ impl Instance {
                         "reflect: missing method name",
                     ));
                 };
-                let name = std::str::from_utf8(name).map_err(|_| {
+                let name = std::str::from_utf8(&name).map_err(|_| {
                     RuntimeError::new("reflect", id, "reflect: invalid method name")
                 })?;
                 if let Data::Interface(value) = receiver.data {
@@ -128,19 +128,35 @@ impl Instance {
                         RuntimeError::new("reflect", id, "reflect: method unavailable")
                     })?;
                 let typ = self.reflect_method_signature(&module, &method, false)?;
+                let function_module = if method.module_path.is_empty() {
+                    module.clone()
+                } else {
+                    method.module_path.clone()
+                };
+                let revision = self
+                    .running
+                    .frames
+                    .last()
+                    .map_or_else(|| self.revision.clone(), |frame| frame.revision.clone());
+                let function_index = revision
+                    .program
+                    .function_index(&function_module, &method.function_id)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            "invalid_function",
+                            "reflect",
+                            format!(
+                                "method {}.{} has no numeric code id",
+                                function_module, method.function_id
+                            ),
+                        )
+                    })?;
                 let function = FunctionValue {
-                    index: None,
-                    revision: Some(
-                        self.running
-                            .frames
-                            .last()
-                            .map_or_else(|| self.revision.clone(), |frame| frame.revision.clone()),
-                    ),
-                    module: if method.module_path.is_empty() {
-                        module.into()
-                    } else {
-                        method.module_path.into()
-                    },
+                    index: Some(function_index),
+                    revision: Some(revision.clone()),
+                    revision_generation: Some(revision.generation),
+                    revision_anchor: self.revision_anchors.get(&revision.generation).copied(),
+                    module: function_module.into(),
                     function: method.function_id.into(),
                     captures: Vec::new(),
                 };
@@ -189,16 +205,36 @@ impl Instance {
             let function = if interface {
                 self.reflect_struct("Value", [])?
             } else {
+                let revision = self
+                    .running
+                    .frames
+                    .last()
+                    .map_or_else(|| self.revision.clone(), |frame| frame.revision.clone());
+                let function_index = revision
+                    .program
+                    .function_index(&function_module, &method.function_id)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            "invalid_function",
+                            "reflect",
+                            format!(
+                                "method {}.{} has no numeric code id",
+                                function_module, method.function_id
+                            ),
+                        )
+                    })?;
                 self.reflect_snapshot(
                     ReflectedValue::owned(Value {
                         typ: callable_type.clone(),
                         data: Data::Method {
                             function: std::sync::Arc::new(FunctionValue {
-                                index: None,
-                                revision: Some(self.running.frames.last().map_or_else(
-                                    || self.revision.clone(),
-                                    |frame| frame.revision.clone(),
-                                )),
+                                index: Some(function_index),
+                                revision: Some(revision.clone()),
+                                revision_generation: Some(revision.generation),
+                                revision_anchor: self
+                                    .revision_anchors
+                                    .get(&revision.generation)
+                                    .copied(),
                                 module: function_module.clone().into(),
                                 function: method.function_id.clone().into(),
                                 captures: Vec::new(),
@@ -263,14 +299,16 @@ impl Instance {
             .iter()
             .map(|reference| self.types.resolve(module, reference))
             .collect::<Result<Vec<_>, _>>()?;
-        self.types.construct(
+        let typ = self.types.construct(
             crate::types::ConstructedType::Function {
                 params,
                 results,
                 variadic: method.signature.variadic,
             },
-            self.limits.max_sequence_elements,
-            self.limits.max_value_depth,
-        )
+            self.limits.max_dynamic_types,
+            self.types.traversal_limit(self.limits.max_dynamic_types),
+        )?;
+        self.publish_dynamic_type(self.types.clone(), &typ)?;
+        Ok(typ)
     }
 }

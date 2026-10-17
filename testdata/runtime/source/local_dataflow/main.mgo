@@ -1,0 +1,53 @@
+package main
+
+func copyThenWrite(a, b int) int {
+	c := a
+	a = b
+	return c * 10 + a
+}
+
+func swap(a, b int) int {
+	a, b = b, a
+	return a * 10 + b
+}
+
+func captured(a int) int {
+	change := func() {
+		a = 9
+	}
+	b := a
+	change()
+	return b * 10 + a
+}
+
+func addressed(a int) int {
+	p := &a
+	b := a
+	*p = 9
+	return b * 10 + a
+}
+
+func join(choose bool) int {
+	a := 1
+	if choose {
+		a = 2
+	}
+	b := a
+	for i := 0; i < 3; i++ {
+		a += i
+	}
+	return b * 10 + a
+}
+
+func Main() int {
+	if copyThenWrite(4, 2) != 42 || swap(2, 4) != 42 {
+		return 1
+	}
+	if captured(4) != 49 || addressed(4) != 49 {
+		return 2
+	}
+	if join(false) != 14 || join(true) != 25 {
+		return 3
+	}
+	return 42
+}

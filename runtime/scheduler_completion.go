@@ -36,6 +36,10 @@ func newGuestPanic(err error) error {
 
 func (machine *executionMachine) startPanic(task *executionTask, current *executionFrame, pc int, value vmValue) {
 	value = normalizePanicValue(value)
+	// Unwinding can recycle the originating frame before a caller recovers.
+	// The panic owner therefore retains an independent value, including any
+	// inline aggregate bytes that belonged to the originating activation.
+	value = current.frame.module.adoptValueWithBatch(current.frame.module.cloneValueForStore(value), task.allocationBatch)
 	panicState := &machinePanic{
 		err: panicError{
 			Value:       value,
@@ -112,11 +116,12 @@ func (machine *executionMachine) advanceCompletion(task *executionTask) ([]vmVal
 			call := current.frame.defers[last]
 			current.frame.defers[last] = deferredCall{}
 			current.frame.defers = current.frame.defers[:last]
+			machine.vm.releaseAllocationBytes(call.admittedBytes)
 			module, err := machine.vm.moduleForFunctionRef(call.caller, call.ref)
 			if err != nil {
 				return nil, false, err
 			}
-			deferred, err := machine.vm.newExecutionFrame(module, call.ref.FunctionID, nil, call.ref.upvalues, task.id, 0, false)
+			deferred, err := machine.vm.newExecutionFrame(module, call.ref.FunctionID, nil, call.ref.captureSlots, task.id, 0, false, 0, task.allocationBatch)
 			if err != nil {
 				return nil, false, err
 			}
@@ -294,7 +299,7 @@ func (machine *executionMachine) recoverValue(task *executionTask) vmValue {
 const panicNilMessage = "panic called with nil argument"
 
 func normalizePanicValue(value vmValue) vmValue {
-	if value.Data != nil {
+	if value.payload() != nil {
 		return value
 	}
 	if value.Type.Ref.Kind == types.Any {

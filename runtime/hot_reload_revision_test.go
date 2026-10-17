@@ -126,6 +126,124 @@ func TestPatchKeepsActiveFrameAndDispatchesNamedCallsToCurrentRevision(t *testin
 	closed = true
 }
 
+func TestRevisionLocalDirectCallUsesOldFrameRevision(t *testing.T) {
+	oldProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(10, 1, false), "revision-local-old")
+	newProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(100, 2, false), "revision-local-new")
+	instance, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupTestInstance(t, instance)
+	execution, err := instance.Start("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, steps, pollErr := execution.PollSteps(1); pollErr != nil || state != ExecutionRunning || steps != 1 {
+		t.Fatalf("initial poll = %s, %d, %v", state, steps, pollErr)
+	}
+	plan, err := instance.PreparePatch(context.Background(), newProgram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.ApplyPatch(plan); err != nil {
+		t.Fatal(err)
+	}
+	if retained, err := instance.RetainedRevisions(context.Background()); err != nil || len(retained) != 2 {
+		t.Fatalf("retained revisions while old frame runs = %#v, %v", retained, err)
+	}
+	result, err := execution.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := result.Values[0].Int64(); !ok || value != 11 {
+		t.Fatalf("old-frame result = %#v, want 11", result.Values)
+	}
+	current, err := instance.Call(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := current.Values[0].Int64(); !ok || value != 102 {
+		t.Fatalf("current revision result = %#v, want 102", current.Values)
+	}
+	if retained, err := instance.RetainedRevisions(context.Background()); err != nil || len(retained) != 1 || retained[0].Generation != 2 {
+		t.Fatalf("retained revisions after old frame = %#v, %v", retained, err)
+	}
+}
+
+func TestRevisionLocalDirectCallIgnoresPatchedFunctionOrder(t *testing.T) {
+	oldProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(10, 1, false), "revision-local-order-old")
+	newProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(100, 2, true), "revision-local-order-new")
+	instance, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupTestInstance(t, instance)
+	execution, err := instance.Start("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, _, pollErr := execution.PollSteps(1); pollErr != nil || state != ExecutionRunning {
+		t.Fatalf("initial poll = %s, %v", state, pollErr)
+	}
+	plan, err := instance.PreparePatch(context.Background(), newProgram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.ApplyPatch(plan); err != nil {
+		t.Fatal(err)
+	}
+	result, err := execution.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := result.Values[0].Int64(); !ok || value != 11 {
+		t.Fatalf("old-frame result after reorder = %#v, want 11", result.Values)
+	}
+	current, err := instance.Call(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := current.Values[0].Int64(); !ok || value != 102 {
+		t.Fatalf("reordered current result = %#v, want 102", current.Values)
+	}
+}
+
+func TestRevisionLocalDirectCallIsolatedBetweenInstances(t *testing.T) {
+	oldProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(10, 1, false), "revision-local-isolated-old")
+	newProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(100, 2, false), "revision-local-isolated-new")
+	first, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupTestInstance(t, first)
+	second, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupTestInstance(t, second)
+	plan, err := first.PreparePatch(context.Background(), newProgram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.ApplyPatch(plan); err != nil {
+		t.Fatal(err)
+	}
+	firstResult, err := first.Call(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResult, err := second.Call(context.Background(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := firstResult.Values[0].Int64(); !ok || value != 102 {
+		t.Fatalf("patched instance result = %#v, want 102", firstResult.Values)
+	}
+	if value, ok := secondResult.Values[0].Int64(); !ok || value != 11 {
+		t.Fatalf("unpatched instance result = %#v, want 11", secondResult.Values)
+	}
+}
+
 func TestTailCallFromOldFrameUsesCurrentRevisionAndReleasesOldPin(t *testing.T) {
 	oldProgram := patchTestProgram(t, patchTailCallArtifact(1), "tail-old")
 	newProgram := patchTestProgram(t, patchTailCallArtifact(2), "tail-new")

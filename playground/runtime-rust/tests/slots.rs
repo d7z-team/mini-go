@@ -4,7 +4,7 @@ use mini_go::{
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
-    value::Data,
+    snapshot::HostData,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -18,6 +18,99 @@ fn operation(name: &str, descriptor: u32, operands: u32) -> Value {
         .position(|entry| entry["op"] == name)
         .unwrap();
     json!([opcode + 1, descriptor, operands])
+}
+
+#[test]
+fn min_max_slot_instruction_reduces_typed_arguments() {
+    use mini_go::contract_generated as wire;
+
+    let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+    for direct_local in [false, true] {
+        let output = if direct_local { 1_u32 << 31 } else { 2 };
+        let returned = if direct_local {
+            json!({"inputs":[[2,0]]})
+        } else {
+            json!({"inputs":[[0,2]],"release":[2]})
+        };
+        let code = support::slot_code(
+            json!([integer, integer, integer]),
+            &[
+                ("const", json!({"constant":"low"}), json!({"outputs":[0]})),
+                ("const", json!({"constant":"high"}), json!({"outputs":[1]})),
+                (
+                    "min_max",
+                    json!({"type":integer,"operator":"min","arg_count":2}),
+                    json!({"inputs":[[0,0],[0,1]],"outputs":[output],"release":[0,1]}),
+                ),
+                ("return", json!({"result_count":1}), returned),
+            ],
+        );
+        let bytes = support::image(json!({
+            "constants":[
+                {"id":"low","type":integer,"value":-3},
+                {"id":"high","type":integer,"value":8}
+            ],
+            "functions":[{"id":"fn.Main","signature":{"results":[integer]},"locals":[{"id":"result","type":integer}],"code":code}]
+        }));
+        let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        vm.start("default", &[]).unwrap();
+        assert_eq!(vm.poll_steps(64).unwrap(), PollStatus::Ready);
+        assert_eq!(
+            vm.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            -3
+        );
+        vm.close().unwrap();
+    }
+}
+
+#[test]
+fn direct_call_initializes_zero_sized_and_large_aggregate_locals() {
+    use mini_go::contract_generated as wire;
+    let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+    for (typ, node) in [
+        (
+            json!({"kind":wire::Struct,"node":"empty"}),
+            json!({"id":"empty","kind":wire::Struct,"fields":[]}),
+        ),
+        (
+            json!({"kind":wire::Array,"node":"large"}),
+            json!({"id":"large","kind":wire::Array,"length":129,"elem":integer}),
+        ),
+    ] {
+        let bytes = support::image(json!({
+            "type_table":{"nodes":[node]},
+            "functions":[
+                {"id":"fn.Main","signature":{"results":[typ]},"locals":[{"id":"result","type":typ}],
+                    "code":support::slot_code(json!([]), &[
+                        ("call_direct",json!({"function":"callee","result_count":1}),json!({"outputs":[1_u32<<31]})),
+                        ("return",json!({"result_count":1}),json!({"inputs":[[2,0]]})),
+                    ])},
+                {"id":"callee","signature":{"results":[typ]},"locals":[{"id":"zero","type":typ}],
+                    "code":support::slot_code(json!([]), &[
+                        ("return",json!({"result_count":1}),json!({"inputs":[[2,0]]})),
+                    ])}
+            ]
+        }));
+        let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        for _ in 0..2 {
+            vm.start("default", &[]).unwrap();
+            while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
+            let snapshot = vm.snapshot_results(Default::default()).unwrap();
+            match &snapshot.roots[0].data {
+                HostData::Struct(fields) => assert!(fields.is_empty()),
+                HostData::Array(values) => {
+                    assert_eq!(values.len(), 129);
+                    assert!(values.iter().all(|value| value.integer().unwrap() == 0));
+                }
+                value => panic!("expected aggregate result: {value:?}"),
+            }
+        }
+        vm.close().unwrap();
+    }
 }
 
 #[test]
@@ -39,9 +132,14 @@ fn labels_resolve_to_executable_pcs_and_profile_names() {
         if profile {
             vm.start_profile(1, 16).unwrap();
         }
-        vm.start("default", vec![]).unwrap();
+        vm.start("default", &[]).unwrap();
         while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
-        assert!(vm.results().is_empty());
+        assert!(
+            vm.snapshot_results(Default::default())
+                .unwrap()
+                .roots
+                .is_empty()
+        );
         assert_eq!(vm.steps(), 2);
         if profile {
             let samples = vm.profile();
@@ -87,9 +185,11 @@ fn invalid_labels_are_checked_in_unreachable_code() {
 fn slot_calls_transfer_arguments_through_tail_replacement_and_bound_functions() {
     use mini_go::contract_generated as wire;
     let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
-    for indirect in [false, true] {
+    for (indirect, local_input) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut instructions = vec![operation("binary", 0, 0)];
-        let mut operands = vec![json!({"inputs":[[1,0],[1,0]],"outputs":[0]})];
+        let mut operands =
+            vec![json!({"inputs":[[1,0],[1,0]],"outputs":[if local_input {1u32 << 31} else {0}]})];
+        let argument = json!([if local_input { 2 } else { 0 }, 0]);
         if indirect {
             instructions.push(operation("make_closure", 0, 1));
             operands.push(json!({"outputs":[1]}));
@@ -104,9 +204,9 @@ fn slot_calls_transfer_arguments_through_tail_replacement_and_bound_functions() 
             operands.len() as u32,
         ));
         operands.push(if indirect {
-            json!({"inputs":[[0,1],[0,0]],"outputs":[2],"release":[0,1]})
+            json!({"inputs":[[0,1],argument],"outputs":[2],"release":if local_input { vec![1] } else { vec![0,1] }})
         } else {
-            json!({"inputs":[[0,0]],"release":[0]})
+            json!({"inputs":[argument],"release":if local_input { vec![] } else { vec![0] }})
         });
         if indirect {
             instructions.push(operation("return", 0, operands.len() as u32));
@@ -116,7 +216,7 @@ fn slot_calls_transfer_arguments_through_tail_replacement_and_bound_functions() 
             "type_table":{"nodes":[{"id":"callable","kind":wire::Function,"signature":{"params":[{"type":integer}],"results":[integer]}}]},
             "constants":[{"id":"half","type":integer,"value":21}],
             "functions":[
-                {"id":"fn.Main","signature":{"results":[integer]},"code":{
+                {"id":"fn.Main","signature":{"results":[integer]},"locals":[{"id":"argument","type":integer}],"code":{
                     "types":[integer,{"kind":wire::Function,"node":"callable"},integer],
                     "descriptors":{"operator":[{"operator":"+"}],"closure":[{"function":"callee"}],"call":[{"function":"callee","arg_count":1,"result_count":1}],"return":[{"result_count":1}]},
                     "instructions":instructions,"operands":operands}},
@@ -128,14 +228,19 @@ fn slot_calls_transfer_arguments_through_tail_replacement_and_bound_functions() 
         let mut vm = Instance::new(
             program,
             ExecutionLimits {
-                max_frames: if indirect { 2 } else { 1 },
+                max_call_depth: if indirect { 2 } else { 1 },
                 ..Default::default()
             },
         )
         .unwrap();
-        vm.start("default", vec![]).unwrap();
+        vm.start("default", &[]).unwrap();
         while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
-        assert_eq!(vm.results()[0].integer().unwrap(), 42);
+        assert_eq!(
+            vm.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            42
+        );
         assert_eq!(vm.steps(), if indirect { 5 } else { 3 });
         vm.close().unwrap();
         assert_eq!(vm.heap_stats().live_objects, 0);
@@ -168,7 +273,7 @@ fn direct_local_results_preserve_budget_and_reject_invalid_destinations() {
         let program = Arc::new(loaded.unwrap());
         for quantum in [1, 4096] {
             let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
-            vm.start("default", vec![]).unwrap();
+            vm.start("default", &[]).unwrap();
             loop {
                 let before = vm.steps();
                 let status = vm.poll_steps(quantum).unwrap();
@@ -179,7 +284,12 @@ fn direct_local_results_preserve_budget_and_reject_invalid_destinations() {
                 assert!(vm.steps() <= 19);
             }
             assert_eq!(vm.steps(), 19);
-            assert_eq!(vm.results()[0].integer().unwrap(), 9);
+            assert_eq!(
+                vm.snapshot_results(Default::default()).unwrap().roots[0]
+                    .integer()
+                    .unwrap(),
+                9
+            );
             vm.close().unwrap();
         }
     }
@@ -336,9 +446,14 @@ fn fused_index_and_length_operations_validate_and_execute() {
     }));
     let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", vec![]).unwrap();
+    vm.start("default", &[]).unwrap();
     while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
-    assert_eq!(vm.results()[0].integer().unwrap(), 98);
+    assert_eq!(
+        vm.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        98
+    );
     vm.close().unwrap();
 
     let length_bytes = support::image(json!({
@@ -360,7 +475,7 @@ fn fused_index_and_length_operations_validate_and_execute() {
     }));
     let program = Arc::new(Program::load(&length_bytes, LoadLimits::default()).unwrap());
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", vec![]).unwrap();
+    vm.start("default", &[]).unwrap();
     while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
     assert_eq!(vm.steps(), 2);
     vm.close().unwrap();
@@ -448,9 +563,11 @@ fn fused_length_branch_compares_signed_and_unsigned_thresholds_exactly() {
         }));
         let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-        vm.start("default", vec![]).unwrap();
+        vm.start("default", &[]).unwrap();
         while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
-        assert!(matches!(vm.results()[0].data(), Data::Bool(value) if *value == taken));
+        assert!(
+            matches!(&vm.snapshot_results(Default::default()).unwrap().roots[0].data, HostData::Bool(value) if *value == taken)
+        );
         assert_eq!(vm.steps(), 2);
         vm.close().unwrap();
     }
@@ -481,9 +598,11 @@ fn aggregate_inputs_match_the_declared_field_types() {
             continue;
         }
         let mut vm = Instance::new(Arc::new(loaded.unwrap()), ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
-        let Data::Struct(fields) = vm.results()[0].data() else {
+        let HostData::Struct(fields) =
+            &vm.snapshot_results(Default::default()).unwrap().roots[0].data
+        else {
             panic!("expected struct result");
         };
         assert_eq!(fields.get("value").unwrap().integer().unwrap(), 42);
@@ -517,7 +636,7 @@ fn slot_call_results_survive_poll_boundaries_and_release_inputs() {
     let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
     for quantum in [1, 2, 64] {
         let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         for _ in 0..16 {
             let before = vm.steps();
             let status = vm.poll_steps(quantum).unwrap();
@@ -526,7 +645,10 @@ fn slot_call_results_survive_poll_boundaries_and_release_inputs() {
                 break;
             }
         }
-        assert!(matches!(vm.results()[0].data(), Data::Integer(42)));
+        assert!(matches!(
+            &vm.snapshot_results(Default::default()).unwrap().roots[0].data,
+            HostData::Integer(42)
+        ));
         assert_eq!(vm.steps(), 5);
         vm.close().unwrap();
     }
@@ -810,11 +932,13 @@ fn intrinsic_results_are_written_to_explicit_destinations() {
     }));
     let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", Vec::new()).unwrap();
+    vm.start("default", &[]).unwrap();
     while vm.poll_steps(1).unwrap() != PollStatus::Ready {
         assert!(vm.steps() <= 2);
     }
-    assert!(matches!(vm.results()[0].data(), Data::Float(42.0)));
+    assert!(
+        matches!(&vm.snapshot_results(Default::default()).unwrap().roots[0].data, HostData::FloatBits(bits) if f64::from_bits(*bits) == 42.0)
+    );
     assert_eq!(vm.steps(), 2);
     vm.close().unwrap();
 }
@@ -865,13 +989,21 @@ fn direct_pointer_inputs_preserve_shared_pointees_and_lazy_nil() {
         let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
         for quantum in [1, 2, 8] {
             let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
-            vm.start("default", Vec::new()).unwrap();
+            vm.start("default", &[]).unwrap();
             while vm.poll_steps(quantum).unwrap() != PollStatus::Ready {}
             if nil {
-                assert!(matches!(vm.results()[0].data(), Data::Nil));
+                assert!(matches!(
+                    &vm.snapshot_results(Default::default()).unwrap().roots[0].data,
+                    HostData::Nil
+                ));
                 assert_eq!(vm.steps(), 1);
             } else {
-                assert_eq!(vm.results()[0].integer().unwrap(), 42);
+                assert_eq!(
+                    vm.snapshot_results(Default::default()).unwrap().roots[0]
+                        .integer()
+                        .unwrap(),
+                    42
+                );
                 assert_eq!(vm.steps(), 6);
             }
             vm.close().unwrap();
@@ -905,13 +1037,16 @@ fn direct_local_inputs_initialize_zero_and_reject_addressable_storage() {
             let Err(error) = loaded else {
                 panic!("addressable local cannot be a direct input");
             };
-            assert!(error.to_string().contains("private scalar"), "{error}");
+            assert_eq!(error.code, "invalid_operand", "{error}");
             continue;
         }
         let mut vm = Instance::new(Arc::new(loaded.unwrap()), ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
-        assert!(matches!(vm.results()[0].data(), Data::Integer(0)));
+        assert!(matches!(
+            &vm.snapshot_results(Default::default()).unwrap().roots[0].data,
+            HostData::Integer(0)
+        ));
         vm.close().unwrap();
     }
 }
@@ -947,10 +1082,12 @@ fn repeated_calls_reset_private_locals_and_keep_unused_cells_lazy() {
             },
         )
         .unwrap();
-        vm.start("default", vec![]).unwrap();
+        vm.start("default", &[]).unwrap();
         while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
         assert_eq!(
-            vm.results()
+            vm.snapshot_results(Default::default())
+                .unwrap()
+                .roots
                 .iter()
                 .map(|value| value.integer().unwrap())
                 .collect::<Vec<_>>(),
@@ -978,13 +1115,18 @@ fn scalar_and_lazy_inputs_survive_one_step_polls() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", vec![]).unwrap();
+    vm.start("default", &[]).unwrap();
     for _ in 0..3 {
         assert_ne!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
     }
     assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
     assert_eq!(vm.steps(), 4);
-    assert_eq!(vm.results()[0].integer().unwrap(), 42);
+    assert_eq!(
+        vm.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
     vm.close().unwrap();
     assert_eq!(vm.heap_stats().live_objects, 0);
 }
@@ -1026,10 +1168,13 @@ fn private_field_inputs_initialize_zero_and_reject_addressable_storage() {
             continue;
         }
         let mut vm = Instance::new(Arc::new(loaded.unwrap()), ExecutionLimits::default()).unwrap();
-        vm.start("default", vec![]).unwrap();
+        vm.start("default", &[]).unwrap();
         assert_ne!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
         assert_eq!(vm.poll_steps(1).unwrap(), PollStatus::Ready);
-        assert!(matches!(vm.results()[0].data(), Data::Integer(0)));
+        assert!(matches!(
+            &vm.snapshot_results(Default::default()).unwrap().roots[0].data,
+            HostData::Integer(0)
+        ));
         vm.close().unwrap();
     }
 }
@@ -1062,7 +1207,7 @@ fn slot_loop_preserves_exact_work_across_poll_and_instance_limits() {
                 },
             )
             .unwrap();
-            vm.start("default", Vec::new()).unwrap();
+            vm.start("default", &[]).unwrap();
             loop {
                 let before = vm.steps();
                 let result = vm.poll_steps(quantum);
@@ -1076,7 +1221,10 @@ fn slot_loop_preserves_exact_work_across_poll_and_instance_limits() {
                     }
                     Ok(PollStatus::Ready) => {
                         assert_eq!(vm.steps(), 28);
-                        assert!(matches!(vm.results()[0].data(), Data::Integer(9)));
+                        assert!(matches!(
+                            &vm.snapshot_results(Default::default()).unwrap().roots[0].data,
+                            HostData::Integer(9)
+                        ));
                         break;
                     }
                     _ => assert!(vm.steps() < 28),

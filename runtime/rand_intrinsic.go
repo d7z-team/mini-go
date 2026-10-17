@@ -7,8 +7,8 @@ import (
 )
 
 func cryptoRandRead(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
-	slice, ok := args[0].Data.(*vmSlice)
-	if !ok && args[0].Data != nil {
+	slice, ok := args[0].payload().(*vmSlice)
+	if !ok && args[0].payload() != nil {
 		return nil, errors.New("crypto/rand intrinsic requires []byte")
 	}
 	if slice == nil || slice.Len == 0 {

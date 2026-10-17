@@ -1,7 +1,6 @@
 //! Intrinsics that suspend a frame resume through the owner scheduler.
 
 use super::reflect_value::ReflectedValue;
-use super::scheduler::Resource;
 use super::*;
 
 pub(super) enum IntrinsicResume {
@@ -89,11 +88,7 @@ impl Instance {
         } else {
             values
         };
-        self.running
-            .frames
-            .last_mut()
-            .unwrap()
-            .extend_results(results);
+        self.extend_results(results)?;
         Ok(())
     }
 
@@ -172,19 +167,7 @@ impl Instance {
                 let mut indexes = Vec::new();
                 let mut receives = Vec::new();
                 for (index, value) in self.slice_values(&arguments[0])?.into_iter().enumerate() {
-                    let Data::Struct(fields) = value.data else {
-                        return Err(RuntimeError::new(
-                            "reflect",
-                            id,
-                            "reflect.Select: invalid case",
-                        ));
-                    };
-                    let direction = fields
-                        .get("Dir")
-                        .ok_or_else(|| {
-                            RuntimeError::new("reflect", id, "reflect.Select: missing Dir")
-                        })?
-                        .integer()?;
+                    let direction = value.field("Dir")?.integer()?;
                     if direction == 3 {
                         if default.replace(index).is_some() {
                             return Err(RuntimeError::new(
@@ -202,10 +185,8 @@ impl Instance {
                             "reflect.Select: invalid Dir",
                         ));
                     }
-                    let snapshot = fields.get("Chan").ok_or_else(|| {
-                        RuntimeError::new("reflect", id, "reflect.Select: missing Chan")
-                    })?;
-                    let Some(channel) = self.reflected_value(snapshot)?.current else {
+                    let snapshot = value.field("Chan")?;
+                    let Some(channel) = self.reflected_value(&snapshot)?.current else {
                         continue;
                     };
                     let (_, node) = self
@@ -226,10 +207,8 @@ impl Instance {
                         ));
                     }
                     let send = if sending {
-                        let snapshot = fields.get("Send").ok_or_else(|| {
-                            RuntimeError::new("reflect", id, "reflect.Select: missing Send")
-                        })?;
-                        Some(self.reflected_value(snapshot)?.current.ok_or_else(|| {
+                        let snapshot = value.field("Send")?;
+                        Some(self.reflected_value(&snapshot)?.current.ok_or_else(|| {
                             RuntimeError::new("reflect", id, "reflect.Select: invalid Send Value")
                         })?)
                     } else {
@@ -279,11 +258,8 @@ impl Instance {
                     ));
                 };
                 let revision = callback.revision.as_ref().unwrap_or(&self.revision);
-                let signature = &revision
-                    .program
-                    .function(&callback.module, &callback.function)?
-                    .declaration
-                    .signature;
+                let callback_function = self.resolve_function_binding(callback, revision)?;
+                let signature = &callback_function.declaration.signature;
                 if signature.params.len() != 1 || signature.results.len() != 1 {
                     return Err(RuntimeError::new(
                         "reflect",
@@ -330,20 +306,21 @@ impl Instance {
                         RuntimeError::new("reflect", id, "reflect: Call of non-function Value")
                     })?;
                 let signature = node.signature.as_ref().unwrap();
+                let variadic = signature.variadic;
                 let params = signature
                     .params
                     .iter()
                     .map(|parameter| self.types.resolve(module, &parameter.r#type))
                     .collect::<Result<Vec<_>, _>>()?;
                 let result_count = signature.results.len();
-                if call_slice && !signature.variadic {
+                if call_slice && !variadic {
                     return Err(RuntimeError::new(
                         "reflect",
                         id,
                         "reflect: CallSlice of non-variadic function",
                     ));
                 }
-                if signature.variadic && !call_slice {
+                if variadic && !call_slice {
                     let fixed = params.len() - 1;
                     if values.len() < fixed {
                         return Err(RuntimeError::new(
@@ -377,9 +354,7 @@ impl Instance {
                         let mut values = values;
                         if let Some(receiver) = receiver {
                             let revision = function.revision.as_ref().unwrap_or(&self.revision);
-                            let callee = revision
-                                .program
-                                .function(&function.module, &function.function)?;
+                            let callee = self.resolve_function_binding(&function, revision)?;
                             let parameter =
                                 callee.declaration.signature.params.first().ok_or_else(|| {
                                     RuntimeError::new(
@@ -391,7 +366,7 @@ impl Instance {
                             let expected = revision
                                 .program
                                 .types()
-                                .resolve(&function.module, &parameter.r#type)?;
+                                .resolve(&callee.module, &parameter.r#type)?;
                             values.insert(
                                 0,
                                 self.method_receiver(Arc::unwrap_or_clone(receiver), &expected)?,
@@ -442,19 +417,15 @@ impl Instance {
                 }
                 let capacity = usize::try_from(arguments[1].integer()?)
                     .ok()
-                    .filter(|capacity| *capacity <= self.limits.max_sequence_elements)
                     .ok_or_else(|| {
                         RuntimeError::new("reflect", id, "reflect.MakeChan: invalid buffer size")
                     })?;
-                self.charge_guest_object(capacity, 0)?;
+                let resource = self.new_channel_resource(&self.element_type(&typ)?, capacity)?;
                 let handle = self.allocate(Value {
                     typ: TypeIdentity::Any,
-                    data: Data::Resource(Box::new(Resource::Channel {
-                        capacity,
-                        closed: false,
-                        values: VecDeque::new(),
-                    })),
+                    data: Data::Resource(Box::new(resource.clone())),
                 })?;
+                self.register_channel_resource(handle, &resource);
                 let value = self.reflect_snapshot(
                     ReflectedValue::owned(Value {
                         typ,
@@ -586,11 +557,7 @@ impl Instance {
                 results
             }
         };
-        self.running
-            .frames
-            .last_mut()
-            .unwrap()
-            .extend_results(results);
+        self.extend_results(results)?;
         Ok(())
     }
 }

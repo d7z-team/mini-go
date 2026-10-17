@@ -294,9 +294,8 @@ impl Default for CompilerOptions {
         Self {
             limits: ExecutionLimits {
                 max_steps: crate::instance::UNLIMITED_STEPS,
-                max_heap_bytes: 128 << 20,
-                max_objects: 500_000,
-                max_sequence_elements: 4 << 20,
+                max_guest_bytes: 128 << 20,
+                max_boundary_elements: 4 << 20,
                 max_dynamic_types: 16_384,
                 max_dynamic_type_bytes: 64 << 20,
                 ..ExecutionLimits::default()
@@ -781,7 +780,7 @@ mod tests {
         );
         drop(session);
 
-        options.limits.max_heap_bytes = 1;
+        options.limits.max_guest_bytes = 1;
         let mut session =
             CompilerSession::from_image(image, 1, RestoreState::default(), options).unwrap();
         let outcome = session

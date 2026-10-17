@@ -12,7 +12,7 @@ impl Instance {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<VariableInfo>, RuntimeError> {
-        if limit > self.limits.max_sequence_elements {
+        if limit > self.limits.max_boundary_elements {
             return Err(RuntimeError::new(
                 "debug_limit",
                 "variables",
@@ -42,8 +42,8 @@ impl Instance {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<VariableInfo>, RuntimeError> {
-        if limit > self.limits.max_sequence_elements
-            || reference.path.len() >= self.limits.max_value_depth
+        if limit > self.limits.max_boundary_elements
+            || reference.path.len() >= self.limits.max_boundary_depth
         {
             return Err(RuntimeError::new(
                 "debug_limit",
@@ -54,6 +54,15 @@ impl Instance {
         let value = self.debug_variable_value(reference)?;
         let mut paths = Vec::new();
         match &value.data {
+            Data::Aggregate(aggregate) => {
+                for index in (0..aggregate.len()).skip(offset).take(limit) {
+                    paths.push(if let Some(name) = aggregate.field_name(index) {
+                        (name.to_owned(), VariablePath::Field(name.to_owned()))
+                    } else {
+                        (format!("[{index}]"), VariablePath::Index(index))
+                    });
+                }
+            }
             Data::Struct(fields) => {
                 paths.extend(
                     fields
@@ -76,11 +85,9 @@ impl Instance {
                     .map(|index| (format!("[{index}]"), VariablePath::Index(index))),
             ),
             Data::Map(handle) => {
-                let Data::MapEntries(entries) = &self.heap.get(*handle)?.data else {
-                    unreachable!()
-                };
+                let length = self.materialize_managed_map(*handle, &value.typ)?.len();
                 paths.extend(
-                    (0..entries.len().saturating_mul(2))
+                    (0..length.saturating_mul(2))
                         .skip(offset)
                         .take(limit)
                         .map(|index| {
@@ -113,10 +120,7 @@ impl Instance {
             .collect()
     }
 
-    fn debug_variable_value(
-        &self,
-        reference: &VariableRef,
-    ) -> Result<crate::value::ValueRead<'_>, RuntimeError> {
+    fn debug_variable_value(&self, reference: &VariableRef) -> Result<Value, RuntimeError> {
         let stale = || {
             RuntimeError::new(
                 "stale_reference",
@@ -127,7 +131,7 @@ impl Instance {
         if self.closed
             || !self.debug.paused
             || reference.epoch != self.debug.epoch
-            || reference.path.len() > self.limits.max_value_depth
+            || reference.path.len() > self.limits.max_boundary_depth
         {
             return Err(stale());
         }
@@ -136,6 +140,14 @@ impl Instance {
             let previous = value;
             let data = &previous.data;
             let child = match (path, data) {
+                (VariablePath::Field(name), Data::Aggregate(aggregate)) => {
+                    value = aggregate.get_field(name)?;
+                    continue;
+                }
+                (VariablePath::Index(index), Data::Aggregate(aggregate)) => {
+                    value = aggregate.get(*index)?;
+                    continue;
+                }
                 (VariablePath::Field(name), Data::Struct(fields)) => {
                     fields.get(name).ok_or_else(stale)?
                 }
@@ -152,18 +164,13 @@ impl Instance {
                     VariablePath::MapKey(index) | VariablePath::MapValue(index),
                     Data::Map(handle),
                 ) => {
-                    let snapshot = self.heap.get(*handle)?;
-                    let Data::MapEntries(entries) = &snapshot.data else {
-                        return Err(stale());
-                    };
+                    let entries = self.materialize_managed_map(*handle, &previous.typ)?;
                     let entry = entries.get(*index).ok_or_else(stale)?;
-                    value = crate::value::ValueRead::Owned(
-                        if matches!(path, VariablePath::MapKey(_)) {
-                            entry.0.clone()
-                        } else {
-                            entry.1.clone()
-                        },
-                    );
+                    value = if matches!(path, VariablePath::MapKey(_)) {
+                        entry.0.clone()
+                    } else {
+                        entry.1.clone()
+                    };
                     continue;
                 }
                 (VariablePath::Dereference, Data::Pointer(address)) => {
@@ -173,23 +180,7 @@ impl Instance {
                 (VariablePath::Dereference, Data::Interface(inner)) => inner,
                 _ => return Err(stale()),
             };
-            value = match previous {
-                crate::value::ValueRead::Borrowed(parent) => {
-                    let child = match (path, &parent.data) {
-                        (VariablePath::Field(name), Data::Struct(fields)) => &fields[name],
-                        (VariablePath::Index(index), Data::Array(values)) => &values[*index],
-                        (VariablePath::Dereference, Data::Interface(inner)) => inner,
-                        _ => {
-                            value = crate::value::ValueRead::Owned(child.clone());
-                            continue;
-                        }
-                    };
-                    crate::value::ValueRead::Borrowed(child)
-                }
-                crate::value::ValueRead::Owned(_) | crate::value::ValueRead::Shared(_) => {
-                    crate::value::ValueRead::Owned(child.clone())
-                }
-            };
+            value = child.clone();
         }
         Ok(value)
     }
@@ -203,14 +194,20 @@ impl Instance {
         let (summary, children) = match &value.data {
             Data::Array(values) => (format!("array len={}", values.len()), values.len()),
             Data::Struct(fields) => (format!("struct fields={}", fields.len()), fields.len()),
+            Data::Aggregate(value) => (
+                if value.is_array() {
+                    format!("array len={}", value.len())
+                } else {
+                    format!("struct fields={}", value.len())
+                },
+                value.len(),
+            ),
             Data::Slice(slice) => (
                 format!("slice len={} cap={}", slice.length, slice.capacity),
                 slice.length,
             ),
             Data::Map(handle) => {
-                let Data::MapEntries(entries) = &self.heap.get(*handle)?.data else {
-                    unreachable!()
-                };
+                let entries = self.materialize_managed_map(*handle, &value.typ)?;
                 (
                     format!("map len={}", entries.len()),
                     entries.len().saturating_mul(2),

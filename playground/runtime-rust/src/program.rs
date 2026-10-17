@@ -16,12 +16,19 @@ pub(crate) struct Revision {
     pub logical_functions: Vec<usize>,
 }
 
+impl Revision {
+    pub(crate) fn function_by_index(
+        &self,
+        index: usize,
+    ) -> Result<Arc<PreparedFunction>, RuntimeError> {
+        self.program.function_by_index(index)
+    }
+}
+
 mod constant;
 pub(crate) use constant::PreparedConstant;
 mod construct;
-pub(crate) use construct::AggregateLayout;
 pub(crate) use construct::StructLayout;
-pub(crate) use construct::ValueLayout;
 mod slots;
 use slots::PreparedOperands;
 
@@ -105,7 +112,6 @@ impl std::ops::Index<usize> for PreparedCode {
 #[derive(Clone)]
 pub(crate) struct PreparedFunction {
     pub index: usize,
-    pub module_index: usize,
     pub module: Arc<str>,
     pub name: Arc<str>,
     pub local_types: Vec<crate::types::TypeIdentity>,
@@ -115,7 +121,7 @@ pub(crate) struct PreparedFunction {
     pub execution: Vec<PreparedInstruction>,
     pub operand_types: Vec<Option<crate::types::TypeIdentity>>,
     pub type_dispatches: Vec<PreparedTypeDispatch>,
-    pub aggregates: Vec<AggregateLayout>,
+    pub aggregates: Vec<StructLayout>,
     pub field_paths: Vec<Vec<PreparedField>>,
     pub globals: Vec<String>,
     pub targets: Vec<Option<usize>>,
@@ -127,11 +133,21 @@ pub(crate) struct PreparedFunction {
     pub upvalues: HashMap<String, usize>,
     pub slot_types: Vec<crate::types::TypeIdentity>,
     pub operands: PreparedOperands,
+    /// Map iterator storage is indexed by the prepared local used by the
+    /// instruction. The instruction payload keeps the source name for
+    /// diagnostics, but execution never hashes that name on each iteration.
+    pub map_iterator_indices: Vec<Option<usize>>,
+    pub map_iterator_count: usize,
     // Only direct locals and non-scalar constants may need owner-side loading.
     pub lazy_slot_inputs: Vec<bool>,
+    /// Interned precise guest roots at each instruction boundary. Bits address
+    /// frame locals, prepared temporary slots, and captured upvalue cells in
+    /// that order. The frame owner also visits captured cells directly.
+    pub reference_maps: Arc<Vec<Vec<u64>>>,
+    pub reference_at_pc: Arc<Vec<u32>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum PreparedInstruction {
     GetPath(usize),
     CompareBranch {
@@ -149,6 +165,11 @@ pub(crate) enum PreparedInstruction {
     Intrinsic(wire::Intrinsic),
     Unary(crate::operators::PreparedOperator),
     Binary(crate::operators::PreparedOperator),
+    MinMax {
+        kind: crate::operators::MinMaxKind,
+        choose_min: bool,
+        arg_count: usize,
+    },
     Constant(usize),
     Local {
         index: usize,
@@ -215,6 +236,259 @@ pub(crate) struct PreparedTypeCase {
     pub target: usize,
     pub binding: Option<usize>,
     pub original: bool,
+}
+
+fn prepare_reference_plan(function: &PreparedFunction) -> (Vec<Vec<u64>>, Vec<u32>) {
+    let local_count = function.local_types.len();
+    let slot_count = function.slot_types.len();
+    let upvalue_count = function.upvalues.len();
+    let upvalue_base = local_count + slot_count;
+    let storage_count = upvalue_base + upvalue_count;
+    let words = storage_count.div_ceil(64);
+    let count = function.execution.len();
+    if count == 0 {
+        return (vec![vec![0; words]], vec![0]);
+    }
+    let mut uses = vec![vec![0_u64; words]; count];
+    let mut defs = vec![vec![0_u64; words]; count];
+    let mut successors = vec![Vec::<(usize, Option<usize>)>::new(); count];
+    let set = |bitmap: &mut [u64], index: usize| {
+        if index < storage_count {
+            bitmap[index / 64] |= 1_u64 << (index % 64);
+        }
+    };
+    let mut result_roots = vec![0_u64; words];
+    for &index in &function.result_locals {
+        set(&mut result_roots, index);
+    }
+    for (pc, execution) in function.execution.iter().enumerate() {
+        let use_map = &mut uses[pc];
+        let def_map = &mut defs[pc];
+        for (word, value) in result_roots.iter().enumerate() {
+            use_map[word] |= value;
+        }
+        for input in function.operands.inputs_at(pc) {
+            match input.kind {
+                0 => set(use_map, local_count + input.index as usize),
+                2 => set(use_map, input.index as usize),
+                _ => {}
+            }
+        }
+        for &output in function.operands.outputs_at(pc) {
+            if output & LOCAL_OUTPUT != 0 {
+                let local = (output & !LOCAL_OUTPUT) as usize;
+                // A direct result updates the same private storage as
+                // StoreLocal. Keep its existing managed identity until
+                // publication, including while a callee is suspended.
+                set(use_map, local);
+                set(def_map, local);
+            } else {
+                set(def_map, local_count + output as usize);
+            }
+        }
+        let read_address = |address: &wire::AddressPayload, bitmap: &mut [u64]| {
+            match address.kind.as_str() {
+                "local" => {
+                    if let Some(index) = function.locals.get(&address.local) {
+                        set(bitmap, *index);
+                    }
+                }
+                "upvalue" => {
+                    if let Some(index) = function.upvalues.get(&address.upvalue) {
+                        set(bitmap, upvalue_base + *index);
+                    }
+                }
+                _ => {}
+            }
+            for segment in address.path.iter() {
+                if segment.kind == "index"
+                    && let Some(index) = function.locals.get(&segment.local)
+                {
+                    set(bitmap, *index);
+                }
+            }
+        };
+        match execution {
+            PreparedInstruction::Local {
+                index,
+                store,
+                rebind,
+                ..
+            } => {
+                if *store {
+                    if function.addressable_locals[*index] || !*rebind {
+                        set(use_map, *index);
+                    }
+                    set(def_map, *index);
+                } else {
+                    set(use_map, *index);
+                }
+                if pc + 1 < count {
+                    successors[pc].push((pc + 1, None));
+                }
+            }
+            PreparedInstruction::Upvalue { index, .. } => {
+                // Upvalue cells retain identity across stores and unwind; a
+                // store therefore reads the cell even when its new payload is
+                // scalar. The frame owner also visits these roots directly.
+                set(use_map, upvalue_base + *index);
+                if pc + 1 < count {
+                    successors[pc].push((pc + 1, None));
+                }
+            }
+            PreparedInstruction::TypeDispatch(index) => {
+                let dispatch = &function.type_dispatches[*index];
+                set(use_map, dispatch.subject);
+                let kill = dispatch.fallback_local.filter(|local| {
+                    if function.addressable_locals[*local] {
+                        set(use_map, *local);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                successors[pc].push((dispatch.fallback, kill));
+                for case in &dispatch.cases {
+                    let kill = case.binding.filter(|binding| {
+                        if function.addressable_locals[*binding] {
+                            set(use_map, *binding);
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    successors[pc].push((case.target, kill));
+                }
+            }
+            PreparedInstruction::Jump {
+                target,
+                conditional,
+                ..
+            } => {
+                successors[pc].push((*target, None));
+                if *conditional && pc + 1 < count {
+                    successors[pc].push((pc + 1, None));
+                }
+            }
+            PreparedInstruction::CompareBranch { target, .. }
+            | PreparedInstruction::LenCompareBranch { target, .. } => {
+                successors[pc].push((*target, None));
+                if pc + 1 < count {
+                    successors[pc].push((pc + 1, None));
+                }
+            }
+            PreparedInstruction::Operand => {
+                // Return, panic, and tail call terminate the current linear
+                // frame. All other wire operations resume at the next PC.
+                let terminal = matches!(
+                    function.code.descriptor(pc),
+                    Some(
+                        Instruction::Return(_)
+                            | Instruction::Panic
+                            | Instruction::TailCallDirect(_)
+                    )
+                );
+                if !terminal && pc + 1 < count {
+                    successors[pc].push((pc + 1, None));
+                }
+            }
+            PreparedInstruction::Construct(_)
+            | PreparedInstruction::GetPath(_)
+            | PreparedInstruction::Intrinsic(_)
+            | PreparedInstruction::Unary(_)
+            | PreparedInstruction::Binary(_)
+            | PreparedInstruction::MinMax { .. }
+            | PreparedInstruction::Constant(_)
+            | PreparedInstruction::Global { .. } => {
+                if pc + 1 < count {
+                    successors[pc].push((pc + 1, None));
+                }
+            }
+        }
+        if let Some(descriptor) = function.code.descriptor(pc) {
+            match descriptor {
+                Instruction::AddressOf(address) => read_address(address, use_map),
+                Instruction::MakeClosure(closure) => {
+                    for address in closure.captures.iter() {
+                        read_address(address, use_map);
+                    }
+                }
+                Instruction::Select(select) => {
+                    if let Some(index) = function.locals.get(&select.index) {
+                        set(def_map, *index);
+                        if function.addressable_locals[*index] {
+                            set(use_map, *index);
+                        }
+                    }
+                    for case in select.cases.iter() {
+                        if let Some(index) = function.locals.get(&case.channel) {
+                            set(use_map, *index);
+                        }
+                        if !case.send.is_empty() {
+                            if let Some(index) = function.locals.get(&case.send) {
+                                set(use_map, *index);
+                            }
+                        } else {
+                            for name in [&case.value, &case.ok] {
+                                if !name.is_empty()
+                                    && let Some(index) = function.locals.get(name)
+                                    && function.addressable_locals[*index]
+                                {
+                                    set(use_map, *index);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut incoming = vec![vec![0_u64; words]; count + 1];
+    incoming[count].copy_from_slice(&result_roots);
+    loop {
+        let mut changed = false;
+        for pc in (0..count).rev() {
+            let mut outgoing = vec![0_u64; words];
+            for &(target, kill) in &successors[pc] {
+                if target >= count {
+                    continue;
+                }
+                for (word, value) in outgoing.iter_mut().enumerate() {
+                    let mut edge = incoming[target][word];
+                    if kill.is_some_and(|index| index / 64 == word) {
+                        edge &= !(1_u64 << (kill.unwrap() % 64));
+                    }
+                    *value |= edge;
+                }
+            }
+            for word in 0..words {
+                let next = uses[pc][word] | (outgoing[word] & !defs[pc][word]);
+                if incoming[pc][word] != next {
+                    incoming[pc][word] = next;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut maps = Vec::<Vec<u64>>::new();
+    let mut interned = HashMap::<Vec<u64>, u32>::new();
+    let mut at_pc = Vec::with_capacity(count + 1);
+    for bitmap in incoming {
+        let id = if let Some(id) = interned.get(&bitmap) {
+            *id
+        } else {
+            let id = maps.len() as u32;
+            interned.insert(bitmap.clone(), id);
+            maps.push(bitmap);
+            id
+        };
+        at_pc.push(id);
+    }
+    (maps, at_pc)
 }
 
 pub struct Program {
@@ -307,7 +581,7 @@ impl Program {
                 })
             })
             .collect();
-        for (module_index, (module, artifact)) in decoded.artifacts().iter().enumerate() {
+        for (module, artifact) in decoded.artifacts() {
             let constants = unique_ids(artifact.constants.iter().map(|value| &value.id), module)?;
             let globals = unique_ids(artifact.globals.iter().map(|value| &value.id), module)?;
             unique_ids(artifact.functions.iter().map(|value| &value.id), module)?;
@@ -355,7 +629,6 @@ impl Program {
                         .map(|global| global.id.clone())
                         .collect(),
                     index: functions.len(),
-                    module_index,
                     module: module.as_str().into(),
                     name: declaration.id.as_str().into(),
                     local_types: declaration
@@ -382,7 +655,11 @@ impl Program {
                         .map(|typ| decoded.types().resolve(module, typ))
                         .collect::<Result<Vec<_>, _>>()?,
                     operands: PreparedOperands::default(),
+                    map_iterator_indices: Vec::new(),
+                    map_iterator_count: 0,
                     lazy_slot_inputs: Vec::new(),
+                    reference_maps: Arc::default(),
+                    reference_at_pc: Arc::default(),
                 };
                 if !declaration.result_locals.is_empty() {
                     let results = unique_ids(declaration.result_locals.iter(), &path)?;
@@ -524,7 +801,13 @@ impl Program {
                                         | Instruction::StringNextRuneIndex
                                         | Instruction::IndexConvert(_)
                                         | Instruction::CallDirect(_)
-                                ) && operands.outputs.len() == 1
+                                        | Instruction::MapIterNext(_)
+                                        | Instruction::MinMax(_)
+                                ) && (operands.outputs.len() == 1
+                                    || matches!(
+                                        instruction,
+                                        Instruction::CallDirect(_) | Instruction::MapIterNext(_)
+                                    ))
                                     && ((output & !LOCAL_OUTPUT) as usize)
                                         < function.local_types.len()
                             } else {
@@ -656,6 +939,10 @@ impl Program {
                             decoded.types().resolve(module, &value.r#type)?;
                             value.element_count >= 0
                         }
+                        Instruction::MinMax(value) => {
+                            decoded.types().resolve(module, &value.r#type)?;
+                            value.arg_count >= 1 && matches!(value.operator.as_str(), "min" | "max")
+                        }
                         Instruction::MakeSlice(value) => {
                             decoded.types().resolve(module, &value.r#type)?;
                             true
@@ -762,14 +1049,9 @@ impl Program {
                                             "field path index out of range",
                                         )
                                     })?;
-                                let names: std::collections::BTreeSet<_> =
-                                    node.fields.iter().map(|field| &field.name).collect();
                                 steps.push(PreparedField {
                                     indirect,
-                                    index: names
-                                        .iter()
-                                        .position(|name| **name == field.name)
-                                        .unwrap(),
+                                    index: index as usize,
                                 });
                                 typ = decoded.types().resolve(owner, &field.r#type)?;
                             }
@@ -793,24 +1075,19 @@ impl Program {
                         },
                         MakeStruct(payload) => {
                             let index = function.aggregates.len();
-                            function.aggregates.push(AggregateLayout::Struct(
-                                StructLayout::prepare(
-                                    decoded.types(),
-                                    &decoded.types().resolve(module, &payload.r#type)?,
-                                    &payload.fields,
-                                )?,
-                            ));
+                            function.aggregates.push(StructLayout::prepare(
+                                decoded.types(),
+                                &decoded.types().resolve(module, &payload.r#type)?,
+                                &payload.fields,
+                            )?);
                             PreparedInstruction::Construct(index)
                         }
                         MakeSequence(payload) => {
-                            let index = function.aggregates.len();
-                            function.aggregates.push(AggregateLayout::Sequence(
-                                ValueLayout::prepare(
-                                    decoded.types(),
-                                    &decoded.types().resolve(module, &payload.r#type)?,
-                                )?,
-                            ));
-                            PreparedInstruction::Construct(index)
+                            construct::validate_aggregate_layout(
+                                decoded.types(),
+                                &decoded.types().resolve(module, &payload.r#type)?,
+                            )?;
+                            PreparedInstruction::Operand
                         }
                         TypeDispatch(payload) => {
                             let index = function.type_dispatches.len();
@@ -907,6 +1184,39 @@ impl Program {
                         Binary(value) => PreparedInstruction::Binary(
                             crate::operators::PreparedOperator::parse(&value.operator)?,
                         ),
+                        MinMax(value) => {
+                            let typ = decoded.types().resolve(module, &value.r#type)?;
+                            let kind = crate::operators::min_max_kind(&typ, decoded.types())?;
+                            let arg_count = usize::try_from(value.arg_count).map_err(|_| {
+                                RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "min/max argument count is out of range",
+                                )
+                            })?;
+                            if arg_count == 0 {
+                                return Err(RuntimeError::new(
+                                    "invalid_operand",
+                                    &path,
+                                    "min/max requires at least one argument",
+                                ));
+                            }
+                            PreparedInstruction::MinMax {
+                                kind,
+                                choose_min: match value.operator.as_str() {
+                                    "min" => true,
+                                    "max" => false,
+                                    _ => {
+                                        return Err(RuntimeError::new(
+                                            "invalid_operand",
+                                            &path,
+                                            "min/max operator must be min or max",
+                                        ));
+                                    }
+                                },
+                                arg_count,
+                            }
+                        }
                         Const(value) => PreparedInstruction::Constant(
                             prepared_constants[&(module.clone(), value.constant.clone())],
                         ),
@@ -1102,7 +1412,38 @@ impl Program {
                 .collect::<Result<Vec<_>, RuntimeError>>()?;
             let function = Arc::get_mut(&mut program.function_table[index]).unwrap();
             function.targets = targets;
+            let mut iterator_indices = HashMap::new();
+            function.map_iterator_indices = (0..function.execution.len())
+                .map(|pc| match &function.code[pc] {
+                    Instruction::MapIterInit(payload)
+                    | Instruction::MapIterNext(payload)
+                    | Instruction::MapIterClose(payload) => {
+                        let next = iterator_indices.len();
+                        Some(
+                            *iterator_indices
+                                .entry(payload.local.clone())
+                                .or_insert(next),
+                        )
+                    }
+                    _ => None,
+                })
+                .collect();
+            function.map_iterator_count = iterator_indices.len();
             function.code.compact(&function.execution);
+            let (maps, at_pc) = prepare_reference_plan(function);
+            if at_pc.len() != function.execution.len() + 1
+                || at_pc
+                    .iter()
+                    .any(|map| usize::try_from(*map).map_or(true, |index| index >= maps.len()))
+            {
+                return Err(RuntimeError::new(
+                    "invalid_reference_plan",
+                    format!("{}.{}", function.module, function.name),
+                    "prepared function has an incomplete reference map",
+                ));
+            }
+            function.reference_maps = Arc::new(maps);
+            function.reference_at_pc = Arc::new(at_pc);
         }
         program.decoded.release_function_bodies();
         Ok(program)
@@ -1149,6 +1490,26 @@ impl Program {
             .and_then(|functions| functions.get(id))
             .map(|index| &self.function_table[*index])
             .ok_or_else(|| RuntimeError::new("missing_function", module, id))
+    }
+
+    pub(crate) fn function_by_index(
+        &self,
+        index: usize,
+    ) -> Result<Arc<PreparedFunction>, RuntimeError> {
+        self.function_table.get(index).cloned().ok_or_else(|| {
+            RuntimeError::new(
+                "missing_function",
+                "program",
+                format!("numeric function id {index} is out of range"),
+            )
+        })
+    }
+
+    pub(crate) fn function_index(&self, module: &str, id: &str) -> Option<usize> {
+        self.function_lookup
+            .get(module)
+            .and_then(|functions| functions.get(id))
+            .copied()
     }
 
     pub(crate) fn export(&self, module: &str, name: &str) -> Result<&wire::Export, RuntimeError> {
@@ -1283,6 +1644,7 @@ fn instruction_arity(
         CallValue(value) => (value.arg_count as usize + 1, value.result_count as usize),
         Return(value) => (value.result_count as usize, 0),
         CallFfi(value) => (value.arg_count as usize, value.result_count as usize),
+        MinMax(value) => (value.arg_count as usize, 1),
         _ => {
             return Err(RuntimeError::new(
                 "invalid_operand",
@@ -1292,4 +1654,180 @@ fn instruction_arity(
         }
     };
     Ok(arity)
+}
+
+#[cfg(test)]
+mod reference_plan_tests {
+    use super::*;
+
+    fn empty_operands(count: usize) -> PreparedOperands {
+        let mut operands = PreparedOperands::default();
+        for _ in 0..count {
+            operands.push(wire::SlotOperands::default());
+        }
+        operands
+    }
+
+    fn prepared_function(
+        local_types: Vec<crate::types::TypeIdentity>,
+        locals: HashMap<String, usize>,
+        upvalues: HashMap<String, usize>,
+        execution: Vec<PreparedInstruction>,
+        code: Vec<Instruction>,
+        operands: PreparedOperands,
+    ) -> PreparedFunction {
+        let mut prepared_code = PreparedCode::default();
+        for instruction in code {
+            prepared_code.push(instruction);
+        }
+        let operand_count = execution.len();
+        PreparedFunction {
+            index: 0,
+            module: "test".into(),
+            name: "main".into(),
+            addressable_locals: vec![false; local_types.len()],
+            local_types,
+            result_types: Vec::new(),
+            result_locals: Vec::new(),
+            execution,
+            operand_types: vec![None; operand_count],
+            type_dispatches: Vec::new(),
+            aggregates: Vec::new(),
+            field_paths: Vec::new(),
+            globals: Vec::new(),
+            targets: Vec::new(),
+            locations: Vec::new(),
+            declaration: wire::Function::default(),
+            code: prepared_code,
+            opcodes: Vec::new(),
+            locals,
+            upvalues,
+            slot_types: Vec::new(),
+            operands,
+            map_iterator_indices: Vec::new(),
+            map_iterator_count: 0,
+            lazy_slot_inputs: Vec::new(),
+            reference_maps: Arc::default(),
+            reference_at_pc: Arc::default(),
+        }
+    }
+
+    fn is_live(function: &PreparedFunction, pc: usize, slot: usize) -> bool {
+        let (maps, at_pc) = prepare_reference_plan(function);
+        maps[at_pc[pc] as usize]
+            .get(slot / 64)
+            .is_some_and(|word| word & (1_u64 << (slot % 64)) != 0)
+    }
+
+    #[test]
+    fn direct_result_keeps_destination_identity_live_until_publication() {
+        let mut operands = PreparedOperands::default();
+        operands.push(wire::SlotOperands {
+            outputs: crate::contract::GoSlice(Some(vec![LOCAL_OUTPUT])),
+            ..Default::default()
+        });
+        let function = prepared_function(
+            vec![crate::types::TypeIdentity::Any],
+            HashMap::from([(String::from("result"), 0)]),
+            HashMap::new(),
+            vec![PreparedInstruction::Operand],
+            vec![Instruction::CallDirect(wire::CallPayload::default())],
+            operands,
+        );
+        assert!(is_live(&function, 0, 0));
+    }
+
+    #[test]
+    fn local_fallthrough_preserves_later_reference() {
+        let local_function = prepared_function(
+            vec![crate::types::TypeIdentity::Any; 2],
+            HashMap::from([(String::from("x"), 0), (String::from("y"), 1)]),
+            HashMap::new(),
+            vec![
+                PreparedInstruction::Constant(0),
+                PreparedInstruction::Local {
+                    index: 0,
+                    move_source: u32::MAX,
+                    store: true,
+                    rebind: true,
+                },
+                PreparedInstruction::Local {
+                    index: 1,
+                    move_source: u32::MAX,
+                    store: false,
+                    rebind: false,
+                },
+            ],
+            vec![
+                Instruction::Const(wire::ConstPayload::default()),
+                Instruction::StoreLocal(wire::LocalPayload::default()),
+                Instruction::LoadLocal(wire::LocalPayload::default()),
+            ],
+            empty_operands(3),
+        );
+        assert!(is_live(&local_function, 0, 1));
+    }
+
+    #[test]
+    fn upvalue_fallthrough_preserves_later_reference() {
+        let upvalue_function = prepared_function(
+            Vec::new(),
+            HashMap::new(),
+            HashMap::from([(String::from("x"), 0), (String::from("y"), 1)]),
+            vec![
+                PreparedInstruction::Constant(0),
+                PreparedInstruction::Upvalue {
+                    index: 0,
+                    store: true,
+                },
+                PreparedInstruction::Upvalue {
+                    index: 1,
+                    store: false,
+                },
+            ],
+            vec![
+                Instruction::Const(wire::ConstPayload::default()),
+                Instruction::StoreUpvalue(wire::UpvaluePayload::default()),
+                Instruction::LoadUpvalue(wire::UpvaluePayload::default()),
+            ],
+            empty_operands(3),
+        );
+        assert!(is_live(&upvalue_function, 0, 1));
+    }
+
+    #[test]
+    fn terminal_instructions_do_not_retain_unreachable_successors() {
+        for terminal in [
+            Instruction::Return(wire::ReturnPayload::default()),
+            Instruction::Panic,
+            Instruction::TailCallDirect(wire::CallPayload::default()),
+        ] {
+            let function = prepared_function(
+                vec![crate::types::TypeIdentity::Any],
+                HashMap::from([(String::from("x"), 0)]),
+                HashMap::new(),
+                vec![
+                    PreparedInstruction::Operand,
+                    PreparedInstruction::Local {
+                        index: 0,
+                        move_source: u32::MAX,
+                        store: false,
+                        rebind: false,
+                    },
+                ],
+                vec![
+                    terminal,
+                    Instruction::LoadLocal(wire::LocalPayload::default()),
+                ],
+                empty_operands(2),
+            );
+            let (maps, at_pc) = prepare_reference_plan(&function);
+            let live = |pc| {
+                let map = &maps[at_pc[pc] as usize];
+                map[0] & 1 != 0
+            };
+            assert!(!live(0), "terminal retained an unreachable successor root");
+            assert!(live(1), "reachable local use was omitted from its boundary");
+        }
+    }
 }

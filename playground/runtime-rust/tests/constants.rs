@@ -45,7 +45,7 @@ fn any_constants_follow_go_scalar_decoding_and_host_boundary_failures() {
         }));
         let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
         let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-        instance.start("default", vec![]).unwrap();
+        instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(2).unwrap(), PollStatus::Ready);
         if let Some(expected) = expected {
             let snapshot = instance
@@ -79,12 +79,9 @@ fn any_constants_follow_go_scalar_decoding_and_host_boundary_failures() {
         }));
         let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
         let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-        instance.start("default", vec![]).unwrap();
+        instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(1).unwrap_err().code, "invalid_constant");
-        assert_eq!(
-            instance.start("default", vec![]).unwrap_err().code,
-            "faulted"
-        );
+        assert_eq!(instance.start("default", &[]).unwrap_err().code, "faulted");
         instance.close().unwrap();
         assert_eq!(instance.heap_stats().live_objects, 0);
     }
@@ -193,9 +190,14 @@ fn byte_constant_backing_is_shared_within_an_instance_and_isolated_between_insta
     for _ in 0..2 {
         let mut instance = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
         for expected in [255, 42] {
-            instance.start(&entry, Vec::new()).unwrap();
+            instance.start(&entry, &[]).unwrap();
             while instance.poll_steps(32).unwrap() != PollStatus::Ready {}
-            assert_eq!(instance.results()[0].integer().unwrap(), expected);
+            assert_eq!(
+                instance.snapshot_results(Default::default()).unwrap().roots[0]
+                    .integer()
+                    .unwrap(),
+                expected
+            );
         }
         instance.close().unwrap();
         assert_eq!(instance.heap_stats().live_bytes, 0);

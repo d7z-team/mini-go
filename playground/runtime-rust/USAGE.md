@@ -20,12 +20,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("expected image path")?;
     let program = Arc::new(Program::load(&std::fs::read(path)?, LoadOptions::default())?);
     let instance = program.instantiate(InstanceOptions {
-        limits: Limits { max_steps: 1_000_000, ..Default::default() },
+        limits: Limits {
+            max_steps: 1_000_000,
+            max_guest_bytes: 64 << 20,
+            max_resident_bytes: 256 << 20,
+            ..Default::default()
+        },
         ..Default::default()
     })?;
     let cancellation = Cancellation::default();
 
-    let execution = instance.start_host("default", &[HostValue::int(10)])?;
+    let execution = instance.start("default", &[HostValue::int(10)])?;
     let snapshot = execution.wait(&cancellation)?;
     execution.wait_scope(&cancellation)?;
     instance.shutdown(&cancellation)?;
@@ -34,9 +39,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`LoadOptions` 限制镜像加载，`Limits` 控制步数、frame、task 和 guest 逻辑内存。零值使用默认限制；
-`UNLIMITED_STEPS` 只放开累计步数。`HostValue` 创建宿主输入，`HostSnapshot` 独立拥有输出并保留别名。
+`LoadOptions` 限制镜像加载，`Limits` 控制步数、调用深度、task、frame 缓存以及两类内存预算：
+`max_guest_bytes` 是所有已发布 payload 与活动 owner 控制记录共享的逻辑 guest 预算，
+`max_resident_bytes` 是 Rust 后端页、目录和 worker 元数据使用的物理驻留预算，`0` 表示不设驻留上限。
+逻辑预算在 reserve-build-publish 成功时提交，构造失败或 owner 结束时立即回滚/释放；collection 不会重建这笔账。
+`max_boundary_bytes`、`max_boundary_depth` 和 `max_boundary_elements` 限制宿主数据输入与调试边界；
+内部 slice、map、channel 和聚合值使用存储预算，动态类型使用 `max_dynamic_types` 与
+`max_dynamic_type_bytes` 元数据预算。
+零值使用默认限制；`UNLIMITED_STEPS` 只放开累计步数。`start` 借用 `HostValue` 输入并将数据复制到实例，
+`HostSnapshot` 独立拥有输出并保留别名，实例关闭后仍可读取。
 错误通过 `RuntimeError` 返回。
+
+启动入口或派生任务时，task 与首帧必须一起满足分配预算。接收 FFI 回复时若回收后 guest 存储预算仍不足，调用返回
+`allocation_limit` 执行错误；宿主操作已经执行，运行时只重试回复物化，并在失败清理时释放回复。
 
 ## 取消、等待与关闭
 
@@ -102,6 +117,8 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 
 准备失败时原程序继续运行。提交遇到 `busy` 或 stale plan 时重新准备。已有 frame、defer 和 closure
 继续引用旧 revision；新的命名调用进入新 revision。identity 和 layout 匹配的 globals 保持状态。
+旧 revision 由实际存活的 code anchor 保留，在 major collection 后释放。`retained_revisions`
+包含尚未回收的版本；需要立即回收无引用版本或取得最新保留集合时，调用 `collect_garbage()`。
 如果状态结构变化，应创建新实例并显式转移数据。
 
 ## 调试与 compiler session

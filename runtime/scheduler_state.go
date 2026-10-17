@@ -10,8 +10,9 @@ import (
 )
 
 type deferredCall struct {
-	caller *moduleInstance
-	ref    functionRef
+	caller        *moduleInstance
+	ref           functionRef
+	admittedBytes int64
 }
 
 type executionMachine struct {
@@ -120,6 +121,10 @@ type executionScope struct {
 
 type executionTask struct {
 	ownership taskOwnership
+	// allocationBatch is owned by the worker for the current task slice. It is
+	// returned before the slice becomes visible to the owner, so collection can
+	// always assume that no worker still owns unpublished nursery space.
+	allocationBatch *managedAllocationBatch
 	// Poll suspension preserves the current scheduling quantum.
 	quantumSteps       int
 	profilePhase       uint64
@@ -133,7 +138,7 @@ type executionTask struct {
 	completingFrame    *executionFrame
 	preparingSelection *channelSelection
 	retryInstruction   bool
-	pendingCensus      int64
+	allocationRetries  uint8
 	debugParents       []debugFrame
 	blocked            *blockedOperation
 	pendingErr         error
@@ -255,7 +260,7 @@ type artifactCallbackRequest struct {
 	module        *moduleInstance
 	functionID    string
 	args          []vmValue
-	upvalues      map[string]*slot
+	captureSlots  []*slot
 	resultCount   int
 	resumeResults int
 	result        reflectCallResult

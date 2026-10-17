@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wait = Cancellation::default();
     let outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
         for round in 0..rounds {
-            let call = retry_busy(|| instance.start_host("default", &[HostValue::int(10)]))?;
+            let call = retry_busy(|| instance.start("default", &[HostValue::int(10)]))?;
             call.wait(&wait)?;
             call.wait_scope(&wait)?;
             retry_busy(|| {
@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        let call = retry_busy(|| instance.start_host("default", &[HostValue::int(1_000_000)]))?;
+        let call = retry_busy(|| instance.start("default", &[HostValue::int(1_000_000)]))?;
         call.cancel();
         match call.wait(&wait) {
             Err(error) if error.code == "canceled" => {}

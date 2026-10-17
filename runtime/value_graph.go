@@ -14,6 +14,14 @@ type runtimeValueWalker struct {
 	seenSlots      map[*slot]bool
 	seenWaitables  map[*waitableResource]bool
 	seenSelections map[*channelSelection]bool
+	seenManaged    map[managedValueIdentity]bool
+}
+
+type managedValueIdentity struct {
+	heap   *managedHeap
+	ref    guestRef
+	offset uint32
+	typ    string
 }
 
 type pointerVisit uint8
@@ -31,6 +39,7 @@ func newRuntimeValueWalker(visitRevision func(*instanceRevision)) *runtimeValueW
 		seenStructs:    make(map[*vmStruct]bool),
 		seenWaitables:  make(map[*waitableResource]bool),
 		seenSelections: make(map[*channelSelection]bool),
+		seenManaged:    make(map[managedValueIdentity]bool),
 	}
 }
 
@@ -62,7 +71,14 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 		}
 		defer walker.leave()
 	}
-	switch data := value.Data.(type) {
+	if value.ref.valid() {
+		identity := managedValueIdentity{heap: value.heap, ref: value.ref, offset: value.offset, typ: value.Type.String()}
+		if walker.seenManaged[identity] {
+			return
+		}
+		walker.seenManaged[identity] = true
+	}
+	switch data := value.payload().(type) {
 	case *channelSelection:
 		if data == nil || walker.seenSelections[data] {
 			return
@@ -81,7 +97,7 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 		if data.exact != nil {
 			walker.visitRevision(data.exact.revision)
 		}
-		for _, cell := range data.upvalues {
+		for _, cell := range data.captureSlots {
 			if walker.stopped {
 				return
 			}
@@ -110,7 +126,7 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 				walker.value(newVMValue(pointerType(data.original.Type), data.original))
 				return
 			}
-			if pointed := walker.pointerContents(data); pointed.Type.Valid() || pointed.Data != nil {
+			if pointed := walker.pointerContents(data); pointed.Type.Valid() || pointed.payload() != nil {
 				walker.value(pointed)
 			}
 		}
@@ -136,7 +152,7 @@ func (walker *runtimeValueWalker) value(value vmValue) {
 			}
 		}
 	case *vmArray:
-		if data.ByteBacked {
+		if data.byteBacked() {
 			return
 		}
 		values := data.values()
@@ -195,7 +211,17 @@ func (walker *runtimeValueWalker) pointerContents(pointer *vmPointer) vmValue {
 	if pointer.original != nil {
 		return walker.addressContents(newVMValue("", pointer.original), nil, nil, true)
 	}
+	if pointer.storage.valid() {
+		layout, err := pointer.owner.valueLayouts.layoutFor(pointer.Type)
+		if err == nil && len(layout.References) == 0 && len(layout.Dynamics) == 0 {
+			return vmValue{}
+		}
+		value, _ := pointer.loadValue()
+		return value
+	}
 	switch pointer.target {
+	case pointerBackingPath:
+		return walker.addressContents(pointer.parent, pointer.path, pointer.indexes, false)
 	case pointerCell:
 		if pointer.cell != nil {
 			value, _ := pointer.cell.snapshot()
@@ -206,11 +232,10 @@ func (walker *runtimeValueWalker) pointerContents(pointer *vmPointer) vmValue {
 	case pointerIndex:
 		return walker.addressContents(pointer.parent, []ir.AddressPathSegment{{Kind: "index"}}, []vmValue{newVMValue("Int", pointer.index)}, true)
 	case pointerArray:
-		if pointer.array != nil && !pointer.array.ByteBacked {
-			return newVMValue(pointer.Type, &vmArray{vmSlice: vmSlice{
-				vmSliceStorage: pointer.array.vmSliceStorage,
-				Start:          pointer.array.Start, Len: pointer.arrayLen, Cap: pointer.arrayLen,
-			}})
+		if pointer.array != nil && !pointer.array.byteBacked() {
+			view := *pointer.array
+			view.Len, view.Cap = pointer.arrayLen, pointer.arrayLen
+			return newVMValue(pointer.Type, &vmArray{vmSlice: view})
 		}
 	case pointerSlot:
 		if value, initialized := pointer.slot.snapshot(); initialized {
@@ -235,7 +260,7 @@ func (walker *runtimeValueWalker) addressContents(value vmValue, path []ir.Addre
 			}
 			indirect = true
 		}
-		if pointer, ok := value.Data.(*vmPointer); ok && indirect {
+		if pointer, ok := value.payload().(*vmPointer); ok && indirect {
 			if walker.enter != nil {
 				if !walker.enter(value) {
 					return vmValue{}
@@ -252,7 +277,7 @@ func (walker *runtimeValueWalker) addressContents(value vmValue, path []ir.Addre
 		switch segment.Kind {
 		case "indirect":
 		case "field":
-			value, _ = structValueField(value.Data, segment.Field)
+			value, _ = structValueField(value.payload(), segment.Field)
 		case "index":
 			if indexPosition >= len(indexes) {
 				return vmValue{}
@@ -262,14 +287,14 @@ func (walker *runtimeValueWalker) addressContents(value vmValue, path []ir.Addre
 			if err != nil || index < 0 {
 				return vmValue{}
 			}
-			switch data := value.Data.(type) {
+			switch data := value.payload().(type) {
 			case *vmSlice:
-				if data == nil || data.ByteBacked || index >= int64(data.Len) {
+				if data == nil || data.byteBacked() || index >= int64(data.Len) {
 					return vmValue{}
 				}
 				value = data.valueAt(int(index))
 			case *vmArray:
-				if index >= int64(data.Len) || data.ByteBacked {
+				if index >= int64(data.Len) || data.byteBacked() {
 					return vmValue{}
 				}
 				value = data.valueAt(int(index))

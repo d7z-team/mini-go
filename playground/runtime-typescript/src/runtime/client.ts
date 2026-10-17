@@ -23,16 +23,36 @@ const textEncoder = new TextEncoder();
 
 // Limit serialization work before handing arbitrary values to a worker.
 function validateTransferInput(value: unknown, maxBytes = 8 * 1024 * 1024): void {
-  const pending: [unknown, number][] = [[value, 0]];
+  const pending: [unknown, number, boolean][] = [[value, 0, false]];
+  const seen = new Set<object>();
+  const active = new Set<object>();
   let bytes = 0,
     nodes = 0;
   while (pending.length) {
-    const [item, depth] = pending.pop()!;
+    const [item, depth, leaving] = pending.pop()!;
+    if (leaving) {
+      active.delete(item as object);
+      continue;
+    }
     if (++nodes > 100_000 || depth > 64) throw new Error("host value structure exceeds limits");
     if (typeof item === "string") bytes += item.length * 2;
-    else if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) bytes += item.byteLength;
-    else if (item && typeof item === "object") {
-      for (const child of Object.values(item)) pending.push([child, depth + 1]);
+    else if (ArrayBuffer.isView(item) || item instanceof ArrayBuffer) {
+      try {
+        bytes += item.byteLength;
+        const buffer = item instanceof ArrayBuffer ? item : item.buffer;
+        if (buffer instanceof ArrayBuffer) new Uint8Array(buffer, 0, 0);
+      } catch {
+        throw new Error("host value contains a detached buffer");
+      }
+    } else if (item && typeof item === "object") {
+      if (active.has(item)) throw new Error("host value graph contains a cycle");
+      if (seen.has(item)) continue;
+      seen.add(item);
+      active.add(item);
+      pending.push([item, depth, true]);
+      const children = Object.values(item);
+      for (let index = children.length - 1; index >= 0; index--)
+        pending.push([children[index], depth + 1, false]);
     }
     if (bytes > maxBytes || pending.length > 100_000)
       throw new Error("host value bytes exceed limits");
@@ -92,9 +112,17 @@ export class RuntimeClient {
         const steps = group === "limits" && name === "maxSteps";
         const wide =
           group === "limits" &&
-          ["maxHeapBytes", "maxAllocatedBytes", "maxDynamicTypeBytes"].includes(name);
+          ["maxGuestBytes", "maxResidentBytes", "maxDynamicTypeBytes"].includes(name);
+        const managedMemory =
+          group === "limits" && ["maxGuestBytes", "maxResidentBytes"].includes(name);
         const minimum = steps ? -1 : name === "maxFrameCacheBytes" && group === "limits" ? 0 : 1;
-        const maximum = steps ? 9223372036854775807n : wide ? 18446744073709551615n : 4294967295n;
+        const maximum = steps
+          ? 9223372036854775807n
+          : managedMemory
+            ? 9223372036854775807n
+            : wide
+              ? 18446744073709551615n
+              : 4294967295n;
         if (
           (typeof value !== "number" && typeof value !== "bigint") ||
           (typeof value === "number" && !Number.isSafeInteger(value)) ||

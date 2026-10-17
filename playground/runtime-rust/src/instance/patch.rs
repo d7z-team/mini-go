@@ -80,11 +80,7 @@ impl PatchPlan {
 }
 impl Instance {
     fn check_revision_capacity(&self) -> Result<(), RuntimeError> {
-        let retained = self
-            .retired_revisions
-            .values()
-            .filter(|revision| revision.strong_count() != 0)
-            .count();
+        let retained = self.retired_revisions.values().count();
         if retained.saturating_add(2) > self.limits.max_retained_revisions {
             return Err(RuntimeError::new(
                 "resource_limit",
@@ -112,7 +108,7 @@ impl Instance {
         }
         self.retired_revisions
             .values()
-            .filter_map(std::sync::Weak::upgrade)
+            .cloned()
             .chain(std::iter::once(self.revision.clone()))
             .map(|revision| RevisionInfo {
                 generation: revision.generation,
@@ -194,9 +190,7 @@ impl Instance {
                 ));
             }
         }
-        let types = self
-            .types
-            .overlay(target.decoded.types(), self.limits.max_sequence_elements)?;
+        let types = self.types.overlay(target.decoded.types())?;
         for (module, artifact) in old.decoded.artifacts() {
             let next = &target.decoded.artifacts()[module];
             for global in artifact.globals.iter() {
@@ -379,43 +373,69 @@ impl Instance {
             self.revision.generation.checked_add(1).ok_or_else(|| {
                 RuntimeError::new("revision_limit", "patch", "generation exhausted")
             })?;
+        // Validate function bindings before touching heap metadata.  The
+        // staged type registry must be active while encoding new globals;
+        // otherwise a structural type introduced by the target is decoded
+        // through the retired registry.  Restore the old registry on every
+        // preparation failure so a rejected patch is observationally atomic.
+        let bindings = FunctionBindings::prepare(&plan.target, &self.logical_functions)?;
+        let previous_types = self.types.clone();
+        self.heap.set_type_registry(plan.types.clone());
         let mut globals = self.globals.clone();
         let mut keys = Vec::with_capacity(plan.globals.len());
         let mut values = Vec::with_capacity(plan.globals.len());
         for (key, value) in plan.globals {
-            let bytes = value.logical_bytes()?.checked_add(128).ok_or_else(|| {
-                RuntimeError::new("allocation_limit", "patch", "global size overflow")
-            })?;
+            let bytes = match self.prepared_allocation_bytes(&value) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.heap.set_type_registry(previous_types.clone());
+                    return Err(RuntimeError::new(error.code, "patch", error.message));
+                }
+            };
             keys.push(key);
             values.push((value, bytes));
         }
-        let allocations = self.heap.prepare_allocations(values)?;
+        let mut allocations = match self.heap.prepare_allocations(values) {
+            Ok(allocations) => allocations,
+            Err(error) => {
+                self.heap.set_type_registry(previous_types.clone());
+                return Err(error);
+            }
+        };
         for (key, handle) in keys.into_iter().zip(allocations.handles()) {
             globals.insert(key, *handle);
         }
-        let bindings = FunctionBindings::prepare(&plan.target, &self.logical_functions)?;
+        let anchor = match allocations.prepare_revision_anchor(globals.values().copied()) {
+            Ok(anchor) => anchor,
+            Err(error) => {
+                drop(allocations);
+                self.heap.set_type_registry(previous_types.clone());
+                return Err(error);
+            }
+        };
         let next = Arc::new(crate::program::Revision {
             generation,
             logical_functions: bindings.ids,
             program: plan.target,
         });
         self.retired_revisions
-            .insert(self.revision.generation, Arc::downgrade(&self.revision));
+            .insert(self.revision.generation, self.revision.clone());
         allocations.commit();
         self.revision = next;
         self.logical_functions = bindings.symbols;
         self.call_targets = bindings.targets;
         self.frame_pool.clear();
         self.types = plan.types;
+        self.heap.set_type_registry(self.types.clone());
         self.interface_assignments.get_mut().unwrap().clear();
         self.globals = globals;
+        self.revision_anchors.insert(generation, anchor);
         let modules = self.revision.program.decoded.artifacts();
         self.initialized
             .retain(|module| modules.contains_key(module));
         self.failed_initializations
             .retain(|module, _| modules.contains_key(module));
         self.debug_revision_changed();
-        self.prune_revision_state();
         Ok(PatchResult {
             previous: plan.base,
             current: self.revision(),

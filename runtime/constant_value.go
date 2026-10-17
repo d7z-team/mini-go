@@ -80,10 +80,10 @@ func decodeConstantAs(module *moduleInstance, runtimeType vmType, raw json.RawMe
 }
 
 func truthy(value vmValue) (bool, error) {
-	if out, ok := value.Data.(bool); ok {
+	if out, ok := value.boolValue(); ok {
 		return out, nil
 	}
-	if value.Data == nil {
+	if value.payload() == nil {
 		return false, nil
 	}
 	return false, fmt.Errorf("expected Bool condition, got %s", value.Type)

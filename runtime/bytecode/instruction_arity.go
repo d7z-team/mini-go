@@ -115,6 +115,12 @@ func instructionArity(inst *Instruction) (inputs, outputs int, err error) {
 			return 0, 0, err
 		}
 		return payload.ArgCount, payload.ResultCount, nil
+	case OpMinMax:
+		payload, err := instructionPayload[MinMaxPayload](inst)
+		if err != nil {
+			return 0, 0, err
+		}
+		return payload.ArgCount, 1, nil
 	default:
 		return 0, 0, fmt.Errorf("unknown opcode %q", inst.Op)
 	}

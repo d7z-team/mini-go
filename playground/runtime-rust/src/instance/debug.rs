@@ -277,7 +277,7 @@ impl Instance {
                     "source file is unavailable",
                 )
             })?;
-        if lines.len() > self.limits.max_sequence_elements || lines.iter().any(|line| *line <= 0) {
+        if lines.len() > self.limits.max_boundary_elements || lines.iter().any(|line| *line <= 0) {
             return Err(RuntimeError::new(
                 "debug_limit",
                 "breakpoints",
@@ -535,13 +535,14 @@ impl Instance {
         let bindings = self.debug_binding_roots(reference)?;
         let values = bindings
             .iter()
-            .map(|(_, root)| self.debug_root_value(root).map(|value| value.into_owned()))
+            .map(|(_, root)| self.debug_root_value(root))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Bindings {
             names: bindings.into_iter().map(|(name, _)| name).collect(),
             values: crate::snapshot::HostSnapshot::capture(
                 &self.heap,
                 &self.types,
+                &self.managed_maps,
                 &values,
                 limits,
             )?,
@@ -570,16 +571,14 @@ impl Instance {
             .ok_or_else(|| RuntimeError::new("stale_reference", "debug", "frame no longer exists"))
     }
 
-    pub(super) fn debug_root_value(
-        &self,
-        root: &VariableRoot,
-    ) -> Result<crate::value::ValueRead<'_>, RuntimeError> {
+    pub(super) fn debug_root_value(&self, root: &VariableRoot) -> Result<Value, RuntimeError> {
         match root {
             VariableRoot::Address(address) => self.snapshot_address(address),
             VariableRoot::Local { frame, index } => {
-                let value = self.debug_frame(frame)?.locals[*index].value(&self.heap)?;
+                let frame = self.debug_frame(frame)?;
+                let value = frame.local_value(*index)?;
                 if matches!(value.data, Data::Uninitialized) {
-                    Ok(crate::value::ValueRead::Owned(self.zero(&value.typ, 0)?))
+                    self.zero(&value.typ)
                 } else {
                     Ok(value)
                 }
@@ -705,7 +704,7 @@ impl Instance {
         sample_every: u64,
         max_samples: usize,
     ) -> Result<(), RuntimeError> {
-        if max_samples > self.limits.max_sequence_elements {
+        if max_samples > self.limits.max_boundary_elements {
             return Err(RuntimeError::new(
                 "debug_limit",
                 "profile",

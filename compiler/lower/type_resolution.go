@@ -32,7 +32,7 @@ func (l *lowerer) compositeKind(expr ast.Expression) string {
 			return "struct"
 		}
 	}
-	if view, ok := l.typeView(l.resolveNamedUnderlyingType(typ)); ok {
+	if view, ok := l.typeView(typ); ok {
 		switch view.Shape() {
 		case types.Array, types.Slice:
 			return "array"

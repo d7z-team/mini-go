@@ -1,0 +1,34 @@
+package main
+
+func makeCells() (*int, func() int, *int, func() int) {
+	var oldPointer *int
+	var oldClosure func() int
+	for i := 0; i < 2; i++ {
+		value := i + 20
+		if i == 0 {
+			oldPointer = &value
+			oldClosure = func() int {
+				return value
+			}
+			continue
+		}
+		newPointer := &value
+		newClosure := func() int {
+			return value
+		}
+		return oldPointer, oldClosure, newPointer, newClosure
+	}
+	return nil, nil, nil, nil
+}
+
+func Main() int {
+	oldPointer, oldClosure, newPointer, newClosure := makeCells()
+	if oldPointer == nil || newPointer == nil {
+		return -1
+	}
+	*newPointer = 22
+	if *oldPointer != 20 || oldClosure() != 20 || *newPointer != 22 || newClosure() != 22 {
+		return -2
+	}
+	return oldClosure() + newClosure()
+}

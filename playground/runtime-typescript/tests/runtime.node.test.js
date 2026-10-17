@@ -22,8 +22,8 @@ test("Node runtime executes an optimized image without taking caller buffers", a
   await call.settled;
   const stats = await vm.stats();
   assert.ok(stats.steps > 0n, "steps");
-  assert.ok(stats.gcCollections > 0n, "logical heap census");
-  assert.ok(stats.totalGuestAllocatedBytes >= stats.liveGuestBytes, "memory accounting");
+  assert.ok(stats.majorCollections + stats.minorCollections > 0n, "managed collection");
+  assert.ok(stats.totalAllocatedBytes >= stats.occupiedBytes, "memory accounting");
   await vm.close();
 });
 
@@ -42,8 +42,7 @@ test("Node runtime enforces budgets and publishes hot patches atomically", async
     code: "load_limit",
   });
   for (const options of [
-    { limits: { maxHeapBytes: 0 } },
-    { limits: { maxSequenceElements: 1n } },
+    { limits: { maxGuestBytes: 0 } },
     { load: { maxPackages: 0.5 } },
     { rpcOptions: { leaseTtlMs: 0 } },
   ]) {

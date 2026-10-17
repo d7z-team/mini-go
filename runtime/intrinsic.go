@@ -11,6 +11,7 @@ type intrinsicContext struct {
 	vm     *vm
 	module *moduleInstance
 	task   *executionTask
+	batch  *managedAllocationBatch
 }
 
 func (ctx intrinsicContext) cancellationError() error {

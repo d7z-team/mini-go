@@ -15,6 +15,7 @@ export async function exerciseNativeRPC(api, address, bindings) {
       [null, undefined],
       [new Uint8Array(), null],
       [new Uint8Array([0, 255]), new Uint8Array()],
+      [new Uint8Array(1 << 20).fill(0x7f), undefined],
     ]) {
       const packet = {
         data,

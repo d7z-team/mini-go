@@ -1,108 +1,37 @@
 //! Struct value copies share immutable fields until a destination is written.
 
 use super::Value;
-use std::{
-    collections::BTreeMap,
-    ops::Index,
-    sync::{Arc, OnceLock},
-};
+use std::{collections::BTreeMap, ops::Index, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct StructStorage {
-    identity: Arc<()>,
     names: Arc<Vec<String>>,
-    fields: Arc<StructFields>,
-}
-
-#[derive(Clone, Debug)]
-struct StructFields {
-    values: Vec<Value>,
-    initialized: Vec<bool>,
-    logical_bytes: OnceLock<u64>,
+    fields: Arc<Vec<Value>>,
 }
 
 impl StructStorage {
-    pub(crate) fn with_layout(
-        names: Arc<Vec<String>>,
-        values: Vec<Value>,
-        initialized: Vec<bool>,
-    ) -> Self {
+    pub(crate) fn with_layout(names: Arc<Vec<String>>, values: Vec<Value>) -> Self {
         debug_assert_eq!(names.len(), values.len());
-        debug_assert_eq!(names.len(), initialized.len());
         Self {
-            identity: Arc::default(),
             names,
-            fields: Arc::new(StructFields {
-                values,
-                initialized,
-                logical_bytes: OnceLock::new(),
-            }),
-        }
-    }
-    pub(crate) fn identity(&self) -> usize {
-        Arc::as_ptr(&self.identity) as usize
-    }
-    pub(crate) fn fresh_zero(&self) -> Self {
-        Self {
-            identity: Arc::default(),
-            names: self.names.clone(),
-            fields: self.fields.clone(),
-        }
-    }
-    pub(crate) fn zero(values: BTreeMap<String, Value>) -> Self {
-        let mut storage = Self::from(values);
-        Arc::get_mut(&mut storage.fields)
-            .unwrap()
-            .initialized
-            .fill(false);
-        storage
-    }
-    pub(crate) fn initialized_values(&self) -> impl Iterator<Item = &Value> {
-        self.fields
-            .values
-            .iter()
-            .zip(&self.fields.initialized)
-            .filter_map(|(value, initialized)| initialized.then_some(value))
-    }
-    pub(crate) fn guest_slots(&self) -> usize {
-        if !self
-            .fields
-            .initialized
-            .iter()
-            .any(|initialized| *initialized)
-        {
-            0
-        } else {
-            self.fields.values.len()
+            fields: Arc::new(values),
         }
     }
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
         let index = self.field_index(name)?;
-        if Arc::strong_count(&self.fields) != 1 {
-            self.identity = Arc::default();
-        }
-        let fields = Arc::make_mut(&mut self.fields);
-        fields.logical_bytes.take();
-        fields.initialized[index] = true;
-        fields.values.get_mut(index)
-    }
-
-    pub(crate) fn cached_bytes(&self) -> Option<u64> {
-        self.fields.logical_bytes.get().copied()
-    }
-
-    pub(crate) fn cache_bytes(&self, bytes: u64) {
-        let _ = self.fields.logical_bytes.set(bytes);
+        Arc::make_mut(&mut self.fields).get_mut(index)
     }
 
     pub(crate) fn field_index(&self, name: &str) -> Option<usize> {
-        self.names
-            .binary_search_by(|candidate| candidate.as_str().cmp(name))
-            .ok()
+        self.names.iter().position(|candidate| candidate == name)
     }
 
     pub(crate) fn field_at(&self, index: usize) -> Option<&Value> {
-        self.fields.values.get(index)
+        self.fields.get(index)
+    }
+
+    pub(crate) fn field_at_mut(&mut self, index: usize) -> Option<&mut Value> {
+        Arc::make_mut(&mut self.fields).get_mut(index)
     }
 
     pub fn get(&self, name: &str) -> Option<&Value> {
@@ -114,15 +43,15 @@ impl StructStorage {
     }
 
     pub fn len(&self) -> usize {
-        self.fields.values.len()
+        self.fields.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.fields.values.is_empty()
+        self.fields.is_empty()
     }
 
     pub fn values(&self) -> std::slice::Iter<'_, Value> {
-        self.fields.values.iter()
+        self.fields.iter()
     }
 
     pub fn keys(&self) -> std::slice::Iter<'_, String> {
@@ -132,15 +61,14 @@ impl StructStorage {
     pub fn iter(
         &self,
     ) -> std::iter::Zip<std::slice::Iter<'_, String>, std::slice::Iter<'_, Value>> {
-        self.names.iter().zip(self.fields.values.iter())
+        self.names.iter().zip(self.fields.iter())
     }
 }
 
 impl From<BTreeMap<String, Value>> for StructStorage {
     fn from(fields: BTreeMap<String, Value>) -> Self {
         let (names, values): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
-        let initialized = vec![true; values.len()];
-        Self::with_layout(Arc::new(names), values, initialized)
+        Self::with_layout(Arc::new(names), values)
     }
 }
 
@@ -158,7 +86,7 @@ impl IntoIterator for StructStorage {
     fn into_iter(self) -> Self::IntoIter {
         Arc::unwrap_or_clone(self.names)
             .into_iter()
-            .zip(Arc::unwrap_or_clone(self.fields).values)
+            .zip(Arc::unwrap_or_clone(self.fields))
     }
 }
 
@@ -175,31 +103,6 @@ impl<'a> IntoIterator for &'a StructStorage {
 mod tests {
     use super::*;
     use crate::{types::TypeIdentity, value::Data};
-
-    #[test]
-    fn logical_size_cache_follows_nested_copy_on_write() {
-        let nested = Value {
-            typ: TypeIdentity::Any,
-            data: Data::Struct(BTreeMap::from([("text".into(), Value::string("abc"))]).into()),
-        };
-        let original = Value {
-            typ: TypeIdentity::Any,
-            data: Data::Struct(BTreeMap::from([("nested".into(), nested)]).into()),
-        };
-        let before = original.logical_bytes().unwrap();
-        let mut copy = original.clone();
-        assert_eq!(copy.logical_bytes().unwrap(), before);
-        let Data::Struct(fields) = &mut copy.data else {
-            unreachable!()
-        };
-        let Data::Struct(nested) = &mut fields.get_mut("nested").unwrap().data else {
-            unreachable!()
-        };
-        *nested.get_mut("text").unwrap() = Value::string("a longer string");
-        assert_eq!(copy.logical_bytes().unwrap(), before + 12);
-        assert_eq!(original.logical_bytes().unwrap(), before);
-        assert_eq!(copy.logical_bytes().unwrap(), before + 12);
-    }
 
     #[test]
     fn nested_arrays_and_fields_are_independent_after_value_copy() {

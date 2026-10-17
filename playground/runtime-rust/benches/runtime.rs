@@ -1,10 +1,9 @@
 //! Fixed workloads; counts are observations, not machine-dependent pass limits.
 use mini_go::{
-    Executor, InstanceOptions, LoadOptions, Program,
+    Executor, HostValue, InstanceOptions, LoadOptions, Program,
     ffi::Cancellation,
     instance::{ExecutionLimits, Instance, PollStatus},
     snapshot::HostData,
-    value::Value,
 };
 use serde_json::json;
 #[cfg(feature = "compiler")]
@@ -87,7 +86,7 @@ fn run(name: &str, image: &[u8], expected: i64, profile: bool) {
         // A separate warmed batch excludes loading and initial frame allocation.
         let repetitions = if iteration == 1 { 100 } else { 1 };
         for _ in 0..repetitions {
-            instance.start("default", vec![Value::int(1000)]).unwrap();
+            instance.start("default", &[HostValue::int(1000)]).unwrap();
             let mut budget = 100_000;
             loop {
                 let quantum = budget.min(1024);
@@ -99,7 +98,12 @@ fn run(name: &str, image: &[u8], expected: i64, profile: bool) {
                     status => panic!("unexpected benchmark state: {status:?}"),
                 }
             }
-            assert_eq!(instance.results()[0].integer().unwrap(), expected);
+            assert_eq!(
+                instance.snapshot_results(Default::default()).unwrap().roots[0]
+                    .integer()
+                    .unwrap(),
+                expected
+            );
         }
         if iteration == 1 {
             let allocations = ALLOCATIONS.load(Ordering::Relaxed);
@@ -116,9 +120,14 @@ fn run(name: &str, image: &[u8], expected: i64, profile: bool) {
     if !profile {
         instance.start_profile(1, 100_000).unwrap();
         let before = instance.steps();
-        instance.start("default", vec![Value::int(1000)]).unwrap();
+        instance.start("default", &[HostValue::int(1000)]).unwrap();
         while instance.poll_steps(1024).unwrap() != PollStatus::Ready {}
-        assert_eq!(instance.results()[0].integer().unwrap(), expected);
+        assert_eq!(
+            instance.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            expected
+        );
         print_opcodes(name, &instance, before);
     }
     instance.close().unwrap();
@@ -465,7 +474,7 @@ fn main() {
     let cancel = Cancellation::default();
     for _ in 0..10 {
         let execution = shared_instance
-            .start("default", vec![Value::int(1000)])
+            .start("default", &[HostValue::int(1000)])
             .unwrap();
         execution.wait(&cancel).unwrap();
     }
@@ -475,10 +484,10 @@ fn main() {
     let started = Instant::now();
     for _ in 0..1000 {
         let execution = shared_instance
-            .start("default", vec![Value::int(1000)])
+            .start("default", &[HostValue::int(1000)])
             .unwrap();
         let result = execution.wait(&cancel).unwrap();
-        assert!(matches!(result.roots[0].data, HostData::Integer(1000)));
+        assert!(matches!(&result.roots[0].data, HostData::Integer(1000)));
     }
     let elapsed = started.elapsed().as_secs_f64();
     let allocations = ALLOCATIONS.load(Ordering::Relaxed);

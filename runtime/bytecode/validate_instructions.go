@@ -109,6 +109,20 @@ func validateInstructionPayload(path string, inst *Instruction) error {
 		if strings.TrimSpace(payload.Operator) == "" {
 			return missingValidationError(path+".payload.operator", errors.New("missing operator"))
 		}
+	case OpMinMax:
+		payload, err := validationPayload[MinMaxPayload](path, inst)
+		if err != nil {
+			return err
+		}
+		if !payload.Type.Valid() {
+			return missingValidationError(path+".payload.type", errors.New("missing min/max type"))
+		}
+		if payload.Operator != "min" && payload.Operator != "max" {
+			return newValidationError(path+".payload.operator", errors.New("min/max operator must be min or max"))
+		}
+		if payload.ArgCount < 1 {
+			return newValidationError(path+".payload.arg_count", errors.New("min/max requires at least one argument"))
+		}
 	case OpMakeSequence:
 		payload, err := validationPayload[MakeSequencePayload](path, inst)
 		if err != nil {

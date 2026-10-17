@@ -1,0 +1,56 @@
+package main
+
+type Pair struct {
+	Values [2]int
+	Label string
+}
+
+func makePairs(seed int) (Pair, Pair) {
+	return Pair{Values: [2]int{seed, seed + 1}, Label: "first"},
+		Pair{Values: [2]int{seed + 1, seed + 2}, Label: "second"}
+}
+
+func adjust(value Pair, delta int) (Pair, int) {
+	before := value.Values[0]
+	value.Values[0] += delta
+	value.Label = "adjusted"
+	return value, before
+}
+
+func observe(value Pair, marker *int) Pair {
+	*marker += value.Values[1]
+	return value
+}
+
+func gcd(a, b uint64) uint64 {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
+func Main() int {
+	if gcd(126, 3) != 3 || gcd(84, 30) != 6 {
+		return -5
+	}
+	first, second := makePairs(3)
+	original := first
+	changed, before := adjust(first, 5)
+	first, second = changed, second
+	marker := 0
+	observed := observe(first, &marker)
+
+	if original.Values[0] != 3 || original.Values[1] != 4 || original.Label != "first" {
+		return -1
+	}
+	if before != 3 || first.Values[0] != 8 || first.Label != "adjusted" {
+		return -2
+	}
+	if second.Values[0] != 4 || second.Values[1] != 5 || second.Label != "second" {
+		return -3
+	}
+	if observed.Values[0] != 8 || observed.Values[1] != 4 || marker != 4 {
+		return -4
+	}
+	return before + marker + first.Values[0] + second.Values[1]
+}

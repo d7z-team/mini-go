@@ -37,7 +37,7 @@ func (l *lowerer) isCallableType(typ string) bool {
 	if typ == "Function" {
 		return true
 	}
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	return ok && view.Shape() == types.Function
 }
 
@@ -144,7 +144,7 @@ func (l *lowerer) validateSliceArrayConversion(expr ast.Expression, target strin
 }
 
 func (l *lowerer) sliceElementType(typ string) (string, bool) {
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	if !ok || view.Shape() != types.Slice {
 		return "", false
 	}
@@ -208,19 +208,25 @@ func (l *lowerer) isValueNameBound(name string, span source.Span, scope *funcSco
 
 func (l *lowerer) recordFunctionValueType(scope *funcScope, name, signature string, variadic bool) {
 	name = strings.TrimSpace(name)
-	variadic = variadic || l.functionTypeVariadic(signature)
-	signature = l.resolveNamedUnderlyingType(signature)
 	if scope == nil || name == "" {
 		return
 	}
-	params, results, signatureVariadic, ok := l.functionSignatureParts(signature)
+	view, ok := l.typeView(signature)
 	if !ok {
 		return
 	}
-	scope.funcValueResults[name] = len(results)
-	scope.funcValueTypes[name] = l.typeRefsFromStrings(results)
-	scope.funcValueParams[name] = l.typeRefsFromStrings(params)
-	scope.funcValueVarargs[name] = variadic || signatureVariadic
+	function, ok := view.Function()
+	if !ok {
+		return
+	}
+	params := make([]types.TypeRef, len(function.Params))
+	for i, param := range function.Params {
+		params[i] = param.Type
+	}
+	scope.funcValueResults[name] = len(function.Results)
+	scope.funcValueTypes[name] = function.Results
+	scope.funcValueParams[name] = params
+	scope.funcValueVarargs[name] = variadic || function.Variadic
 }
 
 func (l *lowerer) functionSignatureResultTypes(signature string) ([]string, bool) {
@@ -282,9 +288,8 @@ func (l *lowerer) callParamTypes(callee ast.Expression, scope *funcScope) ([]str
 			return l.signatureParamTypes(signature), signature.Variadic, true
 		}
 		if typ, ok := l.globalTypes[name]; ok {
-			params, _, parsed := l.functionSignatureParamTypes(l.typeRefString(typ), l.globalVariadics[name])
-			if parsed {
-				return params, l.globalVariadics[name], true
+			if signature, ok := types.View(l.typeTable, typ).Function(); ok {
+				return l.signatureParamTypes(signature), l.globalVariadics[name] || signature.Variadic, true
 			}
 		}
 	}

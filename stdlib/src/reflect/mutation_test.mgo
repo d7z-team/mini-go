@@ -351,6 +351,27 @@ func TestReflectConvertibleToAndValueConvert(t *testing.T) {
 	})
 }
 
+func TestReflectNilSliceHeaderMutation(t *testing.T) {
+	var values []int
+	value := reflect.ValueOf(&values).Elem()
+	value.SetLen(0)
+	value.SetCap(0)
+	if values != nil || !value.IsNil() || value.Len() != 0 || value.Cap() != 0 {
+		t.Fatal("zero bounds must preserve the nil slice")
+	}
+	for _, count := range []int{-1, 1} {
+		expectPanic(t, func() {
+			value.SetLen(count)
+		})
+		expectPanic(t, func() {
+			value.SetCap(count)
+		})
+		if values != nil || !value.IsNil() || value.Len() != 0 || value.Cap() != 0 {
+			t.Fatal("rejected bounds must preserve the nil slice")
+		}
+	}
+}
+
 func TestReflectSliceValueOperations(t *testing.T) {
 	items := []int{1, 2}
 	value := reflect.ValueOf(items)

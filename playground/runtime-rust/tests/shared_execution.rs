@@ -42,7 +42,7 @@ impl Session for Host {
     ) -> Result<Box<dyn Call>, RuntimeError> {
         if let Some(peer) = self.peer.lock().unwrap().take() {
             let _ = peer.heap_stats();
-            assert_eq!(peer.start("read", Vec::new()).err().unwrap().code, "busy");
+            assert_eq!(peer.start("read", &[]).err().unwrap().code, "busy");
         }
         self.completions.send(completion).unwrap();
         Ok(Box::new(self.clone()))
@@ -97,7 +97,7 @@ fn program() -> Arc<Program> {
 
 fn start(instance: &SharedInstance, entry: &str) -> Execution {
     loop {
-        match instance.start(entry, Vec::new()) {
+        match instance.start(entry, &[]) {
             Ok(execution) => return execution,
             Err(error) if error.code == "busy" => std::thread::yield_now(),
             Err(error) => panic!("{error}"),
@@ -107,6 +107,14 @@ fn start(instance: &SharedInstance, entry: &str) -> Execution {
 
 #[test]
 fn supervisor_preserves_other_scopes_and_host_callbacks_run_outside_control_lock() {
+    // Release the deliberately blocked host shutdown when an earlier
+    // assertion unwinds, so a failure cannot deadlock Instance cleanup.
+    struct ReleaseShutdown(mpsc::Sender<()>);
+    impl Drop for ReleaseShutdown {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
     let (completed, completions) = mpsc::channel();
     let (closing, closed) = mpsc::channel();
     let (release, released) = mpsc::channel();
@@ -122,6 +130,7 @@ fn supervisor_preserves_other_scopes_and_host_callbacks_run_outside_control_lock
             ..InstanceOptions::default()
         })
         .unwrap();
+    let _release_on_unwind = ReleaseShutdown(release.clone());
     *host.peer.lock().unwrap() = Some(instance.clone());
     loop {
         match instance.debugger().start_profile(1, 128) {
@@ -132,7 +141,7 @@ fn supervisor_preserves_other_scopes_and_host_callbacks_run_outside_control_lock
     }
     let first = start(&instance, "default");
     let result = first.wait(&Cancellation::default()).unwrap();
-    assert!(matches!(result.roots[0].data, HostData::Integer(42)));
+    assert!(matches!(&result.roots[0].data, HostData::Integer(42)));
     let completion = completions.recv_timeout(Duration::from_secs(5)).unwrap();
     assert!(!first.scope_settled());
     let pending = first.scope_stats();
@@ -178,7 +187,7 @@ fn supervisor_preserves_other_scopes_and_host_callbacks_run_outside_control_lock
     let read = start(&instance, "read")
         .wait(&Cancellation::default())
         .unwrap();
-    assert!(matches!(read.roots[0].data, HostData::Integer(42)));
+    assert!(matches!(&read.roots[0].data, HostData::Integer(42)));
 
     let canceled_wait = Cancellation::default();
     canceled_wait.cancel();

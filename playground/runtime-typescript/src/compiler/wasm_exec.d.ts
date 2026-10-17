@@ -5,5 +5,5 @@ declare global {
     importObject: WebAssembly.Imports;
     run(instance: WebAssembly.Instance): Promise<void>;
   };
-  var __miniGoToolsCall: ((input: Uint8Array) => Uint8Array) | undefined;
+  var __miniGoToolsCall: ((input: Uint8Array) => Uint8Array<ArrayBuffer>) | undefined;
 }

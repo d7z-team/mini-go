@@ -214,7 +214,7 @@ export class LanguageService {
   private exchange(
     peer: Peer,
     id: number,
-    input: Uint8Array | undefined,
+    input: Uint8Array<ArrayBuffer> | undefined,
     signal: AbortSignal,
   ): Promise<CompilerResponse> {
     return new Promise((resolve, reject) => {
@@ -255,7 +255,10 @@ export class LanguageService {
             command.compilerUrl = this.options.compilerUrl.toString();
           peer.connection.send(command);
         } else if (input)
-          peer.connection.send({ kind: "compilerRequest", generation: peer.generation, id, input });
+          peer.connection.send(
+            { kind: "compilerRequest", generation: peer.generation, id, input },
+            [input.buffer],
+          );
         else peer.connection.send({ kind: "compilerStats", generation: peer.generation, id });
       } catch (error) {
         this.terminatePeer(peer, error);
@@ -535,7 +538,7 @@ export class LanguageService {
   }
 }
 
-function encodeRequest(request: Record<string, unknown>): Uint8Array {
+function encodeRequest(request: Record<string, unknown>): Uint8Array<ArrayBuffer> {
   const bytes = textEncoder.encode(JSON.stringify(request));
   if (bytes.byteLength > MAX_BYTES)
     throw new ToolsError("budget", "compiler input exceeds byte limit");

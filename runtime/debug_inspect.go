@@ -316,9 +316,9 @@ func (e *Execution) DebugVariables(reference, start, count int) ([]DebugVariable
 				}
 			}
 			variable.VariablesReference = childReference
-			if _, indexed := binding.Value.Data.(*vmArray); indexed {
+			if _, indexed := binding.Value.payload().(*vmArray); indexed {
 				variable.IndexedVariables = len(children)
-			} else if _, indexed := binding.Value.Data.(*vmSlice); indexed {
+			} else if _, indexed := binding.Value.payload().(*vmSlice); indexed {
 				variable.IndexedVariables = len(children)
 			} else {
 				variable.NamedVariables = len(children)
@@ -339,7 +339,7 @@ func (e *Execution) addDebugReference(reference debugReference) (int, error) {
 }
 
 func debugValueIdentity(value vmValue) (debugObjectIdentity, bool) {
-	switch data := value.Data.(type) {
+	switch data := value.payload().(type) {
 	case *vmSlice:
 		return debugObjectIdentity{kind: "slice", value: data}, data != nil
 	case *vmMap:
@@ -351,7 +351,7 @@ func debugValueIdentity(value vmValue) (debugObjectIdentity, bool) {
 
 func debugValueChildren(value vmValue) []debugLocal {
 	var result []debugLocal
-	switch data := value.Data.(type) {
+	switch data := value.payload().(type) {
 	case *vmSlice:
 		items, _ := sliceValues(value)
 		for index, item := range items {

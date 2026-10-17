@@ -281,6 +281,7 @@ func prepareModuleReferences(modules map[string]*executable) ([]string, error) {
 				}
 				instruction.callModuleIndex = moduleIndexes[targetPath]
 				instruction.callFunctionIndex = targetModule.FunctionIndexes[call.Function]
+				instruction.callRevisionLocal = target.Decl.RevisionLocal
 			}
 			executable.Functions[functionID] = function
 		}
@@ -332,6 +333,9 @@ func (p *Program) newVM(options InstanceOptions) (*vm, error) {
 	if err != nil {
 		return nil, err
 	}
-	vm.installInitialRevision(p)
+	if err := vm.installInitialRevision(p); err != nil {
+		vm.closeRevisions()
+		return nil, err
+	}
 	return vm, nil
 }

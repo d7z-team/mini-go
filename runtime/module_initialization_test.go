@@ -79,7 +79,7 @@ func TestModuleInitializationWaitsForAnotherTaskAndPropagatesFailure(t *testing.
 			if err := machine.initializeModule(owner, nil, module, nil); err != nil {
 				t.Fatal(err)
 			}
-			caller, err := instance.vm.newExecutionFrame(instance.vm.rootModule(), "fn.entry", nil, nil, 2, 1, false)
+			caller, err := instance.vm.newExecutionFrame(instance.vm.rootModule(), "fn.entry", nil, nil, 2, 1, false, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -126,7 +126,7 @@ func TestModuleInitializationWaitsForAnotherTaskAndPropagatesFailure(t *testing.
 
 func TestModuleInitializationPublishesOnlyAfterFramePreparation(t *testing.T) {
 	root, dependency := exportAddressArtifacts()
-	instance, err := patchMultiModuleProgram(t, root, dependency, "initialization-census").Instantiate(t.Context(), InstanceOptions{})
+	instance, err := patchMultiModuleProgram(t, root, dependency, "initialization-storage").Instantiate(t.Context(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,8 @@ func TestModuleInitializationPublishesOnlyAfterFramePreparation(t *testing.T) {
 		t.Fatal("dependency module is missing")
 	}
 
-	instance.vm.limits.MaxAllocatedBytes = 1
+	instance.vm.limits.MaxGuestBytes = 1
+	instance.vm.heap.maxGuestBytes = 1
 	if err := instance.vm.enterOwner(); err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +146,9 @@ func TestModuleInitializationPublishesOnlyAfterFramePreparation(t *testing.T) {
 	task := &executionTask{id: 1}
 	machine := &executionMachine{vm: instance.vm}
 	err = machine.initializeModule(task, nil, module, nil)
-	if _, ok := findGuestCensusRequest(err); !ok {
-		t.Fatalf("frame preparation error = %v, want guest census", err)
+	var limit ResourceLimitError
+	if !errors.As(err, &limit) {
+		t.Fatalf("frame preparation error = %v, want allocation limit", err)
 	}
 	if module.state.initState != moduleUninitialized || module.state.initTask != nil || len(task.frames) != 0 {
 		t.Fatalf("failed preparation published initialization: state=%d task=%p frames=%d", module.state.initState, module.state.initTask, len(task.frames))

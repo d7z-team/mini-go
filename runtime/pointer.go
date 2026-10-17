@@ -12,6 +12,9 @@ type vmPointer struct {
 	Type     vmType
 	Identity string
 	original *vmPointer
+	owner    *vm
+	storage  guestRef
+	offset   uint32
 	target   pointerTarget
 	module   *moduleInstance
 	cell     *slot
@@ -33,18 +36,30 @@ const (
 	pointerField
 	pointerIndex
 	pointerArray
+	pointerBackingPath
 )
 
 func newTargetPointer(pointer *vmPointer) vmValue {
 	if pointer.Identity == "" {
 		pointer.Identity = fmt.Sprintf("pointer:%p", pointer)
 	}
+	if pointer.module != nil && pointer.module.vm != nil && pointer.module.vm.heap != nil {
+		if managed, err := pointer.module.newManagedPointer(pointer); err == nil {
+			return managed
+		}
+	}
 	return newVMValue(pointerType(pointer.Type), pointer)
 }
 
 func newSlotPointerValue(typ any, identity string, cell *slot) vmValue {
 	pointerTypeValue := coerceRuntimeType(typ)
-	return newVMValue(pointerType(pointerTypeValue), &vmPointer{Type: pointerTypeValue, Identity: identity, slot: cell})
+	pointer := &vmPointer{Type: pointerTypeValue, Identity: identity, slot: cell}
+	if cell != nil && cell.module != nil && cell.module.vm != nil && cell.module.vm.heap != nil {
+		if managed, err := cell.module.newManagedPointer(pointer); err == nil {
+			return managed
+		}
+	}
+	return newVMValue(pointerType(pointerTypeValue), pointer)
 }
 
 func newPathPointerValue(typ any, identity string, cell *slot, path []ir.AddressPathSegment, indexes []vmValue) vmValue {
@@ -56,12 +71,21 @@ func newPathPointerValue(typ any, identity string, cell *slot, path []ir.Address
 }
 
 func (pointer *vmPointer) loadValue() (vmValue, error) {
+	if pointer.storage.valid() {
+		layout, err := pointer.owner.valueLayouts.layoutFor(pointer.Type)
+		if err != nil {
+			return vmValue{}, err
+		}
+		return decodeManagedInline(pointer.owner.heap, pointer.storage, pointer.offset, pointer.Type, layout, pointer.owner.valueLayouts, pointer.owner), nil
+	}
 	if pointer.original != nil {
 		value, err := pointer.original.loadValue()
 		value.Type = pointer.Type
 		return value, err
 	}
 	switch pointer.target {
+	case pointerBackingPath:
+		return loadAddressPath(pointer.module, pointer.parent, pointer.path, pointer.indexes)
 	case pointerCell:
 		if pointer.cell == nil {
 			return vmValue{}, errors.New("reflect: invalid cell pointer")
@@ -81,10 +105,9 @@ func (pointer *vmPointer) loadValue() (vmValue, error) {
 		}
 		return indexValue(pointer.module, parent, newVMValue("Int", pointer.index))
 	case pointerArray:
-		return newVMValue(pointer.Type, &vmArray{vmSlice: vmSlice{
-			vmSliceStorage: pointer.array.vmSliceStorage,
-			Start:          pointer.array.Start, Len: pointer.arrayLen, Cap: pointer.arrayLen,
-		}}), nil
+		view := *pointer.array
+		view.Len, view.Cap = pointer.arrayLen, pointer.arrayLen
+		return newVMValue(pointer.Type, &vmArray{vmSlice: view}), nil
 	}
 	if pointer.slot == nil {
 		return vmValue{}, errors.New("invalid pointer")
@@ -96,11 +119,29 @@ func (pointer *vmPointer) loadValue() (vmValue, error) {
 }
 
 func (pointer *vmPointer) storeValue(value vmValue, mutation bool) error {
+	if pointer.storage.valid() {
+		module := pointer.module
+		if module == nil {
+			module = &moduleInstance{vm: pointer.owner}
+		}
+		normalized, err := module.coerceAssignableValue(value, pointer.Type)
+		if err != nil {
+			return err
+		}
+		layout, err := pointer.owner.valueLayouts.layoutFor(pointer.Type)
+		if err != nil {
+			return err
+		}
+		return writeManagedInlineAt(pointer.owner.heap, pointer.storage, pointer.offset, pointer.Type, layout, pointer.owner.valueLayouts, pointer.owner, normalized)
+	}
 	if pointer.original != nil {
 		value.Type = pointer.original.Type
 		return pointer.original.storeValue(value, mutation)
 	}
 	switch pointer.target {
+	case pointerBackingPath:
+		_, err := storeAddressPathMode(pointer.module, pointer.parent, pointer.path, pointer.indexes, value, !mutation)
+		return err
 	case pointerCell:
 		if pointer.cell == nil {
 			return errors.New("reflect: invalid cell pointer")
@@ -138,7 +179,7 @@ func (pointer *vmPointer) storeValue(value vmValue, mutation bool) error {
 		}
 		return nil
 	case pointerArray:
-		array, ok := value.Data.(*vmArray)
+		array, ok := value.payload().(*vmArray)
 		if !ok || array.Len != pointer.arrayLen {
 			return fmt.Errorf("array assignment requires length %d", pointer.arrayLen)
 		}
@@ -207,17 +248,18 @@ func storePointer(pointerValueInput, value vmValue) error {
 }
 
 func pointerValue(value vmValue) (*vmPointer, error) {
-	if value.Data == nil && value.Type.ShapeKind() == types.Pointer {
+	payload := value.payload()
+	if payload == nil && value.Type.ShapeKind() == types.Pointer {
 		return nil, newGuestPanic(errors.New("invalid memory address or nil pointer dereference"))
 	}
-	pointer, ok := value.Data.(*vmPointer)
+	pointer, ok := payload.(*vmPointer)
 	if !ok {
-		return nil, fmt.Errorf("expected pointer payload for %s, got %T", value.Type, value.Data)
+		return nil, fmt.Errorf("expected pointer payload for %s, got %T", value.Type, payload)
 	}
 	if pointer == nil {
 		return nil, newGuestPanic(errors.New("invalid memory address or nil pointer dereference"))
 	}
-	if pointer.original == nil && pointer.target == pointerSlot && pointer.slot == nil {
+	if !pointer.storage.valid() && pointer.original == nil && pointer.target == pointerSlot && pointer.slot == nil {
 		return nil, errors.New("invalid pointer")
 	}
 	return pointer, nil

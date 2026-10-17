@@ -22,8 +22,14 @@ func (m *moduleInstance) resolvedRuntimeType(value any) vmType {
 				return cached
 			}
 			resolved := m.resolveNamedRuntimeType(value)
-
-			m.resolvedRuntimeTypes.store(value.Ref, resolved)
+			if resolved.ShapeKind() == types.Named && m.vm != nil {
+				if known, ok := m.vm.valueLayouts.resolvedType(value); ok {
+					resolved = known
+				}
+			}
+			if resolved.ShapeKind() != types.Named {
+				m.resolvedRuntimeTypes.store(value.Ref, resolved)
+			}
 			return resolved
 		}
 		if value.Table != nil || m == nil || m.executable == nil {
@@ -70,6 +76,18 @@ func (m *moduleInstance) resolvedRuntimeType(value any) vmType {
 }
 
 func (m *moduleInstance) resolveNamedRuntimeType(value vmType) vmType {
+	if value.standalone {
+		if owner, name, ok := m.namedRuntimeType(value.String()); ok && owner != nil && owner.executable != nil {
+			if node, found := owner.executable.Types[name]; found {
+				if node.Alias && node.AliasTarget.Valid() {
+					return owner.resolvedRuntimeType(owner.runtimeType(node.AliasTarget))
+				}
+				return runtimeTypeWithTable(types.TypeRef{Kind: types.Named, Named: types.TypeKey{
+					ModulePath: owner.modulePath(), DeclID: types.DeclID(name),
+				}}, &owner.executable.Artifact.TypeTable)
+			}
+		}
+	}
 	if value.Ref.Named.ModulePath != "" && value.Ref.Named.DeclID != "" {
 		var owner *moduleInstance
 		if m.modulePath() == value.Ref.Named.ModulePath {

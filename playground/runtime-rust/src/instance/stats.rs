@@ -68,17 +68,12 @@ impl Instance {
             pending_ffi_calls: self.ffi_calls.pending_count(),
             pending_boundary_bytes: self.ffi_calls.reserved_bytes(),
             timers: self.timers.len(),
-            retained_revisions: self
-                .retired_revisions
-                .values()
-                .filter(|revision| revision.strong_count() != 0)
-                .count()
-                + usize::from(!self.closed),
+            retained_revisions: self.retired_revisions.values().count() + usize::from(!self.closed),
             executed_steps: self.steps,
             dynamic_types: self.types.dynamic_stats().0,
             dynamic_type_bytes: self.types.dynamic_stats().1,
             heap: self.heap.stats(),
-            memory: self.memory.stats(),
+            memory: self.memory_stats(),
         }
     }
 

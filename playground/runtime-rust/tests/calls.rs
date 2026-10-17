@@ -8,6 +8,45 @@ use serde_json::json;
 use std::sync::Arc;
 
 #[test]
+fn direct_calls_obey_frame_limits_and_tail_calls_reuse_frames() {
+    for (operation, limit, succeeds) in [
+        ("call_direct", 1, false),
+        ("call_direct", 2, true),
+        ("tail_call_direct", 1, true),
+    ] {
+        let caller = support::slot_code(
+            json!([]),
+            &[
+                (operation, json!({"function":"callee"}), json!({})),
+                ("return", json!({}), json!({})),
+            ],
+        );
+        let callee = support::slot_code(json!([]), &[("return", json!({}), json!({}))]);
+        let image = support::image(json!({"functions":[
+            {"id":"fn.Main","code":caller},
+            {"id":"callee","code":callee}
+        ]}));
+        let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
+        let mut instance = Instance::new(
+            program,
+            ExecutionLimits {
+                max_call_depth: limit,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        instance.start("default", &[]).unwrap();
+        if succeeds {
+            assert_eq!(instance.poll_steps(3).unwrap(), PollStatus::Ready);
+        } else {
+            assert_eq!(instance.poll_steps(1).unwrap_err().code, "frame_limit");
+        }
+        instance.close().unwrap();
+        assert_eq!(instance.heap_stats().live_objects, 0);
+    }
+}
+
+#[test]
 fn tail_call_keeps_pending_defers_and_counts_only_bytecode_steps() {
     let integer = json!({"kind":3,"primitive":3});
     let main = support::slot_code(
@@ -97,17 +136,22 @@ fn tail_call_keeps_pending_defers_and_counts_only_bytecode_steps() {
     let mut instance = Instance::new(
         program,
         ExecutionLimits {
-            max_frames: 3,
+            max_call_depth: 3,
             ..Default::default()
         },
     )
     .unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(6).unwrap(), PollStatus::Running);
     assert_eq!(instance.steps(), 6);
     assert_eq!(instance.poll_steps(6).unwrap(), PollStatus::Ready);
     assert_eq!(instance.steps(), 12);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
     instance.close().unwrap();
     assert_eq!(instance.heap_stats().live_objects, 0);
 }

@@ -26,7 +26,7 @@ type RevisionRetention struct {
 	Revision   RevisionInfo
 	Current    bool
 	Pins       int
-	GlobalRoot bool // retained by the most recent global-root census
+	GlobalRoot bool // retained by the current revision's global root anchor
 }
 
 // RevisionRetentionSnapshot separates published revisions from an uncommitted target.
@@ -79,9 +79,9 @@ func (i *Instance) RevisionRetention(ctx context.Context) (RevisionRetentionSnap
 }
 
 type RevisionRootLimits struct {
-	MaxNodes int
-	MaxDepth int
-	MaxRoots int
+	MaxNodes          int
+	MaxTraversalDepth int
+	MaxRoots          int
 }
 
 // RevisionRoot identifies a root and a reachable code reference. Paths are
@@ -114,13 +114,13 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 	if limits.MaxNodes == 0 {
 		limits.MaxNodes = 10000
 	}
-	if limits.MaxDepth == 0 {
-		limits.MaxDepth = 64
+	if limits.MaxTraversalDepth == 0 {
+		limits.MaxTraversalDepth = 64
 	}
 	if limits.MaxRoots == 0 {
 		limits.MaxRoots = 100
 	}
-	if limits.MaxNodes < 1 || limits.MaxDepth < 1 || limits.MaxDepth > 256 || limits.MaxRoots < 1 {
+	if limits.MaxNodes < 1 || limits.MaxTraversalDepth < 1 || limits.MaxTraversalDepth > 256 || limits.MaxRoots < 1 {
 		return out, errors.New("invalid revision root limits (depth must be 1..256)")
 	}
 	if err := i.vm.enterOwnerContext(ctx); err != nil {
@@ -160,7 +160,7 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 			ref := root
 			if len(values) != 0 {
 				ref.Function, ref.Module, ref.Location = "", "", Location{}
-				switch function := values[len(values)-1].Data.(type) {
+				switch function := values[len(values)-1].payload().(type) {
 				case functionRef:
 					ref.Function = function.FunctionID
 					if function.exact != nil {
@@ -187,7 +187,7 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 				walker.stopped = true
 				return false
 			}
-			if depth >= limits.MaxDepth {
+			if depth >= limits.MaxTraversalDepth {
 				out.Complete = false
 				return false
 			}
@@ -266,6 +266,9 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 						if stopped {
 							break
 						}
+						if group.name == "slot" {
+							value = frame.slotValue(n)
+						}
 						ref := root
 						ref.Path += fmt.Sprintf("/%s %d", group.name, n)
 						inspect(ref, value)
@@ -284,9 +287,16 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 					ref.Path += fmt.Sprintf("/defer %d", n)
 					inspect(ref, newVMValue("Function", deferred.ref))
 				}
-				for name, iterator := range frame.mapIterators {
+				for index, iterator := range frame.mapIteratorSlots {
 					if stopped {
 						break
+					}
+					if iterator == nil {
+						continue
+					}
+					name := fmt.Sprintf("local %d", index)
+					if index >= 0 && index < len(frame.function.Decl.Locals) {
+						name = frame.function.Decl.Locals[index].ID
 					}
 					ref := root
 					ref.Path += "/iterator " + name
@@ -342,12 +352,6 @@ func (i *Instance) RevisionRoots(ctx context.Context, generation uint64, limits 
 		}
 		add(timer.pinnedRevision, root)
 		inspect(root, timer.signal)
-	}
-	for _, value := range vm.reflectTypeValues.snapshot() {
-		if stopped {
-			break
-		}
-		inspect(RevisionRoot{Path: "reflection"}, value)
 	}
 	for _, value := range vm.controlRoots {
 		if stopped {

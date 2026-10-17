@@ -6,20 +6,23 @@ import (
 )
 
 type instanceRevision struct {
-	mu           sync.Mutex
-	owner        *vm
-	generation   uint64
-	code         *programCode
-	symbols      *symbolIndex
-	root         *moduleInstance
-	modules      *moduleRegistry
-	moduleOrder  []*moduleInstance
-	entries      map[string]string
-	entry        string
-	pins         int
-	rootRetained bool
-	retired      bool
-	closed       bool
+	mu              sync.Mutex
+	anchorMu        sync.Mutex
+	anchor          guestRef
+	anchorReclaimed bool
+	owner           *vm
+	generation      uint64
+	code            *programCode
+	symbols         *symbolIndex
+	root            *moduleInstance
+	modules         *moduleRegistry
+	moduleOrder     []*moduleInstance
+	entries         map[string]string
+	entry           string
+	pins            int
+	rootRetained    bool
+	retired         bool
+	closed          bool
 }
 
 func (revision *instanceRevision) retain() bool {
@@ -43,6 +46,9 @@ func (revision *instanceRevision) release() {
 	revision.mu.Lock()
 	if revision.pins > 0 {
 		revision.pins--
+	}
+	if revision.pins == 0 && revision.retired && revision.owner != nil {
+		revision.owner.retentionCollectionRequested.Store(true)
 	}
 	revision.closeReadyLocked()
 	closed := revision.closed
@@ -101,14 +107,19 @@ func (revision *instanceRevision) releasePayloadLocked() {
 			continue
 		}
 		module.framePoolMu.Lock()
+		for _, frames := range module.framePools {
+			for _, frame := range frames {
+				frame.discardStorage()
+			}
+		}
 		if module.framePoolPhysicalBytes != 0 {
 			if module.vm != nil {
 				module.vm.idleFrameBytes.Add(-module.framePoolPhysicalBytes)
 			}
 			module.framePoolPhysicalBytes = 0
-			module.framePoolBytes = 0
-			module.framePools = nil
 		}
+		module.framePoolBytes = 0
+		module.framePools = nil
 		module.framePoolMu.Unlock()
 	}
 	revision.code = nil
@@ -121,7 +132,7 @@ func (revision *instanceRevision) releasePayloadLocked() {
 	revision.entries = nil
 }
 
-func (vm *vm) installInitialRevision(program *Program) {
+func (vm *vm) installInitialRevision(program *Program) error {
 	code := program.code
 	entryFunction := ""
 	if entry, ok := code.image.DefaultEntry(); ok {
@@ -138,6 +149,8 @@ func (vm *vm) installInitialRevision(program *Program) {
 		revision.moduleOrder[index], _ = revision.modules.module(path)
 	}
 	vm.revision.Store(revision)
+	_, err := revision.ensureManagedAnchor()
+	return err
 }
 
 func newInstanceRevision(program *Program, previous *instanceRevision, generation uint64) (*instanceRevision, error) {

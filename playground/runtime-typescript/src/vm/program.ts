@@ -43,6 +43,8 @@ import {
   type OperatorCode,
   type UnaryOperatorCode,
 } from "./operators";
+import type { FrameReferences } from "./reference-plan";
+import { prepareFrameReferences } from "./reference-plan";
 
 export interface LoadOptions {
   maxImageBytes: number;
@@ -73,6 +75,9 @@ export interface PreparedInstruction {
   descriptor: Record<string, unknown> | undefined;
   operands: PreparedOperands;
   arity: readonly [number, number];
+  inputScratch: boolean;
+  /** Effects not already accounted for at a value storage boundary. */
+  changesReachability: boolean;
   target?: number;
   local?: number;
   upvalue?: number;
@@ -85,12 +90,14 @@ export interface PreparedInstruction {
   output0?: number;
   output1?: number;
   operatorCode?: OperatorCode | UnaryOperatorCode;
-  callModule?: string;
-  callFunction?: string;
+  /** Valid only in the caller's source Program; old logical calls resolve current by identity. */
+  callTarget?: PreparedFunction;
   method?: string;
   intrinsic?: string;
   field?: string;
   fieldPath?: readonly number[];
+  /** Prepared frame-local index for map iterator state. */
+  iteratorLocal?: number;
   captures?: readonly Record<string, unknown>[];
   selectIndex?: number;
   selectCases?: readonly PreparedSelectCase[];
@@ -115,6 +122,7 @@ export interface PreparedFunction {
   readonly wireToExecutablePC: readonly number[];
   /** Executable instruction to original wire PC mapping. */
   readonly executableToWirePC: readonly number[];
+  references?: FrameReferences;
 }
 
 export interface PreparedModule {
@@ -130,6 +138,42 @@ export interface PreparedModule {
   readonly exports: Map<string, { kind: string; id: string; type?: RuntimeType; untyped: boolean }>;
   readonly requirements: Set<string>;
   readonly artifactHash: string;
+}
+
+function hasManagedReference(type: RuntimeType, active = new Set<string>()): boolean {
+  const underlying = type.registry.underlying(type);
+  const key = `${underlying.module}\0${underlying.registry.key(underlying)}`;
+  if (active.has(key)) return true;
+  const node = underlying.registry.node(underlying);
+  const kind = underlying.dynamic?.kind ?? node?.kind ?? underlying.ref.kind;
+  if (kind === Kind.Primitive) return underlying.ref.primitive === PrimitiveKind.PrimitiveString;
+  if (
+    kind === Kind.Pointer ||
+    kind === Kind.Slice ||
+    kind === Kind.Map ||
+    kind === Kind.Interface ||
+    kind === Kind.Any ||
+    kind === Kind.Function ||
+    kind === Kind.Waitable
+  )
+    return true;
+  const next = new Set(active).add(key);
+  if (kind === Kind.Array) {
+    const element = underlying.registry.element(underlying);
+    return element ? hasManagedReference(element, next) : false;
+  }
+  if (kind === Kind.Struct) {
+    const fields =
+      underlying.dynamic?.fields ??
+      (node?.fields ?? []).map((field) => ({
+        name: field.name,
+        type: underlying.registry.runtime(field.type),
+        tag: field.tag,
+        embedded: field.embedded,
+      }));
+    return fields.some((field) => hasManagedReference(field.type, next));
+  }
+  return false;
 }
 
 export interface ProgramEntry {
@@ -267,6 +311,13 @@ export class Program {
     if (!modules.has(root)) fail("root module does not exist", "image.root", "link_error");
     validateRequirements(modules, artifacts);
     validatePreparedProgram(modules);
+    for (const module of modules.values())
+      for (const fn of module.functions.values())
+        fn.references = prepareFrameReferences(
+          fn,
+          fn.localTypes.map((type) => hasManagedReference(type)),
+          fn.slotTypes.map((type) => hasManagedReference(type)),
+        );
 
     const entries = new Map<string, ProgramEntry>();
     for (const [index, item] of array(image.entries, "image.entries").entries()) {
@@ -430,7 +481,29 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
         descriptor,
         operands: operandRecords[operandIndex]!,
       };
-      instructions.push({ ...prepared, arity: instructionArity(prepared, instructionPath) });
+      const arity = instructionArity(prepared, instructionPath);
+      instructions.push({
+        ...prepared,
+        arity,
+        changesReachability: [
+          "make_closure",
+          "make_sequence",
+          "make_map",
+          "make_slice",
+          "make_waitable",
+          "delete",
+          "clear",
+          "waitable_close",
+          "init_module",
+          "spawn",
+          "call_ffi",
+          "call_intrinsic",
+          "select",
+        ].includes(name),
+        inputScratch:
+          arity[0] > 2 ||
+          [17, 21, 22, 23, 24, 26, 27, 28, 29, 35, 38, 65, 66, 67, 72].includes(opcode),
+      });
       maxInputArity = Math.max(maxInputArity, prepared.operands.inputs.length);
       executablePC++;
     }
@@ -454,6 +527,9 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     if (resultLocals.length && resultLocals.length !== signature.results.length)
       fail("result locals do not match function results", `${path}.result_locals`);
     const cellLocals = new Set<number>();
+    // Named results remain addressable through defer/recover and therefore
+    // need stable cells even without an explicit address/capture instruction.
+    for (const result of resultLocals) cellLocals.add(result);
     for (const instruction of instructions) {
       const descriptor = instruction.descriptor ?? {};
       if (instruction.name === "address_of") {
@@ -555,19 +631,11 @@ const DIRECT_LOCAL_OUTPUTS = new Set([
   "convert",
   "get_path",
   "call_direct",
+  "map_iter_next",
   "string_next_rune_index",
   "index_convert",
+  "min_max",
 ]);
-
-function isFixedScalar(type: RuntimeType): boolean {
-  const primitive = type.registry.underlying(type).ref;
-  return (
-    primitive.kind === Kind.Primitive &&
-    (primitive.primitive === PrimitiveKind.PrimitiveBool ||
-      (primitive.primitive >= PrimitiveKind.PrimitiveInt &&
-        primitive.primitive <= PrimitiveKind.PrimitiveComplex128))
-  );
-}
 
 function isIntegerScalar(type: RuntimeType): boolean {
   const primitive = type.registry.underlying(type).ref;
@@ -623,7 +691,7 @@ function prepareInstructionMetadata(instruction: PreparedInstruction): void {
   if (output1 !== undefined) instruction.output1 = output1;
   const descriptor = instruction.descriptor;
   if (!descriptor) return;
-  if (typeof descriptor.operator === "string") {
+  if (typeof descriptor.operator === "string" && instruction.name !== "min_max") {
     instruction.operatorCode =
       instruction.name === "unary"
         ? unaryOperatorCode(descriptor.operator)
@@ -636,11 +704,16 @@ function prepareInstructionMetadata(instruction: PreparedInstruction): void {
   if (typeof descriptor.$constant === "number") instruction.constant = descriptor.$constant;
   if (descriptor.$type && typeof descriptor.$type === "object")
     instruction.type = descriptor.$type as RuntimeType;
-  if (typeof descriptor.module_path === "string") instruction.callModule = descriptor.module_path;
-  if (typeof descriptor.function === "string") instruction.callFunction = descriptor.function;
   if (typeof descriptor.method === "string") instruction.method = descriptor.method;
   if (typeof descriptor.id === "string") instruction.intrinsic = descriptor.id;
   if (typeof descriptor.field === "string") instruction.field = descriptor.field;
+  if (
+    (instruction.name === "map_iter_init" ||
+      instruction.name === "map_iter_next" ||
+      instruction.name === "map_iter_close") &&
+    typeof descriptor.$local === "number"
+  )
+    instruction.iteratorLocal = descriptor.$local;
   if (instruction.name === "get_path") {
     const fields = descriptorList(descriptor, "fields", instruction.name);
     instruction.fieldPath = Object.freeze(fields.map((field) => Number(field)));
@@ -698,20 +771,16 @@ function validateOperands(
     validateU32(output, `${path}.outputs`);
     if (output >= LOCAL_OUTPUT) {
       if (
-        operands.outputs.length !== 1 ||
         !DIRECT_LOCAL_OUTPUTS.has(instruction.name) ||
+        (operands.outputs.length !== 1 &&
+          instruction.name !== "call_direct" &&
+          instruction.name !== "map_iter_next") ||
         output - LOCAL_OUTPUT >= fn.localTypes.length
       )
         fail("invalid direct local output", `${path}.outputs`, "invalid_operand");
       if (fn.cellLocals.has(output - LOCAL_OUTPUT))
         fail(
           "direct local output requires private local storage",
-          `${path}.outputs`,
-          "invalid_operand",
-        );
-      if (!isFixedScalar(fn.localTypes[output - LOCAL_OUTPUT]!))
-        fail(
-          "direct local output requires a fixed scalar local",
           `${path}.outputs`,
           "invalid_operand",
         );
@@ -797,6 +866,10 @@ function instructionArity(
     case "call_intrinsic":
       inputs = count("arg_count");
       outputs = count("result_count", instruction.name === "call_intrinsic");
+      break;
+    case "min_max":
+      inputs = count("arg_count");
+      outputs = 1;
       break;
     default:
       fail("opcode has no operand arity", path, "invalid_operand");
@@ -953,6 +1026,30 @@ function validateDescriptor(
       descriptor.$type = validateTypeDescriptor(fn.module, descriptor.type, `${path}.type`);
       descriptor.$target = label(descriptor.label, `${path}.label`);
       break;
+    case "min_max": {
+      const type = validateTypeDescriptor(fn.module, descriptor.type, `${path}.type`);
+      if (!type) fail("min/max type is unavailable", `${path}.type`, "invalid_operand");
+      const underlying = fn.module.registry.underlying(type).ref;
+      const ordered =
+        underlying.kind === Kind.Primitive &&
+        (underlying.primitive === PrimitiveKind.PrimitiveString ||
+          (underlying.primitive >= PrimitiveKind.PrimitiveInt &&
+            underlying.primitive <= PrimitiveKind.PrimitiveFloat64));
+      if (!ordered) fail("min/max type is not ordered", `${path}.type`, "invalid_operand");
+      const operator = descriptorString(descriptor, "operator", path);
+      if (operator !== "min" && operator !== "max")
+        fail("invalid min/max operator", `${path}.operator`, "invalid_operand");
+      const argCount = descriptorInteger(descriptor, "arg_count", path);
+      if (argCount < 1 || argCount !== instruction.operands.inputs.length)
+        fail("min/max argument count is invalid", `${path}.arg_count`, "invalid_operand");
+      for (const operand of instruction.operands.inputs)
+        if (!fn.module.registry.identical(operandType(operand), type))
+          fail("min/max operand type differs from descriptor", path, "invalid_operand");
+      if (!fn.module.registry.identical(outputType(instruction.operands.outputs[0]!), type))
+        fail("min/max output type differs from descriptor", path, "invalid_operand");
+      descriptor.$type = type;
+      break;
+    }
     case "len_compare_branch": {
       const type = validateTypeDescriptor(fn.module, descriptor.type, `${path}.type`);
       if (
@@ -1029,6 +1126,7 @@ function validateDescriptor(
       const target = targetModule();
       const callee = target.functions.get(descriptorString(descriptor, "function", path));
       if (!callee) fail("call target does not exist", path, "link_error");
+      instruction.callTarget = callee;
       const results = descriptorInteger(descriptor, "result_count", path, true);
       if (
         descriptorInteger(descriptor, "arg_count", path) !== callee.signature.params.length ||
@@ -1037,16 +1135,11 @@ function validateDescriptor(
       )
         fail("call contract does not match target signature", path, "invalid_call");
       if (instruction.name === "call_direct") {
-        const localOutput = instruction.operands.outputs[0];
-        if (localOutput !== undefined && localOutput >= LOCAL_OUTPUT) {
-          if (callee.signature.results.length !== 1)
-            fail("direct local call output requires one result", path, "invalid_call");
-          const localIndex = localOutput - LOCAL_OUTPUT;
-          const resultType = target.registry.runtime(callee.signature.results[0]!);
-          if (
-            !isFixedScalar(resultType) ||
-            !target.registry.identical(fn.localTypes[localIndex]!, resultType)
-          )
+        for (const [index, output] of instruction.operands.outputs.entries()) {
+          if (output < LOCAL_OUTPUT) continue;
+          const localIndex = output - LOCAL_OUTPUT;
+          const resultType = target.registry.runtime(callee.signature.results[index]!);
+          if (!target.registry.identical(fn.localTypes[localIndex]!, resultType))
             fail("direct local call output type does not match result", path, "invalid_call");
         }
       }

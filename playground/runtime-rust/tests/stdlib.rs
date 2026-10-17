@@ -54,7 +54,7 @@ impl Entropy for Environment {
     fn read(&self, bytes: &mut [u8]) -> (usize, Option<RuntimeError>) {
         let start = self
             .entropy
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |start| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |start| {
                 Some(start.saturating_add(bytes.len()).min(4096))
             })
             .unwrap();
@@ -84,7 +84,7 @@ fn run_package(vector: &Vector, bridge: &dyn mini_go::ffi::Bridge) -> Result<(),
     )?;
     let environment = Arc::new(Environment::default());
     instance.set_environment(environment.clone(), environment.clone())?;
-    instance.start("default", vec![])?;
+    instance.start("default", &[])?;
     let wake = instance.wake();
     let mut last_progress = Instant::now();
     loop {

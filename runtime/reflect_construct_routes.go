@@ -118,11 +118,6 @@ func reflectMakeSlice(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		}
 		return reflectValueError(err.Error()), nil
 	}
-	if ctx.vm != nil {
-		if err := ctx.vm.chargeRuntimeObject(capacityValue, 0); err != nil {
-			return nil, err
-		}
-	}
 	elemType := module.sequenceElementType(typ)
 	backing := make([]vmValue, capacityValue)
 	for i := range backing {

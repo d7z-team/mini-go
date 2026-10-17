@@ -30,9 +30,12 @@ pub mod error;
 pub mod execution;
 mod executor_pool;
 pub mod ffi;
-pub mod heap;
+mod heap;
 pub mod instance;
 pub mod loader;
+pub(crate) mod managed_channel;
+pub(crate) mod managed_map;
+pub(crate) mod managed_storage;
 mod operators;
 pub mod program;
 #[cfg(feature = "rpc")]
@@ -42,13 +45,14 @@ pub mod snapshot;
 pub mod stdlib_host;
 pub mod symbols;
 pub mod types;
-pub mod value;
+mod value;
 
 pub use error::RuntimeError;
 pub use execution::Executor;
 pub use execution::{
     Debugger, Execution, ExecutionState, InstanceOptions, ScopeStats, SharedInstance as Instance,
 };
+pub use heap::HeapStats;
 pub use instance::patch::{PatchPlan, PatchResult, RevisionInfo};
 pub use instance::stats::{InstanceState, Stats};
 pub use instance::{ExecutionLimits as Limits, UNLIMITED_STEPS};

@@ -6,7 +6,7 @@ import (
 )
 
 func stringsIndexByte(_ intrinsicContext, args []vmValue) ([]vmValue, error) {
-	text, ok := args[0].Data.(string)
+	text, ok := args[0].payload().(string)
 	start, startErr := asInt64(args[1])
 	end, endErr := asInt64(args[2])
 	needle, needleErr := asInt64(args[3])

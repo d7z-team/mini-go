@@ -30,24 +30,34 @@ type ScopeStats struct {
 
 // Stats is a point-in-time runtime snapshot copied by the VM owner.
 type Stats struct {
-	Revision             RevisionInfo
-	State                InstanceState
-	ActiveScopes         int
-	RunnableTasks        int
-	BlockedTasks         int
-	BlockedContexts      []BlockedContext
-	PausedTasks          int
-	PendingFFICalls      int
-	Timers               int
-	RetainedRevisions    int
-	ExecutedSteps        int64
-	LiveGuestBytes       int64
-	AllocatedSinceSweep  int64
-	TotalAllocatedBytes  int64
-	PeakGuestBytes       int64
-	PendingBoundaryBytes int64
-	DynamicTypes         int
-	DynamicTypeBytes     int64
+	Revision                 RevisionInfo
+	State                    InstanceState
+	ActiveScopes             int
+	RunnableTasks            int
+	BlockedTasks             int
+	BlockedContexts          []BlockedContext
+	PausedTasks              int
+	PendingFFICalls          int
+	Timers                   int
+	RetainedRevisions        int
+	ExecutedSteps            int64
+	OccupiedGuestBytes       int64
+	ReservedGuestBytes       int64
+	TotalGuestAllocatedBytes int64
+	LastMajorReachableBytes  int64
+	CopiedGuestBytes         int64
+	PromotedGuestBytes       int64
+	ResidentPageBytes        int64
+	ManagedAllocations       int64
+	MinorCollections         int64
+	MajorCollections         int64
+	GCNanos                  int64
+	ScannedRoots             int64
+	ScannedCards             int64
+	ScannedReferences        int64
+	PendingBoundaryBytes     int64
+	DynamicTypes             int
+	DynamicTypeBytes         int64
 }
 
 // State returns the current instance lifecycle without entering the VM owner.
@@ -76,14 +86,28 @@ func (i *Instance) RuntimeStats(ctx context.Context) (Stats, error) {
 		return Stats{}, err
 	}
 	defer i.vm.leaveOwner()
-	sinceSweep := i.vm.allocatedSinceSweep.Load()
 	stats := Stats{
 		State: i.State(), PendingFFICalls: len(i.vm.ffiCalls), Timers: len(i.vm.timers),
 		RetainedRevisions: i.vm.liveRevisionCount(), ExecutedSteps: i.vm.executedSteps,
-		LiveGuestBytes: i.vm.liveGuestBytes.Load() + sinceSweep, AllocatedSinceSweep: sinceSweep,
-		TotalAllocatedBytes: i.vm.totalAllocatedBytes.Load(), PeakGuestBytes: i.vm.peakGuestBytes.Load(),
 		PendingBoundaryBytes: i.vm.pendingBoundaryBytes.Load(),
 		DynamicTypes:         i.vm.dynamicTypeCount, DynamicTypeBytes: i.vm.dynamicTypeBytes,
+	}
+	if i.vm.heap != nil {
+		heap := i.vm.heap.stats()
+		stats.OccupiedGuestBytes = int64(heap.occupiedBytes)
+		stats.ReservedGuestBytes = int64(heap.reservedBytes)
+		stats.LastMajorReachableBytes = int64(heap.lastMajorReachableBytes)
+		stats.CopiedGuestBytes = int64(heap.copiedBytes)
+		stats.PromotedGuestBytes = int64(heap.promotedBytes)
+		stats.TotalGuestAllocatedBytes = int64(heap.totalAllocatedBytes)
+		stats.ResidentPageBytes = int64(heap.residentPageBytes)
+		stats.ManagedAllocations = int64(heap.allocations)
+		stats.MinorCollections = int64(heap.minorCollections)
+		stats.MajorCollections = int64(heap.majorCollections)
+		stats.GCNanos = int64(heap.gcNanos)
+		stats.ScannedRoots = int64(heap.scannedRoots)
+		stats.ScannedCards = int64(heap.scannedCards)
+		stats.ScannedReferences = int64(heap.scannedReferences)
 	}
 	if revision := i.vm.revision.Load(); revision != nil && revision.code != nil {
 		stats.Revision = RevisionInfo{Generation: revision.generation, Hash: revision.code.image.Hash, SymbolsHash: revision.symbolsHash()}

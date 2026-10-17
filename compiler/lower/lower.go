@@ -75,9 +75,8 @@ func Lower(checked check.CheckedProgram, options Options) (ir.Program, []source.
 			break
 		}
 	}
-	l.semanticTypeText = map[types.TypeRef]string{}
+	l.typeTextCache = map[types.TypeRef]string{}
 	l.resolvedTypes = map[string]string{}
-	l.namedUnderlyingTypes = map[string]string{}
 	if len(l.diagnostics) != 0 {
 		return ir.Program{}, l.diagnostics
 	}

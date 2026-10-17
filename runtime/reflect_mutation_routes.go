@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func reflectValueSetLen(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
@@ -43,8 +41,8 @@ func reflectValueGrow(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if module == nil || !module.isSliceType(current.Type) {
 		return []vmValue{newVMValue("String", "reflect: Grow of non-slice Value"), newVMValue("Bool", false)}, nil
 	}
-	slice, ok := current.Data.(*vmSlice)
-	if !ok && current.Data != nil {
+	slice, ok := current.payload().(*vmSlice)
+	if !ok && current.payload() != nil {
 		return []vmValue{newVMValue("String", "reflect: invalid slice backing"), newVMValue("Bool", false)}, nil
 	}
 	length, capacity := 0, 0
@@ -69,13 +67,8 @@ func reflectValueGrow(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		}
 		return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
 	}
-	if ctx.vm != nil {
-		if err := ctx.vm.chargeAllocationBytes(int64(checkedCapacity-capacity) * ir.RuntimeSlotBytes); err != nil {
-			return nil, err
-		}
-	}
 	var grown vmValue
-	if slice != nil && slice.ByteBacked {
+	if slice != nil && slice.byteBacked() {
 		backing := make([]byte, checkedCapacity)
 		copy(backing, slice.bytes())
 		grown = newByteSliceHeaderValue(current.Type, backing, length, checkedCapacity)
@@ -140,7 +133,7 @@ func reflectSetSliceHeaderValue(value vmValue, n int64, setLen bool) (vmValue, e
 	if n < 0 {
 		return vmValue{}, fmt.Errorf("negative count %d", n)
 	}
-	slice, ok := value.Data.(*vmSlice)
+	slice, ok := value.payload().(*vmSlice)
 	if !ok {
 		return vmValue{}, fmt.Errorf("invalid slice backing for %s", value.Type)
 	}
@@ -255,7 +248,7 @@ func reflectValueSetMapIndex(ctx intrinsicContext, args []vmValue) ([]vmValue, e
 	}
 	module := reflectRelationModule(ctx)
 	if !elemOK {
-		data, ok := targetMap.Data.(*vmMap)
+		data, ok := targetMap.payload().(*vmMap)
 		if !ok || data == nil {
 			return []vmValue{newVMValue("String", "reflect: SetMapIndex on nil map"), newVMValue("Bool", false)}, nil
 		}
@@ -271,14 +264,11 @@ func reflectValueSetMapIndex(ctx intrinsicContext, args []vmValue) ([]vmValue, e
 		if err != nil {
 			return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
 		}
-		data.deleteEntry(encoded)
-	} else if _, err := setIndexValue(module, targetMap, keyValue, elemValue); err != nil {
-		return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
-	}
-	if ctx.vm != nil {
-		if err := ctx.vm.validateRuntimeValue(targetMap); err != nil {
-			return nil, err
+		if err := data.deleteEntryWithBatch(encoded, ctx.batch); err != nil {
+			return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
 		}
+	} else if _, err := setIndexValueWithBatch(module, targetMap, keyValue, elemValue, ctx.batch); err != nil {
+		return []vmValue{newVMValue("String", err.Error()), newVMValue("Bool", false)}, nil
 	}
 	if hasTarget {
 		if err := storePointer(targetPtr, targetMap); err != nil {

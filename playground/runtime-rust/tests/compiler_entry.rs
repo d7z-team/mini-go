@@ -81,7 +81,11 @@ fn compiler_prepares_unicode_with_default_limits() {
         deadline,
     );
     compiler.start_bytes("default", b"{}").unwrap();
-    while compiler.poll_steps(4096).unwrap() != PollStatus::Ready {
+    while compiler
+        .poll_steps(4096)
+        .unwrap_or_else(|error| panic!("compiler handshake: {error}; {:?}", compiler.stats()))
+        != PollStatus::Ready
+    {
         assert!(Instant::now() < deadline, "compiler handshake watchdog");
     }
     let snapshot = compiler.snapshot_results(Default::default()).unwrap();
@@ -98,7 +102,11 @@ fn compiler_prepares_unicode_with_default_limits() {
     compiler
         .start_bytes("default", &serde_json::to_vec(&request).unwrap())
         .unwrap();
-    while compiler.poll_steps(4096).unwrap() != PollStatus::Ready {
+    while compiler
+        .poll_steps(4096)
+        .unwrap_or_else(|error| panic!("Unicode prepare: {error}; {:?}", compiler.stats()))
+        != PollStatus::Ready
+    {
         assert!(
             Instant::now() < deadline,
             "Unicode prepare watchdog: {:?}",
@@ -119,7 +127,7 @@ fn compiler_prepares_unicode_with_default_limits() {
     let program =
         Arc::new(Program::load(fields["Image"].get().as_bytes(), LoadLimits::default()).unwrap());
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", Vec::new()).unwrap();
+    vm.start("default", &[]).unwrap();
     while vm.poll_steps(4096).unwrap() != PollStatus::Ready {
         assert!(
             Instant::now() < deadline,

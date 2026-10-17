@@ -66,18 +66,18 @@ func reflectValueIsZero(module *moduleInstance, value vmValue) bool {
 
 func reflectValueIsNil(value vmValue, info TypeInfo) bool {
 	if value.Type.Ref.Kind == types.Any {
-		if value.Data == nil {
+		if value.payload() == nil {
 			return true
 		}
-		inner, ok := value.Data.(vmValue)
+		inner, ok := value.payload().(vmValue)
 		return ok && reflectValueIsNil(inner, reflectTypeInfoForTypeText(nil, inner.Type.String()))
 	}
 	switch strings.TrimSpace(info.Kind) {
 	case "slice":
-		data, ok := value.Data.(*vmSlice)
+		data, ok := value.payload().(*vmSlice)
 		return !ok || data == nil
 	case "map":
-		switch data := value.Data.(type) {
+		switch data := value.payload().(type) {
 		case nil:
 			return true
 		case *vmMap:
@@ -86,14 +86,14 @@ func reflectValueIsNil(value vmValue, info TypeInfo) bool {
 			return false
 		}
 	case "pointer":
-		return value.Data == nil
+		return value.payload() == nil
 	case "chan", "recv_chan", "send_chan":
-		data, ok := value.Data.(*waitableResource)
+		data, ok := value.payload().(*waitableResource)
 		return !ok || data == nil
 	case "function":
-		return value.Data == nil
+		return value.payload() == nil
 	case "interface":
-		return value.Data == nil
+		return value.payload() == nil
 	default:
 		return false
 	}

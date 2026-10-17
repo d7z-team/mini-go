@@ -1,12 +1,5 @@
 package bytecode
 
-const (
-	RuntimeNodeBytes     = 128
-	RuntimeSlotBytes     = 16
-	RuntimeMapEntryBytes = 32
-	RuntimeByteBytes     = 1
-)
-
 var payloadSpecs = []PayloadSpec{
 	{Name: "field_path", Fields: []FieldSpec{{Name: "type", Type: "TypeRef", Required: true}, {Name: "fields", Type: "[]uint32", Required: true}}},
 	{Name: "compare_branch", Fields: []FieldSpec{{Name: "operator", Type: "comparison", Required: true}, {Name: "type", Type: "TypeRef", Required: true}, {Name: "label", Type: "label", Required: true}, {Name: "when", Type: "bool", Required: true}}},
@@ -19,6 +12,7 @@ var payloadSpecs = []PayloadSpec{
 	{Name: "address", Fields: []FieldSpec{{Name: "kind", Type: "enum(local,upvalue,global,export)", Required: true}, {Name: "local", Type: "local-id"}, {Name: "upvalue", Type: "upvalue-id"}, {Name: "global", Type: "global-id"}, {Name: "module_path", Type: "module-path", Rule: "required for export addresses; mutually exclusive with local, upvalue and global ids"}, {Name: "export", Type: "export-name", Rule: "required for export addresses; must resolve to a global variable"}, {Name: "path", Type: "[]address-segment(field,index,indirect)"}}},
 	{Name: "type", Fields: []FieldSpec{{Name: "type", Type: "canonical-type", Required: true}, {Name: "variadic", Type: "bool", Rule: "when true, type must be a function signature with a final Slice<T> parameter"}}},
 	{Name: "operator", Fields: []FieldSpec{{Name: "operator", Type: "string", Required: true}}},
+	{Name: "minmax", Fields: []FieldSpec{{Name: "type", Type: "TypeRef", Required: true}, {Name: "operator", Type: "string", Required: true, Rule: "min or max"}, {Name: "arg_count", Type: "int", Required: true, Rule: "at least one"}}},
 	{Name: "make_sequence", Fields: []FieldSpec{{Name: "type", Type: "canonical-type", Required: true}, {Name: "element_count", Type: "int", Required: true, Rule: "non-negative"}}},
 	{Name: "make_map", Fields: []FieldSpec{{Name: "type", Type: "canonical-type", Required: true}, {Name: "entry_count", Type: "int", Required: true, Rule: "non-negative key/value pair count"}, {Name: "has_capacity", Type: "bool", Rule: "when true, the final input is a capacity hint after the key/value pairs"}}},
 	{Name: "make_struct", Fields: []FieldSpec{{Name: "type", Type: "canonical-type", Required: true}, {Name: "fields", Type: "[]field-name"}}},
@@ -61,7 +55,7 @@ var opcodeSpecs = []OpcodeSpec{
 	{Op: "recover", Arity: OperandArity{Kind: "fixed", Inputs: 0, Outputs: 1}, Category: "control", Operands: "write recovered panic value"},
 	{Op: "defer_push", Arity: OperandArity{Kind: "fixed", Inputs: 1, Outputs: 0}, Category: "control", Payload: "defer", Operands: "read function", Notes: "owner_depth lets compiler-lowered helper frames register a deferred call on an enclosing source frame"},
 	{Op: "call_value", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read callee and args, write results"},
-	{Op: "call_direct", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read args, write results; a single fixed scalar result may target a private local"},
+	{Op: "call_direct", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read args, write results; results may target distinct private locals"},
 	{Op: "tail_call_direct", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call", Operands: "read args and complete through target", Terminal: true},
 	{Op: "call_interface", Arity: OperandArity{Kind: "payload"}, Category: "call", Payload: "call_interface", Operands: "read interface receiver and args, write results", Notes: "dynamic dispatch by canonical interface method metadata; not Go source selector syntax"},
 	{Op: "make_closure", Arity: OperandArity{Kind: "fixed", Inputs: 0, Outputs: 1}, Category: "call", Payload: "closure", Operands: "write closure"},
@@ -111,6 +105,7 @@ var opcodeSpecs = []OpcodeSpec{
 	{Op: "get_path", Arity: OperandArity{Kind: "fixed", Inputs: 1, Outputs: 1}, Category: "value", Payload: "field_path", Operands: "consume one operand, produce one result", Notes: "read a bounded sequence of declared fields"},
 	{Op: "index_convert", Arity: OperandArity{Kind: "fixed", Inputs: 2, Outputs: 1}, Category: "composite", Payload: "type", Operands: "read indexable object/index, write converted integer", Notes: "fused load_index followed by a scalar integer conversion"},
 	{Op: "len_compare_branch", Arity: OperandArity{Kind: "fixed", Inputs: 2, Outputs: 0}, Category: "control", Payload: "compare_branch", Operands: "read indexable object/integer, branch without materializing len", Notes: "length is the left comparison operand; compiler normalizes the operator when source length was on the right"},
+	{Op: "min_max", Arity: OperandArity{Kind: "payload"}, Category: "value", Payload: "minmax", Operands: "read ordered values, write selected value"},
 }
 
 var knownOpcodes = func() map[string]Opcode {

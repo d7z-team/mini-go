@@ -6,8 +6,9 @@ use crate::{
     error::RuntimeError,
     heap::{Handle, Heap},
     instance::scheduler::Resource,
+    managed_map::ManagedMapOwner,
     types::{TypeIdentity, TypeRegistry},
-    value::{Address, Data, PathElement, Value},
+    value::{Address, Data, Value},
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -18,6 +19,16 @@ pub struct HostValue {
 }
 
 impl HostValue {
+    pub fn integer(&self) -> Result<i64, RuntimeError> {
+        match self.data {
+            HostData::Integer(value) => Ok(value),
+            _ => Err(RuntimeError::new(
+                "type_error",
+                "host_value",
+                "expected signed integer",
+            )),
+        }
+    }
     pub fn int(value: i64) -> Self {
         Self {
             typ: TypeIdentity::Primitive(wire::PrimitiveInt),
@@ -50,6 +61,18 @@ impl HostValue {
             data: HostData::Interface(Box::new(value)),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PathElement {
+    Field(String),
+    Index(usize),
+    ArrayView {
+        start: usize,
+        length: usize,
+        typ: TypeIdentity,
+    },
+    TypeView(TypeIdentity),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -130,21 +153,26 @@ pub struct HostSnapshot {
 }
 
 struct SnapshotBuilder<'a> {
+    heap: &'a Heap,
+    maps: &'a ManagedMapOwner,
     types: &'a TypeRegistry,
     limits: SnapshotLimits,
     bytes: usize,
     indices: HashMap<Handle, usize>,
-    pending: Vec<Handle>,
+    pending: Vec<(Handle, Option<TypeIdentity>)>,
 }
 
 impl HostSnapshot {
     pub(crate) fn capture(
-        heap: &Heap<Value>,
+        heap: &Heap,
         types: &TypeRegistry,
+        maps: &ManagedMapOwner,
         roots: &[Value],
         limits: SnapshotLimits,
     ) -> Result<Self, RuntimeError> {
         let mut builder = SnapshotBuilder {
+            heap,
+            maps,
             types,
             limits,
             bytes: 0,
@@ -157,8 +185,51 @@ impl HostSnapshot {
             .collect::<Result<Vec<_>, _>>()?;
         let mut objects = Vec::new();
         while objects.len() < builder.pending.len() {
-            let value = heap.get(builder.pending[objects.len()])?;
-            objects.push(builder.value(&value, 0)?);
+            let (handle, typ) = builder.pending[objects.len()].clone();
+            if let Some(map) = builder.maps.get(handle) {
+                let typ = typ.as_ref().ok_or_else(|| {
+                    RuntimeError::new("snapshot_type", "map", "map view type is missing")
+                })?;
+                let (module, node) = types.node(typ)?.ok_or_else(|| {
+                    RuntimeError::new("snapshot_type", "map", "map type is unavailable")
+                })?;
+                let key_type = types.resolve(module, &node.key)?;
+                let value_type = types.resolve(module, &node.elem)?;
+                let count = map.len()? as usize;
+                if count > builder.limits.max_bytes.saturating_sub(builder.bytes) / 32 {
+                    return Err(RuntimeError::new(
+                        "snapshot_limit",
+                        "map",
+                        "map entries exceed snapshot byte budget",
+                    ));
+                }
+                builder.charge(16)?;
+                let mut entries = Vec::with_capacity(count);
+                for identity in map.snapshot()? {
+                    if let Some(entry) = map.entry(identity)? {
+                        let key =
+                            heap.decode_map_lane(&key_type, &entry.key, &entry.key_references)?;
+                        let value = heap.decode_map_lane(
+                            &value_type,
+                            &entry.value,
+                            &entry.value_references,
+                        )?;
+                        entries.push((builder.value(&key, 1)?, builder.value(&value, 1)?));
+                    }
+                }
+                objects.push(HostValue {
+                    typ: TypeIdentity::Any,
+                    data: HostData::MapEntries(entries),
+                });
+            } else {
+                let mut value = heap.read_typed_value(handle)?;
+                if matches!(value.data, Data::Resource(_))
+                    && let Some(typ) = typ
+                {
+                    value.typ = typ;
+                }
+                objects.push(builder.value(&value, 0)?);
+            }
         }
         Ok(Self {
             roots,
@@ -179,6 +250,191 @@ impl HostSnapshot {
             RuntimeError::new("snapshot_address", "snapshot", "object does not exist")
         })?;
         self.project_address(value, &address.path)
+    }
+
+    fn numeric_path(
+        types: &TypeRegistry,
+        root_type: &TypeIdentity,
+        offset: u64,
+        target_type_id: u32,
+    ) -> Result<Vec<PathElement>, RuntimeError> {
+        let target_type = types
+            .identity_for_storage_type_id(target_type_id)
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    "snapshot_address",
+                    "snapshot",
+                    "numeric pointer type is unavailable",
+                )
+            })?;
+        fn find(
+            types: &TypeRegistry,
+            typ: &TypeIdentity,
+            offset: u64,
+            target_type_id: u32,
+            target_type: &TypeIdentity,
+            path: &mut Vec<PathElement>,
+            depth: usize,
+        ) -> Result<bool, RuntimeError> {
+            if depth > 256 {
+                return Err(RuntimeError::new(
+                    "snapshot_address",
+                    "snapshot",
+                    "numeric pointer path is too deep",
+                ));
+            }
+            if offset == 0
+                && (typ == &TypeIdentity::Any
+                    || types.storage_type_id(typ)? == target_type_id
+                    || types.conversion_underlying_identical(typ, target_type)?)
+            {
+                if typ == &TypeIdentity::Any {
+                    if let Some(crate::types::StorageTypeLayout::Array { element, length }) =
+                        types.storage_layout(&types.underlying(target_type)?)?
+                    {
+                        path.push(PathElement::ArrayView {
+                            start: 0,
+                            length,
+                            typ: element,
+                        });
+                    } else {
+                        path.push(PathElement::TypeView(target_type.clone()));
+                    }
+                } else if types.storage_type_id(typ)? != target_type_id {
+                    path.push(PathElement::TypeView(target_type.clone()));
+                }
+                return Ok(true);
+            }
+            let underlying = types.underlying(typ)?;
+            if let TypeIdentity::Slice(element) = &underlying {
+                let stride = u64::from(types.storage_lane_layout(element)?.stride);
+                let target = types
+                    .identity_for_storage_type_id(target_type_id)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            "snapshot_address",
+                            "snapshot",
+                            "numeric pointer type is unavailable",
+                        )
+                    })?;
+                if let Some(crate::types::StorageTypeLayout::Array {
+                    element: target_element,
+                    length,
+                }) = types.storage_layout(&types.underlying(&target)?)?
+                    && stride != 0
+                    && offset.is_multiple_of(stride)
+                    && types.storage_type_id(&target)? == target_type_id
+                {
+                    path.push(PathElement::ArrayView {
+                        start: (offset / stride) as usize,
+                        length,
+                        typ: target_element,
+                    });
+                    return Ok(true);
+                }
+            }
+            if let Some(crate::types::StorageTypeLayout::Array {
+                element: source_element,
+                length: source_length,
+            }) = types.storage_layout(&underlying)?
+            {
+                let target = types
+                    .identity_for_storage_type_id(target_type_id)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            "snapshot_address",
+                            "snapshot",
+                            "numeric pointer type is unavailable",
+                        )
+                    })?;
+                if let Some(crate::types::StorageTypeLayout::Array {
+                    element: target_element,
+                    length: target_length,
+                }) = types.storage_layout(&types.underlying(&target)?)?
+                {
+                    let stride = u64::from(types.storage_lane_layout(&source_element)?.stride);
+                    let start = offset.checked_div(stride).unwrap_or(u64::MAX);
+                    if stride != 0
+                        && offset.is_multiple_of(stride)
+                        && start.saturating_add(target_length as u64) <= source_length as u64
+                        && types.storage_type_id(&target)? == target_type_id
+                    {
+                        path.push(PathElement::ArrayView {
+                            start: start as usize,
+                            length: target_length,
+                            typ: target_element,
+                        });
+                        return Ok(true);
+                    }
+                }
+            }
+            match types.storage_layout(&underlying)? {
+                Some(crate::types::StorageTypeLayout::Struct { fields }) => {
+                    let mut base = 0_u64;
+                    for (name, field_type) in fields.iter() {
+                        let stride = u64::from(types.storage_lane_layout(field_type)?.stride);
+                        if offset < base.saturating_add(stride) {
+                            path.push(PathElement::Field(name.clone()));
+                            if find(
+                                types,
+                                field_type,
+                                offset.saturating_sub(base),
+                                target_type_id,
+                                target_type,
+                                path,
+                                depth + 1,
+                            )? {
+                                return Ok(true);
+                            }
+                            path.pop();
+                            return Ok(false);
+                        }
+                        base = base.saturating_add(stride);
+                    }
+                }
+                Some(crate::types::StorageTypeLayout::Array { element, length }) => {
+                    let stride = u64::from(types.storage_lane_layout(&element)?.stride);
+                    if let Some(index) = offset.checked_div(stride)
+                        && index < length as u64
+                    {
+                        path.push(PathElement::Index(index as usize));
+                        if find(
+                            types,
+                            &element,
+                            offset % stride,
+                            target_type_id,
+                            target_type,
+                            path,
+                            depth + 1,
+                        )? {
+                            return Ok(true);
+                        }
+                        path.pop();
+                    }
+                }
+                _ => {}
+            }
+            Ok(false)
+        }
+
+        let mut path = Vec::new();
+        if find(
+            types,
+            root_type,
+            offset,
+            target_type_id,
+            &target_type,
+            &mut path,
+            0,
+        )? {
+            Ok(path)
+        } else {
+            Err(RuntimeError::new(
+                "snapshot_address",
+                "snapshot",
+                "numeric pointer location does not resolve",
+            ))
+        }
     }
 
     fn project_address<'a>(
@@ -442,8 +698,15 @@ impl SnapshotBuilder<'_> {
         Ok(())
     }
 
-    fn object(&mut self, handle: Handle) -> Result<usize, RuntimeError> {
+    fn object(
+        &mut self,
+        handle: Handle,
+        typ: Option<&TypeIdentity>,
+    ) -> Result<usize, RuntimeError> {
         if let Some(index) = self.indices.get(&handle) {
+            if self.pending[*index].1.is_none() {
+                self.pending[*index].1 = typ.cloned();
+            }
             return Ok(*index);
         }
         if self.pending.len() >= self.limits.max_objects {
@@ -456,12 +719,69 @@ impl SnapshotBuilder<'_> {
         self.charge(128)?;
         let index = self.pending.len();
         self.indices.insert(handle, index);
-        self.pending.push(handle);
+        self.pending.push((handle, typ.cloned()));
         Ok(index)
     }
 
     fn address(&mut self, address: &Address) -> Result<HostAddress, RuntimeError> {
-        for segment in &address.path {
+        let path = if let Some((offset, type_id, flags)) = address.identity.numeric {
+            if flags == 1 {
+                let target = self
+                    .types
+                    .identity_for_storage_type_id(type_id)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            "snapshot_address",
+                            "snapshot",
+                            "numeric pointer type is unavailable",
+                        )
+                    })?;
+                match self
+                    .types
+                    .storage_layout(&self.types.underlying(&target)?)?
+                {
+                    Some(crate::types::StorageTypeLayout::Array { element, length }) => {
+                        vec![PathElement::ArrayView {
+                            start: usize::try_from(offset).map_err(|_| {
+                                RuntimeError::new(
+                                    "snapshot_address",
+                                    "snapshot",
+                                    "numeric byte offset overflows",
+                                )
+                            })?,
+                            length,
+                            typ: element,
+                        }]
+                    }
+                    _ if self.types.underlying(&target)?
+                        == TypeIdentity::Primitive(wire::PrimitiveUint8) =>
+                    {
+                        vec![PathElement::Index(usize::try_from(offset).map_err(
+                            |_| {
+                                RuntimeError::new(
+                                    "snapshot_address",
+                                    "snapshot",
+                                    "numeric byte offset overflows",
+                                )
+                            },
+                        )?)]
+                    }
+                    _ => {
+                        return Err(RuntimeError::new(
+                            "snapshot_address",
+                            "snapshot",
+                            "compact pointer target is not byte-addressable",
+                        ));
+                    }
+                }
+            } else {
+                let value = self.heap.read_typed_value(address.root)?;
+                HostSnapshot::numeric_path(self.types, &value.typ, offset, type_id)?
+            }
+        } else {
+            address.path.clone()
+        };
+        for segment in &path {
             self.charge(
                 16 + match segment {
                     PathElement::Field(name) => name.len(),
@@ -470,8 +790,8 @@ impl SnapshotBuilder<'_> {
             )?;
         }
         Ok(HostAddress {
-            object: self.object(address.root)?,
-            path: address.path.clone(),
+            object: self.object(address.root, None)?,
+            path,
         })
     }
 
@@ -528,6 +848,21 @@ impl SnapshotBuilder<'_> {
                     .map(|value| self.value(value, depth + 1))
                     .collect::<Result<_, _>>()?,
             ),
+            Data::Aggregate(value) if value.is_array() => HostData::Array(
+                value
+                    .values()
+                    .map(|value| self.value(&value?, depth + 1))
+                    .collect::<Result<_, _>>()?,
+            ),
+            Data::Aggregate(value) => {
+                let mut output = BTreeMap::new();
+                for index in 0..value.len() {
+                    let name = value.field_name(index).unwrap();
+                    self.charge(name.len())?;
+                    output.insert(name.to_owned(), self.value(&value.get(index)?, depth + 1)?);
+                }
+                HostData::Struct(output)
+            }
             Data::Struct(fields) => {
                 let mut output = BTreeMap::new();
                 for (name, value) in fields {
@@ -535,6 +870,20 @@ impl SnapshotBuilder<'_> {
                     output.insert(name.clone(), self.value(value, depth + 1)?);
                 }
                 HostData::Struct(output)
+            }
+            Data::Interface(inner)
+                if value.typ == TypeIdentity::Any
+                    && (inner.typ == TypeIdentity::Primitive(wire::PrimitiveBool)
+                        || inner.typ == TypeIdentity::Primitive(wire::PrimitiveInt)
+                        || inner.typ == TypeIdentity::Primitive(wire::PrimitiveUint)
+                        || inner.typ == TypeIdentity::Primitive(wire::PrimitiveFloat32)
+                        || inner.typ == TypeIdentity::Primitive(wire::PrimitiveFloat64)
+                        || inner.typ == TypeIdentity::Primitive(wire::PrimitiveString)) =>
+            {
+                // Any scalar constants are represented internally as a
+                // one-element interface, but the public host snapshot uses
+                // Go's scalar boundary representation.
+                self.value(inner, depth + 1)?.data
             }
             Data::Interface(value) => HostData::Interface(Box::new(self.value(value, depth + 1)?)),
             Data::Pointer(address) => HostData::Pointer(self.address(address)?),
@@ -544,15 +893,7 @@ impl SnapshotBuilder<'_> {
                 length: slice.length,
                 capacity: slice.capacity,
             },
-            Data::Map(handle) => HostData::Map(self.object(*handle)?),
-            Data::MapEntries(entries) => HostData::MapEntries(
-                entries
-                    .iter()
-                    .map(|(key, value)| {
-                        Ok((self.value(key, depth + 1)?, self.value(value, depth + 1)?))
-                    })
-                    .collect::<Result<_, RuntimeError>>()?,
-            ),
+            Data::Map(handle) => HostData::Map(self.object(*handle, Some(&value.typ))?),
             Data::Function(function) => {
                 self.charge(function.module.len() + function.function.len())?;
                 HostData::Function {
@@ -581,7 +922,9 @@ impl SnapshotBuilder<'_> {
                     .map(|value| self.value(value, depth + 1).map(Box::new))
                     .transpose()?,
             },
-            Data::ResourceRef(handle) => HostData::Resource(self.object(*handle)?),
+            Data::ResourceRef(handle) => {
+                HostData::Resource(self.object(*handle, Some(&value.typ))?)
+            }
             Data::Resource(resource) => match &**resource {
                 Resource::Mutex {
                     locked,
@@ -592,27 +935,82 @@ impl SnapshotBuilder<'_> {
                     waiting: waiters.len(),
                     granted: grant.is_some(),
                 },
-                Resource::Channel {
-                    capacity,
-                    closed,
-                    values,
-                    ..
-                } => HostData::Channel {
-                    capacity: *capacity,
-                    closed: *closed,
-                    queued: values
-                        .iter()
-                        .map(|value| self.value(value, depth + 1))
-                        .collect::<Result<_, _>>()?,
-                },
+                Resource::Channel { channel } => {
+                    let channel = channel.lock().map_err(|_| {
+                        RuntimeError::new("runtime", "snapshot", "channel lock poisoned")
+                    })?;
+                    if channel.len() > self.limits.max_bytes.saturating_sub(self.bytes) / 16 {
+                        return Err(RuntimeError::new(
+                            "snapshot_limit",
+                            "channel",
+                            "queued values exceed snapshot byte budget",
+                        ));
+                    }
+                    let mut queued = Vec::with_capacity(channel.len());
+                    if !channel.is_empty() {
+                        let element = match &value.typ {
+                            // An untyped/any channel stores a dynamic typed
+                            // descriptor in each ring slot.  The prepared
+                            // decoder can recover that descriptor directly;
+                            // there is no registry node to resolve for Any.
+                            TypeIdentity::Any => TypeIdentity::Any,
+                            TypeIdentity::Slice(element) => (**element).clone(),
+                            typ => {
+                                let (module, node) = self.types.node(typ)?.ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "snapshot_type",
+                                        "channel",
+                                        "channel element type is unavailable",
+                                    )
+                                })?;
+                                self.types.resolve(module, &node.elem)?
+                            }
+                        };
+                        for index in 0..channel.len() {
+                            let payload = channel
+                                .peek_at(&self.heap.storage_pool(), index)?
+                                .ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "snapshot_state",
+                                        "channel",
+                                        "queued message is unavailable",
+                                    )
+                                })?;
+                            let message = self.heap.decode_prepared_value(&element, &payload)?;
+                            queued.push(self.value(&message, depth + 1)?);
+                        }
+                    }
+                    HostData::Channel {
+                        capacity: channel.capacity(),
+                        closed: channel.is_closed(),
+                        queued,
+                    }
+                }
             },
         };
         Ok(HostValue {
             typ: if value.typ == TypeIdentity::Any {
-                match value.data {
-                    Data::Bool(_) => TypeIdentity::Primitive(wire::PrimitiveBool),
-                    Data::String(_) => TypeIdentity::Primitive(wire::PrimitiveString),
-                    _ => value.typ.clone(),
+                match &value.data {
+                    Data::Interface(inner)
+                        if matches!(
+                            inner.data,
+                            Data::Bool(_)
+                                | Data::Integer(_)
+                                | Data::Unsigned(_)
+                                | Data::Float(_)
+                                | Data::Complex { .. }
+                                | Data::String(_)
+                        ) =>
+                    {
+                        inner.typ.clone()
+                    }
+                    _ => match &data {
+                        HostData::Bool(_) => TypeIdentity::Primitive(wire::PrimitiveBool),
+                        HostData::Integer(_) => TypeIdentity::Primitive(wire::PrimitiveInt),
+                        HostData::Unsigned(_) => TypeIdentity::Primitive(wire::PrimitiveUint),
+                        HostData::String(_) => TypeIdentity::Primitive(wire::PrimitiveString),
+                        _ => value.typ.clone(),
+                    },
                 }
             } else {
                 value.typ.clone()

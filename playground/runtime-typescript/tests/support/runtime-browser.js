@@ -17,7 +17,7 @@ try {
       before: before.toString(),
       after: after.toString(),
       generation: stats.generation.toString(),
-      memory: stats.totalGuestAllocatedBytes.toString(),
+      memory: stats.totalAllocatedBytes.toString(),
     };
   } finally {
     await vm.close();

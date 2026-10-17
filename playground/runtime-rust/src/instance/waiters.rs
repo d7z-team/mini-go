@@ -152,9 +152,14 @@ mod tests {
 
     #[test]
     fn ready_events_are_deduplicated_ordered_and_detached_on_cancel() {
-        let heap = Heap::new(4, 1024).unwrap();
-        let resource = heap.allocate(Value::int(0), 16).unwrap();
-        let unrelated = heap.allocate(Value::int(0), 16).unwrap();
+        let resource = Handle {
+            slot: 1,
+            generation: 1,
+        };
+        let unrelated = Handle {
+            slot: 2,
+            generation: 1,
+        };
         let mut waiters = Waiters::default();
         for id in 1..=128 {
             waiters.push(

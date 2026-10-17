@@ -298,7 +298,7 @@ struct BoundaryReservation {
 impl BoundaryBudget {
     fn reserve(self: &Arc<Self>, bytes: usize) -> Result<BoundaryReservation, RuntimeError> {
         self.used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|total| *total <= self.limit)
             })
             .map_err(|_| {
@@ -567,6 +567,18 @@ impl PendingCalls {
         let pending = self.calls.remove(&id).unwrap();
         reply.reservations[0] = Some(pending.reservation);
         Some(reply)
+    }
+
+    /// Copies a ready reply without changing its delivery state. Materializing
+    /// guest values may reach a collection or allocation limit; callers must
+    /// use this preview before removing the reply so a retry never loses the
+    /// host completion or invokes the host operation again.
+    pub(crate) fn preview(&self, id: u64) -> Option<(Vec<u8>, Option<RuntimeError>)> {
+        let pending = self.calls.get(&id)?;
+        pending.call.as_ref()?;
+        let delivery = pending.slot.delivery.lock().unwrap();
+        let reply = delivery.reply.as_ref()?;
+        Some((reply.payload().to_vec(), reply.error().cloned()))
     }
 
     pub fn cancel(&mut self, id: u64) {

@@ -9,10 +9,12 @@ import (
 
 func (m *moduleInstance) evalUnary(operator preparedOperator, value vmValue, numeric types.PrimitiveKind) (vmValue, error) {
 	resultType := value.Type
-	value = m.numericOperandValue(value, numeric)
+	if value.Type.Ref.Kind != types.Primitive {
+		value = m.numericOperandValue(value, numeric)
+	}
 	switch operator {
 	case operatorNot:
-		out, ok := value.Data.(bool)
+		out, ok := value.boolValue()
 		if !ok {
 			return vmValue{}, fmt.Errorf("operator %s expects Bool, got %s", operator, value.Type)
 		}
@@ -87,9 +89,13 @@ func (m *moduleInstance) evalUnary(operator preparedOperator, value vmValue, num
 
 func (m *moduleInstance) evalBinary(operator preparedOperator, left, right vmValue, numeric [2]types.PrimitiveKind) (vmValue, error) {
 	resultType := left.Type
-	left = m.numericOperandValue(left, numeric[0])
-	right = m.numericOperandValue(right, numeric[1])
-	if out, handled, err := evalIntegerBinary(operator, left, right); handled {
+	if left.Type.Ref.Kind != types.Primitive {
+		left = m.numericOperandValue(left, numeric[0])
+	}
+	if right.Type.Ref.Kind != types.Primitive {
+		right = m.numericOperandValue(right, numeric[1])
+	}
+	if out, handled, err := evalIntegerBinary(operator, left.Type, left.scalarKind, left.scalar, right.scalarKind, right.scalar); handled {
 		if err == nil && out.scalarKind != 0 {
 			out.Type = resultType
 		}
@@ -101,12 +107,7 @@ func (m *moduleInstance) evalBinary(operator preparedOperator, left, right vmVal
 			if !isStringValue(left) || !isStringValue(right) || !left.Type.Equal(right.Type) {
 				return vmValue{}, fmt.Errorf("operator %s requires matching String operands, got %s and %s", operator, left.Type, right.Type)
 			}
-			text := left.Data.(string) + right.Data.(string)
-			if m.vm != nil {
-				if err := m.vm.chargeAllocationBytes(int64(len(text))); err != nil {
-					return vmValue{}, err
-				}
-			}
+			text := left.payload().(string) + right.payload().(string)
 			return newVMValue(left.Type, text), nil
 		}
 		out, err := evalNumeric(operator, left, right)
@@ -140,44 +141,44 @@ func (m *moduleInstance) evalBinary(operator preparedOperator, left, right vmVal
 	}
 }
 
-func evalIntegerBinary(operator preparedOperator, left, right vmValue) (vmValue, bool, error) {
-	if left.scalarKind == vmScalarSigned {
-		l := int64(left.scalar)
-		if right.scalarKind == vmScalarSigned {
-			r := int64(right.scalar)
+func evalIntegerBinary(operator preparedOperator, resultType vmType, leftKind vmScalarKind, leftBits uint64, rightKind vmScalarKind, rightBits uint64) (vmValue, bool, error) {
+	if leftKind == vmScalarSigned {
+		l := int64(leftBits)
+		if rightKind == vmScalarSigned {
+			r := int64(rightBits)
 			switch operator {
 			case operatorAdd:
-				return normalizeSignedValue(left.Type, l+r), true, nil
+				return normalizeSignedValue(resultType, l+r), true, nil
 			case operatorSub:
-				return normalizeSignedValue(left.Type, l-r), true, nil
+				return normalizeSignedValue(resultType, l-r), true, nil
 			case operatorMul:
-				return normalizeSignedValue(left.Type, l*r), true, nil
+				return normalizeSignedValue(resultType, l*r), true, nil
 			case operatorDiv:
 				if r == 0 {
 					return vmValue{}, true, newGuestPanic(errors.New("division by zero"))
 				}
-				return normalizeSignedValue(left.Type, l/r), true, nil
+				return normalizeSignedValue(resultType, l/r), true, nil
 			case operatorMod:
 				if r == 0 {
 					return vmValue{}, true, newGuestPanic(errors.New("division by zero"))
 				}
-				return normalizeSignedValue(left.Type, l%r), true, nil
+				return normalizeSignedValue(resultType, l%r), true, nil
 			case operatorBitAnd:
-				return normalizeSignedValue(left.Type, l&r), true, nil
+				return normalizeSignedValue(resultType, l&r), true, nil
 			case operatorBitOr:
-				return normalizeSignedValue(left.Type, l|r), true, nil
+				return normalizeSignedValue(resultType, l|r), true, nil
 			case operatorBitXor:
-				return normalizeSignedValue(left.Type, l^r), true, nil
+				return normalizeSignedValue(resultType, l^r), true, nil
 			case operatorBitClear:
-				return normalizeSignedValue(left.Type, l&^r), true, nil
+				return normalizeSignedValue(resultType, l&^r), true, nil
 			case operatorShiftLeft, operatorShiftRight:
 				if r < 0 {
 					return vmValue{}, true, newGuestPanic(errors.New("negative shift amount"))
 				}
 				if operator == operatorShiftLeft {
-					return normalizeSignedValue(left.Type, l<<uint(r)), true, nil
+					return normalizeSignedValue(resultType, l<<uint(r)), true, nil
 				}
-				return normalizeSignedValue(left.Type, l>>uint(r)), true, nil
+				return normalizeSignedValue(resultType, l>>uint(r)), true, nil
 			case operatorEqual, operatorNotEqual, operatorLess, operatorGreater, operatorLessEqual, operatorGreaterEqual:
 				result := l == r
 				switch operator {
@@ -195,22 +196,22 @@ func evalIntegerBinary(operator preparedOperator, left, right vmValue) (vmValue,
 				return newBoolValue(result), true, nil
 			}
 		}
-		if right.scalarKind == vmScalarUnsigned && (operator == operatorShiftLeft || operator == operatorShiftRight) {
-			r := right.scalar
+		if rightKind == vmScalarUnsigned && (operator == operatorShiftLeft || operator == operatorShiftRight) {
+			r := rightBits
 			if operator == operatorShiftLeft {
-				return normalizeSignedValue(left.Type, l<<uint(r)), true, nil
+				return normalizeSignedValue(resultType, l<<uint(r)), true, nil
 			}
-			return normalizeSignedValue(left.Type, l>>uint(r)), true, nil
+			return normalizeSignedValue(resultType, l>>uint(r)), true, nil
 		}
 	}
-	if left.scalarKind == vmScalarUnsigned {
-		l := left.scalar
+	if leftKind == vmScalarUnsigned {
+		l := leftBits
 		var r uint64
-		switch right.scalarKind {
+		switch rightKind {
 		case vmScalarUnsigned:
-			r = right.scalar
+			r = rightBits
 		case vmScalarSigned:
-			value := int64(right.scalar)
+			value := int64(rightBits)
 			if operator != operatorShiftLeft && operator != operatorShiftRight {
 				return vmValue{}, false, nil
 			}
@@ -223,33 +224,33 @@ func evalIntegerBinary(operator preparedOperator, left, right vmValue) (vmValue,
 		}
 		switch operator {
 		case operatorAdd:
-			return normalizeUnsignedValue(left.Type, l+r), true, nil
+			return normalizeUnsignedValue(resultType, l+r), true, nil
 		case operatorSub:
-			return normalizeUnsignedValue(left.Type, l-r), true, nil
+			return normalizeUnsignedValue(resultType, l-r), true, nil
 		case operatorMul:
-			return normalizeUnsignedValue(left.Type, l*r), true, nil
+			return normalizeUnsignedValue(resultType, l*r), true, nil
 		case operatorDiv:
 			if r == 0 {
 				return vmValue{}, true, newGuestPanic(errors.New("division by zero"))
 			}
-			return normalizeUnsignedValue(left.Type, l/r), true, nil
+			return normalizeUnsignedValue(resultType, l/r), true, nil
 		case operatorMod:
 			if r == 0 {
 				return vmValue{}, true, newGuestPanic(errors.New("division by zero"))
 			}
-			return normalizeUnsignedValue(left.Type, l%r), true, nil
+			return normalizeUnsignedValue(resultType, l%r), true, nil
 		case operatorBitAnd:
-			return normalizeUnsignedValue(left.Type, l&r), true, nil
+			return normalizeUnsignedValue(resultType, l&r), true, nil
 		case operatorBitOr:
-			return normalizeUnsignedValue(left.Type, l|r), true, nil
+			return normalizeUnsignedValue(resultType, l|r), true, nil
 		case operatorBitXor:
-			return normalizeUnsignedValue(left.Type, l^r), true, nil
+			return normalizeUnsignedValue(resultType, l^r), true, nil
 		case operatorBitClear:
-			return normalizeUnsignedValue(left.Type, l&^r), true, nil
+			return normalizeUnsignedValue(resultType, l&^r), true, nil
 		case operatorShiftLeft:
-			return normalizeUnsignedValue(left.Type, l<<uint(r)), true, nil
+			return normalizeUnsignedValue(resultType, l<<uint(r)), true, nil
 		case operatorShiftRight:
-			return normalizeUnsignedValue(left.Type, l>>uint(r)), true, nil
+			return normalizeUnsignedValue(resultType, l>>uint(r)), true, nil
 		case operatorEqual, operatorNotEqual, operatorLess, operatorGreater, operatorLessEqual, operatorGreaterEqual:
 			result := l == r
 			switch operator {
@@ -271,9 +272,6 @@ func evalIntegerBinary(operator preparedOperator, left, right vmValue) (vmValue,
 }
 
 func (m *moduleInstance) numericOperandValue(value vmValue, primitive types.PrimitiveKind) vmValue {
-	if value.Type.Ref.Kind == types.Primitive {
-		return value
-	}
 	if primitive != types.PrimitiveInvalid {
 		value.Type = vmType{Ref: types.Builtin(primitive)}
 		return value

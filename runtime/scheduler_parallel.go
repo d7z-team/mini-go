@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 // taskBatch is one owner-selected group of independent task quanta. The owner
@@ -32,6 +30,11 @@ type taskRun struct {
 }
 
 func (machine *executionMachine) prepareTaskBatch(parallelism, budget int) (*taskBatch, runOutcome) {
+	if machine.vm.heap != nil && machine.vm.heap.collectionRequested.Load() {
+		if err := machine.vm.collectManagedAtSafepoint(); err != nil {
+			return nil, failedRun(err)
+		}
+	}
 	if parallelism < 1 {
 		parallelism = 1
 	}
@@ -89,12 +92,51 @@ func (batch *taskBatch) launch() {
 		index := index
 		job := executor.pool.job(func() bool {
 			run := &batch.runs[index]
+			// A lease is scoped to one task slice. It is flushed before the
+			// slice is published to the owner, which keeps collection free of
+			// worker-owned nursery pages and unfinished directory tickets.
+			var allocationBatch *managedAllocationBatch
+			if batch.machine.vm.heap != nil {
+				heap := batch.machine.vm.heap
+				heap.mu.Lock()
+				used := heap.counters.occupiedBytes + heap.counters.reservedBytes
+				canLease := heap.maxGuestBytes == 0 || used <= heap.maxGuestBytes && heap.maxGuestBytes-used >= managedBatchCredit
+				heap.mu.Unlock()
+				if canLease {
+					allocationBatch, _ = heap.acquireBatch(managedBatchCredit, managedBatchHandles)
+				}
+				// A batch is an optional fast path. Its admission failure is not
+				// itself a guest allocation failure: scalar instructions can still
+				// complete without a lease, while a real payload failure records
+				// pressure through recordAllocationFailure.
+			}
+			run.task.allocationBatch = allocationBatch
 			if observer != nil {
 				observer(run.task.id, true, taskIDs)
-				defer observer(run.task.id, false, taskIDs)
 			}
 			run.yield, run.values, run.err = batch.machine.runTask(run.task, &run.slice)
+			if run.err != nil || run.yield.kind == taskYieldCooperate {
+				allocationBatch.abortUnfinished()
+			}
+			// Return the lease before relinquishing task ownership. A task can be
+			// scheduled again as soon as ownership is released, so clearing frame
+			// state in a deferred cleanup would race the next slice.
+			if allocationBatch != nil {
+				if err := allocationBatch.flush(); err != nil && run.err == nil {
+					run.err = err
+				}
+			}
+			run.task.retainedFrames(func(_ int, frame *executionFrame) bool {
+				if frame != nil {
+					frame.frame.allocationBatch = nil
+				}
+				return true
+			})
+			run.task.allocationBatch = nil
 			run.task.sliceValues = run.values
+			if observer != nil {
+				observer(run.task.id, false, taskIDs)
+			}
 			run.task.ownership.relinquish()
 			batch.instance.vm.releaseSlice()
 			if batch.pending.Add(-1) == 0 {
@@ -151,11 +193,9 @@ func (machine *executionMachine) runControlInstruction(task *executionTask, curr
 	defer machine.controlMu.Unlock()
 	yield, handled, err := machine.executeControl(task, current, pc, inst)
 	if err != nil {
-		if census, ok := findGuestCensusRequest(err); ok {
-			current.frame.pc = pc
-			task.retryInstruction = true
-			task.pendingCensus = census.bytes
-			return taskYield{kind: taskYieldCensus}, true, nil
+		if errors.Is(err, errManagedCollection) {
+			yield, retryErr := machine.retryManagedCollection(task, current.frame, pc, inst)
+			return yield, handled, retryErr
 		}
 		var guestFault *guestPanic
 		if errors.As(err, &guestFault) {
@@ -164,6 +204,7 @@ func (machine *executionMachine) runControlInstruction(task *executionTask, curr
 		}
 		return taskYield{}, handled, machine.vm.runtimeInstructionError(current.frame, current.frame.function.Decl.ID, pc, inst, err)
 	}
+	task.allocationRetries = 0
 	if handled && yield.kind == "" && task.blocked != nil {
 		machine.blockTask(task, current, pc, inst, task.blocked)
 		return taskYield{kind: taskYieldBlocked}, true, nil
@@ -199,11 +240,8 @@ func (machine *executionMachine) runDataInstruction(task *executionTask, current
 	callFrame := current.frame
 	functionID := callFrame.function.Decl.ID
 	if err := machine.vm.executeInstruction(task, callFrame, inst); err != nil {
-		if census, ok := findGuestCensusRequest(err); ok {
-			callFrame.pc = pc
-			task.retryInstruction = true
-			task.pendingCensus = census.bytes
-			return taskYield{kind: taskYieldCensus}, nil
+		if errors.Is(err, errManagedCollection) {
+			return machine.retryManagedCollection(task, callFrame, pc, inst)
 		}
 		var lock *mutexLockRequest
 		if errors.As(err, &lock) {
@@ -226,6 +264,9 @@ func (machine *executionMachine) runDataInstruction(task *executionTask, current
 			}
 			selection, selectErr := machine.vm.prepareChannelSelection(task, callFrame.module, []channelSelectCase{selected})
 			if selectErr != nil {
+				if errors.Is(selectErr, errManagedCollection) {
+					return machine.retryManagedCollection(task, callFrame, pc, inst)
+				}
 				return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, selectErr)
 			}
 			if !selection.tryCommit() {
@@ -234,6 +275,9 @@ func (machine *executionMachine) runDataInstruction(task *executionTask, current
 				return taskYield{kind: taskYieldBlocked}, nil
 			}
 			if selection.err != nil {
+				if errors.Is(selection.err, errManagedCollection) {
+					return machine.retryManagedCollection(task, callFrame, pc, inst)
+				}
 				machine.startPanic(task, current, pc, newVMValue("String", selection.err.Error()))
 				return taskYield{}, nil
 			}
@@ -253,7 +297,7 @@ func (machine *executionMachine) runDataInstruction(task *executionTask, current
 		}
 		var request *artifactCallbackRequest
 		if errors.As(err, &request) {
-			callee, frameErr := machine.vm.newExecutionFrame(request.module, request.functionID, request.args, request.upvalues, task.id, request.resultCount, false)
+			callee, frameErr := machine.vm.newExecutionFrame(request.module, request.functionID, request.args, request.captureSlots, task.id, request.resultCount, false, 0, task.allocationBatch)
 			if frameErr != nil {
 				return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, frameErr)
 			}
@@ -268,20 +312,39 @@ func (machine *executionMachine) runDataInstruction(task *executionTask, current
 		}
 		return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
 	}
-	if inst.op == preparedBinary || inst.op == preparedConvert || inst.op == preparedCallIntrinsic {
-		for _, destination := range callFrame.slotOperands.Outputs[:callFrame.slotOutput] {
-			var value vmValue
-			if destination&ir.LocalOutput != 0 {
-				value = callFrame.localCells[destination&^ir.LocalOutput].load()
-			} else {
-				value = callFrame.slotValues[destination]
-			}
-			if err := machine.vm.validateRuntimeValue(value); err != nil {
-				return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
-			}
+	if task.allocationBatch != nil && task.allocationBatch.failure != nil {
+		err := task.allocationBatch.failure
+		task.allocationBatch.failure = nil
+		if errors.Is(err, errManagedCollection) {
+			return machine.retryManagedCollection(task, callFrame, pc, inst)
 		}
+		return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
 	}
+	if err := machine.vm.takeAllocationFailure(); err != nil {
+		if errors.Is(err, errManagedCollection) {
+			return machine.retryManagedCollection(task, callFrame, pc, inst)
+		}
+		return taskYield{}, machine.vm.runtimeInstructionError(callFrame, functionID, pc, inst, err)
+	}
+	task.allocationRetries = 0
 	return taskYield{}, nil
+}
+
+// retryManagedCollection returns control to the owner so it can flush the
+// current worker lease and collect. The scheduler re-enters the same PC once;
+// a second failure becomes the stable allocation-limit diagnostic. All callers
+// invoke it before publishing a control transition or host side effect.
+func (machine *executionMachine) retryManagedCollection(task *executionTask, callFrame *frame, pc int, inst *preparedInstruction) (taskYield, error) {
+	if machine.vm.heap != nil {
+		machine.vm.heap.collectionRequested.Store(true)
+	}
+	if task.allocationRetries != 0 {
+		return taskYield{}, machine.vm.runtimeInstructionError(callFrame, callFrame.function.Decl.ID, pc, inst, allocationLimitError(machine.vm.limits.MaxGuestBytes))
+	}
+	callFrame.pc = pc
+	task.allocationRetries++
+	task.retryInstruction = true
+	return taskYield{kind: taskYieldCooperate}, nil
 }
 
 // driveTasks is called by an external execution handle. It may wait for task
@@ -355,10 +418,8 @@ func (i *Instance) driveTasks(ctx context.Context, budget int, waitForOwner bool
 		executed := outcome.executed
 		total += executed
 		outcome.executed = total
-		// A census or another resumable control transition may complete without
-		// retiring a bytecode instruction. Return ownership after one such batch
-		// so an accidental repeated transition cannot trap a host PollSteps call
-		// in an unbounded internal loop.
+		// Return ownership after a non-progressing control transition so an
+		// accidental repeated transition cannot trap a host PollSteps call.
 		if outcome.state != ExecutionRunning || total >= budget || executed == 0 {
 			return outcome
 		}

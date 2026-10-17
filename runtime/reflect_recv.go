@@ -23,11 +23,11 @@ func reflectValueRecv(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if module == nil || !module.isWaitableTypeName(current.Type) {
 		return reflectValueRecvError("reflect: Recv of non-chan Value"), nil
 	}
-	value, received, closed, err := waitableTryRecvValue(module, current)
+	value, received, closed, err := waitableTryRecvValue(module, current, ctx.batch)
 	if err != nil {
 		return reflectValueRecvError(err.Error()), nil
 	}
-	request := &reflectRecvRequest{ctx: intrinsicContext{vm: ctx.vm, module: module}, waitable: current}
+	request := &reflectRecvRequest{ctx: intrinsicContext{vm: ctx.vm, module: module, task: ctx.task, batch: ctx.batch}, waitable: current}
 	if !received && !closed {
 		return nil, request
 	}

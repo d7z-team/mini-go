@@ -192,7 +192,7 @@ class Encoder {
   private readonly bytes: number[] = [];
 
   fixed(value: Uint8Array): void {
-    this.bytes.push(...value);
+    for (const byte of value) this.bytes.push(byte);
   }
 
   uint(input: number | bigint): void {

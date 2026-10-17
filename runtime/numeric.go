@@ -235,7 +235,7 @@ func isFloatValue(value vmValue) bool {
 }
 
 func isComplexValue(value vmValue) bool {
-	_, ok := value.Data.(complex128)
+	_, ok := value.payload().(complex128)
 	return ok
 }
 
@@ -249,7 +249,7 @@ func numericAsInt64(value vmValue) (int64, error) {
 	if data, ok := value.floatValue(); ok {
 		return int64(data), nil
 	}
-	if data, ok := value.Data.(complex128); ok {
+	if data, ok := value.payload().(complex128); ok {
 		return int64(real(data)), nil
 	}
 	return 0, fmt.Errorf("invalid %s numeric value", value.Type)
@@ -265,7 +265,7 @@ func numericAsUint64(value vmValue) (uint64, error) {
 	if data, ok := value.floatValue(); ok {
 		return uint64(data), nil
 	}
-	if data, ok := value.Data.(complex128); ok {
+	if data, ok := value.payload().(complex128); ok {
 		return uint64(real(data)), nil
 	}
 	return 0, fmt.Errorf("invalid %s numeric value", value.Type)
@@ -294,7 +294,7 @@ func numericAsComplex128(value vmValue) (complex128, error) {
 	if data, ok := value.floatValue(); ok {
 		return complex(data, 0), nil
 	}
-	if data, ok := value.Data.(complex128); ok {
+	if data, ok := value.payload().(complex128); ok {
 		return data, nil
 	}
 	return 0, fmt.Errorf("expected numeric value, got %s", value.Type)

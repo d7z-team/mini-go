@@ -16,7 +16,7 @@ func (t *TypeTable) ValidateCompiler() error {
 }
 
 func (t *TypeTable) validate(compiler bool) error {
-	if err := t.index(); err != nil {
+	if err := t.rebuildIndexes(); err != nil {
 		return err
 	}
 	for _, node := range t.Nodes {

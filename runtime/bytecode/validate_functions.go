@@ -213,6 +213,8 @@ func validateInstructionRefs(path string, inst *Instruction, refs artifactRefs, 
 		return err
 	case OpCompareBranch, OpLenCompareBranch:
 		return validateTypeRef(path+".type", inst.Payload.(CompareBranchPayload).Type, table)
+	case OpMinMax:
+		return validateTypeRef(path+".type", inst.Payload.(MinMaxPayload).Type, table)
 	case OpTypeDispatch:
 		payload, err := validationPayload[TypeDispatchPayload](path, inst)
 		if err != nil {

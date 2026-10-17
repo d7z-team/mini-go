@@ -12,7 +12,12 @@ type decodeOptions struct {
 	firstError *error
 	useNumber bool
 	disallowUnknownFields bool
-	fields map[reflect.Type][]jsonStructField
+	fields map[reflect.Type]decodeFields
+}
+
+type decodeFields struct {
+	ordered []jsonStructField
+	exact map[string]int
 }
 
 // Unmarshal parses the JSON-encoded data and stores the result
@@ -118,7 +123,7 @@ func unmarshalAt(text string, pos int, value any, options decodeOptions) (int, e
 	}
 	var firstError error
 	options.firstError = &firstError
-	options.fields = map[reflect.Type][]jsonStructField{}
+	options.fields = map[reflect.Type]decodeFields{}
 	end, err := unmarshalValue(text, pos, target.Elem(), options)
 	if err != nil {
 		return end, err
@@ -300,7 +305,11 @@ func unmarshalStruct(text string, pos int, target reflect.Value, options decodeO
 	typ := target.Type()
 	fields, cached := options.fields[typ]
 	if !cached {
-		fields = jsonVisibleFields(typ)
+		fields.ordered = jsonVisibleFields(typ)
+		fields.exact = make(map[string]int, len(fields.ordered))
+		for index, field := range fields.ordered {
+			fields.exact[field.Name] = index
+		}
 		if len(options.fields) < 256 {
 			options.fields[typ] = fields
 		}
@@ -319,8 +328,17 @@ func unmarshalStruct(text string, pos int, target reflect.Value, options decodeO
 			return pos, newMarshalError("json: expected colon")
 		}
 		pos = skipJSONSpace(text, pos + 1)
-		field, found := jsonFieldByJSONName(fields, key)
+		index, found := fields.exact[key]
+		if !found {
+			for i, field := range fields.ordered {
+				if strings.EqualFold(field.Name, key) {
+					index, found = i, true
+					break
+				}
+			}
+		}
 		if found {
+			field := fields.ordered[index]
 			previousError := *options.firstError
 			fieldValue := jsonFieldValue(target, field.Field.Index, true)
 			if !fieldValue.IsValid() {
@@ -493,20 +511,6 @@ func unmarshalAny(text string, pos int, target reflect.Value, options decodeOpti
 		target.Set(reflect.ValueOf(value))
 	}
 	return next, nil
-}
-
-func jsonFieldByJSONName(fields []jsonStructField, name string) (jsonStructField, bool) {
-	for i := 0; i < len(fields); i++ {
-		if fields[i].Name == name {
-			return fields[i], true
-		}
-	}
-	for _, field := range fields {
-		if strings.EqualFold(field.Name, name) {
-			return field, true
-		}
-	}
-	return jsonStructField{}, false
 }
 
 func jsonMapKeyValue(key string, typ reflect.Type) (reflect.Value, error) {

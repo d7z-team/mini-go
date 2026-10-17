@@ -258,9 +258,9 @@ func Main() int {
     );
     session.close().await.unwrap();
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", Vec::new()).unwrap();
+    vm.start("default", &[]).unwrap();
     while vm.poll_steps(4096).unwrap() != PollStatus::Ready {}
-    assert_eq!(vm.results()[0].integer().unwrap(), 42);
+    assert_eq!(vm.snapshot_results(Default::default()).unwrap().roots[0].integer().unwrap(), 42);
     vm.close().unwrap();
     }).await.expect("compiler integration test watchdog");
 }
@@ -456,9 +456,14 @@ async fn assert_warm_analysis(name: &str) {
             let mut instance =
                 Instance::new(std::sync::Arc::new(program), ExecutionLimits::default()).unwrap();
             while instance.poll_initialize(&cancel, 1024).unwrap() != PollStatus::Ready {}
-            instance.start("default", vec![]).unwrap();
+            instance.start("default", &[]).unwrap();
             while instance.poll_steps(1024).unwrap() != PollStatus::Ready {}
-            assert_eq!(instance.results()[0].integer().unwrap(), 41);
+            assert_eq!(
+                instance.snapshot_results(Default::default()).unwrap().roots[0]
+                    .integer()
+                    .unwrap(),
+                41
+            );
             instance.close().unwrap();
         }
         let after = session

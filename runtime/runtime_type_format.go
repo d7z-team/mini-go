@@ -214,10 +214,20 @@ func (t vmType) Underlying() vmType {
 	if t.Table == nil || t.Ref.Kind != types.Named {
 		return t
 	}
-	if t.underlyingRef != nil {
-		return t.derived(*t.underlyingRef)
+	return t.derived(t.underlyingTypeRef())
+}
+
+// Prepared types retain their resolved underlying reference. Classification
+// reads that reference directly without rebuilding a type view or consulting
+// the shared type-table cache on every value access.
+func (t vmType) underlyingTypeRef() types.TypeRef {
+	if t.Table == nil || t.Ref.Kind != types.Named {
+		return t.Ref
 	}
-	return t.derived(t.Table.Underlying(t.Ref))
+	if t.underlyingRef != nil {
+		return *t.underlyingRef
+	}
+	return t.Table.Underlying(t.Ref)
 }
 
 func (t vmType) Node() (types.TypeNode, bool) {

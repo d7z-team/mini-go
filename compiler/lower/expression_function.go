@@ -96,7 +96,7 @@ func (l *lowerer) lowerFuncLiteral(expr ast.Expression, outer *funcScope) (ir.Ex
 		Signature:     l.hirSignature(l.signatureOf(*expr.Func), funcDeclVariadic(*expr.Func)),
 	}
 	scope := newFuncScope(&fn, outer)
-	scope.resultTypes = l.typeRefsFromStrings(l.resultTypes(expr.Func.Results))
+	scope.resultTypes = fn.Signature.Results
 	scope.expectedReturns = len(expr.Func.Results)
 	for _, param := range expr.Func.Params {
 		if !l.addFunctionParamLocal(&fn, &scope, param, len(fn.Locals)) {

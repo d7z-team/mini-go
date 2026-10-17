@@ -71,7 +71,7 @@ fn byte_append_growth_keeps_the_old_backing_and_copies_only_visible_bytes() {
     let mut instance = Instance::new(
         program,
         ExecutionLimits {
-            max_heap_bytes: 20_000,
+            max_guest_bytes: 20_000,
             ..ExecutionLimits::default()
         },
     )
@@ -170,7 +170,7 @@ fn byte_backing_mutation_preserves_pointer_aliases_with_a_byte_sized_budget() {
     let mut instance = Instance::new(
         program,
         ExecutionLimits {
-            max_heap_bytes: 5120,
+            max_guest_bytes: 5120,
             ..ExecutionLimits::default()
         },
     )
@@ -194,8 +194,8 @@ fn byte_backing_mutation_preserves_pointer_aliases_with_a_byte_sized_budget() {
     let HostData::Array(values) = &array.data else {
         panic!("expected array view")
     };
-    assert!(matches!(values[0].data, HostData::Unsigned(0)));
-    assert!(matches!(values[1].data, HostData::Unsigned(255)));
+    assert!(matches!(&values[0].data, HostData::Unsigned(0)));
+    assert!(matches!(&values[1].data, HostData::Unsigned(255)));
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn repeated_pointer_type_views_write_original_storage_and_survive_in_snapshots()
         .resolve("test", &serde_json::from_value(b).unwrap())
         .unwrap();
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start("default", vec![]).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(4000).unwrap(), PollStatus::Ready);
     let snapshot = instance
         .snapshot_results(SnapshotLimits::default())
@@ -289,8 +289,8 @@ fn repeated_pointer_type_views_write_original_storage_and_survive_in_snapshots()
     assert_eq!(instance.heap_stats().live_objects, 0);
     let value = snapshot.resolve_address(address).unwrap();
     assert_eq!(value.typ, expected);
-    assert!(matches!(value.data, HostData::Integer(42)));
-    assert!(matches!(snapshot.roots[1].data, HostData::Integer(42)));
+    assert!(matches!(&value.data, HostData::Integer(42)));
+    assert!(matches!(&snapshot.roots[1].data, HostData::Integer(42)));
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn array_pointer_conversion_preserves_snapshot_view_and_faults_on_short_input() 
             ]),
         };
         instance
-            .start_host("default", std::slice::from_ref(&input))
+            .start("default", std::slice::from_ref(&input))
             .unwrap();
         assert_eq!(instance.poll_steps(3).unwrap(), PollStatus::Ready);
         let snapshot = instance
@@ -363,18 +363,15 @@ fn array_pointer_conversion_preserves_snapshot_view_and_faults_on_short_input() 
             panic!("expected array view")
         };
         assert_eq!(values.len(), 2);
-        assert!(matches!(values[0].data, HostData::Integer(20)));
-        assert!(matches!(values[1].data, HostData::Integer(22)));
+        assert!(matches!(&values[0].data, HostData::Integer(20)));
+        assert!(matches!(&values[1].data, HostData::Integer(22)));
         input.data = HostData::Array(vec![HostValue::int(1)]);
-        instance.start_host("default", &[input]).unwrap();
+        instance.start("default", &[input]).unwrap();
         assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Running);
         assert_eq!(instance.poll_steps(1).unwrap_err().code, "type_error");
-        assert_eq!(
-            instance.start("default", vec![]).unwrap_err().code,
-            "faulted"
-        );
+        assert_eq!(instance.start("default", &[]).unwrap_err().code, "faulted");
         instance.close().unwrap();
         assert_eq!(instance.heap_stats().live_objects, 0);
-        assert!(matches!(values[1].data, HostData::Integer(22)));
+        assert!(matches!(&values[1].data, HostData::Integer(22)));
     }
 }

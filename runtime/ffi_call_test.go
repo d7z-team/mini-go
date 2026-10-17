@@ -82,7 +82,10 @@ func TestFFIStartFailureDiscardsSynchronousCompletion(t *testing.T) {
 func TestFFIStartHandoffKeepsReplyAndHandleOwnership(t *testing.T) {
 	for _, outcome := range []string{"success", "failure", "cancel"} {
 		t.Run(outcome, func(t *testing.T) {
-			machine := &vm{limits: normalizeLimits(Limits{}), ffiCalls: make(map[*pendingFFICall]struct{})}
+			module := newManagedValueTestModule()
+			machine := module.vm
+			machine.limits = normalizeLimits(Limits{})
+			machine.ffiCalls = make(map[*pendingFFICall]struct{})
 			_, cancel := context.WithCancel(t.Context())
 			pending := &pendingFFICall{vm: machine, cancel: cancel, starting: true}
 			pending.relay = &ffiCompletionRelay{pending: pending}
@@ -96,7 +99,7 @@ func TestFFIStartHandoffKeepsReplyAndHandleOwnership(t *testing.T) {
 			ownership.relinquish()
 			var discarded, canceled atomic.Int32
 			pending.complete(ffi.Result{Payload: []byte("early"), Discard: func() { discarded.Add(1) }})
-			if _, ready := pending.take(); ready || ownership.notified(ticket) {
+			if _, ready, err := pending.materializeForFrame(module, nil); err != nil || ready || ownership.notified(ticket) {
 				t.Fatal("reply delivered before Start returned")
 			}
 			var startErr error
@@ -108,7 +111,10 @@ func TestFFIStartHandoffKeepsReplyAndHandleOwnership(t *testing.T) {
 				ownership.terminate()
 			}
 			pending.finishStart(ffi.CancelFunc(func() { canceled.Add(1) }), startErr)
-			values, ready := pending.take()
+			values, ready, err := pending.materializeForFrame(module, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if outcome == "cancel" {
 				if ready || ownership.notified(ticket) {
 					t.Fatal("cancelled start delivered a late reply")
@@ -254,7 +260,10 @@ func TestPendingFFICallRejectsOversizedResponse(t *testing.T) {
 
 func TestPendingFFICallTransfersBoundaryPayloadToGuest(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
-	machine := &vm{limits: normalizeLimits(Limits{MaxBoundaryBytes: 32, MaxAllocatedBytes: 1 << 20}), ffiCalls: make(map[*pendingFFICall]struct{})}
+	module := newManagedValueTestModule()
+	machine := module.vm
+	machine.limits = normalizeLimits(Limits{MaxBoundaryBytes: 32, MaxGuestBytes: 1 << 20})
+	machine.ffiCalls = make(map[*pendingFFICall]struct{})
 	machine.owner.Store(true)
 	pending := &pendingFFICall{vm: machine, cancel: cancel, state: pendingFFIWaiting, boundaryBytes: 4}
 	relay := &ffiCompletionRelay{pending: pending}
@@ -267,16 +276,77 @@ func TestPendingFFICallTransfersBoundaryPayloadToGuest(t *testing.T) {
 	if got := machine.pendingBoundaryBytes.Load(); got != 8 {
 		t.Fatalf("pending boundary bytes = %d, want 8", got)
 	}
-	values, ready := pending.take()
-	if !ready || len(values) != 3 {
-		t.Fatalf("take = %#v, %v", values, ready)
+	values, ready, err := pending.materializeForFrame(module, nil)
+	if err != nil || !ready || len(values) != 3 {
+		t.Fatalf("take = %#v, %v, %v", values, ready, err)
 	}
-	guest := values[0].Data.(*vmSlice)
-	if &guest.ByteBacking[0] != &payload[0] {
-		t.Fatal("FFI response payload was copied during ownership transfer")
+	payload[0] = 'x'
+	guest, err := ffiPayloadBytes(module, values[0])
+	if err != nil || string(guest) != "done" {
+		t.Fatalf("guest reply aliases host input: %q, %v", guest, err)
 	}
 	if machine.pendingEvents.Load() != 0 || machine.pendingBoundaryBytes.Load() != 0 || len(machine.ffiCalls) != 0 {
 		t.Fatalf("settled FFI retained pending state: events=%d bytes=%d calls=%d", machine.pendingEvents.Load(), machine.pendingBoundaryBytes.Load(), len(machine.ffiCalls))
+	}
+}
+
+func TestPendingFFIMaterializePublishesAllGuestResultsBeforeConsume(t *testing.T) {
+	module := newManagedValueTestModule()
+	machine := module.vm
+	machine.limits = normalizeLimits(Limits{MaxBoundaryBytes: 32, MaxGuestBytes: 1 << 20})
+	machine.ffiCalls = make(map[*pendingFFICall]struct{})
+	_, cancel := context.WithCancel(t.Context())
+	pending := &pendingFFICall{vm: machine, cancel: cancel, state: pendingFFIWaiting, boundaryBytes: 5}
+	pending.relay = &ffiCompletionRelay{pending: pending}
+	machine.ffiCalls[pending] = struct{}{}
+	machine.pendingEvents.Store(1)
+	machine.pendingBoundaryBytes.Store(5)
+	pending.complete(ffi.Result{Payload: []byte("reply")})
+
+	values, ready, err := pending.materializeForFrame(module, nil)
+	if err != nil || !ready || len(values) != 3 {
+		t.Fatalf("materialize = %#v, %v, %v", values, ready, err)
+	}
+	if pending.state != pendingFFIConsumed || !values[0].ref.valid() || !values[1].ref.valid() {
+		t.Fatalf("materialization consumed before publication: state=%d values=%#v", pending.state, values)
+	}
+	payload, ok := materializeManagedSlice(values[0])
+	if !ok || string(payload.bytes()) != "reply" {
+		t.Fatalf("managed FFI payload = %#v", payload)
+	}
+	message, ok := materializeManagedString(values[1])
+	if !ok || message != "" {
+		t.Fatalf("managed FFI message = %q, %t", message, ok)
+	}
+	if machine.pendingEvents.Load() != 0 || machine.pendingBoundaryBytes.Load() != 0 || len(machine.ffiCalls) != 0 {
+		t.Fatalf("materialization retained pending state: events=%d boundary=%d calls=%d", machine.pendingEvents.Load(), machine.pendingBoundaryBytes.Load(), len(machine.ffiCalls))
+	}
+}
+
+func TestPendingFFIMaterializeRetainsReadyReplyWhenGuestBuildFails(t *testing.T) {
+	module := newManagedValueTestModule()
+	module.vm.limits = normalizeLimits(Limits{MaxBoundaryBytes: 32, MaxGuestBytes: 1 << 20})
+	module.vm.heap.maxGuestBytes = 40
+	machine := module.vm
+	machine.ffiCalls = make(map[*pendingFFICall]struct{})
+	_, cancel := context.WithCancel(t.Context())
+	pending := &pendingFFICall{vm: machine, cancel: cancel, state: pendingFFIWaiting, boundaryBytes: 5}
+	pending.relay = &ffiCompletionRelay{pending: pending}
+	machine.ffiCalls[pending] = struct{}{}
+	machine.pendingEvents.Store(1)
+	machine.pendingBoundaryBytes.Store(5)
+	pending.complete(ffi.Result{Payload: []byte("reply")})
+
+	values, ready, err := pending.materializeForFrame(module, nil)
+	if ready || err == nil || values != nil {
+		t.Fatalf("failed materialization = %#v, %v, %v", values, ready, err)
+	}
+	if pending.state != pendingFFIReady {
+		t.Fatalf("failed materialization consumed reply: state=%d", pending.state)
+	}
+	pending.stop()
+	if machine.pendingEvents.Load() != 0 || machine.pendingBoundaryBytes.Load() != 0 || len(machine.ffiCalls) != 0 {
+		t.Fatalf("failed materialization retained pending state: events=%d boundary=%d calls=%d", machine.pendingEvents.Load(), machine.pendingBoundaryBytes.Load(), len(machine.ffiCalls))
 	}
 }
 

@@ -6,7 +6,7 @@ use crate::snapshot::{HostData, HostValue};
 impl Instance {
     /// Imports host-owned value trees. Slice inputs use Array or compact byte
     /// String data; map inputs use MapEntries. Live resource handles are not inputs.
-    pub fn start_host(&mut self, entry: &str, arguments: &[HostValue]) -> Result<(), RuntimeError> {
+    pub fn start(&mut self, entry: &str, arguments: &[HostValue]) -> Result<(), RuntimeError> {
         if self.closed {
             return Err(RuntimeError::new(
                 "closed",
@@ -24,7 +24,7 @@ impl Instance {
         if self.foreground.is_some() {
             return Err(RuntimeError::new("busy", "argument", "execution is active"));
         }
-        if arguments.len() > self.limits.max_sequence_elements {
+        if arguments.len() > self.limits.max_boundary_elements {
             return Err(RuntimeError::new(
                 "boundary_limit",
                 "argument",
@@ -33,39 +33,13 @@ impl Instance {
         }
         self.types
             .use_context(self.revision.program.decoded.types());
-        let mut remaining = self.limits.max_heap_bytes;
+        let mut remaining = self.limits.max_boundary_bytes as u64;
         let result = (|| {
             let values = arguments
                 .iter()
                 .map(|value| self.import_host_value(value, 0, &mut remaining))
                 .collect::<Result<Vec<_>, _>>()?;
-            let mut pending: Vec<_> = arguments.iter().collect();
-            let mut bytes = 0u64;
-            while let Some(value) = pending.pop() {
-                bytes = bytes.saturating_add(128);
-                match &value.data {
-                    HostData::String(text) => bytes = bytes.saturating_add(text.len() as u64),
-                    HostData::Array(items) => {
-                        bytes = bytes.saturating_add(items.len() as u64 * 16);
-                        pending.extend(items);
-                    }
-                    HostData::Struct(fields) => {
-                        bytes = bytes.saturating_add(fields.len() as u64 * 16);
-                        pending.extend(fields.values());
-                    }
-                    HostData::MapEntries(entries) => {
-                        bytes = bytes.saturating_add(entries.len() as u64 * 32);
-                        for (key, value) in entries {
-                            pending.push(key);
-                            pending.push(value);
-                        }
-                    }
-                    HostData::Interface(value) => pending.push(value),
-                    _ => {}
-                }
-            }
-            self.charge_guest(bytes)?;
-            self.start(entry, values)
+            self.start_values(entry, values)
         })();
         if result.is_err() {
             self.collect_at_boundary()?;
@@ -86,13 +60,14 @@ impl Instance {
                 "host data does not match its declared type",
             )
         };
-        if depth >= self.limits.max_value_depth {
+        if depth >= self.limits.max_boundary_depth {
             return Err(RuntimeError::new(
                 "boundary_limit",
                 "argument",
                 "host value depth exceeds limit",
             ));
         }
+        let underlying = self.types.underlying(&input.typ)?;
         *remaining = remaining.checked_sub(16).ok_or_else(|| {
             RuntimeError::new(
                 "boundary_limit",
@@ -100,14 +75,13 @@ impl Instance {
                 "host value size exceeds limit",
             )
         })?;
-        let underlying = self.types.underlying(&input.typ)?;
         let primitive = match underlying {
             TypeIdentity::Primitive(primitive) => Some(primitive),
             _ => None,
         };
         let value = match &input.data {
             HostData::Nil if self.types.nil_assignable(&input.typ)? => {
-                return self.zero(&input.typ, 0);
+                return self.zero(&input.typ);
             }
             HostData::Bool(value) if primitive == Some(wire::PrimitiveBool) => {
                 Value::boolean(*value)
@@ -155,9 +129,6 @@ impl Instance {
                 }
             }
             HostData::String(bytes) => {
-                *remaining = remaining.checked_sub(bytes.len() as u64).ok_or_else(|| {
-                    RuntimeError::new("boundary_limit", "argument", "host string exceeds limit")
-                })?;
                 let slice = matches!(underlying, TypeIdentity::Slice(_))
                     || self
                         .types
@@ -170,8 +141,18 @@ impl Instance {
                     )? {
                         return Err(invalid());
                     }
+                    *remaining = remaining.checked_sub(bytes.len() as u64).ok_or_else(|| {
+                        RuntimeError::new(
+                            "boundary_limit",
+                            "argument",
+                            "host byte slice exceeds limit",
+                        )
+                    })?;
                     return self.make_bytes(input.typ.clone(), bytes.len(), bytes.len(), bytes);
                 }
+                *remaining = remaining.checked_sub(bytes.len() as u64).ok_or_else(|| {
+                    RuntimeError::new("boundary_limit", "argument", "host string exceeds limit")
+                })?;
                 self.check_string_size(bytes.len())?;
                 Value::string(bytes.clone())
             }
@@ -180,7 +161,7 @@ impl Instance {
                 return self.coerce(value, &input.typ);
             }
             HostData::Array(values) => {
-                if values.len() > self.limits.max_sequence_elements {
+                if values.len() > self.limits.max_boundary_elements {
                     return Err(RuntimeError::new(
                         "boundary_limit",
                         "argument",
@@ -215,23 +196,43 @@ impl Instance {
                 };
             }
             HostData::Struct(fields) => {
-                let mut value = self.zero(&input.typ, 0)?;
-                let Data::Struct(destinations) = &mut value.data else {
-                    return Err(invalid());
-                };
-                if fields.len() > self.limits.max_sequence_elements {
+                if fields.len() > self.limits.max_boundary_elements {
                     return Err(RuntimeError::new(
                         "boundary_limit",
                         "argument",
                         "host struct exceeds limit",
                     ));
                 }
-                for (name, input) in fields {
-                    let destination = destinations.get_mut(name).ok_or_else(invalid)?;
-                    let value = self.import_host_value(input, depth + 1, remaining)?;
-                    *destination = self.coerce(value, &destination.typ)?;
+                if !self
+                    .types
+                    .node(&input.typ)?
+                    .is_some_and(|(_, node)| node.kind == wire::Struct)
+                {
+                    return Err(invalid());
                 }
-                return Ok(value);
+                let layout = self.heap.layout_for_type(&input.typ)?;
+                if layout.kind != wire::Struct
+                    || fields.keys().any(|name| {
+                        !layout
+                            .fields
+                            .iter()
+                            .any(|field| field.name.as_str() == name.as_str())
+                    })
+                {
+                    return Err(invalid());
+                }
+                let mut replacements = Vec::with_capacity(fields.len());
+                for (name, input) in fields {
+                    let index = layout
+                        .fields
+                        .iter()
+                        .position(|field| field.name.as_str() == name.as_str())
+                        .ok_or_else(invalid)?;
+                    let value = self.import_host_value(input, depth + 1, remaining)?;
+                    let value = self.coerce(value, &layout.fields[index].typ)?;
+                    replacements.push((index, value));
+                }
+                return self.construct_aggregate(input.typ.clone(), replacements);
             }
             HostData::MapEntries(entries) => {
                 if !self
@@ -241,21 +242,14 @@ impl Instance {
                 {
                     return Err(invalid());
                 }
-                if entries.len() > self.limits.max_sequence_elements {
+                if entries.len() > self.limits.max_boundary_elements {
                     return Err(RuntimeError::new(
                         "boundary_limit",
                         "argument",
                         "host map exceeds limit",
                     ));
                 }
-                let root = self.allocate(Value {
-                    typ: TypeIdentity::Any,
-                    data: Data::MapEntries(Default::default()),
-                })?;
-                let map = Value {
-                    typ: input.typ.clone(),
-                    data: Data::Map(root),
-                };
+                let map = self.make_empty_map(input.typ.clone())?;
                 for (key, value) in entries {
                     let key = self.import_host_value(key, depth + 1, remaining)?;
                     let value = self.import_host_value(value, depth + 1, remaining)?;

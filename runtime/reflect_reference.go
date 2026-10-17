@@ -26,16 +26,19 @@ func reflectSameReference(ctx intrinsicContext, args []vmValue) ([]vmValue, erro
 		return []vmValue{newVMValue("Bool", false)}, nil
 	}
 	equal := false
-	switch left := values[0].Data.(type) {
+	switch left := values[0].payload().(type) {
 	case *vmPointer:
-		right, ok := values[1].Data.(*vmPointer)
-		equal = ok && (left == right || left != nil && right != nil && left.Identity != "" && left.Identity == right.Identity)
+		right, ok := values[1].payload().(*vmPointer)
+		equal = ok && referenceComparableIdentity(left) == referenceComparableIdentity(right)
 	case *vmMap:
-		right, ok := values[1].Data.(*vmMap)
+		right, ok := values[1].payload().(*vmMap)
 		equal = ok && left == right
+		if ok && left != nil && right != nil && left.managed != nil && right.managed != nil {
+			equal = left.managed.heap == right.managed.heap && left.managed.identity == right.managed.identity
+		}
 	case *vmSlice:
-		right, ok := values[1].Data.(*vmSlice)
-		equal = ok && (left == right || left != nil && right != nil && left.vmSliceStorage != nil && left.vmSliceStorage == right.vmSliceStorage && left.Start == right.Start && left.Len == right.Len)
+		right, ok := values[1].payload().(*vmSlice)
+		equal = ok && (left == right || left != nil && right != nil && left.Len == right.Len && reflectSameSliceStart(left, right))
 	}
 	return []vmValue{newVMValue("Bool", equal)}, nil
 }

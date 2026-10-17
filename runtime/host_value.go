@@ -222,15 +222,12 @@ func addMeasuredBytes(total *int64, value int64) error {
 	return nil
 }
 
-func measureHostValue(ctx context.Context, value HostValue, limits Limits) (int64, error) {
+func measureHostValue(ctx context.Context, value HostValue, limits Limits) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	measure := hostValueMeasure{}
-	if err := measure.visit(ctx, value, limits, 0); err != nil {
-		return 0, err
-	}
-	return measure.logicalBytes, nil
+	return measure.visit(ctx, value, limits, 0)
 }
 
 func (measure *hostValueMeasure) visit(ctx context.Context, value HostValue, limits Limits, depth int) error {
@@ -255,27 +252,23 @@ func (measure *hostValueMeasure) visit(ctx context.Context, value HostValue, lim
 	if err := addMeasuredBytes(&measure.boundaryBytes, int64(len(value.bytes))); err != nil {
 		return err
 	}
-	if err := addMeasuredBytes(&measure.logicalBytes, ir.RuntimeNodeBytes); err != nil {
+	if err := addMeasuredBytes(&measure.logicalBytes, ir.StorageRecordHeaderBytes); err != nil {
 		return err
 	}
-	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.text))*ir.RuntimeByteBytes); err != nil {
+	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.text))*ir.StorageByteBytes); err != nil {
 		return err
 	}
-	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.bytes))*ir.RuntimeByteBytes); err != nil {
+	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.bytes))*ir.StorageByteBytes); err != nil {
 		return err
 	}
-	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.items)+len(value.fields))*ir.RuntimeSlotBytes); err != nil {
+	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.items)+len(value.fields))*ir.StorageDynamicBytes); err != nil {
 		return err
 	}
-	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.entries))*ir.RuntimeMapEntryBytes); err != nil {
+	if err := addMeasuredBytes(&measure.logicalBytes, int64(len(value.entries))*ir.StorageMapEntryBytes); err != nil {
 		return err
 	}
 	if measure.boundaryBytes > limits.MaxBoundaryBytes {
 		return fmt.Errorf("host value byte limit exceeded: max %d", limits.MaxBoundaryBytes)
-	}
-	elements := len(value.items) + len(value.entries) + len(value.fields)
-	if elements > limits.MaxCollectionElements {
-		return fmt.Errorf("host value collection limit exceeded: max %d", limits.MaxCollectionElements)
 	}
 	switch value.kind {
 	case HostNilKind, HostBoolKind, HostIntKind, HostUintKind, HostFloatKind, HostComplexKind, HostStringKind, HostBytesKind:
@@ -308,7 +301,7 @@ func (measure *hostValueMeasure) visit(ctx context.Context, value HostValue, lim
 			if err := addMeasuredBytes(&measure.boundaryBytes, int64(len(field.Name))); err != nil {
 				return err
 			}
-			if err := addMeasuredBytes(&measure.logicalBytes, int64(len(field.Name))*ir.RuntimeByteBytes); err != nil {
+			if err := addMeasuredBytes(&measure.logicalBytes, int64(len(field.Name))*ir.StorageByteBytes); err != nil {
 				return err
 			}
 			if measure.boundaryBytes > limits.MaxBoundaryBytes {

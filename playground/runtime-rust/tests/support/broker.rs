@@ -343,7 +343,7 @@ impl Session for BrokerSession {
         let id = self
             .state
             .next_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| transport("call IDs exhausted"))?
             + 1;
         let (send, receive) = mpsc::channel();

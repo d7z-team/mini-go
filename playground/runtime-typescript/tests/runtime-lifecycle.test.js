@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { readFileSync } from "node:fs";
 import { test, vi } from "vitest";
-import { RuntimeClient } from "../src/runtime/client";
+import { RuntimeClient, values } from "../src/runtime/client";
 
 const segment = 2_147_483_647;
 
@@ -100,6 +100,24 @@ test("close waiters detach and repeated close observes completion", async (t) =>
   await h.vm.close();
 });
 
+test("client validates host graphs without expanding aliases and rejects cycles or detached buffers", async (t) => {
+  const h = await harness(t);
+  const shared = { typ: "shared", data: values.int(7n) };
+  const execution = h.vm.start("default", [shared, shared, values.int(1n)]);
+  assert.equal(execution.result instanceof Promise, true);
+  assert.equal(h.sent.filter((message) => message.kind === "start").length, 1);
+
+  const cyclic = {};
+  cyclic.self = cyclic;
+  assert.throws(() => h.vm.start("default", [cyclic]), /host value graph contains a cycle/);
+  assert.equal(h.sent.filter((message) => message.kind === "start").length, 1);
+
+  const buffer = new ArrayBuffer(4);
+  const view = new Uint8Array(buffer);
+  structuredClone(buffer, { transfer: [buffer] });
+  assert.throws(() => h.vm.start("default", [view]), /host value contains a detached buffer/);
+});
+
 test("close send failure rejects all later waits", async (t) => {
   const h = await harness(t);
   h.worker.rejectLifecycle = true;
@@ -183,10 +201,9 @@ test("invalid step budgets reject before constructing a worker", async () => {
 
 test("invalid byte and count budgets reject before constructing a worker", async () => {
   for (const options of [
-    { limits: { maxHeapBytes: 0 } },
-    { limits: { maxHeapBytes: 1n << 64n } },
+    { limits: { maxGuestBytes: 0 } },
+    { limits: { maxGuestBytes: 1n << 64n } },
     { limits: { maxPendingCalls: -1 } },
-    { limits: { maxSequenceElements: 1n } },
     { load: { maxImageBytes: Number.MAX_SAFE_INTEGER + 1 } },
     { load: { maxPackages: 0.5 } },
   ]) {

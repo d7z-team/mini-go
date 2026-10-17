@@ -66,3 +66,32 @@ fn payload_rejects_unknown_fields_and_trailing_values() {
         assert!(strict_json_from_str::<ConstPayload>(input).is_err());
     }
 }
+
+#[test]
+fn storage_cost_contract_uses_the_shared_logical_widths() {
+    assert_eq!(STORAGE_VERSION, 1);
+    assert_eq!(STORAGE_BYTE, 1);
+    assert_eq!(STORAGE_SCALAR, 8);
+    assert_eq!(STORAGE_REFERENCE, 8);
+    assert_eq!(STORAGE_DYNAMIC, 24);
+    assert_eq!(STORAGE_STRING, 24);
+    assert_eq!(STORAGE_SLICE, 32);
+    assert_eq!(STORAGE_POINTER, 24);
+    assert_eq!(STORAGE_RECORD_HEADER, 16);
+    assert_eq!(STORAGE_FRAME_HEADER, 32);
+    assert_eq!(STORAGE_CONTROL_RECORD, 64);
+    assert_eq!(STORAGE_MAP_BUCKET, 4);
+    assert_eq!(STORAGE_MAP_ENTRY, 16);
+    assert_eq!(STORAGE_PRIMITIVE_BYTES[PrimitiveBool as usize], 1);
+    assert_eq!(STORAGE_PRIMITIVE_BYTES[PrimitiveString as usize], 24);
+    assert_eq!(STORAGE_PRIMITIVE_BYTES[PrimitiveComplex128 as usize], 16);
+    assert_eq!(STORAGE_PRIMITIVE_BYTES[PrimitiveFunction as usize], 8);
+}
+
+#[test]
+fn storage_cost_contract_rejects_overflow_before_admission() {
+    assert_eq!(checked_storage_bytes(16, 7, 8), Some(72));
+    assert_eq!(checked_storage_bytes(16, u64::MAX, 0), Some(16));
+    assert_eq!(checked_storage_bytes(0, u64::MAX, 8), None);
+    assert_eq!(checked_storage_bytes(u64::MAX, 0, 0), None);
+}

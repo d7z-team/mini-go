@@ -16,22 +16,23 @@ func ffiPayloadBytes(module *moduleInstance, value vmValue) ([]byte, error) {
 	if !ok || !elem.Primitive(types.PrimitiveUint8) {
 		return nil, fmt.Errorf("FFI payload must be []byte, got %s", value.Type)
 	}
-	if value.Data == nil {
+	payload := value.payload()
+	if payload == nil {
 		return nil, nil
 	}
-	slice, ok := value.Data.(*vmSlice)
+	slice, ok := payload.(*vmSlice)
 	if !ok {
-		return nil, fmt.Errorf("invalid FFI byte slice %T", value.Data)
+		return nil, fmt.Errorf("invalid FFI byte slice %T", payload)
 	}
 	if slice == nil {
 		return nil, nil
 	}
-	if slice.ByteBacked {
+	if slice.byteBacked() {
 		return slice.bytes(), nil
 	}
 	items, ok := sliceValues(value)
 	if !ok {
-		return nil, fmt.Errorf("invalid FFI byte slice %T", value.Data)
+		return nil, fmt.Errorf("invalid FFI byte slice %T", payload)
 	}
 	out := make([]byte, len(items))
 	for i, item := range items {
@@ -125,10 +126,10 @@ func (call *pendingFFICall) complete(result ffi.Result) {
 				Code:    "execution.boundary_limit",
 				Message: fmt.Sprintf("FFI response byte limit exceeded: max %d", machine.limits.MaxBoundaryBytes),
 			}}
-		} else if err := machine.reserveBoundaryBytes(int64(len(result.Payload)) * ir.RuntimeByteBytes); err != nil {
+		} else if err := machine.reserveBoundaryBytes(int64(len(result.Payload)) * ir.StorageByteBytes); err != nil {
 			result = ffi.Result{Err: err}
 		} else {
-			call.boundaryBytes += int64(len(result.Payload)) * ir.RuntimeByteBytes
+			call.boundaryBytes += int64(len(result.Payload)) * ir.StorageByteBytes
 		}
 	}
 	if result.Err != nil {
@@ -166,7 +167,7 @@ func (call *pendingFFICall) finishStart(hostCall ffi.Call, startErr error) {
 	var discard func()
 	if startErr != nil {
 		discard = call.result.Discard
-		responseBytes := int64(len(call.result.Payload)) * ir.RuntimeByteBytes
+		responseBytes := int64(len(call.result.Payload)) * ir.StorageByteBytes
 		call.boundaryBytes -= responseBytes
 		if call.vm != nil {
 			call.vm.pendingBoundaryBytes.Add(-responseBytes)
@@ -211,7 +212,7 @@ func (vm *vm) startFFICall(scope *executionScope, route string, payload []byte) 
 	if err := vm.reservePendingEvent(); err != nil {
 		return nil, err
 	}
-	requestBytes := int64(len(payload)) * ir.RuntimeByteBytes
+	requestBytes := int64(len(payload)) * ir.StorageByteBytes
 	if err := vm.reserveBoundaryBytes(requestBytes); err != nil {
 		vm.pendingEvents.Add(-1)
 		return nil, err
@@ -237,43 +238,63 @@ func (vm *vm) startFFICall(scope *executionScope, route string, payload []byte) 
 	return pending, nil
 }
 
-func (call *pendingFFICall) take() ([]vmValue, bool) {
-	if call == nil {
-		return []vmValue{newByteSliceValue("Slice<Uint8>", ""), newVMValue("String", "FFI call lost continuation"), newVMValue("Int", int64(2))}, true
+// materializeForFrame completes the managed publication before consuming the
+// host reply. A later frame push cannot roll back an already-settled call.
+func (call *pendingFFICall) materializeForFrame(module *moduleInstance, batch *managedAllocationBatch) ([]vmValue, bool, error) {
+	if call == nil || module == nil || module.vm == nil {
+		return nil, false, errors.New("FFI continuation has no managed owner")
 	}
 	call.mu.Lock()
-	ready := call.state == pendingFFIReady && !call.starting
+	if call.state != pendingFFIReady || call.starting {
+		call.mu.Unlock()
+		return nil, false, nil
+	}
 	machine := call.vm
-	payloadBytes := int64(len(call.result.Payload)) * ir.RuntimeByteBytes
-	call.mu.Unlock()
-	var allocationErr error
-	if ready && machine != nil && payloadBytes > 0 {
-		allocationErr = machine.chargeAllocationBytes(ir.RuntimeNodeBytes + payloadBytes)
-	}
-	result, settled := call.settle(pendingFFIConsumed)
-	if !settled {
-		return nil, false
-	}
-	if allocationErr != nil {
-		if result.Discard != nil {
-			result.Discard()
-		}
-		result = ffi.Result{Err: allocationErr}
-	}
 	message := ""
 	status := int64(0)
-	if result.Err != nil {
-		message = result.Err.Error()
+	if call.result.Err != nil {
+		message = call.result.Err.Error()
 		status = 2
-		if errors.Is(result.Err, ffi.ErrRouteUnavailable) {
+		if errors.Is(call.result.Err, ffi.ErrRouteUnavailable) {
 			status = 1
 		}
 	}
-	return []vmValue{
-		newByteSliceHeaderValue("Slice<Uint8>", result.Payload, len(result.Payload), len(result.Payload)),
+	values := []vmValue{
+		newByteSliceHeaderValue("Slice<Uint8>", call.result.Payload, len(call.result.Payload), len(call.result.Payload)),
 		newVMValue("String", message),
 		newVMValue("Int", status),
-	}, true
+	}
+	for index := range 2 {
+		published, err := module.importDetachedValueWithBatch(values[index], map[uintptr]guestRef{}, batch)
+		if err != nil {
+			call.mu.Unlock()
+			return nil, false, err
+		}
+		values[index] = published
+	}
+	// The call lock remains held across preparation. This prevents cancellation
+	// from winning between the final managed write and state consumption.
+	relay := call.relay
+	scope := call.scope
+	boundaryBytes := call.boundaryBytes
+	call.result = ffi.Result{}
+	call.state = pendingFFIConsumed
+	call.cancel()
+	call.call, call.vm, call.scope, call.relay = nil, nil, nil, nil
+	call.waitOwner, call.waitTicket = nil, nil
+	call.boundaryBytes = 0
+	call.mu.Unlock()
+	if relay != nil {
+		relay.detach()
+	}
+	if machine != nil {
+		machine.releasePendingEvent(boundaryBytes)
+		delete(machine.ffiCalls, call)
+		if machine.machine != nil {
+			machine.machine.releaseScopeFFI(scope)
+		}
+	}
+	return values, true, nil
 }
 
 func (call *pendingFFICall) settle(next pendingFFIState) (ffi.Result, bool) {

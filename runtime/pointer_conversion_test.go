@@ -55,6 +55,42 @@ func TestArrayElementAddressesDistinguishScalarIndices(t *testing.T) {
 	}
 }
 
+func TestManagedArrayFieldElementAddressKeepsOwningStorage(t *testing.T) {
+	module := newManagedValueTestModule()
+	module.vm.revision.Store(&instanceRevision{root: module})
+	typ := coerceRuntimeType("struct{Prefix:Array<32, Uint8>,Values:Array<256, Uint8>}")
+	root := newSlot(typ, module, false)
+	index := &slot{typ: coerceRuntimeType("Int"), module: module, value: newVMValue("Int", int64(65)), initialized: true}
+	frame := &frame{module: module, function: loadedFunction{LocalIndexes: map[string]int{"index": 0}}, localCells: []*slot{index}}
+	pointer, err := frame.pathAddress(root, ir.AddressPayload{Path: []ir.AddressPathSegment{{Kind: "field", Field: "Values"}, {Kind: "index", Local: "index"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storePointer(pointer, newVMValue("Uint8", uint64(255))); err != nil {
+		t.Fatal(err)
+	}
+	array, err := loadFieldValue(module, root.load(), "Values")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := indexValue(module, array, index.load())
+	if value, _ := numericAsUint64(got); err != nil || value != 255 {
+		t.Fatalf("array field write = %d, %v", value, err)
+	}
+	// The address alone keeps its backing reachable even after the original
+	// variable's cell ceases to be a root.
+	if _, err := module.vm.heap.collect([]guestRef{pointer.ref}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := storePointer(pointer, newVMValue("Uint8", uint64(17))); err != nil {
+		t.Fatal(err)
+	}
+	got, err = derefPointer(pointer)
+	if value, _ := numericAsUint64(got); err != nil || value != 17 {
+		t.Fatalf("address after collection = %d, %v", value, err)
+	}
+}
+
 func TestArrayAssignmentPreservesElementViews(t *testing.T) {
 	module := &moduleInstance{}
 	root := newSlot(coerceRuntimeType("Array<2, Int>"), module, false)

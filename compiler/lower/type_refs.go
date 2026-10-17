@@ -22,6 +22,9 @@ func (l *lowerer) initTypeRefs() {
 
 func (l *lowerer) typeRef(text string) (types.TypeRef, bool) {
 	l.initTypeRefs()
+	if ref, ok := l.typeRefs[text]; ok {
+		return ref, ref.Valid()
+	}
 	canonical := strings.TrimSpace(l.resolveType(text))
 	if canonical == "" {
 		return types.TypeRef{}, false
@@ -54,15 +57,14 @@ func (l *lowerer) typeRefString(ref types.TypeRef) string {
 	if !ref.Valid() {
 		return ""
 	}
-	return l.formatTypeRef(ref, map[types.TypeID]bool{})
-}
-
-func (l *lowerer) typeRefsFromStrings(texts []string) []types.TypeRef {
-	refs := make([]types.TypeRef, len(texts))
-	for i, text := range texts {
-		refs[i] = l.hirType(text)
+	if text, ok := l.typeTextCache[ref]; ok {
+		return text
 	}
-	return refs
+	text := l.formatTypeRef(ref, map[types.TypeID]bool{})
+	if text != "" && l.typeTextCache != nil {
+		l.typeTextCache[ref] = text
+	}
+	return text
 }
 
 func (l *lowerer) typeStringsFromRefs(refs []types.TypeRef) []string {
@@ -74,11 +76,11 @@ func (l *lowerer) typeStringsFromRefs(refs []types.TypeRef) []string {
 }
 
 func (l *lowerer) signatureParamTypes(signature types.FunctionSignature) []string {
-	refs := make([]types.TypeRef, len(signature.Params))
+	texts := make([]string, len(signature.Params))
 	for i, param := range signature.Params {
-		refs[i] = param.Type
+		texts[i] = l.typeRefString(param.Type)
 	}
-	return l.typeStringsFromRefs(refs)
+	return texts
 }
 
 func (l *lowerer) signatureResultTypes(signature types.FunctionSignature) []string {

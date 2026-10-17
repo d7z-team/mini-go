@@ -105,6 +105,8 @@ func TestRPCPrecompiledImages(t *testing.T) {
 					t.Fatal(err)
 				}
 				if _, err := rpccheck.Exercise(ctx, binder); err != nil {
+					result, executionErr := execution.Result()
+					t.Logf("provider state=%v result=%+v error=%v", execution.State(), result, executionErr)
 					t.Fatal(err)
 				}
 				if err := instance.Shutdown(ctx); err != nil {

@@ -7,7 +7,8 @@ use crate::{
     error::RuntimeError,
     ffi::{Bridge, Cancellation, PendingCalls, Session, Wake},
     heap::{Handle, Heap, HeapStats, Trace},
-    program::{Instruction, Program},
+    managed_map::ManagedMapOwner,
+    program::{Instruction, PreparedFunction, Program, Revision},
     types::{TypeIdentity, TypeRegistry},
     value::{Address, Data, FunctionValue, PathElement, SliceValue, Value},
 };
@@ -25,6 +26,8 @@ pub mod debug;
 mod debug_variables;
 mod frame;
 mod gc;
+#[cfg(test)]
+mod gc_tests;
 use frame::Frame;
 #[cfg(test)]
 mod budget_tests;
@@ -40,7 +43,7 @@ mod reflect;
 mod reflect_async;
 mod reflect_method;
 mod reflect_value;
-pub mod scheduler;
+pub(crate) mod scheduler;
 mod select;
 mod slots;
 pub mod stats;
@@ -58,25 +61,25 @@ const TASK_POLL_INTERVAL: u8 = 64;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionLimits {
-    pub max_frames: usize,
+    pub max_call_depth: usize,
     /// Physical idle frame storage, independent of guest allocation accounting.
     pub max_frame_cache_bytes: usize,
     /// Includes the current revision and the candidate being published.
     pub max_retained_revisions: usize,
     pub max_dynamic_types: usize,
     pub max_dynamic_type_bytes: u64,
-    pub max_objects: usize,
-    /// Arena storage accounting, independent of process RSS.
-    pub max_heap_bytes: u64,
-    /// Logical live guest data and allocations since the last census.
-    pub max_allocated_bytes: u64,
-    pub max_string_bytes: usize,
+    /// Logical managed payload admitted by the instance.
+    pub max_guest_bytes: u64,
+    /// Resident managed pages and runtime metadata.
+    pub max_resident_bytes: u64,
+    /// Boundary payload bytes used by host conversion and RPC snapshots.
+    pub max_boundary_bytes: usize,
     /// Scope instruction budget: 0 uses the default, -1 is unlimited.
     pub max_steps: i64,
-    pub max_value_depth: usize,
-    pub max_sequence_elements: usize,
+    pub max_boundary_depth: usize,
+    pub max_boundary_elements: usize,
     pub max_tasks: usize,
-    pub max_pending_calls: usize,
+    pub max_pending_events: usize,
     pub max_ffi_bytes: usize,
     pub max_ffi_result_bytes: usize,
 }
@@ -84,20 +87,19 @@ pub struct ExecutionLimits {
 impl Default for ExecutionLimits {
     fn default() -> Self {
         Self {
-            max_frames: 1024,
+            max_call_depth: 1024,
             max_frame_cache_bytes: 8 << 20,
             max_retained_revisions: 128,
             max_dynamic_types: 4096,
             max_dynamic_type_bytes: 16 << 20,
-            max_objects: 100_000,
-            max_heap_bytes: 64 << 20,
-            max_allocated_bytes: 8 << 30,
-            max_string_bytes: 64 << 20,
+            max_guest_bytes: 8 << 30,
+            max_resident_bytes: 0,
+            max_boundary_bytes: 64 << 20,
             max_steps: 100_000_000,
-            max_value_depth: 128,
-            max_sequence_elements: 1_000_000,
+            max_boundary_depth: 128,
+            max_boundary_elements: 1_000_000,
             max_tasks: 4096,
-            max_pending_calls: 65_536,
+            max_pending_events: 65_536,
             max_ffi_bytes: 64 << 20,
             max_ffi_result_bytes: 64 << 20,
         }
@@ -137,8 +139,19 @@ const MAX_LOGICAL_FUNCTIONS: usize = 1 << 20;
 pub struct Instance {
     revision: Arc<crate::program::Revision>,
     types: crate::types::TypeRegistry,
-    heap: Arc<Heap<Value>>,
-    memory: Arc<memory::GuestMemory>,
+    type_registry_revision: usize,
+    heap: Heap,
+    /// Numeric map owners are kept beside the instance; map payloads and
+    /// child edges live in `StorageHeap`, never in this registry.
+    pub(crate) managed_maps: ManagedMapOwner,
+    /// Channel records are instance-owned. Serialized resource pages carry
+    /// only channel metadata; this table keeps one stable managed ring owner
+    /// across resource reads and lets collection retire it when its handle is
+    /// gone.
+    pub(crate) channel_records: std::sync::Mutex<
+        HashMap<Handle, Arc<std::sync::Mutex<crate::managed_channel::ManagedChannel>>>,
+    >,
+    revision_anchors: BTreeMap<u64, Handle>,
     globals: BTreeMap<(String, String), Handle>,
     constant_values: BTreeMap<(u64, usize), Value>,
     logical_functions: LogicalFunctions,
@@ -155,13 +168,17 @@ pub struct Instance {
     results: Vec<Value>,
     collection_roots: Vec<Handle>,
     collect_after_bytes: u64,
-    collect_after_objects: usize,
+    collect_major_after_bytes: u64,
     limits: ExecutionLimits,
     steps: u64,
     pub(crate) last_poll_steps: usize,
     scope_steps: BTreeMap<u64, Arc<budget::StepBudget>>,
     scope_work: BTreeMap<u64, stats::ScopeWork>,
     pub(crate) changed_scopes: std::collections::BTreeSet<u64>,
+    // Identifies the task scope when a blocked operation fails while the
+    // supervisor is advancing background work. This keeps error cleanup
+    // local when other scopes are concurrently active.
+    pub(crate) last_error_scope: Option<u64>,
     closed: bool,
     faulted: bool,
     next_task: u64,
@@ -178,9 +195,20 @@ pub struct Instance {
     entropy: Arc<dyn crate::environment::Entropy>,
     timers: timer::TimerQueue,
     timer_check_steps: usize,
-    reflected_types: Vec<(TypeIdentity, Value)>,
+    // Reflection metadata is an index, not a root. The runtimeType value is
+    // rebuilt at the call boundary and only a managed record that receives it
+    // can keep its dynamic type metadata alive.
+    reflected_types: Vec<(TypeIdentity, String)>,
     reflected_type_indices: HashMap<TypeIdentity, usize>,
     reflected_type_keys: HashMap<String, usize>,
+    // Dynamic metadata is charged while at least one managed runtimeType
+    // record owns it. Constructing a reflection value in a frame does not
+    // create a permanent instance root.
+    dynamic_type_costs: HashMap<String, u64>,
+    dynamic_type_identities: HashMap<String, TypeIdentity>,
+    dynamic_type_leases: HashMap<String, crate::managed_storage::StorageControlLease>,
+    dynamic_type_owner_counts: HashMap<String, usize>,
+    dynamic_type_owners: HashMap<Handle, Vec<String>>,
     // Method-set validation is immutable within a published revision. Keep only
     // successful assignments, with a fixed bound on this owner-local memo.
     interface_assignments: std::sync::Mutex<HashSet<(TypeIdentity, TypeIdentity)>>,
@@ -188,7 +216,7 @@ pub struct Instance {
     cancellation_events: Arc<crate::ffi::CancellationEvents>,
     pub(crate) debug: debug::DebugState,
     host_capabilities: HashSet<String>,
-    retired_revisions: BTreeMap<u64, std::sync::Weak<crate::program::Revision>>,
+    retired_revisions: BTreeMap<u64, Arc<crate::program::Revision>>,
 }
 
 impl Drop for Instance {
@@ -198,6 +226,34 @@ impl Drop for Instance {
 }
 
 impl Instance {
+    /// Adopt a heap-created structural catalog only after its revision changes.
+    /// Ordinary allocations never clone the dynamic registry; Any aggregate
+    /// materialization bumps the heap revision and the owner observes it at a
+    /// safepoint or before publishing a task result.
+    pub(super) fn sync_heap_type_registry(&mut self) {
+        let revision = self.heap.type_registry_revision();
+        if revision == self.type_registry_revision {
+            return;
+        }
+        if let Some(types) = self.heap.type_registry_snapshot() {
+            self.types = types;
+            self.type_registry_revision = revision;
+        }
+    }
+
+    pub(super) fn resolve_function_binding(
+        &self,
+        callee: &FunctionValue,
+        revision: &Arc<Revision>,
+    ) -> Result<Arc<PreparedFunction>, RuntimeError> {
+        if let Some(index) = callee.index {
+            return revision.function_by_index(index);
+        }
+        revision
+            .program
+            .function(&callee.module, &callee.function)
+            .cloned()
+    }
     pub fn new(program: Arc<Program>, limits: ExecutionLimits) -> Result<Self, RuntimeError> {
         if !program.image().capabilities.is_empty() {
             return Err(RuntimeError::new(
@@ -211,17 +267,30 @@ impl Instance {
 
     fn create(program: Arc<Program>, limits: ExecutionLimits) -> Result<Self, RuntimeError> {
         let limits = limits.normalize()?;
+        let mut types = program.decoded.types().clone();
+        // Storage type IDs are instance-local publication state. A new VM
+        // starts with the program catalog's type definitions but never shares
+        // the mutable numeric-ID table with another instance.
+        types.fork_storage_catalog();
+        let heap = Heap::new(usize::MAX, limits.max_guest_bytes)?
+            .with_dynamic_type_limits(limits.max_dynamic_types, limits.max_dynamic_type_bytes);
+        heap.set_resident_limit(limits.max_resident_bytes)?;
+        heap.set_type_registry(types.clone());
+        let type_registry_revision = heap.type_registry_revision();
         let wake = Arc::new(Wake::default());
         let bindings = patch::FunctionBindings::prepare(&program, &LogicalFunctions::new())?;
         let mut instance = Self {
-            types: program.decoded.types().clone(),
+            types,
+            type_registry_revision,
             revision: Arc::new(crate::program::Revision {
                 generation: 1,
                 logical_functions: bindings.ids,
                 program,
             }),
-            heap: Arc::new(Heap::new(limits.max_objects, limits.max_heap_bytes)?),
-            memory: Arc::default(),
+            heap,
+            managed_maps: ManagedMapOwner::default(),
+            channel_records: std::sync::Mutex::new(HashMap::new()),
+            revision_anchors: BTreeMap::new(),
             globals: BTreeMap::new(),
             constant_values: BTreeMap::new(),
             logical_functions: bindings.symbols,
@@ -237,14 +306,15 @@ impl Instance {
             cleanup_result: None,
             results: Vec::new(),
             collection_roots: Vec::new(),
-            collect_after_bytes: (256 << 10).min(limits.max_heap_bytes),
-            collect_after_objects: 256.min(limits.max_objects),
+            collect_after_bytes: (256 << 10).min(limits.max_guest_bytes),
+            collect_major_after_bytes: (1 << 20).min(limits.max_guest_bytes),
             limits,
             steps: 0,
             last_poll_steps: 0,
             scope_steps: BTreeMap::new(),
             scope_work: BTreeMap::new(),
             changed_scopes: Default::default(),
+            last_error_scope: None,
             closed: false,
             faulted: false,
             next_task: 1,
@@ -255,7 +325,7 @@ impl Instance {
             select_state: 0,
             ffi_session: None,
             ffi_calls: PendingCalls::new(
-                limits.max_pending_calls,
+                limits.max_pending_events,
                 limits.max_ffi_bytes,
                 wake.clone(),
             ),
@@ -268,6 +338,11 @@ impl Instance {
             reflected_types: Vec::new(),
             reflected_type_indices: HashMap::new(),
             reflected_type_keys: HashMap::new(),
+            dynamic_type_costs: HashMap::new(),
+            dynamic_type_identities: HashMap::new(),
+            dynamic_type_leases: HashMap::new(),
+            dynamic_type_owner_counts: HashMap::new(),
+            dynamic_type_owners: HashMap::new(),
             interface_assignments: std::sync::Mutex::new(HashSet::new()),
             scope_cancellations: BTreeMap::new(),
             cancellation_events: Arc::new(crate::ffi::CancellationEvents::new(wake.clone())),
@@ -297,6 +372,25 @@ impl Instance {
             let handle = instance.allocate(value)?;
             instance.globals.insert((module, global.id), handle);
         }
+        // Code records retain the revision's global cells through numeric
+        // reference lanes, with the shared record-header accounting.
+        let anchor = instance
+            .heap
+            .allocate_revision_anchor(instance.globals.values().copied())
+            .map_err(|error| {
+                if error.code == "collection_required" {
+                    RuntimeError::new(
+                        "allocation_limit",
+                        "revision",
+                        "guest allocation byte limit exceeded",
+                    )
+                } else {
+                    error
+                }
+            })?;
+        instance
+            .revision_anchors
+            .insert(instance.revision.generation, anchor);
         Ok(instance)
     }
 
@@ -475,9 +569,8 @@ impl Instance {
         Ok(())
     }
 
-    /// Results remain rooted until the next start or close. Guest references in
-    /// cloned values belong to this instance and are not persistent host roots.
-    pub fn results(&self) -> &[Value] {
+    #[cfg(test)]
+    pub(crate) fn guest_results(&self) -> &[Value] {
         &self.results
     }
 
@@ -485,16 +578,35 @@ impl Instance {
         &self,
         limits: crate::snapshot::SnapshotLimits,
     ) -> Result<crate::snapshot::HostSnapshot, RuntimeError> {
-        crate::snapshot::HostSnapshot::capture(&self.heap, &self.types, &self.results, limits)
+        crate::snapshot::HostSnapshot::capture(
+            &self.heap,
+            &self.types,
+            &self.managed_maps,
+            &self.results,
+            limits,
+        )
     }
     pub fn heap_stats(&self) -> HeapStats {
         self.heap.stats()
     }
+
+    /// Publish the current worker's nursery before this instance crosses an
+    /// ownership boundary (executor queue, host result or external owner).
+    /// A lease is thread-local, so another executor worker cannot resolve its
+    /// handles until this explicit handoff point.
+    pub(crate) fn publish_worker_storage(&self) -> Result<(), RuntimeError> {
+        self.heap.flush_worker_lease()
+    }
+
     pub fn steps(&self) -> u64 {
         self.steps
     }
 
-    pub fn start(&mut self, entry: &str, arguments: Vec<Value>) -> Result<(), RuntimeError> {
+    pub(crate) fn start_values(
+        &mut self,
+        entry: &str,
+        arguments: Vec<Value>,
+    ) -> Result<(), RuntimeError> {
         if self.closed {
             return Err(RuntimeError::new(
                 "closed",
@@ -543,42 +655,28 @@ impl Instance {
         ));
         let initialized = self.initialized.clone();
         let initializing = self.initializing.clone();
-        let result = self
-            .push_frame(
-                FunctionValue {
-                    index: None,
-                    revision: None,
-                    module: entry.module_path.clone().into(),
-                    function: entry.function_id.into(),
-                    captures: Vec::new(),
-                },
-                arguments,
-                result_count,
-                false,
-            )
-            .and_then(|()| {
-                let frames = std::mem::take(&mut self.running.frames);
-                let result = self.charge_guest(128);
-                self.running.frames = frames;
-                result
-            });
-        let preparing_initialization = result.is_ok();
-        let result = result.and_then(|()| self.initialize_module(&entry.module_path).map(|_| ()));
+        let frame_result = self.push_frame(
+            FunctionValue {
+                index: None,
+                revision: None,
+                revision_generation: None,
+                revision_anchor: None,
+                module: entry.module_path.clone().into(),
+                function: entry.function_id.into(),
+                captures: Vec::new(),
+            },
+            arguments,
+            result_count,
+            false,
+            128,
+        );
+        let result =
+            frame_result.and_then(|()| self.initialize_module(&entry.module_path).map(|_| ()));
         let prepared_task =
             std::mem::replace(&mut self.running, self.preparing_task.take().unwrap());
         if let Err(error) = result {
             self.initialized = initialized;
             self.initializing = initializing;
-            if preparing_initialization {
-                for frame in &prepared_task.frames {
-                    self.memory.recycle_frame_storage(
-                        frame.revision.generation,
-                        frame.prepared.module_index,
-                        frame.prepared.index,
-                        frame.memory,
-                    );
-                }
-            }
             drop(prepared_task);
             self.collect_at_boundary()?;
             return Err(error);
@@ -614,7 +712,7 @@ impl Instance {
         );
         self.changed_scopes.insert(task_id);
         self.running.transient_roots.clear();
-        Ok(())
+        self.heap.flush_worker_lease()
     }
 
     /// Starts a binary ABI entry with an owned guest byte slice.
@@ -637,8 +735,8 @@ impl Instance {
             return Err(RuntimeError::new("busy", "instance", "execution is active"));
         }
         self.admit_task()?;
-        if bytes.len() > self.limits.max_sequence_elements
-            || bytes.len() as u64 > self.limits.max_heap_bytes
+        if bytes.len() > self.limits.max_boundary_bytes
+            || bytes.len() as u64 > self.limits.max_guest_bytes
         {
             return Err(RuntimeError::new(
                 "boundary_limit",
@@ -654,9 +752,7 @@ impl Instance {
             bytes.len(),
             bytes,
         )?;
-        let result = self
-            .charge_guest(128 + bytes.len() as u64)
-            .and_then(|()| self.start(entry, vec![argument]));
+        let result = self.start_values(entry, vec![argument]);
         if result.is_err() {
             self.collect_at_boundary()?;
         }
@@ -792,6 +888,11 @@ impl Instance {
     }
 
     pub(crate) fn merge_parallel_runs(&mut self, runs: Vec<task_runner::TaskRun>) -> usize {
+        // Private execution can materialize a structural Any aggregate while
+        // encoding a frame bank.  The shared Heap owns that catalog during
+        // the worker slice; adopt it before the task becomes visible to the
+        // owner and before the next collection prunes dynamic metadata.
+        self.sync_heap_type_registry();
         let mut progressed = 0usize;
         for mut run in runs {
             run.task.step_grant = None;
@@ -816,6 +917,11 @@ impl Instance {
             return Ok(None);
         }
         self.yield_task();
+        // Selected tasks may run on a different executor worker. Publish
+        // nursery handles before moving them out of this owner thread's TLS
+        // lease; private scalar instructions can then read the shared
+        // directory without a cross-thread lease lookup.
+        self.publish_worker_storage()?;
         let available = self.runnable.len();
         let wanted = parallelism.min(budget).min(available);
         if wanted == 0 {
@@ -915,7 +1021,12 @@ impl Instance {
             Ok(status)
         });
         self.running.step_grant = None;
-        result
+        let published = self.heap.flush_worker_lease();
+        match (result, published) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(status), Ok(())) => Ok(status),
+        }
     }
 
     fn poll_ready(&self, background: bool) -> bool {
@@ -946,11 +1057,10 @@ impl Instance {
                 "instance execution failed",
             ));
         }
-        // A census retry or budget failure belongs to the instruction just
-        // counted. Complete that zero-step continuation before returning.
+        // Allocation retries belong to the instruction transaction and are
+        // completed before returning a poll status.
         while self.last_poll_steps < count
             || self.running.pending_error.is_some()
-            || self.running.retry_instruction
             || self
                 .running
                 .frames
@@ -976,7 +1086,6 @@ impl Instance {
             }
             let pending_error = self.running.pending_error.take();
             let frame = self.running.frames.last().unwrap();
-            let retrying = self.running.retry_instruction;
             let instruction_step = pending_error.is_none()
                 && frame.returning.is_none()
                 && self.running.selection_completion.is_none()
@@ -984,7 +1093,7 @@ impl Instance {
                 && frame.continuation.is_none()
                 && frame.after_init.is_none()
                 && frame.pc < frame.prepared.code.len();
-            let counted_instruction = instruction_step && !retrying;
+            let counted_instruction = instruction_step;
             if counted_instruction && self.debug_before_instruction() {
                 return Ok(PollStatus::Paused);
             }
@@ -1037,6 +1146,7 @@ impl Instance {
                     let executed =
                         task_runner::execute_private_slice(&mut self.running, quantum, &self.types);
                     if executed != 0 {
+                        self.sync_heap_type_registry();
                         self.steps = self.steps.saturating_add(executed as u64);
                         self.last_poll_steps += executed;
                         self.timer_check_steps += executed;
@@ -1056,19 +1166,7 @@ impl Instance {
             } else {
                 (|| {
                     if let Some(request) = self.running.write_collection.request.take() {
-                        match request {
-                            mutation::CollectionRequest::Heap { clear_cache } => {
-                                if clear_cache {
-                                    self.frame_pool.clear();
-                                }
-                                self.collect_rooted()?;
-                                self.running.write_collection.heap_collected = true;
-                            }
-                            mutation::CollectionRequest::Census => {
-                                self.memory.publish_census(self.live_guest_bytes()?);
-                                self.running.write_collection.census_published = true;
-                            }
-                        }
+                        self.collect_pending_write(request)?;
                     }
                     if instruction_step {
                         self.types.use_context(
@@ -1088,10 +1186,6 @@ impl Instance {
                             )
                         {
                             return Ok(());
-                        }
-                        if retrying {
-                            self.running.rewind_instruction();
-                            self.running.retry_instruction = false;
                         }
                         let pc = self.running.frames.last().unwrap().pc;
                         self.running.begin_instruction(pc);
@@ -1113,88 +1207,23 @@ impl Instance {
                 }
                 self.changed_scopes.insert(scope);
             }
-            if outcome
-                .as_ref()
-                .is_err_and(|error| error.code == "census_required")
-            {
-                let requested = self.running.census_request.ok_or_else(|| {
-                    RuntimeError::new(
-                        "internal",
-                        "scheduler",
-                        "census request lost its allocation size",
-                    )
-                })?;
-                // Module initialization retains the triggering instruction in
-                // `after_init`. Its ordinary PC already points at the next
-                // instruction, so rewinding it here would execute the owner
-                // action twice after initialization finishes. Other
-                // allocation failures use the regular instruction retry
-                // continuation and must restore their original PC/operands.
-                let initialization_continuation = self
-                    .running
-                    .frames
-                    .last()
-                    .is_some_and(|frame| frame.after_init.is_some());
-                if initialization_continuation {
-                    self.running.finish_instruction();
-                } else {
-                    self.running.rewind_instruction();
-                }
-                let live = self.live_guest_bytes()?;
-                self.memory.publish_census(live);
-                if let Some(index) = self.running.census_completed_frame.take() {
-                    let mut frame = self.running.suspended_frames.remove(index);
-                    self.cache_frame(&mut frame)?;
-                    self.memory.recycle_frame_storage(
-                        frame.revision.generation,
-                        frame.prepared.module_index,
-                        frame.prepared.index,
-                        frame.memory,
-                    );
-                }
-                if requested > self.limits.max_allocated_bytes.saturating_sub(live) {
-                    if !initialization_continuation {
-                        let pc = self.running.instruction_pc;
-                        self.running.frames.last_mut().unwrap().pc = pc.saturating_add(1);
-                    }
-                    self.running.finish_instruction();
-                    self.running.pending_error = Some(RuntimeError::new(
+            if let Err(mut error) = outcome {
+                if error.code == "collection_required" {
+                    error = RuntimeError::new(
                         "allocation_limit",
                         "guest",
                         "guest allocation byte limit exceeded",
-                    ));
-                } else if !initialization_continuation {
-                    self.running.retry_instruction = true;
+                    );
                 }
-                self.running.transient_roots.clear();
-                if let Some(frame) = self
-                    .running
-                    .popped_frame
-                    .take()
-                    .and_then(|index| self.running.frames.get_mut(index))
-                {
-                    frame.operand_census = None;
+                if error.code == "allocation_limit" && counted_instruction {
+                    self.running.finish_instruction();
+                    self.running.transient_roots.clear();
                 }
-                if counted_instruction {
-                    self.running.scheduling_phase =
-                        (self.running.scheduling_phase + 1) % TASK_POLL_INTERVAL;
-                }
-                if self.running.pending_error.is_some()
-                    || self.running.retry_instruction
-                    || initialization_continuation
-                {
-                    continue;
-                }
-                return Ok(PollStatus::Running);
-            }
-            if let Err(mut error) = outcome {
                 if error.code == "panic" && !self.running.frames.is_empty() {
+                    let panic = self.allocate_private(Value::string(error.message))?;
                     let frame = self.running.frames.last_mut().unwrap();
-                    frame.panic = Some(Arc::new(Value {
-                        typ: TypeIdentity::Primitive(wire::PrimitiveString),
-                        data: Data::String(error.message.into_bytes().into()),
-                    }));
-                    frame.returning = Some(Vec::new());
+                    frame.panic = Some(panic);
+                    frame.returning = Some(0);
                     self.debug_panic();
                 } else {
                     let initialization_failed = error.path == "module_init"
@@ -1227,7 +1256,9 @@ impl Instance {
                         }
                     } else {
                         self.faulted = true;
-                        self.abort()?;
+                        if let Err(cleanup) = self.abort() {
+                            error.message = format!("{}; abort cleanup: {cleanup}", error.message);
+                        }
                     }
                     return Err(error);
                 }
@@ -1244,24 +1275,36 @@ impl Instance {
                 .as_ref()
                 .is_some_and(|task| task.pending_write.is_some());
             if let Some(task) = task {
+                let popped_frame_suspended = task.instruction_frame_suspended;
                 task.finish_instruction();
                 task.transient_roots.clear();
                 if counted_instruction {
                     task.scheduling_phase = (task.scheduling_phase + 1) % TASK_POLL_INTERVAL;
                 }
-                if let Some(frame) = task
-                    .popped_frame
-                    .take()
-                    .and_then(|index| task.frames.get_mut(index))
-                {
+                let popped_frame = task.popped_frame.take();
+                let frame = if popped_frame_suspended {
+                    task.suspended_frames.last_mut()
+                } else {
+                    popped_frame.and_then(|index| task.frames.get_mut(index))
+                };
+                if let Some(frame) = frame {
                     frame.popped_roots.clear();
-                    frame.operand_census = None;
                 }
             }
             if self.debug.paused {
                 return Ok(PollStatus::Paused);
             }
             if mutation_pending {
+                if self.running.id == task_id
+                    && let Some(request) = self.running.write_collection.request.take()
+                {
+                    // All outputs are now owned by the pending write. Reclaim
+                    // at this boundary, then resume only their publication on
+                    // the next poll, without charging another opcode.
+                    if let Err(error) = self.collect_pending_write(request) {
+                        self.running.pending_error = Some(error);
+                    }
+                }
                 return Ok(PollStatus::Running);
             }
             if counted_instruction && self.running.scheduling_phase == 0 {
@@ -1294,8 +1337,11 @@ impl Instance {
     pub(crate) fn cancel_requested_scopes(&mut self) -> Result<Vec<u64>, RuntimeError> {
         let scopes = self.cancellation_events.take();
         for scope in &scopes {
-            if self.scope_cancellations.contains_key(scope) {
-                self.cancel_scope(*scope)?;
+            if self.scope_cancellations.contains_key(scope)
+                && let Err(error) = self.cancel_scope(*scope)
+            {
+                self.last_error_scope = Some(*scope);
+                return Err(error);
             }
         }
         Ok(scopes.into_iter().collect())
@@ -1312,6 +1358,10 @@ impl Instance {
         self.scope_work
             .get(&scope)
             .is_some_and(|work| work.tasks != 0 || work.timers != 0)
+    }
+
+    pub(crate) fn take_last_error_scope(&mut self) -> Option<u64> {
+        self.last_error_scope.take()
     }
 
     pub(crate) fn cancel_scope(&mut self, scope: u64) -> Result<(), RuntimeError> {
@@ -1352,12 +1402,6 @@ impl Instance {
                         ),
                     );
                 }
-                self.memory.recycle_frame_storage(
-                    frame.revision.generation,
-                    frame.prepared.module_index,
-                    frame.prepared.index,
-                    frame.memory,
-                );
             }
             if let Some(scheduler::Blocked::Mutex(handle)) = task.blocked {
                 self.cancel_mutex_wait(handle, task.id)?;
@@ -1370,7 +1414,10 @@ impl Instance {
             self.foreground = None;
             self.results.clear();
         }
-        self.collect_at_boundary().map(|_| ())
+        // Cancellation releases task/frame owners immediately. Unreachable
+        // payload remains charged until an allocation or explicit collection
+        // reaches the collector; cancelling a scope is not a heap safepoint.
+        Ok(())
     }
 
     pub fn close(&mut self) -> Result<(), RuntimeError> {
@@ -1388,7 +1435,7 @@ impl Instance {
     }
 
     pub fn begin_close(&mut self) {
-        if self.cleanup.is_some() || self.cleanup_result.is_some() {
+        if self.closed || self.cleanup.is_some() || self.cleanup_result.is_some() {
             return;
         }
         self.debug = debug::DebugState::default();
@@ -1404,23 +1451,26 @@ impl Instance {
         self.reflected_types.clear();
         self.reflected_type_indices.clear();
         self.reflected_type_keys.clear();
+        self.destroy_channel_records();
+        // Drop dynamic metadata owner records together with the registry. In
+        // normal execution their leases are released when the last managed
+        // runtimeType handle is reclaimed; close is the final owner boundary.
+        self.dynamic_type_costs.clear();
+        self.dynamic_type_identities.clear();
+        self.dynamic_type_leases.clear();
+        self.dynamic_type_owner_counts.clear();
+        self.dynamic_type_owners.clear();
         self.interface_assignments.get_mut().unwrap().clear();
         self.failed_initializations.clear();
         self.types.clear_dynamic();
-        let accounting = self.heap.set_external_bytes(0);
-        let aborted = self.abort();
-        self.memory.publish_census(0);
-        self.memory.retain_revisions(|_| false);
+        self.revision_anchors.clear();
         self.scope_steps.clear();
         let session = self.ffi_session.take();
         self.cleanup = Some(Box::pin(async move {
-            let cleanup = match session {
+            match session {
                 Some(session) => session.shutdown_async().await,
                 None => Ok(()),
-            };
-            accounting?;
-            aborted?;
-            cleanup
+            }
         }));
     }
 
@@ -1440,6 +1490,28 @@ impl Instance {
             None => Ok(()),
         };
         self.cleanup = None;
+        if let Err(error) = result {
+            self.cleanup_result = Some(Err(error.clone()));
+            return std::task::Poll::Ready(Err(error));
+        }
+        // The owner itself can still have a TLS lease when a host calls
+        // Instance::close directly.  Return that lease before waiting for
+        // executor workers; otherwise the active-worker gate would wait on
+        // the current thread forever.
+        if let Err(error) = self.heap.flush_worker_lease() {
+            self.cleanup_result = Some(Err(error.clone()));
+            return std::task::Poll::Ready(Err(error));
+        }
+        // Executor workers own thread-local nursery leases.  Closing the
+        // directory while one is still active would discard its page and
+        // make the worker's eventual handoff stale.  Keep the close future
+        // pending until every worker has returned its lease; the worker pool
+        // wakes the owner through the normal execution wake path.
+        if self.heap.active_worker_leases()? != 0 {
+            cx.waker().wake_by_ref();
+            return std::task::Poll::Pending;
+        }
+        let result = self.abort().and_then(|()| self.heap.close());
         self.cleanup_result = Some(result.clone());
         std::task::Poll::Ready(result)
     }
@@ -1458,14 +1530,6 @@ impl Instance {
             .chain(&self.runnable)
             .chain(self.blocked.iter())
         {
-            for frame in task.frames.iter().chain(&task.suspended_frames) {
-                self.memory.recycle_frame_storage(
-                    frame.revision.generation,
-                    frame.prepared.module_index,
-                    frame.prepared.index,
-                    frame.memory,
-                );
-            }
             if let Some(scheduler::Blocked::Ffi(id)) = task.blocked {
                 self.ffi_calls.cancel(id);
             }
@@ -1504,13 +1568,6 @@ impl Instance {
                 "untyped constant cannot be executed",
             )),
             crate::program::PreparedConstant::Bytes { typ, bytes } => {
-                if bytes.len() > self.limits.max_sequence_elements {
-                    return Err(RuntimeError::new(
-                        "value_limit",
-                        "constant",
-                        "byte constant exceeds collection limit",
-                    ));
-                }
                 let value = self.make_bytes(typ.clone(), bytes.len(), bytes.len(), bytes)?;
                 self.constant_values.insert(key, value.clone());
                 Ok(value)
@@ -1562,6 +1619,8 @@ impl Instance {
             FunctionValue {
                 index: None,
                 revision: None,
+                revision_generation: None,
+                revision_anchor: None,
                 module: module.into(),
                 function: "fn.init".into(),
                 captures: Vec::new(),
@@ -1569,12 +1628,11 @@ impl Instance {
             Vec::new(),
             0,
             true,
+            0,
         );
         if let Err(error) = prepared {
-            if error.code != "census_required" {
-                self.failed_initializations
-                    .insert(module.to_owned(), error.clone());
-            }
+            self.failed_initializations
+                .insert(module.to_owned(), error.clone());
             return Err(error);
         }
         self.initializing.insert(module.to_owned(), self.running.id);
@@ -1601,7 +1659,7 @@ impl Instance {
         if self.running.frames.last().unwrap().panic.is_some() {
             let frame = self.running.frames.last_mut().unwrap();
             frame.continuation = None;
-            frame.delivery.values.clear();
+            frame.delivery.handles.clear();
             frame.delivery.reading = false;
         }
         if let Some(continuation) = self.running.frames.last_mut().unwrap().continuation.take() {
@@ -1630,14 +1688,24 @@ impl Instance {
         } else {
             let pc = self.running.frames.last().unwrap().pc;
             if pc == function.code.len() {
-                self.running.frames.last_mut().unwrap().returning = Some(Vec::new());
+                self.running.frames.last_mut().unwrap().returning = Some(0);
                 return self.finish_frame();
             }
             self.running.frames.last_mut().unwrap().pc += 1;
             pc
         };
         let instruction = function.code.descriptor(pc);
-        self.begin_slot_instruction(pc)?;
+        if let Err(error) = self.begin_slot_instruction(pc) {
+            if error.code != "collection_required" {
+                return Err(error);
+            }
+            // Non-scalar constants are materialized while preparing the
+            // operand lanes. Keep the instruction at its original PC and
+            // retry that preparation after the owner collection; unlike a
+            // pending address write there is no guest-visible mutation yet.
+            self.collect_rooted()?;
+            self.begin_slot_instruction(pc)?;
+        }
         use Instruction::*;
         let initialization_target = match instruction {
             Some(CallDirect(payload) | TailCallDirect(payload)) => Some(&payload.module_path),
@@ -1739,7 +1807,7 @@ impl Instance {
                 }
                 if matched {
                     if let Some(binding) = binding {
-                        self.store_local(binding, selected, false)?;
+                        self.store_local_retry_after_collection(binding, selected, false)?;
                     }
                     let frame = self.running.frames.last_mut().unwrap();
                     frame.type_dispatch_index = 0;
@@ -1775,7 +1843,7 @@ impl Instance {
                             value,
                         )?;
                     } else {
-                        self.store_local(index, value, false)?;
+                        self.store_local_retry_after_collection(index, value, false)?;
                     }
                 }
             }
@@ -1835,16 +1903,7 @@ impl Instance {
                         };
                         value = self.read_address(&address)?;
                     }
-                    let Data::Struct(fields) = value.data else {
-                        return Err(RuntimeError::new(
-                            "type_error",
-                            "get_path",
-                            "expected struct",
-                        ));
-                    };
-                    value = fields.field_at(step.index).cloned().ok_or_else(|| {
-                        RuntimeError::new("missing_field", "get_path", "invalid field layout")
-                    })?;
+                    value = value.element(step.index)?;
                 }
                 result = Some(value);
             }
@@ -1870,7 +1929,7 @@ impl Instance {
             }
             Prepared::Binary(operator) | Prepared::CompareBranch { operator, .. } => {
                 // Inputs stay rooted in their slots until commit, including
-                // while string allocation triggers a memory census.
+                // while string allocation requests collection.
                 let frame = self.running.frames.last().unwrap();
                 let (left, right) = (
                     frame.operand_from_end(pc, 1).unwrap(),
@@ -1887,7 +1946,6 @@ impl Instance {
                 };
                 if let Some(length) = concatenation {
                     self.check_string_size(length)?;
-                    self.charge_guest(length as u64)?;
                 }
                 let frame = self.running.frames.last().unwrap();
                 let (left_value, right_value) = (
@@ -1908,27 +1966,40 @@ impl Instance {
                     result = Some(value);
                 }
             }
+            Prepared::MinMax {
+                kind,
+                choose_min,
+                arg_count,
+            } => {
+                let values = self.running.pop_values(&self.frame_pool, arg_count)?;
+                let value = crate::operators::min_max(
+                    kind,
+                    if choose_min { "min" } else { "max" },
+                    &values,
+                )?;
+                self.frame_pool
+                    .recycle_operands(values, self.limits.max_frame_cache_bytes);
+                result = Some(value);
+            }
             Prepared::Operand | Prepared::Construct(_) => match instruction
                 .expect("unprepared operation descriptor")
             {
-                TypeDispatch(_) | CompareBranch(_) | LenCompareBranch(_) | GetPath(_) => {
+                TypeDispatch(_) | CompareBranch(_) | LenCompareBranch(_) | GetPath(_)
+                | MinMax(_) => {
                     unreachable!("dispatch is prepared")
                 }
                 Zero(_) => {
-                    result = Some(self.zero(function.operand_types[pc].as_ref().unwrap(), 0)?);
+                    result = Some(self.zero(function.operand_types[pc].as_ref().unwrap())?);
                 }
                 Pop => {
                     self.running.pop()?;
                 }
                 AddressOf(payload) => {
-                    self.charge_guest(128)?;
                     let mut address = self.resolve_address(payload)?;
+                    let numeric = address.identity.numeric;
                     address.reset_identity(address.identity.path_root);
-                    let pointee = if address.path.is_empty() {
-                        self.heap.get(address.root)?.typ.clone()
-                    } else {
-                        self.snapshot_address(&address)?.typ.clone()
-                    };
+                    Arc::make_mut(&mut address.identity).numeric = numeric;
+                    let pointee = self.snapshot_address(&address)?.typ.clone();
                     let typ = TypeIdentity::Pointer(std::sync::Arc::new(pointee));
                     result = Some(Value {
                         typ,
@@ -1973,94 +2044,38 @@ impl Instance {
                     let Prepared::Construct(index) = function.execution[pc] else {
                         unreachable!("prepared struct")
                     };
-                    let crate::program::AggregateLayout::Struct(layout) =
-                        &function.aggregates[index]
-                    else {
-                        unreachable!("struct layout")
-                    };
-                    if layout.limits.depth > self.limits.max_value_depth
-                        || layout.limits.max_sequence > self.limits.max_sequence_elements
-                    {
+                    let layout = &function.aggregates[index];
+                    let typ = function.operand_types[pc].as_ref().unwrap().clone();
+                    if self.types.storage_logical_bytes(&typ)? > self.limits.max_guest_bytes {
                         return Err(RuntimeError::new(
-                            "value_limit",
+                            "allocation_limit",
                             "make_struct",
-                            "aggregate layout exceeds value limits",
+                            "struct layout exceeds heap budget",
                         ));
                     }
-                    self.charge_guest_object(layout.declared_fields, 0)?;
-                    let typ = function.operand_types[pc].as_ref().unwrap().clone();
-                    let mut remaining = self
-                        .limits
-                        .max_heap_bytes
-                        .checked_sub(128 + layout.declared_fields as u64 * 16)
-                        .ok_or_else(|| {
-                            RuntimeError::new(
-                                "allocation_limit",
-                                "make_struct",
-                                "struct layout exceeds heap budget",
-                            )
-                        })?;
                     let mut fields = Vec::with_capacity(layout.fields.len());
-                    let mut initialized = Vec::with_capacity(layout.fields.len());
                     for (field_type, input) in &layout.fields {
                         fields.push(if let Some(input) = input {
-                            let value = self.coerce(
+                            self.coerce(
                                 std::mem::replace(&mut values[*input], Value::int(0)),
                                 field_type,
-                            )?;
-                            remaining = remaining
-                                .checked_sub(value.logical_bytes()?.saturating_sub(16))
-                                .ok_or_else(|| {
-                                    RuntimeError::new(
-                                        "allocation_limit",
-                                        "make_struct",
-                                        "field exceeds heap budget",
-                                    )
-                                })?;
-                            value
-                        } else {
-                            Value::zero_with_budget(
-                                &self.types,
-                                field_type,
-                                1,
-                                self.limits.max_value_depth,
-                                self.limits.max_sequence_elements,
-                                &mut remaining,
                             )?
+                        } else {
+                            self.zero(field_type)?
                         });
-                        initialized.push(input.is_some());
                     }
                     result = Some(Value {
                         typ,
                         data: Data::Struct(crate::value::StructStorage::with_layout(
                             layout.names.clone(),
                             fields,
-                            initialized,
                         )),
                     });
                 }
                 MakeSequence(payload) => {
-                    let Prepared::Construct(index) = function.execution[pc] else {
-                        unreachable!("prepared sequence")
-                    };
-                    let crate::program::AggregateLayout::Sequence(layout) =
-                        &function.aggregates[index]
-                    else {
-                        unreachable!("sequence layout")
-                    };
-                    if layout.depth > self.limits.max_value_depth
-                        || layout.max_sequence > self.limits.max_sequence_elements
-                    {
-                        return Err(RuntimeError::new(
-                            "value_limit",
-                            "make_sequence",
-                            "aggregate layout exceeds value limits",
-                        ));
-                    }
                     let values = self
                         .running
                         .pop_values(&self.frame_pool, payload.element_count as usize)?;
-                    self.charge_guest_object(values.len(), 0)?;
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
                     if self
                         .types
@@ -2087,13 +2102,6 @@ impl Instance {
                                 "element count mismatch",
                             ));
                         }
-                        if values.len() > self.limits.max_sequence_elements {
-                            return Err(RuntimeError::new(
-                                "value_limit",
-                                "array",
-                                "array length exceeds limit",
-                            ));
-                        }
                         let element = self.types.resolve(module, &node.elem)?;
                         let mut elements = Vec::with_capacity(values.len());
                         for value in values {
@@ -2103,7 +2111,8 @@ impl Instance {
                             typ,
                             data: Data::Array(elements.into()),
                         };
-                        if value.logical_bytes()? > self.limits.max_heap_bytes {
+                        if self.heap.logical_allocation_bytes(&value)? > self.limits.max_guest_bytes
+                        {
                             return Err(RuntimeError::new(
                                 "allocation_limit",
                                 "make_sequence",
@@ -2131,20 +2140,19 @@ impl Instance {
                         ));
                     }
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
-                    if capacity as u64 > self.limits.max_sequence_elements as u64 {
-                        return Err(RuntimeError::new(
-                            "value_limit",
+                    let capacity = usize::try_from(capacity).map_err(|_| {
+                        RuntimeError::new(
+                            "allocation_limit",
                             "make_slice",
-                            "slice capacity exceeds limit",
-                        ));
-                    }
-                    self.charge_guest_object(capacity as usize, 0)?;
-                    result = Some(self.make_slice(
+                            "capacity overflows host size",
+                        )
+                    })?;
+                    self.running.pending_write = Some(mutation::PendingWrite::Slice {
                         typ,
-                        length as usize,
-                        capacity as usize,
-                        Vec::new(),
-                    )?);
+                        length: length as usize,
+                        capacity,
+                    });
+                    self.resume_write()?;
                 }
                 MakeMap(payload) => {
                     let entry_values = payload.entry_count as usize * 2;
@@ -2152,49 +2160,28 @@ impl Instance {
                         &self.frame_pool,
                         entry_values + usize::from(payload.has_capacity),
                     )?;
-                    let mut requested_capacity = payload.entry_count as usize;
                     if payload.has_capacity {
                         let capacity = values.pop().unwrap().integer()?;
-                        if capacity < 0
-                            || capacity as u64 > self.limits.max_sequence_elements as u64
-                        {
+                        if usize::try_from(capacity).is_err() {
                             return Err(RuntimeError::new(
-                                "value_limit",
+                                "panic",
                                 "make_map",
                                 "invalid map capacity",
                             ));
                         }
-                        requested_capacity = requested_capacity.max(capacity as usize);
                     }
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
-                    if requested_capacity > self.limits.max_sequence_elements {
-                        return Err(RuntimeError::new(
-                            "value_limit",
-                            "make_map",
-                            "map capacity exceeds limit",
-                        ));
+                    let mut entries = VecDeque::with_capacity(payload.entry_count as usize);
+                    let mut values = values.into_iter();
+                    while let Some(key) = values.next() {
+                        entries.push_back((key, values.next().unwrap()));
                     }
-                    let mut entries = crate::value::MapStorage::default();
-                    let element = self.element_type(&typ)?;
-                    for pair in values.as_chunks::<2>().0 {
-                        let key = self.map_key(&typ, pair[0].clone())?;
-                        let value = self.coerce(pair[1].clone(), &element)?;
-                        if let Some(index) = entries.find(&key, &self.types)? {
-                            entries.set_value(index, value);
-                        } else {
-                            entries.insert(key, value);
-                        }
-                    }
-                    self.charge_guest_object(0, requested_capacity)?;
-                    let root = self.allocate(Value {
-                        typ: TypeIdentity::Any,
-                        data: Data::MapEntries(Box::new(entries)),
-                    })?;
-                    let map = Value {
+                    self.running.pending_write = Some(mutation::PendingWrite::MapLiteral {
                         typ,
-                        data: Data::Map(root),
-                    };
-                    result = Some(map);
+                        map: None,
+                        entries,
+                    });
+                    self.resume_write()?;
                 }
                 LoadField(payload) => {
                     let mut value = self.running.pop()?;
@@ -2210,16 +2197,7 @@ impl Instance {
                     if let Data::Pointer(address) = value.data {
                         value = self.read_address(&address)?;
                     }
-                    let Data::Struct(fields) = value.data else {
-                        return Err(RuntimeError::new(
-                            "type_error",
-                            "load_field",
-                            "expected struct",
-                        ));
-                    };
-                    result = Some(fields.get(&payload.field).cloned().ok_or_else(|| {
-                        RuntimeError::new("missing_field", "load_field", &payload.field)
-                    })?);
+                    result = Some(value.field(&payload.field)?);
                 }
                 StoreField(payload) => {
                     let value = self.running.pop()?;
@@ -2244,7 +2222,7 @@ impl Instance {
                     let object = self.running.pop()?;
                     let (value, ok) = self.index_value(&object, &key)?;
                     if with_ok {
-                        self.running.frames.last_mut().unwrap().push_result(value);
+                        self.push_result(value)?;
                         result = Some(Value::boolean(ok));
                     } else {
                         result = Some(value);
@@ -2267,7 +2245,6 @@ impl Instance {
                     self.resume_write()?;
                 }
                 MakeClosure(payload) => {
-                    self.charge_guest_object(payload.captures.len(), 0)?;
                     let captures = payload
                         .captures
                         .iter()
@@ -2279,6 +2256,11 @@ impl Instance {
                         data: Data::Function(std::sync::Arc::new(FunctionValue {
                             index: Some(target.index),
                             revision: Some(revision.clone()),
+                            revision_generation: Some(revision.generation),
+                            revision_anchor: self
+                                .revision_anchors
+                                .get(&revision.generation)
+                                .copied(),
                             module: target.module.clone(),
                             function: target.name.clone(),
                             captures,
@@ -2296,7 +2278,7 @@ impl Instance {
                     );
                     let indirect_function = if indirect {
                         let caller = self.running.frames.last().unwrap();
-                        match &caller.input_at(pc, 0).unwrap().data {
+                        match &caller.input_value(0)?.data {
                             Data::Function(callee) => Some(Arc::unwrap_or_clone(callee.clone())),
                             _ => None,
                         }
@@ -2311,13 +2293,10 @@ impl Instance {
                         caller.memory.popped = memory::grow_frame_buffer(
                             caller.memory.popped,
                             count + usize::from(indirect),
-                            false,
                         )?;
                         let start = caller.slot_input.checked_sub(count).ok_or_else(|| {
                             RuntimeError::new("invalid_operand", "frame", "input underflow")
                         })?;
-                        caller.operand_census =
-                            Some(start - usize::from(indirect)..caller.slot_input);
                         Some(frame::FrameArguments::Caller {
                             frame: caller_index,
                             suspended: false,
@@ -2383,11 +2362,14 @@ impl Instance {
                             })?;
                         }
                         let target = &bound_revision.program.function_table[target_index];
+                        let revision_generation = bound_revision.generation;
                         FunctionValue {
                             index: Some(target_index),
                             module: target.module.clone(),
                             function: target.name.clone(),
                             revision: Some(bound_revision),
+                            revision_generation: Some(revision_generation),
+                            revision_anchor: None,
                             captures: Vec::new(),
                         }
                     };
@@ -2409,6 +2391,7 @@ impl Instance {
                         self.running
                             .suspended_frames
                             .push(self.running.frames.pop().unwrap());
+                        self.running.instruction_frame_suspended = true;
                     }
                     let frame_index = self.running.frames.len();
                     let created = self.push_frame_arguments(
@@ -2416,6 +2399,7 @@ impl Instance {
                         borrowed_arguments.unwrap_or(frame::FrameArguments::Owned(arguments)),
                         payload.result_count as usize,
                         false,
+                        0,
                     );
                     let old = if replace {
                         self.running.suspended_frames.pop()
@@ -2426,16 +2410,14 @@ impl Instance {
                         if let Some(old) = old {
                             self.running.frames.push(old);
                         }
+                        // Caller slots still own their values after a failed
+                        // frame build. Their leases therefore remain attached
+                        // to the caller and are released by normal liveness,
+                        // rather than being reconstructed at the next GC.
                         return Err(error);
                     }
                     if let Some(mut old) = old {
                         self.cache_frame(&mut old)?;
-                        self.memory.recycle_frame_storage(
-                            old.revision.generation,
-                            old.prepared.module_index,
-                            old.prepared.index,
-                            old.memory,
-                        );
                         let frame = &mut self.running.frames[frame_index];
                         frame.initializing = old.initializing;
                         frame.deferred = old.deferred;
@@ -2474,6 +2456,8 @@ impl Instance {
                         FunctionValue {
                             index: None,
                             revision: None,
+                            revision_generation: None,
+                            revision_anchor: None,
                             module: if method.module_path.is_empty() {
                                 owner.into()
                             } else {
@@ -2485,6 +2469,7 @@ impl Instance {
                         arguments,
                         payload.result_count as usize,
                         false,
+                        0,
                     )?;
                 }
                 Return(payload) => {
@@ -2512,11 +2497,15 @@ impl Instance {
                             )
                         })?;
                     let frame = &mut self.running.frames[owner];
-                    frame.memory.deferred = memory::grow_frame_buffer(
-                        frame.memory.deferred,
-                        frame.defers.len() + 1,
-                        true,
+                    let old_capacity = frame.memory.deferred;
+                    let new_capacity =
+                        memory::grow_frame_buffer(old_capacity, frame.defers.len() + 1)?;
+                    frame.ensure_resident_growth(
+                        old_capacity,
+                        new_capacity,
+                        std::mem::size_of::<Value>(),
                     )?;
+                    frame.memory.deferred = new_capacity;
                     frame.defers.push(Arc::unwrap_or_clone(callee));
                 }
                 Panic => {
@@ -2527,9 +2516,14 @@ impl Instance {
                             data: Data::String((&b"panic called with nil argument"[..]).into()),
                         };
                     }
+                    // Unwinding may cross deferred frames and collection
+                    // boundaries. Store the panic payload in the managed
+                    // heap before publishing it on the frame so its nested
+                    // references remain visible to the collector.
+                    let panic = self.allocate_private(value)?;
                     let frame = self.running.frames.last_mut().unwrap();
-                    frame.panic = Some(Arc::new(value));
-                    frame.returning = Some(Vec::new());
+                    frame.panic = Some(panic);
+                    frame.returning = Some(0);
                     self.debug_panic();
                 }
                 Recover => {
@@ -2544,9 +2538,9 @@ impl Instance {
                     if top > 0
                         && self.running.frames[top].deferred
                         && self.running.frames[top].recovered.is_none()
-                        && let Some(panic) = self.running.frames[top - 1].panic.clone()
+                        && let Some(panic) = self.running.frames[top - 1].panic
                     {
-                        result = Some((*panic).clone());
+                        result = Some(self.heap.read_typed_value(panic)?);
                         self.running.frames[top].recovered = Some(panic);
                     }
                 }
@@ -2564,18 +2558,20 @@ impl Instance {
                         "function" => Value {
                             typ: TypeIdentity::Any,
                             data: Data::Function(std::sync::Arc::new(FunctionValue {
-                                index: None,
+                                index: revision
+                                    .program
+                                    .function_index(&payload.module_path, &export.id),
                                 revision: Some(self.revision.clone()),
+                                revision_generation: Some(self.revision.generation),
+                                revision_anchor: None,
                                 module: payload.module_path.clone().into(),
                                 function: export.id.clone().into(),
                                 captures: Vec::new(),
                             })),
                         },
-                        "global" => self
-                            .heap
-                            .get(self.globals[&(payload.module_path.clone(), export.id.clone())])?
-                            .as_ref()
-                            .clone(),
+                        "global" => self.heap.read_typed_value(
+                            self.globals[&(payload.module_path.clone(), export.id.clone())],
+                        )?,
                         _ => {
                             return Err(RuntimeError::new(
                                 "invalid_export",
@@ -2641,24 +2637,19 @@ impl Instance {
                     let object = self.running.pop()?;
                     match &object.data {
                         Data::Map(root) => {
-                            let Data::MapEntries(entries) = &self.heap.get(*root)?.data else {
-                                return Err(RuntimeError::new(
-                                    "invalid_map",
-                                    "clear",
-                                    "invalid backing",
-                                ));
-                            };
-                            let backing = Value {
-                                typ: TypeIdentity::Any,
-                                data: Data::MapEntries(Box::new(entries.cleared())),
-                            };
-                            let bytes = backing.logical_bytes()? + 128;
-                            self.heap
-                                .replace(*root, backing, bytes)
-                                .map_err(|(error, _)| error)?;
+                            self.managed_maps
+                                .get_mut(*root)
+                                .ok_or_else(|| {
+                                    RuntimeError::new(
+                                        "invalid_map",
+                                        "clear",
+                                        "map owner is missing",
+                                    )
+                                })?
+                                .clear()?;
                         }
                         Data::Slice(slice) => {
-                            let zero = self.zero(&self.element_type(&object.typ)?, 0)?;
+                            let zero = self.zero(&self.element_type(&object.typ)?)?;
                             for index in 0..slice.length {
                                 self.store_index(
                                     object.clone(),
@@ -2678,39 +2669,88 @@ impl Instance {
                     }
                 }
                 MapIterInit(payload) => {
+                    let local = self
+                        .running
+                        .frames
+                        .last()
+                        .and_then(|frame| {
+                            frame
+                                .prepared
+                                .map_iterator_indices
+                                .get(frame.pc.saturating_sub(1))
+                        })
+                        .and_then(|local| *local)
+                        .ok_or_else(|| {
+                            RuntimeError::new(
+                                "invalid_iterator",
+                                "iterator",
+                                format!("iterator local is not prepared: {}", payload.local),
+                            )
+                        })?;
                     let object = self.running.pop()?;
-                    self.init_map_iterator(&payload.local, object)?;
+                    self.init_map_iterator(local, object)?;
                 }
                 MapIterNext(payload) => {
-                    let (key, value, ok) = self.next_map_entry(&payload.local)?;
-                    self.running
+                    let local = self
+                        .running
                         .frames
-                        .last_mut()
-                        .unwrap()
-                        .extend_results([key, value]);
+                        .last()
+                        .and_then(|frame| {
+                            frame
+                                .prepared
+                                .map_iterator_indices
+                                .get(frame.pc.saturating_sub(1))
+                        })
+                        .and_then(|local| *local)
+                        .ok_or_else(|| {
+                            RuntimeError::new(
+                                "invalid_iterator",
+                                "iterator",
+                                format!("iterator local is not prepared: {}", payload.local),
+                            )
+                        })?;
+                    let (key, value, ok) = self.next_map_entry(local)?;
+                    self.extend_results([key, value])?;
                     result = Some(Value::boolean(ok));
                 }
                 MapIterClose(payload) => {
-                    self.running
+                    let local = self
+                        .running
+                        .frames
+                        .last()
+                        .and_then(|frame| {
+                            frame
+                                .prepared
+                                .map_iterator_indices
+                                .get(frame.pc.saturating_sub(1))
+                        })
+                        .and_then(|local| *local)
+                        .ok_or_else(|| {
+                            RuntimeError::new(
+                                "invalid_iterator",
+                                "iterator",
+                                format!("iterator local is not prepared: {}", payload.local),
+                            )
+                        })?;
+                    if let Some(iterator) = self
+                        .running
                         .frames
                         .last_mut()
                         .unwrap()
                         .map_iterators
-                        .remove(&payload.local);
+                        .get_mut(local)
+                    {
+                        *iterator = None;
+                    }
                 }
                 MapKeys => {
                     let object = self.running.pop()?;
-                    let values = match object.data {
-                        Data::Map(root) => {
-                            let Data::MapEntries(entries) = &self.heap.get(root)?.data else {
-                                return Err(RuntimeError::new(
-                                    "invalid_map",
-                                    "map_keys",
-                                    "invalid backing",
-                                ));
-                            };
-                            entries.iter().map(|(key, _)| key.clone()).collect()
-                        }
+                    let values = match &object.data {
+                        Data::Map(root) => self
+                            .materialize_managed_map(*root, &object.typ)?
+                            .into_iter()
+                            .map(|(key, _)| key)
+                            .collect(),
                         Data::Nil => Vec::new(),
                         _ => {
                             return Err(RuntimeError::new(
@@ -2777,9 +2817,13 @@ impl Instance {
                         Data::Interface(value) => Arc::unwrap_or_clone(value),
                         _ => value,
                     };
+                    let dynamic_type = match &value.data {
+                        Data::DynamicFunction(callback) => &callback.typ,
+                        _ => &value.typ,
+                    };
                     let ok = !nil_interface
-                        && (self.types.identical(&value.typ, &typ)?
-                            || self.types.implements(&value.typ, &typ)?);
+                        && (self.types.identical(dynamic_type, &typ)?
+                            || self.types.implements(dynamic_type, &typ)?);
                     if !with_ok && !ok {
                         return Err(RuntimeError::new(
                             "panic",
@@ -2788,12 +2832,19 @@ impl Instance {
                         ));
                     }
                     let value = if ok {
-                        self.coerce(value, &typ)?
+                        if matches!(value.data, Data::DynamicFunction(_)) {
+                            Value {
+                                typ: typ.clone(),
+                                data: value.data,
+                            }
+                        } else {
+                            self.coerce(value, &typ)?
+                        }
                     } else {
-                        self.zero(&typ, 0)?
+                        self.zero(&typ)?
                     };
                     if with_ok {
-                        self.running.frames.last_mut().unwrap().push_result(value);
+                        self.push_result(value)?;
                         result = Some(Value::boolean(ok));
                     } else {
                         result = Some(value);
@@ -2821,8 +2872,24 @@ impl Instance {
             if let Data::String(bytes) = &value.data {
                 self.check_string_size(bytes.len())?;
             }
-            self.running.frames.last_mut().unwrap().push_result(value);
+            self.push_result(value)?;
         }
         Ok(())
+    }
+
+    fn store_local_retry_after_collection(
+        &mut self,
+        index: usize,
+        value: Value,
+        rebind: bool,
+    ) -> Result<(), RuntimeError> {
+        value.trace(&mut |handle| self.running.transient_roots.push(handle));
+        match self.store_local(index, value.clone(), rebind) {
+            Err(error) if error.code == "collection_required" => {
+                self.collect_rooted()?;
+                self.store_local(index, value, rebind)
+            }
+            outcome => outcome,
+        }
     }
 }

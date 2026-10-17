@@ -41,24 +41,6 @@ func (machine *executionMachine) applyTaskRunResult(run *taskRun) runOutcome {
 		}
 		return runOutcome{state: ExecutionRunning}
 	}
-	if run.yield.kind == taskYieldCensus {
-		requested := task.pendingCensus
-		task.pendingCensus = 0
-		live := machine.vm.refreshLiveGuestBytes()
-		limit := machine.vm.limits.MaxAllocatedBytes
-		if limit == 0 {
-			limit = defaultLimits.MaxAllocatedBytes
-		}
-		if requested > limit-live {
-			task.retryInstruction = false
-			if len(task.frames) != 0 {
-				task.frames[len(task.frames)-1].frame.releasePopValues()
-			}
-			task.pendingErr = allocationLimitError(limit)
-		}
-		machine.pushRunnableFront(task)
-		return runOutcome{state: ExecutionRunning}
-	}
 	if run.yield.kind != taskYieldPause {
 		task.quantumSteps = 0
 	}

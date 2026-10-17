@@ -5,14 +5,7 @@ use super::*;
 
 impl Instance {
     pub(super) fn check_string_size(&self, length: usize) -> Result<(), RuntimeError> {
-        if length > self.limits.max_string_bytes {
-            return Err(RuntimeError::new(
-                "string_limit",
-                "string",
-                "string exceeds byte limit",
-            ));
-        }
-        if length as u64 > self.limits.max_heap_bytes {
+        if length as u64 > self.limits.max_guest_bytes {
             return Err(RuntimeError::new(
                 "allocation_limit",
                 "string",
@@ -27,6 +20,15 @@ impl Instance {
             return Ok(bytes.to_vec());
         }
         if let Data::Slice(slice) = &value.data {
+            if slice.storage.path.is_empty()
+                && let Some(bytes) = self.heap.read_byte_storage_range(
+                    slice.storage.root,
+                    slice.start,
+                    slice.length,
+                )?
+            {
+                return Ok(bytes);
+            }
             let backing = self.snapshot_address(&slice.storage)?;
             if let Data::Bytes(bytes) = &backing.data {
                 return bytes
@@ -36,19 +38,23 @@ impl Instance {
                         RuntimeError::new("invalid_slice", "bytes", "invalid byte view")
                     });
             }
-            let Data::Array(values) = &backing.data else {
+            let Some((true, count)) = backing.data.aggregate_shape() else {
                 return Err(RuntimeError::new(
                     "invalid_slice",
                     "slice",
                     "invalid backing",
                 ));
             };
-            let values = values
-                .get(slice.start..slice.start + slice.length)
-                .ok_or_else(|| RuntimeError::new("invalid_slice", "slice", "invalid view"))?;
-            let mut bytes = Vec::with_capacity(values.len());
-            for value in values {
-                match value.data {
+            if slice
+                .start
+                .checked_add(slice.length)
+                .is_none_or(|end| end > count)
+            {
+                return Err(RuntimeError::new("invalid_slice", "slice", "invalid view"));
+            }
+            let mut bytes = Vec::with_capacity(slice.length);
+            for index in slice.start..slice.start + slice.length {
+                match backing.element(index)?.data {
                     Data::Unsigned(byte) if byte <= 255 => bytes.push(byte as u8),
                     _ => {
                         return Err(RuntimeError::new(
@@ -74,17 +80,68 @@ impl Instance {
         capacity: usize,
         initial: &[u8],
     ) -> Result<Value, RuntimeError> {
-        if initial.len() > length
-            || length > capacity
-            || capacity > self.limits.max_sequence_elements
-            || (capacity as u64).saturating_add(272) > self.limits.max_heap_bytes
-        {
+        if initial.len() > length || length > capacity {
             return Err(RuntimeError::new(
                 "allocation_limit",
                 "bytes",
                 "byte backing exceeds instance limits",
             ));
         }
+        let capacity = u64::try_from(capacity).map_err(|_| {
+            RuntimeError::new(
+                "allocation_limit",
+                "bytes",
+                "byte backing length overflows guest accounting",
+            )
+        })?;
+        let logical = crate::contract_generated::STORAGE_RECORD_HEADER
+            .checked_add(capacity)
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    "allocation_limit",
+                    "bytes",
+                    "byte backing size overflows guest accounting",
+                )
+            })?;
+        let physical = capacity
+            .max(1)
+            .checked_add(7)
+            .map(|size| size & !7)
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    "allocation_limit",
+                    "bytes",
+                    "byte backing size overflows managed storage",
+                )
+            })?;
+        if physical > u64::from(u32::MAX - 7) {
+            return Err(RuntimeError::new(
+                "allocation_limit",
+                "bytes",
+                "byte backing exceeds managed storage size",
+            ));
+        }
+        if logical > self.limits.max_guest_bytes {
+            return Err(RuntimeError::new(
+                "allocation_limit",
+                "bytes",
+                "byte backing exceeds guest allocation limit",
+            ));
+        }
+        if self.limits.max_resident_bytes != 0 && physical > self.limits.max_resident_bytes {
+            return Err(RuntimeError::new(
+                "allocation_limit",
+                "bytes",
+                "byte backing exceeds resident limit",
+            ));
+        }
+        let capacity = usize::try_from(capacity).map_err(|_| {
+            RuntimeError::new(
+                "allocation_limit",
+                "bytes",
+                "byte backing length exceeds host size",
+            )
+        })?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(capacity).map_err(|_| {
             RuntimeError::new(
@@ -95,10 +152,45 @@ impl Instance {
         })?;
         bytes.extend_from_slice(initial);
         bytes.resize(capacity, 0);
-        let root = self.allocate(Value {
-            typ: TypeIdentity::Any,
-            data: Data::Bytes(bytes),
-        })?;
+        // Raw byte backing is an internal storage object, so it does not pass
+        // through `Instance::allocate(Value)`.  Keep the same one-shot owner
+        // collection/retry contract here; a direct heap call must not turn a
+        // reclaimable `collection_required` into an externally visible
+        // allocation failure.
+        let root = match self.heap.allocate_raw_bytes(&bytes) {
+            Ok(root) => root,
+            Err(error) if matches!(error.code, "collection_required" | "allocation_limit") => {
+                self.collect_rooted().map_err(|error| {
+                    if error.code == "collection_required" {
+                        RuntimeError::new(
+                            "allocation_limit",
+                            "guest",
+                            "guest allocation byte limit exceeded",
+                        )
+                    } else {
+                        error
+                    }
+                })?;
+                self.heap.allocate_raw_bytes(&bytes).map_err(|error| {
+                    if error.code == "collection_required" {
+                        RuntimeError::new(
+                            "allocation_limit",
+                            "guest",
+                            "guest allocation byte limit exceeded",
+                        )
+                    } else {
+                        error
+                    }
+                })?
+            }
+            Err(error) => return Err(error),
+        };
+        // Unlike `Instance::allocate`, raw byte storage bypasses the normal
+        // value allocation helper. Keep the returned backing alive for the
+        // current operation so a subsequent host argument allocation or
+        // collection cannot reclaim an earlier byte argument before its
+        // owner publishes it.
+        self.running.transient_roots.push(root);
         Ok(Value {
             typ,
             data: Data::Slice(std::sync::Arc::new(SliceValue {
@@ -135,15 +227,23 @@ impl Instance {
                     "byte range outside slice",
                 ));
             }
+            if slice.storage.path.is_empty()
+                && let Some(bytes) = self.heap.read_byte_storage_range(
+                    slice.storage.root,
+                    slice.start + start,
+                    length,
+                )?
+            {
+                return Ok(bytes);
+            }
             let backing = self.snapshot_address(&slice.storage)?;
             match &backing.data {
                 Data::Bytes(bytes) => {
                     return Ok(bytes[slice.start + start..slice.start + start + length].to_vec());
                 }
-                Data::Array(values) => {
-                    return values[slice.start + start..slice.start + start + length]
-                        .iter()
-                        .map(|value| match value.data {
+                data if data.aggregate_shape().is_some_and(|(array, _)| array) => {
+                    return (slice.start + start..slice.start + start + length)
+                        .map(|index| match backing.element(index)?.data {
                             Data::Unsigned(byte) if byte <= 255 => Ok(byte as u8),
                             _ => Err(RuntimeError::new(
                                 "type_error",
@@ -183,22 +283,18 @@ impl Instance {
         }
         if slice.storage.path.is_empty() {
             loop {
-                let (snapshot, bytes) = self.heap.read_mutation_base(slice.storage.root)?;
+                let (snapshot, _bytes, version) =
+                    self.heap.read_typed_mutation_base(slice.storage.root)?;
                 if !matches!(snapshot.data, Data::Bytes(_)) {
                     break;
                 }
-                let expected = Arc::downgrade(&snapshot);
                 drop(snapshot);
-                if self
-                    .heap
-                    .update(slice.storage.root, expected, bytes, true, |backing| {
-                        let Data::Bytes(bytes) = &mut backing.data else {
-                            unreachable!()
-                        };
-                        bytes[slice.start + offset..slice.start + offset + source.len()]
-                            .copy_from_slice(source);
-                    })?
-                {
+                if self.heap.write_byte_storage_range_if_version(
+                    slice.storage.root,
+                    slice.start + offset,
+                    source,
+                    version,
+                )? {
                     return Ok(());
                 }
             }
@@ -253,14 +349,133 @@ impl Instance {
 mod tests {
     use super::*;
 
+    fn storage_cost(name: &str) -> (u64, u64) {
+        let vectors: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../../testdata/runtime/storage_cost.json"
+        ))
+        .unwrap();
+        let vector = vectors
+            .iter()
+            .find(|vector| vector["name"] == name)
+            .unwrap();
+        (
+            vector["bytes"].as_u64().unwrap(),
+            vector["allocations"].as_u64().unwrap(),
+        )
+    }
+
+    #[test]
+    fn byte_capacity_budget_rejects_before_host_scratch_allocation() {
+        let program = test_helpers::program_with_artifact(|_| {});
+        let mut vm = Instance::new(
+            program,
+            ExecutionLimits {
+                max_guest_bytes: 64,
+                ..ExecutionLimits::default()
+            },
+        )
+        .unwrap();
+        let before = vm.heap_stats();
+        let error = vm
+            .make_bytes(
+                TypeIdentity::Slice(Arc::new(TypeIdentity::Primitive(wire::PrimitiveUint8))),
+                0,
+                usize::MAX,
+                &[],
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "allocation_limit");
+        let after = vm.heap_stats();
+        assert_eq!(after.guest_bytes, before.guest_bytes);
+        assert_eq!(after.allocations, before.allocations);
+        vm.close().unwrap();
+    }
+
+    #[test]
+    fn byte_backing_stays_live_until_operation_owner_releases_it() {
+        let program = test_helpers::program_with_artifact(|_| {});
+        let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+        let value = vm
+            .make_bytes(
+                TypeIdentity::Slice(Arc::new(TypeIdentity::Primitive(wire::PrimitiveUint8))),
+                3,
+                3,
+                &[7, 8, 9],
+            )
+            .unwrap();
+        let root = match &value.data {
+            Data::Slice(slice) => slice.storage.root,
+            _ => panic!("byte backing must be a slice"),
+        };
+        vm.heap.flush_worker_lease().unwrap();
+        vm.collect_rooted().unwrap();
+        assert!(vm.heap.is_live(root));
+        assert_eq!(vm.slice_bytes(&value).unwrap(), [7, 8, 9]);
+
+        vm.running.transient_roots.clear();
+        vm.collect_rooted().unwrap();
+        assert!(!vm.heap.is_live(root));
+        vm.close().unwrap();
+    }
+
+    #[test]
+    fn slice_backings_match_shared_storage_cost_contract() {
+        for (name, element, initial) in [
+            (
+                "byte_slice_backing",
+                TypeIdentity::Primitive(wire::PrimitiveUint8),
+                vec![Value {
+                    typ: TypeIdentity::Primitive(wire::PrimitiveUint8),
+                    data: Data::Unsigned(7),
+                }],
+            ),
+            (
+                "int_slice_backing",
+                TypeIdentity::Primitive(wire::PrimitiveInt),
+                vec![Value::int(7)],
+            ),
+        ] {
+            let program = test_helpers::program_with_artifact(|_| {});
+            let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+            let before = vm.heap_stats();
+            let slice = vm
+                .make_slice(TypeIdentity::Slice(Arc::new(element)), 1, 3, initial)
+                .unwrap();
+            vm.heap.flush_worker_lease().unwrap();
+            let after = vm.heap_stats();
+            let (expected_bytes, expected_allocations) = storage_cost(name);
+            assert_eq!(
+                after.total_allocated_bytes - before.total_allocated_bytes,
+                expected_bytes,
+                "{name}"
+            );
+            assert_eq!(
+                after.allocations - before.allocations,
+                expected_allocations,
+                "{name}"
+            );
+            assert_eq!(vm.slice_values(&slice).unwrap().len(), 1);
+            vm.close().unwrap();
+        }
+    }
+
     #[test]
     fn append_growth_rejection_preserves_both_backing_kinds() {
         for element in [wire::PrimitiveUint8, wire::PrimitiveInt] {
             let program = test_helpers::program_with_artifact(|_| {});
+            // The empty program also owns its revision anchor. Admit that
+            // owner and one backing while leaving growth unable to publish.
+            let guest_budget = wire::STORAGE_RECORD_HEADER
+                + storage_cost(if element == wire::PrimitiveUint8 {
+                    "byte_slice_backing"
+                } else {
+                    "int_slice_backing"
+                })
+                .0;
             let mut vm = Instance::new(
                 program,
                 ExecutionLimits {
-                    max_sequence_elements: 3,
+                    max_guest_bytes: guest_budget,
                     ..ExecutionLimits::default()
                 },
             )
@@ -286,7 +501,7 @@ mod tests {
             let error = vm
                 .append_values(slice.clone(), vec![initial.clone(), initial.clone()])
                 .unwrap_err();
-            assert_eq!(error.code, "value_limit");
+            assert_eq!(error.code, "allocation_limit");
             assert_eq!(
                 vm.heap_stats().total_allocated_bytes,
                 before.total_allocated_bytes
@@ -377,18 +592,22 @@ mod tests {
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
         let element = TypeIdentity::Primitive(wire::PrimitiveUint8);
         for data in [Data::Unsigned(256), Data::Integer(1)] {
-            let root = vm
-                .allocate(Value {
-                    typ: TypeIdentity::Any,
-                    data: Data::Array(
-                        vec![Value {
-                            typ: element.clone(),
-                            data,
-                        }]
-                        .into(),
-                    ),
-                })
-                .unwrap();
+            let integer_input = matches!(data, Data::Integer(_));
+            let allocation = vm.allocate(Value {
+                typ: TypeIdentity::Any,
+                data: Data::Array(
+                    vec![Value {
+                        typ: element.clone(),
+                        data,
+                    }]
+                    .into(),
+                ),
+            });
+            if integer_input {
+                assert_eq!(allocation.unwrap_err().code, "typed_payload_unsupported");
+                continue;
+            }
+            let root = allocation.unwrap();
             let mut slice = SliceValue {
                 identity: Arc::default(),
                 storage: Address {

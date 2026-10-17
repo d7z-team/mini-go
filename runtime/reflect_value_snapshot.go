@@ -15,7 +15,7 @@ func reflectValueSnapshot(ctx intrinsicContext, value vmValue) (vmValue, error) 
 // of an unexported embedded field; selecting a child field clears it.
 func reflectCopyEmbeddedReadOnly(out vmValue, source reflectValueFields) vmValue {
 	if reflectBoolField(source.get("embeddedReadOnly")) {
-		setRuntimeStructField(out.Data.(*vmStruct), "embeddedReadOnly", newBoolValue(true))
+		setRuntimeStructField(out.payload().(*vmStruct), "embeddedReadOnly", newBoolValue(true))
 	}
 	return out
 }
@@ -29,14 +29,14 @@ func reflectValueSnapshotWithTarget(ctx intrinsicContext, value, target vmValue,
 	}
 	boolValue, intValue, uintValue, floatValue, complexValue, stringValue := reflectScalarValues(value)
 	out := newRuntimeStructValue(module, "reflect.Value", nil)
-	fields, ok := out.Data.(*vmStruct)
+	fields, ok := out.payload().(*vmStruct)
 	if !ok || fields == nil {
 		return vmValue{}, errors.New("reflect: invalid Value schema")
 	}
 	setRuntimeStructField(fields, "valid", newBoolValue(true))
 	setRuntimeStructField(fields, "valueType", reflectTypeValueFromVM(ctx.vm, info))
 	setRuntimeStructField(fields, "data", newVMValue("Any", value))
-	if target.Type.Valid() || target.Data != nil {
+	if target.Type.Valid() || target.payload() != nil {
 		setRuntimeStructField(fields, "target", newVMValue("Any", target))
 	}
 	if addressable {
@@ -104,7 +104,7 @@ func reflectScalarValues(value vmValue) (bool, int64, uint64, float64, complex12
 }
 
 func reflectTypeInfoForValue(module *moduleInstance, value vmValue) TypeInfo {
-	if ref, ok := value.Data.(functionRef); ok {
+	if ref, ok := value.payload().(functionRef); ok {
 		if target, fn, ok := reflectFunctionRefTarget(module, ref); ok {
 			signature := fn.Decl.Signature
 			info := reflectTypeInfoForTypeText(target, types.FormatSignature(&target.executable.Artifact.TypeTable, signature))
@@ -113,14 +113,14 @@ func reflectTypeInfoForValue(module *moduleInstance, value vmValue) TypeInfo {
 			return info
 		}
 	}
-	if target, ok := value.Data.(reflectMethodTarget); ok {
+	if target, ok := value.payload().(reflectMethodTarget); ok {
 		signature := target.Method.SignatureType.String()
 		info := reflectTypeInfoForTypeText(module, signature)
 		info.Kind = "function"
 		info.Variadic = target.Method.Variadic
 		return info
 	}
-	if target, ok := value.Data.(reflectUnboundMethodTarget); ok {
+	if target, ok := value.payload().(reflectUnboundMethodTarget); ok {
 		signature := reflectUnboundMethodSignature(
 			target.Method.ReceiverType.String(),
 			target.Method.SignatureType.String(),

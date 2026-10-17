@@ -17,146 +17,26 @@ func (l *lowerer) lowerMinMaxCall(expr ast.Expression, scope *funcScope) (ir.Exp
 	if !ok {
 		return ir.Expression{}, false
 	}
-	packedType := "Slice<" + targetType + ">"
-	valueTypeExpr := ast.TypeExpr{Kind: ast.TypeName, Name: targetType}
-	valuesTypeExpr := ast.TypeExpr{Kind: ast.TypeSlice, Elem: &valueTypeExpr}
-	values := ast.Expression{
-		Kind: ast.ExprIdent,
-		Name: "values",
-		Type: &valuesTypeExpr,
-	}
-	zero := ast.Expression{
-		Kind:    ast.ExprLiteral,
-		Literal: "0",
-		Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
-	}
-	best := ast.Expression{Kind: ast.ExprIdent, Name: "best", Type: &valueTypeExpr}
-	value := ast.Expression{Kind: ast.ExprIdent, Name: "value", Type: &valueTypeExpr}
-	first := ast.Expression{Kind: ast.ExprIndex, Operand: &values, Index: &zero, Type: &valueTypeExpr}
-	comparisonOperator := "<"
-	if expr.Callee != nil && strings.TrimSpace(expr.Callee.Name) == "max" {
-		comparisonOperator = ">"
-	}
-	comparison := l.minMaxUpdateCondition(comparisonOperator, targetType, value, best)
-	update := ast.Statement{
-		Kind:  ast.StmtAssign,
-		Op:    "=",
-		Left:  []ast.Expression{best},
-		Right: []ast.Expression{value},
-	}
-	rangeStmt := ast.Statement{
-		Kind:  ast.StmtRange,
-		Op:    ":=",
-		Key:   &ast.Expression{Kind: ast.ExprIdent, Name: "_"},
-		Value: &ast.Expression{Kind: ast.ExprIdent, Name: "value", Type: &valueTypeExpr},
-		Range: &values,
-		Body: ast.BlockStmt{Stmts: []ast.Statement{{
-			Kind: ast.StmtIf,
-			Cond: &comparison,
-			Body: ast.BlockStmt{Stmts: []ast.Statement{update}},
-		}}},
-	}
-	generated := ast.Expression{
-		Kind: ast.ExprFunc,
-		Func: &ast.FuncDecl{
-			Params:  []ast.Field{{Name: "values", Type: valueTypeExpr, Variadic: true}},
-			Results: []ast.Field{{Type: valueTypeExpr}},
-			Body: ast.BlockStmt{Stmts: []ast.Statement{
-				{Kind: ast.StmtDecl, Decls: []ast.Decl{{Kind: ast.DeclVar, Var: &ast.ValueDecl{
-					Names: []string{"best"}, Type: valueTypeExpr, Values: []ast.Expression{first},
-				}}}},
-				rangeStmt,
-				{Kind: ast.StmtReturn, Results: []ast.Expression{best}},
-			}},
-		},
-	}
-	fnValue, ok := l.lowerFuncLiteral(generated, nil)
-	if !ok {
-		return ir.Expression{}, false
-	}
-	l.extraFunctions[len(l.extraFunctions)-1].Generated = true
-	callArgs := make([]ir.Expression, 0, 1)
-	elements := make([]ir.Expression, 0, len(expr.Args))
+	args := make([]ir.Expression, 0, len(expr.Args))
 	for _, arg := range expr.Args {
 		lowered, ok := l.lowerExpressionInType(arg, targetType, scope)
 		if !ok {
 			return ir.Expression{}, false
 		}
-		elements = append(elements, lowered)
+		args = append(args, lowered)
 	}
-	callArgs = append(callArgs, ir.Expression{Kind: ir.ExprSequence, Type: l.hirType(packedType), Elements: elements})
 	return ir.Expression{
-		Kind:        ir.ExprCallDirect,
-		Function:    fnValue.Function,
-		Args:        callArgs,
+		Kind:        ir.ExprMinMax,
+		Operator:    strings.TrimSpace(expr.Callee.Name),
+		Args:        args,
 		Type:        l.hirType(targetType),
 		ResultCount: 1,
 	}, true
 }
 
-func (l *lowerer) minMaxUpdateCondition(operator, targetType string, value, best ast.Expression) ast.Expression {
-	normal := astBinary(operator, value, best)
-	if !isFloatType(l.resolveNamedUnderlyingType(targetType)) {
-		return normal
-	}
-	valueNaN := astBinary("!=", value, value)
-	bestNaN := astBinary("!=", best, best)
-	notBestNaN := ast.Expression{Kind: ast.ExprUnary, Operator: "!", Operand: &bestNaN}
-	valueZero := astBinary("==", value, typedNumericLiteral(targetType, "0"))
-	bestZero := astBinary("==", best, typedNumericLiteral(targetType, "0"))
-	bothZero := astBinary("&&", valueZero, bestZero)
-	valueReciprocal := astArithmetic("/", typedNumericLiteral(targetType, "1"), value, targetType)
-	bestReciprocal := astArithmetic("/", typedNumericLiteral(targetType, "1"), best, targetType)
-	zeroOperator := "<"
-	if operator == ">" {
-		zeroOperator = ">"
-	}
-	zeroBetter := astBinary(zeroOperator, valueReciprocal, bestReciprocal)
-	tiebreak := astBinary("&&", bothZero, zeroBetter)
-	ordinaryOrZero := astBinary("||", normal, tiebreak)
-	eligible := astBinary("&&", notBestNaN, ordinaryOrZero)
-	return astBinary("||", valueNaN, eligible)
-}
-
-func astBinary(operator string, left, right ast.Expression) ast.Expression {
-	return ast.Expression{
-		Kind:     ast.ExprBinary,
-		Operator: operator,
-		Left:     &left,
-		Right:    &right,
-		Type:     &ast.TypeExpr{Kind: ast.TypeName, Name: "Bool"},
-	}
-}
-
-func astArithmetic(operator string, left, right ast.Expression, typ string) ast.Expression {
-	return ast.Expression{
-		Kind:     ast.ExprBinary,
-		Operator: operator,
-		Left:     &left,
-		Right:    &right,
-		Type:     &ast.TypeExpr{Kind: ast.TypeName, Name: typ},
-	}
-}
-
-func typedNumericLiteral(targetType, literal string) ast.Expression {
-	value := ast.Expression{
-		Kind:    ast.ExprLiteral,
-		Literal: literal,
-		Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: "Int"},
-	}
-	return ast.Expression{
-		Kind:    ast.ExprConvert,
-		Type:    &ast.TypeExpr{Kind: ast.TypeName, Name: targetType},
-		Operand: &value,
-	}
-}
-
 func (l *lowerer) minMaxTargetType(expr ast.Expression, scope *funcScope) (string, bool) {
 	if len(expr.Args) == 0 {
 		l.add("hirgen.builtin.minmax.arg_count", "min and max require at least one argument", expr.Span)
-		return "", false
-	}
-	if expr.Ellipsis {
 		return "", false
 	}
 	target := ""

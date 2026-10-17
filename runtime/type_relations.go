@@ -40,33 +40,37 @@ func (m *moduleInstance) coerceAssignableRuntimeValue(value vmValue, targetType 
 		return out, nil
 	}
 	if value.Type.Ref.Kind == types.Any {
-		if value.Data == nil {
+		payload := value.payload()
+		if payload == nil {
 			if m.nilAssignableRuntimeType(targetText) {
 				return m.zeroValue(targetType), nil
 			}
 			return vmValue{}, fmt.Errorf("type assertion failed: nil is not %s", targetText)
 		}
-		inner, ok := value.Data.(vmValue)
+		inner, ok := payload.(vmValue)
 		if !ok {
 			return vmValue{}, errors.New("invalid Any value")
 		}
 		value = inner
 	} else if (value.Type.Ref.Kind == types.Interface || value.Type.Ref.Kind == types.Named) && m.isInterfaceType(value.Type) {
-		if value.Data == nil {
+		payload := value.payload()
+		if payload == nil {
 			return vmValue{}, fmt.Errorf("type assertion failed: nil interface is not %s", targetText)
 		}
-		inner, ok := value.Data.(vmValue)
+		inner, ok := payload.(vmValue)
 		if !ok {
-			return vmValue{}, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, value.Data)
+			return vmValue{}, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, payload)
 		}
 		value = inner
 	}
-	if _, ok := value.Data.(functionRef); ok && m.isFunctionType(targetText) {
-		if !m.functionValueAssignable(value, targetText, &targetVariadic) {
-			return vmValue{}, fmt.Errorf("type assertion failed: %s is not %s", value.Type, targetText)
+	if m.isFunctionType(targetText) {
+		if _, function := value.payload().(functionRef); function {
+			if !m.functionValueAssignable(value, targetText, &targetVariadic) {
+				return vmValue{}, fmt.Errorf("type assertion failed: %s is not %s", value.Type, targetText)
+			}
+			value.Type = targetType
+			return value, nil
 		}
-		value.Type = targetType
-		return value, nil
 	}
 	if !m.assignableType(value.Type, targetType) {
 		return vmValue{}, fmt.Errorf("type assertion failed: %s is not %s", value.Type, targetText)
@@ -118,9 +122,9 @@ func (m *moduleInstance) matchTypeAssertion(value vmValue, target any, targetVar
 			return value, true, nil
 		}
 		if m.isInterfaceType(value.Type) {
-			inner, ok := value.Data.(vmValue)
+			inner, ok := value.payload().(vmValue)
 			if !ok {
-				return vmValue{}, false, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, value.Data)
+				return vmValue{}, false, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, value.payload())
 			}
 			return newVMValue(targetType, inner), true, nil
 		}
@@ -142,19 +146,19 @@ func (m *moduleInstance) matchTypeAssertion(value vmValue, target any, targetVar
 		return vmValue{}, false, nil
 	}
 	if value.Type.Ref.Kind == types.Any {
-		inner, ok := value.Data.(vmValue)
+		inner, ok := value.payload().(vmValue)
 		if !ok {
 			return vmValue{}, false, errors.New("invalid Any value")
 		}
 		value = inner
 	} else if m.isInterfaceType(value.Type) {
-		inner, ok := value.Data.(vmValue)
+		inner, ok := value.payload().(vmValue)
 		if !ok {
-			return vmValue{}, false, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, value.Data)
+			return vmValue{}, false, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, value.payload())
 		}
 		value = inner
 	}
-	if _, ok := value.Data.(functionRef); ok && m.isFunctionType(targetText) {
+	if _, ok := value.payload().(functionRef); ok && m.isFunctionType(targetText) {
 		if !m.functionValueAssignable(value, targetText, &targetVariadic) {
 			return vmValue{}, false, nil
 		}
@@ -247,7 +251,7 @@ func (m *moduleInstance) functionTypeInfo(typ any) (string, bool, bool) {
 }
 
 func (m *moduleInstance) functionValueAssignable(value vmValue, target any, explicitVariadic ...*bool) bool {
-	ref, ok := value.Data.(functionRef)
+	ref, ok := value.payload().(functionRef)
 	if !ok || m == nil || m.executable == nil {
 		return false
 	}
@@ -453,7 +457,7 @@ func (m *moduleInstance) modulePath() string {
 
 func isNilDynamicInterface(m *moduleInstance, value vmValue) bool {
 	if value.Type.Ref.Kind == types.Any {
-		return value.Data == nil
+		return value.payload() == nil
 	}
-	return m.isInterfaceType(value.Type) && value.Data == nil
+	return m.isInterfaceType(value.Type) && value.payload() == nil
 }

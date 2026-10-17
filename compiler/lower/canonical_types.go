@@ -11,7 +11,7 @@ import (
 
 func (l *lowerer) channelElementType(typ string) string {
 	typ = strings.TrimSpace(typ)
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	if !ok {
 		return ""
 	}
@@ -34,7 +34,7 @@ func (l *lowerer) sendChannelElementType(expr ast.Expression, scope *funcScope, 
 
 func (l *lowerer) isChannelType(typ string) bool {
 	typ = strings.TrimSpace(typ)
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	return ok && view.Shape() == types.Waitable
 }
 
@@ -44,7 +44,7 @@ func (l *lowerer) isArrayType(typ string) bool {
 }
 
 func (l *lowerer) isSliceType(typ string) bool {
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	return ok && view.Shape() == types.Slice
 }
 
@@ -61,7 +61,7 @@ func (l *lowerer) sliceResultType(typ string) string {
 }
 
 func (l *lowerer) arrayTypeInfo(typ string) (int64, string, bool) {
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	if !ok {
 		return 0, "", false
 	}
@@ -73,7 +73,7 @@ func (l *lowerer) arrayTypeInfo(typ string) (int64, string, bool) {
 }
 
 func (l *lowerer) pointerElementType(typ string) (string, bool) {
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	if !ok || view.Shape() != types.Pointer {
 		return "", false
 	}
@@ -90,7 +90,7 @@ func (l *lowerer) isPointerType(typ string) bool {
 }
 
 func (l *lowerer) mapTypeInfo(typ string) (string, string, bool) {
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	if !ok {
 		return "", "", false
 	}
@@ -110,27 +110,10 @@ func (l *lowerer) isStringType(typ string) bool {
 }
 
 func (l *lowerer) resolveNamedUnderlyingType(typ string) string {
-	typ = l.resolveType(strings.TrimSpace(typ))
-	if typ == "" {
-		return ""
+	if ref, ok := l.typeRef(typ); ok {
+		return l.typeRefString(types.View(l.typeTable, ref).Underlying())
 	}
-	if underlying, ok := l.namedUnderlyingTypes[typ]; ok {
-		return underlying
-	}
-	underlying := typ
-	if decl, ok := l.typeDeclFor(typ); ok {
-		if resolved := l.resolveSourceType(decl); resolved != "" {
-			underlying = resolved
-		}
-	} else if export, ok := l.importedTypeInfo(typ); ok {
-		if resolved := l.resolveType(export.Underlying); resolved != "" {
-			underlying = resolved
-		}
-	}
-	if l.namedUnderlyingTypes != nil {
-		l.namedUnderlyingTypes[typ] = underlying
-	}
-	return underlying
+	return ""
 }
 
 func arrayLengthTypeString(expr *ast.Expression) string {
@@ -171,7 +154,7 @@ func (l *lowerer) memberType(receiverType, field string) string {
 }
 
 func (l *lowerer) structMemberType(typ, field string) string {
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	if !ok || view.Shape() != types.Struct {
 		return ""
 	}

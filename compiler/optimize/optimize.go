@@ -51,6 +51,7 @@ func Apply(program hir.Program, level Level) (hir.Program, error) {
 		if level >= LevelFull {
 			body, _ := foldPureBooleanBranches(out.Functions[index].Body)
 			body, _ = propagateAdjacentBooleanLocals(body)
+			body = propagateLocalValues(body, &out.TypeTable)
 			body, err = optimizeBody(body, constants)
 			if err != nil {
 				return hir.Program{}, fmt.Errorf("function %s: %w", out.Functions[index].ID, err)
@@ -92,11 +93,82 @@ func markDirectTailCall(function *hir.Function, logicalFunctions map[string]hir.
 }
 
 func cloneStatements(statements []hir.Statement) []hir.Statement {
-	out := append([]hir.Statement(nil), statements...)
+	out := cloneSlice(statements)
 	for index := range out {
-		out[index].SourcePoints = append([]hir.Location(nil), statements[index].SourcePoints...)
-		out[index].TypeCases = append([]hir.TypeCase(nil), statements[index].TypeCases...)
+		out[index].SourcePoints = cloneSlice(statements[index].SourcePoints)
+		out[index].TypeCases = cloneSlice(statements[index].TypeCases)
+		out[index].SelectCases = cloneSlice(statements[index].SelectCases)
+		out[index].Targets = cloneSlice(statements[index].Targets)
+		out[index].Expr = cloneExpression(statements[index].Expr)
+		out[index].Object = cloneExpression(statements[index].Object)
+		out[index].Index = cloneExpression(statements[index].Index)
+		out[index].Results = cloneExpressions(statements[index].Results)
+		out[index].Values = cloneExpressions(statements[index].Values)
+		out[index].Args = cloneExpressions(statements[index].Args)
 	}
+	return out
+}
+
+func cloneExpressions(expressions []hir.Expression) []hir.Expression {
+	if expressions == nil {
+		return nil
+	}
+	out := make([]hir.Expression, len(expressions))
+	for index, expression := range expressions {
+		out[index] = cloneExpression(expression)
+	}
+	return out
+}
+
+func cloneSlice[T any](input []T) []T {
+	if input == nil {
+		return nil
+	}
+	output := make([]T, len(input))
+	copy(output, input)
+	return output
+}
+
+func cloneExpression(expression hir.Expression) hir.Expression {
+	out := expression
+	for _, child := range []struct {
+		target **hir.Expression
+		source *hir.Expression
+	}{
+		{&out.Left, expression.Left},
+		{&out.Right, expression.Right},
+		{&out.Operand, expression.Operand},
+		{&out.Bind, expression.Bind},
+		{&out.Body, expression.Body},
+		{&out.Size, expression.Size},
+		{&out.Index, expression.Index},
+		{&out.Start, expression.Start},
+		{&out.End, expression.End},
+		{&out.Max, expression.Max},
+	} {
+		if child.source != nil {
+			cloned := cloneExpression(*child.source)
+			*child.target = &cloned
+		}
+	}
+	out.Args = cloneExpressions(expression.Args)
+	out.Elements = cloneExpressions(expression.Elements)
+	if expression.Entries != nil {
+		out.Entries = make([]hir.MapEntry, len(expression.Entries))
+		for index, entry := range expression.Entries {
+			out.Entries[index] = hir.MapEntry{Key: cloneExpression(entry.Key), Value: cloneExpression(entry.Value)}
+		}
+	}
+	if expression.Fields != nil {
+		out.Fields = make([]hir.FieldValue, len(expression.Fields))
+		for index, field := range expression.Fields {
+			out.Fields[index] = hir.FieldValue{Name: field.Name, Value: cloneExpression(field.Value)}
+		}
+	}
+	out.Locals = cloneSlice(expression.Locals)
+	out.Captures = cloneSlice(expression.Captures)
+	out.Path = cloneSlice(expression.Path)
+	out.ResultTypes = cloneSlice(expression.ResultTypes)
 	return out
 }
 

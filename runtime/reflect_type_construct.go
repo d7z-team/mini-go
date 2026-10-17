@@ -58,7 +58,7 @@ func reflectFuncOf(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if err != nil {
 		return reflectTypeError(err.Error()), nil
 	}
-	variadic, ok := args[2].Data.(bool)
+	variadic, ok := args[2].boolValue()
 	if !ok || !args[2].Type.Primitive(types.PrimitiveBool) {
 		return reflectTypeError("reflect.FuncOf: variadic flag is not bool"), nil
 	}
@@ -93,18 +93,18 @@ func reflectStructOf(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	offset := uint64(0)
 	maxAlign := 1
 	for index, value := range values {
-		data, ok := materializeStructValue(value.Data)
+		data, ok := materializeStructValue(value.payload())
 		if !ok {
 			return reflectTypeError(fmt.Sprintf("reflect.StructOf: invalid field %d", index)), nil
 		}
 		nameValue, nameExists := data["Name"]
-		name, nameOK := nameValue.Data.(string)
+		name, nameOK := nameValue.payload().(string)
 		pkgPathValue, pkgPathExists := data["PkgPath"]
-		pkgPath, pkgPathOK := pkgPathValue.Data.(string)
+		pkgPath, pkgPathOK := pkgPathValue.payload().(string)
 		tagValue, tagExists := data["Tag"]
-		tag, tagOK := tagValue.Data.(string)
+		tag, tagOK := tagValue.payload().(string)
 		anonymousValue, anonymousExists := data["Anonymous"]
-		anonymous, anonymousOK := anonymousValue.Data.(bool)
+		anonymous, anonymousOK := anonymousValue.boolValue()
 		if !nameExists || !nameOK || !module.resolvedRuntimeType(nameValue.Type).Primitive(types.PrimitiveString) ||
 			!pkgPathExists || !pkgPathOK || !module.resolvedRuntimeType(pkgPathValue.Type).Primitive(types.PrimitiveString) ||
 			!tagExists || !tagOK || !module.resolvedRuntimeType(tagValue.Type).Primitive(types.PrimitiveString) ||
@@ -192,7 +192,7 @@ func reflectRegisterDynamicType(ctx intrinsicContext, typ string, overrides Type
 		if size > limits.MaxDynamicTypeBytes-ctx.vm.dynamicTypeBytes {
 			return nil, ResourceLimitError{Code: "execution.dynamic_type_bytes_limit", Message: fmt.Sprintf("dynamic reflection metadata byte limit exceeded: max %d", limits.MaxDynamicTypeBytes)}
 		}
-		if err := ctx.vm.chargeAllocationBytes(size); err != nil {
+		if err := ctx.vm.chargeAllocationBytes(size, ctx.batch); err != nil {
 			return nil, err
 		}
 	}
@@ -224,6 +224,7 @@ func reflectRegisterDynamicType(ctx intrinsicContext, typ string, overrides Type
 	}
 	if ctx.vm != nil {
 		ctx.vm.reflectTypes.store(info.Key, info)
+		ctx.vm.recordDynamicTypeCost(info.Key, size)
 		ctx.vm.dynamicTypeCount++
 		ctx.vm.dynamicTypeBytes += size
 	}

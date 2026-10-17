@@ -40,15 +40,15 @@ func (m *moduleInstance) evalCompare(operator preparedOperator, left, right vmVa
 	case "Bool":
 		return vmValue{}, fmt.Errorf("operator %s is not valid for Bool", operator)
 	case "String":
-		l, lok := left.Data.(string)
-		r, rok := right.Data.(string)
+		l, lok := left.payload().(string)
+		r, rok := right.payload().(string)
 		if !lok || !rok {
 			return vmValue{}, errors.New("invalid String operands")
 		}
 		return newBoolValue(compareString(operator, l, r)), nil
 	default:
 		if isStringValue(left) && isStringValue(right) {
-			return newBoolValue(compareString(operator, left.Data.(string), right.Data.(string))), nil
+			return newBoolValue(compareString(operator, left.payload().(string), right.payload().(string))), nil
 		}
 		return vmValue{}, fmt.Errorf("operator %s is not valid for %s", operator, left.Type)
 	}
@@ -101,15 +101,15 @@ func (m *moduleInstance) equalConcreteValues(left, right vmValue, depth int) (bo
 		}
 		switch left.Type.Ref.Primitive {
 		case types.PrimitiveBool:
-			l, lok := left.Data.(bool)
-			r, rok := right.Data.(bool)
+			l, lok := left.boolValue()
+			r, rok := right.boolValue()
 			if !lok || !rok {
 				return false, errors.New("invalid Bool operands")
 			}
 			return l == r, nil
 		case types.PrimitiveString:
-			l, lok := left.Data.(string)
-			r, rok := right.Data.(string)
+			l, lok := left.payload().(string)
+			r, rok := right.payload().(string)
 			if !lok || !rok {
 				return false, errors.New("invalid String operands")
 			}
@@ -134,7 +134,7 @@ func (m *moduleInstance) equalConcreteValues(left, right vmValue, depth int) (bo
 		return leftNil == rightNil, nil
 	}
 	if m.isReferenceComparableType(left.Type) {
-		return referenceComparableIdentity(left.Data) == referenceComparableIdentity(right.Data), nil
+		return referenceComparableIdentity(left.payload()) == referenceComparableIdentity(right.payload()), nil
 	}
 	if ok, err := m.isComparableRuntimeType(left.Type, map[string]struct{}{}); err != nil || !ok {
 		if err != nil {
@@ -144,15 +144,15 @@ func (m *moduleInstance) equalConcreteValues(left, right vmValue, depth int) (bo
 	}
 	switch m.underlyingRuntimeType(left.Type) {
 	case "Bool":
-		l, lok := left.Data.(bool)
-		r, rok := right.Data.(bool)
+		l, lok := left.boolValue()
+		r, rok := right.boolValue()
 		if !lok || !rok {
 			return false, errors.New("invalid Bool operands")
 		}
 		return l == r, nil
 	case "String":
-		l, lok := left.Data.(string)
-		r, rok := right.Data.(string)
+		l, lok := left.payload().(string)
+		r, rok := right.payload().(string)
 		if !lok || !rok {
 			return false, errors.New("invalid String operands")
 		}
@@ -164,8 +164,8 @@ func (m *moduleInstance) equalConcreteValues(left, right vmValue, depth int) (bo
 		return equalNumericValues(left, right)
 	}
 	if _, _, ok := m.arrayType(left.Type); ok {
-		leftArray, lok := left.Data.(*vmArray)
-		rightArray, rok := right.Data.(*vmArray)
+		leftArray, lok := left.payload().(*vmArray)
+		rightArray, rok := right.payload().(*vmArray)
 		if !lok || !rok {
 			return false, fmt.Errorf("invalid array operands for %s", left.Type)
 		}
@@ -185,10 +185,10 @@ func (m *moduleInstance) equalConcreteValues(left, right vmValue, depth int) (bo
 		return true, nil
 	}
 	if fields, ok := m.comparableStructFields(left.Type); ok {
-		if !isStructValue(left.Data) {
+		if !isStructValue(left.payload()) {
 			return false, fmt.Errorf("invalid struct operands for %s", left.Type)
 		}
-		if !isStructValue(right.Data) {
+		if !isStructValue(right.payload()) {
 			return false, fmt.Errorf("invalid struct operands for %s", right.Type)
 		}
 		for _, field := range fields {
@@ -210,7 +210,7 @@ func (m *moduleInstance) equalConcreteValues(left, right vmValue, depth int) (bo
 		}
 		return true, nil
 	}
-	return left.Data == right.Data, nil
+	return left.payload() == right.payload(), nil
 }
 
 func (m *moduleInstance) unwrapComparableDynamicValue(value vmValue) (vmValue, bool, error) {
@@ -342,7 +342,7 @@ func (m *moduleInstance) isReferenceComparableType(typ any) bool {
 }
 
 func isNilRuntimeValue(value vmValue) bool {
-	switch data := value.Data.(type) {
+	switch data := value.payload().(type) {
 	case nil:
 		return true
 	case *vmSlice:
@@ -363,6 +363,13 @@ func referenceComparableIdentity(data any) any {
 	case nil:
 		return "nil"
 	case *vmPointer:
+		if value != nil && value.storage.valid() {
+			return struct {
+				owner   *vm
+				storage guestRef
+				offset  uint32
+			}{value.owner, value.storage, value.offset}
+		}
 		if value == nil {
 			return "nil"
 		}
@@ -389,6 +396,9 @@ func referenceComparableMapKeyIdentity(data any) (string, error) {
 	case nil:
 		return "nil", nil
 	case *vmPointer:
+		if value != nil && value.storage.valid() {
+			return fmt.Sprintf("pointer:%p:%d:%d:%d", value.owner, value.storage.slot, value.storage.generation, value.offset), nil
+		}
 		if value == nil {
 			return "nil", nil
 		}

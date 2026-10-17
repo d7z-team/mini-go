@@ -15,6 +15,7 @@ const (
 	preparedPop
 	preparedUnary
 	preparedBinary
+	preparedMinMax
 	preparedLoadLocal
 	preparedStoreLocal
 	preparedLoadUpvalue
@@ -92,6 +93,7 @@ var preparedOpcodes = map[ir.Opcode]preparedOpcode{
 	ir.OpMapIterInit:      preparedMapIterInit, ir.OpMapIterNext: preparedMapIterNext, ir.OpMapIterClose: preparedMapIterClose,
 	ir.OpConst: preparedConst, ir.OpZero: preparedZero, ir.OpPop: preparedPop,
 	ir.OpUnary: preparedUnary, ir.OpBinary: preparedBinary,
+	ir.OpMinMax:    preparedMinMax,
 	ir.OpLoadLocal: preparedLoadLocal, ir.OpStoreLocal: preparedStoreLocal,
 	ir.OpLoadUpvalue: preparedLoadUpvalue, ir.OpStoreUpvalue: preparedStoreUpvalue,
 	ir.OpLoadGlobal: preparedLoadGlobal, ir.OpStoreGlobal: preparedStoreGlobal,
@@ -243,6 +245,7 @@ type preparedInstruction struct {
 	typeDispatch  *ir.TypeDispatchPayload
 	dispatch      *preparedTypeSwitch
 	comparison    *ir.CompareBranchPayload
+	minMax        *ir.MinMaxPayload
 	fieldPath     *ir.FieldPathPayload
 	path          []preparedField
 
@@ -257,7 +260,11 @@ type preparedInstruction struct {
 	callModule        string
 	callModuleIndex   int
 	callFunctionIndex int
+	// callRevisionLocal records the linked target declaration. An old frame
+	// must resolve such a call in its own revision.
+	callRevisionLocal bool
 	conversion        conversionMetadata
+	minMaxKind        minMaxValueKind
 }
 
 func (inst preparedInstruction) opcodeText() string {
@@ -302,6 +309,8 @@ func prepareInstruction(inst ir.Instruction) (preparedInstruction, error) {
 				err = fmt.Errorf("unknown operator %q", payload.Operator)
 			}
 		}
+	case preparedMinMax:
+		out.minMax, err = decodePreparedPayload[ir.MinMaxPayload](inst)
 	case preparedMakeSequence:
 		out.makeSequence, err = decodePreparedPayload[ir.MakeSequencePayload](inst)
 	case preparedMakeMap:

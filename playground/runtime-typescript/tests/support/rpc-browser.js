@@ -17,5 +17,6 @@ try {
   await exerciseNativeRPC(nativeRPC, address, nativeBindings);
   globalThis.__miniGoResult = true;
 } catch (error) {
-  globalThis.__miniGoError = String(error instanceof Error ? (error.stack ?? error) : error);
+  globalThis.__miniGoError =
+    error instanceof Error ? `${error}\n${error.stack ?? ""}` : String(error);
 }

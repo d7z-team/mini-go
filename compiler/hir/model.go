@@ -184,6 +184,7 @@ const (
 	ExprValues              ExpressionKind = "values"
 	ExprUnary               ExpressionKind = "unary"
 	ExprBinary              ExpressionKind = "binary"
+	ExprMinMax              ExpressionKind = "min_max"
 	ExprCallDirect          ExpressionKind = "call_direct"
 	ExprCallFFI             ExpressionKind = "call_ffi"
 	ExprCallIntrinsic       ExpressionKind = "call_intrinsic"

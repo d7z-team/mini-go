@@ -52,7 +52,20 @@ func reflectTypeValueFromVM(vm *vm, info TypeInfo) vmValue {
 	if vm != nil {
 		vm.reflectTypes.store(key, info)
 		if value, ok := vm.reflectTypeValues.load(key); ok {
-			return value
+			// The cache is an index, not a root. Detached values are safe to
+			// reuse; a managed value must still point at a live record before it
+			// is returned after a collection or revision close.
+			if value.ref.valid() {
+				if vm.heap == nil || value.heap != vm.heap {
+					vm.reflectTypeValues.delete(key)
+				} else if _, err := vm.heap.resolveObject(value.ref); err != nil {
+					vm.reflectTypeValues.delete(key)
+				} else {
+					return value
+				}
+			} else {
+				return value
+			}
 		}
 	}
 	var module *moduleInstance

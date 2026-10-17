@@ -6,7 +6,9 @@ use crate::contract::GoSlice;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_CATALOG: AtomicU64 = AtomicU64::new(1);
+const DYNAMIC_SHAPE_CACHE_LIMIT: usize = 4096;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConstructedField {
     pub name: String,
     pub typ: TypeIdentity,
@@ -14,6 +16,7 @@ pub struct ConstructedField {
     pub embedded: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConstructedType {
     Array {
         length: usize,
@@ -37,14 +40,182 @@ pub enum ConstructedType {
 
 impl TypeRegistry {
     pub fn clear_dynamic(&mut self) {
-        self.dynamic_nodes = HashMap::new();
-        self.dynamic_refs = HashMap::new();
+        let removed = self.dynamic_nodes.keys().cloned().collect::<HashSet<_>>();
+        self.dynamic_nodes = Arc::default();
+        self.dynamic_refs = Arc::default();
         self.dynamic_module.clear();
-        self.registered_dynamic.clear();
+        self.registered_dynamic = Arc::default();
+        self.dynamic_costs = Arc::default();
+        self.dynamic_shapes = Arc::default();
         self.dynamic_bytes = 0;
+        self.prune_storage_type_ids(&removed);
+        // Prepared layouts can contain dynamic structural identities. They
+        // must not survive a catalog reset and accidentally retain a removed
+        // node graph.
+        let mut cache = self.cache.write().unwrap();
+        cache.storage.clear();
+        cache.lanes.clear();
+        cache.fixed_words.clear();
+        cache.logical_bytes.clear();
+        cache.underlying.clear();
+        cache.identical.clear();
+        cache.zeros.clear();
+        cache.zero_bytes = 0;
     }
     pub fn dynamic_stats(&self) -> (usize, u64) {
         (self.registered_dynamic.len(), self.dynamic_bytes)
+    }
+
+    /// Remove dynamic metadata that is no longer owned by a managed payload.
+    /// The roots are the published dynamic identities; imported nodes are
+    /// retained only when reachable from one of those roots.
+    pub(crate) fn prune_dynamic(&mut self, roots: &[TypeIdentity]) -> (usize, u64) {
+        let mut keep = HashSet::new();
+        for root in roots {
+            self.mark_dynamic_identity(root, &mut keep);
+        }
+        let before = self.registered_dynamic.len();
+        let removed = self
+            .dynamic_nodes
+            .keys()
+            .filter(|identity| !keep.contains(*identity))
+            .cloned()
+            .collect::<HashSet<_>>();
+        if !removed.is_empty() {
+            Arc::make_mut(&mut self.dynamic_nodes).retain(|identity, _| keep.contains(identity));
+        }
+        self.prune_storage_type_ids(&removed);
+        let dynamic_module = self.dynamic_module.clone();
+        let stale_refs = self.dynamic_refs.iter().any(|(_, reference)| {
+            reference.node.is_empty()
+                || !keep.contains(&(dynamic_module.clone().into(), reference.node.clone().into()))
+        });
+        if stale_refs {
+            Arc::make_mut(&mut self.dynamic_refs).retain(|_, reference| {
+                !reference.node.is_empty()
+                    && keep
+                        .contains(&(dynamic_module.clone().into(), reference.node.clone().into()))
+            });
+        }
+        let root_set = roots.iter().collect::<HashSet<_>>();
+        let stale_registered = self
+            .registered_dynamic
+            .iter()
+            .any(|typ| !root_set.contains(typ));
+        if stale_registered {
+            Arc::make_mut(&mut self.registered_dynamic).retain(|typ| root_set.contains(typ));
+        }
+        let registered_dynamic = self.registered_dynamic.clone();
+        let stale_costs = self
+            .dynamic_costs
+            .keys()
+            .any(|typ| !registered_dynamic.contains(typ));
+        if stale_costs {
+            Arc::make_mut(&mut self.dynamic_costs)
+                .retain(|typ, _| registered_dynamic.contains(typ));
+        }
+        let dynamic_nodes = self.dynamic_nodes.clone();
+        let stale_shapes = self.dynamic_shapes.iter().any(|(_, typ)| {
+            matches!(typ, TypeIdentity::Structural { module, node }
+                if !dynamic_nodes.contains_key(&(module.clone(), node.clone())))
+        });
+        if stale_shapes {
+            Arc::make_mut(&mut self.dynamic_shapes).retain(|_, typ| {
+                matches!(typ, TypeIdentity::Structural { module, node }
+                    if dynamic_nodes.contains_key(&(module.clone(), node.clone())))
+            });
+        }
+        self.dynamic_bytes = self.dynamic_costs.values().copied().sum();
+        // Dependency nodes may be reclaimed while the set of published roots
+        // stays the same. Clear every derived layout cache whenever the node
+        // graph changed, and reset the byte ledger for zero templates along
+        // with the entries themselves.
+        if !removed.is_empty() || before != self.registered_dynamic.len() {
+            let mut cache = self.cache.write().unwrap();
+            cache.storage.clear();
+            cache.lanes.clear();
+            cache.fixed_words.clear();
+            cache.logical_bytes.clear();
+            cache.underlying.clear();
+            cache.identical.clear();
+            cache.zeros.clear();
+            cache.zero_bytes = 0;
+        }
+        (
+            before.saturating_sub(self.registered_dynamic.len()),
+            self.dynamic_bytes,
+        )
+    }
+
+    fn prune_storage_type_ids(&self, removed: &HashSet<NodeIdentity>) {
+        if removed.is_empty() {
+            return;
+        }
+        let mut ids = self.storage_ids.write().unwrap();
+        ids.by_identity.retain(|identity, _| {
+            let mut target = identity;
+            while let TypeIdentity::Pointer(element) | TypeIdentity::Slice(element) = target {
+                target = element;
+            }
+            !matches!(target, TypeIdentity::Structural { module, node }
+                if removed.contains(&(module.clone(), node.clone())))
+        });
+        let StorageTypeIdentities {
+            by_identity, by_id, ..
+        } = &mut *ids;
+        by_id.retain(|_, (identity, _)| by_identity.contains_key(identity));
+    }
+
+    fn mark_dynamic_identity(&self, typ: &TypeIdentity, keep: &mut HashSet<NodeIdentity>) {
+        if let TypeIdentity::Pointer(element) | TypeIdentity::Slice(element) = typ {
+            self.mark_dynamic_identity(element, keep);
+            return;
+        }
+        let TypeIdentity::Structural { module, node } = typ else {
+            return;
+        };
+        let identity = (module.clone(), node.clone());
+        if !keep.insert(identity.clone()) {
+            return;
+        }
+        let Some(node_data) = self.dynamic_nodes.get(&identity) else {
+            return;
+        };
+        let node_data = node_data.clone();
+        let mut mark_reference = |reference: &wire::TypeRef| {
+            if reference.kind != wire::Invalid
+                && let Ok(resolved) = self.resolve(module, reference)
+            {
+                self.mark_dynamic_identity(&resolved, keep);
+            }
+        };
+        mark_reference(&node_data.elem);
+        mark_reference(&node_data.key);
+        mark_reference(&node_data.underlying);
+        mark_reference(&node_data.alias_target);
+        for field in node_data.fields.iter() {
+            mark_reference(&field.r#type);
+        }
+        for item in node_data.tuple.iter() {
+            mark_reference(item);
+        }
+        if let Some(signature) = &node_data.signature {
+            for parameter in signature.params.iter() {
+                mark_reference(&parameter.r#type);
+            }
+            for result in signature.results.iter() {
+                mark_reference(result);
+            }
+        }
+        for method in node_data.methods.iter() {
+            mark_reference(&method.receiver);
+            for parameter in method.signature.params.iter() {
+                mark_reference(&parameter.r#type);
+            }
+            for result in method.signature.results.iter() {
+                mark_reference(result);
+            }
+        }
     }
 
     pub(crate) fn register_dynamic(
@@ -54,7 +225,10 @@ impl TypeRegistry {
         max_bytes: u64,
         max_depth: usize,
     ) -> Result<(), RuntimeError> {
-        for existing in &self.registered_dynamic {
+        if self.registered_dynamic.contains(typ) {
+            return Ok(());
+        }
+        for existing in self.registered_dynamic.iter() {
             if self.identical(existing, typ)? {
                 return Ok(());
             }
@@ -82,8 +256,14 @@ impl TypeRegistry {
                 "dynamic reflection metadata byte limit exceeded",
             ));
         }
-        self.registered_dynamic.insert(typ.clone());
+        Arc::make_mut(&mut self.registered_dynamic).insert(typ.clone());
+        Arc::make_mut(&mut self.dynamic_costs).insert(typ.clone(), size);
         self.dynamic_bytes += size;
+        let mut cache = self.cache.write().unwrap();
+        cache.storage.remove(typ);
+        cache.lanes.remove(typ);
+        cache.fixed_words.remove(typ);
+        cache.logical_bytes.remove(typ);
         Ok(())
     }
 
@@ -425,10 +605,19 @@ impl TypeRegistry {
         max_nodes: usize,
         max_depth: usize,
     ) -> Result<TypeIdentity, RuntimeError> {
+        if let Some(identity) = self.dynamic_shapes.get(&shape)
+            && let TypeIdentity::Structural { module, node } = identity
+            && self
+                .dynamic_nodes
+                .contains_key(&(module.clone(), node.clone()))
+        {
+            return Ok(identity.clone());
+        }
+        let shape_key = shape.clone();
         let mut candidate = self.clone();
         if candidate.dynamic_module.is_empty() {
             let id = NEXT_CATALOG
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
                 .map_err(|_| {
                     RuntimeError::new("type_limit", "dynamic", "type catalog identity exhausted")
                 })?;
@@ -532,29 +721,58 @@ impl TypeRegistry {
                 node.fields = GoSlice(Some(output));
             }
         }
-        node.id = format!("constructed.{}", candidate.dynamic_nodes.len());
+        // The number of live nodes is not an identity: pruning can make it
+        // smaller while old structural identities remain in bytecode, frame
+        // metadata, or a staged revision. Keep the sequence in the registry
+        // lineage and advance it even when a node is later reclaimed.
+        let mut sequence = candidate.next_dynamic_sequence;
+        loop {
+            let id = format!("constructed.{sequence}");
+            if !candidate
+                .dynamic_nodes
+                .keys()
+                .any(|(_, existing)| existing.as_ref() == id)
+            {
+                node.id = id;
+                break;
+            }
+            sequence = sequence.checked_add(1).ok_or_else(|| {
+                RuntimeError::new("type_limit", "dynamic", "dynamic type identity exhausted")
+            })?;
+        }
+        candidate.next_dynamic_sequence = sequence.checked_add(1).ok_or_else(|| {
+            RuntimeError::new("type_limit", "dynamic", "dynamic type identity exhausted")
+        })?;
         let identity = TypeIdentity::Structural {
             module: candidate.dynamic_module.clone().into(),
             node: node.id.clone().into(),
         };
-        candidate.dynamic_nodes.insert(
+        Arc::make_mut(&mut candidate.dynamic_nodes).insert(
             (
                 candidate.dynamic_module.clone().into(),
                 node.id.clone().into(),
             ),
             node,
         );
-        for ((module, _), node) in &candidate.dynamic_nodes {
+        for ((module, _), node) in candidate.dynamic_nodes.iter() {
             candidate.validate_node(module, node)?;
         }
-        for (module, node) in self.dynamic_nodes.keys() {
-            let existing = TypeIdentity::Structural {
+        let existing_identities = self
+            .dynamic_nodes
+            .keys()
+            .map(|(module, node)| TypeIdentity::Structural {
                 module: module.clone(),
                 node: node.clone(),
-            };
-            if candidate.identical(&existing, &identity)? {
-                return Ok(existing);
+            })
+            .collect::<Vec<_>>();
+        for existing in existing_identities {
+            if !candidate.identical(&existing, &identity)? {
+                continue;
             }
+            if self.dynamic_shapes.len() < DYNAMIC_SHAPE_CACHE_LIMIT {
+                Arc::make_mut(&mut self.dynamic_shapes).insert(shape_key.clone(), existing.clone());
+            }
+            return Ok(existing);
         }
         if candidate.dynamic_nodes.len() > max_nodes {
             return Err(RuntimeError::new(
@@ -562,6 +780,9 @@ impl TypeRegistry {
                 "dynamic",
                 "dynamic type budget exceeded",
             ));
+        }
+        if candidate.dynamic_shapes.len() < DYNAMIC_SHAPE_CACHE_LIMIT {
+            Arc::make_mut(&mut candidate.dynamic_shapes).insert(shape_key, identity.clone());
         }
         *self = candidate;
         Ok(identity)
@@ -642,10 +863,30 @@ impl TypeRegistry {
                 (module.to_owned(), node.clone())
             }
         };
-        node.id = format!("imported.{}", self.dynamic_refs.len());
+        // Imported nodes share the dynamic catalog with constructed nodes.
+        // Their live count is not an identity either: pruning an unreachable
+        // import must not let a stale reference resolve to a later shape.
+        let mut sequence = self.next_imported_sequence;
+        loop {
+            let id = format!("imported.{sequence}");
+            if !self
+                .dynamic_nodes
+                .keys()
+                .any(|(_, existing)| existing.as_ref() == id)
+            {
+                node.id = id;
+                break;
+            }
+            sequence = sequence.checked_add(1).ok_or_else(|| {
+                RuntimeError::new("type_limit", "dynamic", "dynamic type identity exhausted")
+            })?;
+        }
+        self.next_imported_sequence = sequence.checked_add(1).ok_or_else(|| {
+            RuntimeError::new("type_limit", "dynamic", "dynamic type identity exhausted")
+        })?;
         reference.kind = node.kind;
         reference.node = node.id.clone();
-        self.dynamic_refs.insert(typ.clone(), reference.clone());
+        Arc::make_mut(&mut self.dynamic_refs).insert(typ.clone(), reference.clone());
         if let TypeIdentity::Pointer(element) | TypeIdentity::Slice(element) = typ {
             node.elem = self.import_type(element, max_nodes, depth - 1)?;
         } else {
@@ -702,7 +943,7 @@ impl TypeRegistry {
             }
             node.methods = GoSlice(Some(methods));
         }
-        self.dynamic_nodes.insert(
+        Arc::make_mut(&mut self.dynamic_nodes).insert(
             (self.dynamic_module.clone().into(), node.id.clone().into()),
             node,
         );
@@ -749,6 +990,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repeated_shape_construction_reuses_catalog_identity() {
+        let mut types = TypeRegistry::new([]).unwrap();
+        let shape = ConstructedType::Array {
+            length: 4,
+            element: TypeIdentity::Primitive(wire::PrimitiveInt),
+        };
+        let first = types.construct(shape.clone(), 32, 16).unwrap();
+        let node_count = types.dynamic_nodes.len();
+        // Reusing a live shape does not consume another node admission.
+        let second = types.construct(shape.clone(), node_count, 16).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(types.dynamic_nodes.len(), node_count);
+
+        let snapshot = types.clone();
+        types.prune_dynamic(&[]);
+        let replacement = types.construct(shape, 32, 16).unwrap();
+        assert_ne!(first, replacement);
+        assert_eq!(snapshot.node(&first).unwrap().unwrap().1.length, 4);
+        assert!(types.node(&first).is_err());
+        assert_eq!(types.node(&replacement).unwrap().unwrap().1.length, 4);
+    }
+
+    #[test]
+    fn dynamic_construction_snapshot_isolated_from_later_catalog_writes() {
+        let mut types = TypeRegistry::new([]).unwrap();
+        let snapshot = types.clone();
+        let shape = ConstructedType::Array {
+            length: 3,
+            element: TypeIdentity::Primitive(wire::PrimitiveInt),
+        };
+        let created = types.construct(shape, 32, 16).unwrap();
+        assert!(snapshot.node(&created).is_err());
+        assert!(types.node(&created).unwrap().is_some());
+
+        let before_nodes = types.dynamic_nodes.len();
+        let before_refs = types.dynamic_refs.len();
+        let failed = types.construct(
+            ConstructedType::Array {
+                length: 5,
+                element: TypeIdentity::Primitive(wire::PrimitiveInt),
+            },
+            0,
+            16,
+        );
+        assert_eq!(failed.unwrap_err().code, "type_limit");
+        assert_eq!(types.dynamic_nodes.len(), before_nodes);
+        assert_eq!(types.dynamic_refs.len(), before_refs);
+    }
+
+    #[test]
+    fn clear_dynamic_releases_zero_cache_budget_for_the_next_catalog() {
+        let mut types = TypeRegistry::new([]).unwrap();
+        let shape = ConstructedType::Struct(vec![ConstructedField {
+            name: "Value".into(),
+            typ: TypeIdentity::Primitive(wire::PrimitiveInt),
+            tag: String::new(),
+            embedded: false,
+        }]);
+        let first = types.construct(shape.clone(), 32, 16).unwrap();
+        let mut budget = 4096;
+        crate::value::Value::zero_with_budget(&types, &first, 0, 16, 32, &mut budget).unwrap();
+        {
+            let cache = types.cache.read().unwrap();
+            assert_eq!(cache.zeros.len(), 1);
+            assert!(cache.zero_bytes > 0);
+        }
+
+        types.clear_dynamic();
+        {
+            let cache = types.cache.read().unwrap();
+            assert!(cache.zeros.is_empty());
+            assert_eq!(cache.zero_bytes, 0);
+        }
+
+        let replacement = types.construct(shape, 32, 16).unwrap();
+        let mut budget = 4096;
+        crate::value::Value::zero_with_budget(&types, &replacement, 0, 16, 32, &mut budget)
+            .unwrap();
+        let cache = types.cache.read().unwrap();
+        assert_eq!(cache.zeros.len(), 1);
+        assert!(cache.zero_bytes > 0);
+    }
+
+    #[test]
     fn metadata_budgets_charge_canonical_shapes_once_and_preserve_state_on_failure() {
         let mut types = TypeRegistry::new([]).unwrap();
         let array = types
@@ -786,7 +1111,7 @@ mod tests {
             .register_dynamic(&pointer, 2, array_bytes + pointer_bytes, 16)
             .unwrap();
         assert_eq!(types.dynamic_stats(), (2, array_bytes + pointer_bytes));
-        let merged = types.overlay(&TypeRegistry::new([]).unwrap(), 32).unwrap();
+        let merged = types.overlay(&TypeRegistry::new([]).unwrap()).unwrap();
         assert_eq!(merged.dynamic_stats(), types.dynamic_stats());
         types.clear_dynamic();
         assert_eq!(types.dynamic_stats(), (0, 0));
@@ -876,5 +1201,101 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn pruning_dynamic_metadata_keeps_dependency_closure_only() {
+        let mut types = TypeRegistry::new([]).unwrap();
+        let array = types
+            .construct(
+                ConstructedType::Array {
+                    length: 2,
+                    element: TypeIdentity::Primitive(wire::PrimitiveInt),
+                },
+                32,
+                16,
+            )
+            .unwrap();
+        types.register_dynamic(&array, 32, 1 << 20, 16).unwrap();
+        assert_eq!(types.storage_logical_bytes(&array).unwrap(), 16);
+        let pointer = types
+            .construct(
+                ConstructedType::Array {
+                    length: 3,
+                    element: array.clone(),
+                },
+                32,
+                16,
+            )
+            .unwrap();
+        types.register_dynamic(&pointer, 32, 1 << 20, 16).unwrap();
+        // The outer array stores three inline two-int arrays, so its logical
+        // width is 3 * (2 * 8), independent of its physical descriptor.
+        assert_eq!(types.storage_logical_bytes(&pointer).unwrap(), 48);
+        assert_eq!(types.dynamic_stats().0, 2);
+        types
+            .construct(
+                ConstructedType::Array {
+                    length: 1,
+                    element: TypeIdentity::Pointer(Arc::new(TypeIdentity::Primitive(
+                        wire::PrimitiveInt,
+                    ))),
+                },
+                32,
+                16,
+            )
+            .unwrap();
+        let old_imported = types
+            .dynamic_refs
+            .values()
+            .map(|reference| reference.node.clone())
+            .collect::<Vec<_>>();
+        assert!(!old_imported.is_empty());
+
+        types.prune_dynamic(std::slice::from_ref(&pointer));
+        assert_eq!(types.dynamic_stats().0, 1);
+        assert!(types.node(&pointer).unwrap().is_some());
+        assert!(types.node(&array).unwrap().is_some());
+
+        types.prune_dynamic(&[]);
+        assert_eq!(types.dynamic_stats(), (0, 0));
+        assert!(types.node(&pointer).is_err());
+        assert!(types.node(&array).is_err());
+
+        // The retired identities remain unavailable to later construction;
+        // a stale frame or staged revision must never resolve to a new shape
+        // merely because the live node count became smaller.
+        let replacement = types
+            .construct(
+                ConstructedType::Array {
+                    length: 4,
+                    element: TypeIdentity::Primitive(wire::PrimitiveInt),
+                },
+                32,
+                16,
+            )
+            .unwrap();
+        assert_ne!(replacement, array);
+        assert_eq!(types.node(&replacement).unwrap().unwrap().1.length, 4);
+
+        let pointer_after_prune = types
+            .construct(
+                ConstructedType::Array {
+                    length: 1,
+                    element: TypeIdentity::Pointer(Arc::new(TypeIdentity::Primitive(
+                        wire::PrimitiveInt,
+                    ))),
+                },
+                32,
+                16,
+            )
+            .unwrap();
+        let new_imported = types
+            .dynamic_refs
+            .values()
+            .map(|reference| reference.node.clone())
+            .collect::<Vec<_>>();
+        assert!(new_imported.iter().all(|node| !old_imported.contains(node)));
+        assert!(types.node(&pointer_after_prune).is_ok());
     }
 }

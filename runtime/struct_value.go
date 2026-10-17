@@ -81,6 +81,12 @@ func setRuntimeStructField(value *vmStruct, name string, field vmValue) {
 	if value == nil || value.schema == nil {
 		return
 	}
+	if value.managedHeap != nil && value.managedRef.valid() {
+		if index, _, ok := value.schema.field(name); ok && index < len(value.managedFields) {
+			_ = writeManagedStructField(value, index, field)
+		}
+		return
+	}
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	if index, _, ok := value.schema.field(name); ok && index < len(value.values) {
@@ -103,11 +109,24 @@ func (schema *structSchema) field(name string) (int, TypeFieldInfo, bool) {
 // vmStruct is a slot-based struct value. Uninitialized slots denote declared
 // zero values and are attached to the value when first observed.
 type vmStruct struct {
-	mu     sync.Mutex
-	schema *structSchema
-	values []vmValue
-	sparse bool
-	shared bool
+	mu            sync.Mutex
+	schema        *structSchema
+	values        []vmValue
+	sparse        bool
+	shared        bool
+	managedHeap   *managedHeap
+	managedRef    guestRef
+	managedFields []managedStructField
+	layouts       *preparedLayoutRegistry
+	managedBase   uint32
+	owner         *vm
+	// inlineRaw is a view over a prepared frame aggregate. It keeps only the
+	// byte range and schema; fields are decoded on demand.
+	inlineRaw    []byte
+	inlineType   vmType
+	inlineLayout preparedValueLayout
+	inlineModule *moduleInstance
+	inlineBatch  *managedAllocationBatch
 }
 
 // detachSharedValues is called with mu held before changing a field. Struct
@@ -120,6 +139,20 @@ func (value *vmStruct) detachSharedValues() {
 }
 
 func (value *vmStruct) snapshot() ([]vmValue, bool) {
+	if value != nil && value.inlineRaw != nil {
+		values := make([]vmValue, len(value.schema.fields))
+		for index := range values {
+			values[index], _ = value.fieldAt(index)
+		}
+		return values, false
+	}
+	if value.managedHeap != nil && value.managedRef.valid() {
+		values := make([]vmValue, len(value.managedFields))
+		for index := range values {
+			values[index], _ = value.fieldAt(index)
+		}
+		return values, false
+	}
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	values := make([]vmValue, len(value.values), cap(value.values))
@@ -128,6 +161,28 @@ func (value *vmStruct) snapshot() ([]vmValue, bool) {
 }
 
 func (value *vmStruct) fieldAt(index int) (vmValue, bool) {
+	if value != nil && value.inlineRaw != nil {
+		if value.schema == nil || index < 0 || index >= len(value.schema.fields) || value.inlineModule == nil || value.inlineModule.vm == nil {
+			return vmValue{}, false
+		}
+		offset := value.inlineFieldOffset(index)
+		if offset < 0 {
+			return vmValue{}, false
+		}
+		field := value.managedFields[index]
+		if offset+int(field.layout.Stride) > len(value.inlineRaw) {
+			return vmValue{}, false
+		}
+		return readInlineAggregateOwned(value.inlineModule, field.typ, field.layout,
+			value.inlineRaw[offset:offset+int(field.layout.Stride)], value.inlineBatch), true
+	}
+	if value != nil && value.managedHeap != nil && value.managedRef.valid() {
+		if index < 0 || index >= len(value.managedFields) {
+			return vmValue{}, false
+		}
+		field := value.managedFields[index]
+		return decodeManagedInline(value.managedHeap, value.managedRef, value.managedBase+field.offset, field.typ, field.layout, value.layouts, value.owner), true
+	}
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	if index < 0 || index >= len(value.values) || !value.values[index].Type.Valid() {
@@ -137,6 +192,20 @@ func (value *vmStruct) fieldAt(index int) (vmValue, bool) {
 }
 
 func (value *vmStruct) initializeField(index int, zero vmValue) vmValue {
+	if value != nil && value.inlineRaw != nil {
+		if current, ok := value.fieldAt(index); ok {
+			return current
+		}
+		if value.inlineModule != nil {
+			offset := value.inlineFieldOffset(index)
+			if offset >= 0 && value.inlineModule.writeInlineValueWithLayout(value.inlineRaw, offset, zero, value.managedFields[index].layout, map[uintptr]guestRef{}, value.inlineBatch) == nil {
+				if current, ok := value.fieldAt(index); ok {
+					return current
+				}
+			}
+		}
+		return zero
+	}
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	if len(value.values) == 0 {
@@ -147,6 +216,13 @@ func (value *vmStruct) initializeField(index int, zero vmValue) vmValue {
 		value.values[index] = zero
 	}
 	return value.values[index]
+}
+
+func (value *vmStruct) inlineFieldOffset(index int) int {
+	if value == nil || index < 0 || index >= len(value.managedFields) {
+		return -1
+	}
+	return int(value.managedFields[index].offset)
 }
 
 func structValueField(data any, field string) (vmValue, bool) {
@@ -161,14 +237,13 @@ func structValueField(data any, field string) (vmValue, bool) {
 	return value.fieldAt(index)
 }
 
-func (m *moduleInstance) structValueFieldInfo(object vmValue, field string) (TypeFieldInfo, bool) {
-	value, ok := object.Data.(*vmStruct)
-	if !ok || value == nil || value.schema == nil {
+func (m *moduleInstance) structFieldInfo(typ vmType, value *vmStruct, field string) (TypeFieldInfo, bool) {
+	if value == nil || value.schema == nil {
 		return TypeFieldInfo{}, false
 	}
 	schema := value.schema
-	if !schema.typ.Equal(object.Type) {
-		if target, found := m.structSchema(object.Type); found {
+	if !schema.typ.Equal(typ) {
+		if target, found := m.structSchema(typ); found {
 			schema = target
 		}
 	}
@@ -211,6 +286,25 @@ func updatedStructValue(data any, field string, value vmValue) (any, bool) {
 	index, _, ok := current.schema.field(field)
 	if !ok {
 		return nil, false
+	}
+	if current.managedHeap != nil && current.managedRef.valid() {
+		if err := writeManagedStructField(current, index, value); err != nil {
+			return nil, false
+		}
+		return current, true
+	}
+	if current.inlineRaw != nil {
+		if current.inlineModule == nil {
+			return nil, false
+		}
+		offset := current.inlineFieldOffset(index)
+		if offset < 0 || offset+int(current.managedFields[index].layout.Stride) > len(current.inlineRaw) {
+			return nil, false
+		}
+		if err := current.inlineModule.writeInlineValueWithLayout(current.inlineRaw, offset, value, current.managedFields[index].layout, map[uintptr]guestRef{}, current.inlineBatch); err != nil {
+			return nil, false
+		}
+		return current, true
 	}
 	current.mu.Lock()
 	defer current.mu.Unlock()

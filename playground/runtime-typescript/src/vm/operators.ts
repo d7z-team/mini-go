@@ -7,8 +7,10 @@ import {
   decodeRune,
   dereference,
   guestEqual,
+  indexValue,
   normalize,
   primitive,
+  type Cell,
   type RuntimeType,
   type SliceValue,
   type Value,
@@ -356,7 +358,11 @@ export function compareCode(code: number, left: Value, right: Value): boolean {
   }
 }
 
-export function convert(value: Value, type: RuntimeType): Value {
+export function convert(
+  value: Value,
+  type: RuntimeType,
+  createCell: (value: Value) => Cell = cell,
+): Value {
   const target = type.registry.underlying(type);
   if (target.ref.kind === Kind.Any) return value;
   if (type.registry.identical(value.type, type)) return { ...value, type };
@@ -390,7 +396,7 @@ export function convert(value: Value, type: RuntimeType): Value {
       type,
       kind: "slice",
       value: {
-        storage: { root: cell(backing!), path: [] },
+        storage: { root: createCell(backing!), path: [] },
         start: 0,
         length: length!,
         capacity: length!,
@@ -465,9 +471,9 @@ export function convert(value: Value, type: RuntimeType): Value {
           backing.kind === "bytes"
             ? (backing.value as Uint8Array).slice(slice.start, slice.start + slice.length)
             : Uint8Array.from(
-                (backing.value as Value[])
-                  .slice(slice.start, slice.start + slice.length)
-                  .map((item) => Number(item.value as bigint)),
+                Array.from({ length: slice.length }, (_, index) =>
+                  Number(indexValue(backing, slice.start + index).value as bigint),
+                ),
               );
         return { type, kind: "string", value: bytes };
       }
@@ -476,7 +482,9 @@ export function convert(value: Value, type: RuntimeType): Value {
         sourceElement.registry.underlying(sourceElement).ref.primitive ===
           PrimitiveKind.PrimitiveInt32
       ) {
-        const values = (backing.value as Value[]).slice(slice.start, slice.start + slice.length);
+        const values = Array.from({ length: slice.length }, (_, index) =>
+          indexValue(backing, slice.start + index),
+        );
         const text = values
           .map((item) => {
             const rune = Number(item.value as bigint);

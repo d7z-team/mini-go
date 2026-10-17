@@ -66,7 +66,7 @@ func reflectValueCall(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if err != nil {
 		return reflectValueCallError(err.Error()), nil
 	}
-	callSlice, ok := args[2].Data.(bool)
+	callSlice, ok := args[2].boolValue()
 	if !ok || !args[2].Type.Primitive(types.PrimitiveBool) {
 		return reflectValueCallError("reflect.value_call expects Bool callSlice flag"), nil
 	}
@@ -99,17 +99,17 @@ func reflectValueCallResults(ctx intrinsicContext, results []vmValue) ([]vmValue
 }
 
 func reflectCallValue(ctx intrinsicContext, current vmValue, reflectedArgs []vmValue, callSlice bool) (*artifactCallbackRequest, error) {
-	if target, ok := current.Data.(reflectMethodTarget); ok {
+	if target, ok := current.payload().(reflectMethodTarget); ok {
 		return reflectCallMethodTarget(ctx, target, reflectedArgs, callSlice)
 	}
-	if target, ok := current.Data.(reflectUnboundMethodTarget); ok {
+	if target, ok := current.payload().(reflectUnboundMethodTarget); ok {
 		return reflectCallUnboundMethodTarget(ctx, target, reflectedArgs, callSlice)
 	}
 	module := reflectRelationModule(ctx)
 	if ctx.vm == nil {
 		return nil, errors.New("reflect: Call requires VM context")
 	}
-	if target, ok := current.Data.(reflectMakeFuncTarget); ok {
+	if target, ok := current.payload().(reflectMakeFuncTarget); ok {
 		callArgs, err := reflectPrepareCallArguments(module, target.handlerModule, target.functionType.String(), target.variadic, reflectedArgs, callSlice)
 		if err != nil {
 			return nil, err
@@ -147,11 +147,11 @@ func reflectCallValue(ctx intrinsicContext, current vmValue, reflectedArgs []vmV
 		return nil, fmt.Errorf("reflect: Call target %s is missing", ref.FunctionID)
 	}
 	request := &artifactCallbackRequest{
-		module:      targetModule,
-		functionID:  ref.FunctionID,
-		args:        callArgs,
-		upvalues:    ref.upvalues,
-		resultCount: len(function.ResultTypes),
+		module:       targetModule,
+		functionID:   ref.FunctionID,
+		args:         callArgs,
+		captureSlots: ref.captureSlots,
+		resultCount:  len(function.ResultTypes),
 	}
 	request.result = reflectCallResult{module: targetModule, qualify: targetModule != module}
 	return request, nil

@@ -96,7 +96,7 @@ func FormatWithTable(table *TypeTable, ref TypeRef) string {
 		return formatRef(ref, nil, map[TypeID]bool{})
 	}
 	if table.indexOwner != table {
-		if err := table.index(); err != nil {
+		if err := table.rebuildIndexes(); err != nil {
 			return formatRef(ref, table, map[TypeID]bool{})
 		}
 	}

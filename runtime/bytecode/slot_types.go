@@ -11,8 +11,12 @@ func validateSlotTypes(function Function, operations []Instruction, refs artifac
 	relations := types.NewRelations(table)
 	locals := make(map[string]types.TypeRef, len(function.Locals))
 	upvalues := make(map[string]types.TypeRef, len(function.Upvalues))
+	resultLocals := make(map[string]bool, len(function.ResultLocals))
 	for _, local := range function.Locals {
 		locals[local.ID] = local.Type
+	}
+	for _, result := range function.ResultLocals {
+		resultLocals[result] = true
 	}
 	for _, upvalue := range function.Upvalues {
 		upvalues[upvalue.ID] = upvalue.Type
@@ -37,8 +41,8 @@ func validateSlotTypes(function Function, operations []Instruction, refs artifac
 		for _, output := range operands.Outputs {
 			if output&LocalOutput != 0 {
 				local := function.Locals[output&^LocalOutput]
-				if addressed[local.ID] || !IsDirectOutputType(table, local.Type) {
-					return fmt.Errorf("instruction %d: direct local output requires private fixed-size scalar storage", pc)
+				if addressed[local.ID] || resultLocals[local.ID] || !IsDirectOutputType(table, local.Type) {
+					return fmt.Errorf("instruction %d: direct local output requires private value storage", pc)
 				}
 			}
 		}
@@ -47,17 +51,8 @@ func validateSlotTypes(function Function, operations []Instruction, refs artifac
 				continue
 			}
 			local := function.Locals[operand.Index]
-			fieldRead := false
-			if operation.Op == OpGetPath && len(operands.Outputs) == 1 {
-				output := operands.Outputs[0]
-				if output&LocalOutput != 0 {
-					fieldRead = IsDirectLocalType(table, function.Locals[output&^LocalOutput].Type)
-				} else {
-					fieldRead = IsDirectLocalType(table, code.Types[output])
-				}
-			}
-			if addressed[local.ID] || !fieldRead && !IsDirectLocalType(table, local.Type) {
-				return fmt.Errorf("instruction %d: direct local input requires private scalar, pointer or scalar field read", pc)
+			if addressed[local.ID] || resultLocals[local.ID] || !IsDirectLocalValueType(table, local.Type) {
+				return fmt.Errorf("instruction %d: direct local input requires private value storage", pc)
 			}
 		}
 		input := func(index int) types.TypeRef {
@@ -330,6 +325,24 @@ func validateSlotTypes(function Function, operations []Instruction, refs artifac
 				return fmt.Errorf("instruction %d: %w", pc, err)
 			}
 			expectedOutputs = []types.TypeRef{result}
+		case OpMinMax:
+			payload := operation.Payload.(MinMaxPayload)
+			if payload.ArgCount < 1 || len(operands.Inputs) != payload.ArgCount {
+				return fmt.Errorf("instruction %d: min/max argument count mismatch", pc)
+			}
+			for i := 0; i < payload.ArgCount; i++ {
+				if !relations.Identical(input(i), payload.Type).OK {
+					return fmt.Errorf("instruction %d: min/max operand type differs from descriptor", pc)
+				}
+			}
+			if payload.Operator != "min" && payload.Operator != "max" {
+				return fmt.Errorf("instruction %d: invalid min/max operator", pc)
+			}
+			underlying := types.View(table, payload.Type).Underlying()
+			if underlying.Kind != types.Primitive || underlying.Primitive != types.PrimitiveString && !types.IsIntegerType(table, payload.Type) && !types.IsFloatType(table, payload.Type) {
+				return fmt.Errorf("instruction %d: min/max requires an ordered scalar type", pc)
+			}
+			expectedOutputs = []types.TypeRef{payload.Type}
 		case OpCompareBranch:
 			declared := operation.Payload.(CompareBranchPayload).Type
 			if !relations.Identical(input(0), declared).OK {

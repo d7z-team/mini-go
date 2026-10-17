@@ -18,9 +18,15 @@ type waitableResource struct {
 	Buffer                 []vmValue
 	bufferHead             int
 	Closed                 bool
+	managed                *managedWaitableStorage
+	mutex                  *mutexResource
 }
 
 func makeWaitableValue(module *moduleInstance, typ any, capacity vmValue) (vmValue, error) {
+	return makeWaitableValueWithBatch(module, typ, capacity, nil)
+}
+
+func makeWaitableValueWithBatch(module *moduleInstance, typ any, capacity vmValue, batch *managedAllocationBatch) (vmValue, error) {
 	runtimeType := module.resolvedRuntimeType(typ)
 	elemType := module.resolvedRuntimeType("Any")
 	if info, ok := runtimeType.WaitableInfo(); ok {
@@ -37,21 +43,10 @@ func makeWaitableValue(module *moduleInstance, typ any, capacity vmValue) (vmVal
 	if err != nil {
 		return vmValue{}, err
 	}
-	if module.vm != nil {
-		if err := module.vm.chargeRuntimeObject(capacityInt, 0); err != nil {
-			return vmValue{}, err
-		}
-	}
-	resource := &waitableResource{
-		Type:     runtimeType,
-		ElemType: elemType,
-		Capacity: capacityInt,
-		Buffer:   make([]vmValue, 0, capacityInt),
-	}
-	return newVMValue(runtimeType, resource), nil
+	return module.newManagedWaitableWithBatch(runtimeType, elemType, capacityInt, batch)
 }
 
-func waitableTrySendValue(module *moduleInstance, waitableValue, value vmValue) (bool, error) {
+func waitableTrySendValue(module *moduleInstance, waitableValue, value vmValue, batches ...*managedAllocationBatch) (bool, error) {
 	resource, err := waitableValueData(module, waitableValue)
 	if err != nil {
 		return false, err
@@ -76,12 +71,14 @@ func waitableTrySendValue(module *moduleInstance, waitableValue, value vmValue) 
 	if resource.bufferLen() >= resource.Capacity {
 		return false, nil
 	}
-	resource.appendBuffer(normalized)
+	if err := resource.appendBuffer(normalized, batches...); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
-func waitableTryRecvValues(module *moduleInstance, waitableValue vmValue) (vmValue, vmValue, error) {
-	value, ok, _, err := waitableTryRecvValue(module, waitableValue)
+func waitableTryRecvValues(module *moduleInstance, waitableValue vmValue, batches ...*managedAllocationBatch) (vmValue, vmValue, error) {
+	value, ok, _, err := waitableTryRecvValue(module, waitableValue, batches...)
 	if err != nil {
 		return vmValue{}, vmValue{}, err
 	}
@@ -110,7 +107,7 @@ func waitableReadySendValue(module *moduleInstance, waitableValue vmValue) (vmVa
 	return newVMValue("Bool", waitableSendReady(resource)), nil
 }
 
-func waitableTryRecvValue(module *moduleInstance, waitableValue vmValue) (vmValue, bool, bool, error) {
+func waitableTryRecvValue(module *moduleInstance, waitableValue vmValue, batches ...*managedAllocationBatch) (vmValue, bool, bool, error) {
 	resource, err := waitableValueData(module, waitableValue)
 	if err != nil {
 		return vmValue{}, false, false, err
@@ -131,7 +128,10 @@ func waitableTryRecvValue(module *moduleInstance, waitableValue vmValue) (vmValu
 		}
 		return waitableZeroValue(module, waitableValue.Type, resource), false, resource.Closed, nil
 	}
-	value := resource.popBuffer()
+	value, err := resource.popBuffer(batches...)
+	if err != nil {
+		return vmValue{}, false, false, err
+	}
 	return value, true, resource.Closed, nil
 }
 
@@ -148,6 +148,11 @@ func waitableCloseValue(module *moduleInstance, waitableValue vmValue) error {
 	}
 	if resource.Closed {
 		return newGuestPanic(errors.New("close of closed waitable"))
+	}
+	if resource.managed != nil {
+		if err := resource.managed.setClosed(true); err != nil {
+			return err
+		}
 	}
 	resource.Closed = true
 	resource.notifySelections()
@@ -185,10 +190,20 @@ func (resource *waitableResource) bufferLen() int {
 	if resource == nil {
 		return 0
 	}
+	if resource.managed != nil {
+		return resource.managed.length()
+	}
 	return len(resource.Buffer) - resource.bufferHead
 }
 
-func (resource *waitableResource) appendBuffer(value vmValue) {
+func (resource *waitableResource) appendBuffer(value vmValue, batches ...*managedAllocationBatch) error {
+	if resource.managed != nil {
+		if err := resource.managed.append(value, batches...); err != nil {
+			return err
+		}
+		resource.notifySelections()
+		return nil
+	}
 	if resource.bufferHead > 0 && len(resource.Buffer) == cap(resource.Buffer) {
 		active := copy(resource.Buffer, resource.Buffer[resource.bufferHead:])
 		clear(resource.Buffer[active:])
@@ -197,9 +212,18 @@ func (resource *waitableResource) appendBuffer(value vmValue) {
 	}
 	resource.Buffer = append(resource.Buffer, value)
 	resource.notifySelections()
+	return nil
 }
 
-func (resource *waitableResource) popBuffer() vmValue {
+func (resource *waitableResource) popBuffer(batches ...*managedAllocationBatch) (vmValue, error) {
+	if resource.managed != nil {
+		value, err := resource.managed.pop(batches...)
+		if err != nil {
+			return vmValue{}, err
+		}
+		resource.notifySelections()
+		return value, nil
+	}
 	value := resource.Buffer[resource.bufferHead]
 	resource.Buffer[resource.bufferHead] = vmValue{}
 	resource.bufferHead++
@@ -208,15 +232,16 @@ func (resource *waitableResource) popBuffer() vmValue {
 		resource.bufferHead = 0
 	}
 	resource.notifySelections()
-	return value
+	return value, nil
 }
 
 func waitableValueData(module *moduleInstance, value vmValue) (*waitableResource, error) {
-	resource, ok := value.Data.(*waitableResource)
+	payload := value.payload()
+	resource, ok := payload.(*waitableResource)
 	if ok {
 		return resource, nil
 	}
-	if value.Data != nil {
+	if payload != nil {
 		return nil, fmt.Errorf("invalid waitable resource backing for %s", value.Type)
 	}
 	if !module.isWaitableTypeName(value.Type) {

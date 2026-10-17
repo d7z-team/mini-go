@@ -31,6 +31,11 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 			}
 		}
 	}
+	for _, result := range function.ResultLocals {
+		if index, ok := locals[result]; ok {
+			private[index] = false
+		}
+	}
 	if err := promoteTemporaries(code, function, table, locals, private, symbols); err != nil {
 		return err
 	}
@@ -38,17 +43,14 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 		nextWrite[i] = len(code.Instructions)
 	}
 	lastUse := make([]int, len(code.Types))
-	fieldReads := make([]bool, len(code.Types))
+	boundaries := sourceBoundaries(symbols)
 	for i := range lastUse {
 		lastUse[i] = -1
-		fieldReads[i] = true
 	}
 	for pc, instruction := range code.Instructions {
 		operands := code.Operands[instruction.Operands]
-		fieldRead := instruction.Op == ir.OpGetPath && len(operands.Outputs) == 1 && ir.IsDirectLocalType(table, code.Types[operands.Outputs[0]])
 		for _, input := range operands.Inputs {
 			if input.Kind == ir.OperandSlot {
-				fieldReads[input.Index] = fieldReads[input.Index] && fieldRead
 				lastUse[input.Index] = pc
 			}
 		}
@@ -56,6 +58,7 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 	forwarded := make(map[uint32]ir.Operand)
 	removed := make([]bool, len(code.Instructions))
 	boundary := len(code.Instructions)
+	observationBoundary := len(code.Instructions)
 	for pc := len(code.Instructions) - 1; pc >= 0; pc-- {
 		instruction := code.Instructions[pc]
 		switch instruction.Op {
@@ -65,10 +68,7 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 		case ir.OpLoadLocal:
 			local := locals[code.Descriptors.Local[instruction.Descriptor].Local]
 			output := code.Operands[instruction.Operands].Outputs[0]
-			if !private[local] || !fieldReads[output] && !ir.IsDirectLocalType(table, function.Locals[local].Type) {
-				continue
-			}
-			if lastUse[output] <= boundary && lastUse[output] <= nextWrite[local] {
+			if private[local] && lastUse[output] <= boundary && lastUse[output] <= nextWrite[local] && lastUse[output] < observationBoundary {
 				forwarded[output], removed[pc] = ir.Operand{Kind: ir.OperandLocal, Index: uint32(local)}, true
 			}
 		case ir.OpLabel, ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpReturn, ir.OpPanic,
@@ -76,6 +76,12 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 			ir.OpCallDirect, ir.OpCallValue, ir.OpCallInterface, ir.OpTailCallDirect, ir.OpCallFFI,
 			ir.OpDeferPush, ir.OpSpawn, ir.OpInitModule:
 			boundary = pc
+		}
+		// A pure load's own source point moves to the next retained instruction.
+		// A later observation point must still see the earlier snapshot, so do
+		// not forward a read across that point (including into its instruction).
+		if boundaries[pc] {
+			observationBoundary = pc
 		}
 	}
 	if len(forwarded) != 0 {
@@ -251,7 +257,14 @@ func promoteTemporaries(code *ir.SlotCode, function *hir.Function, table *types.
 		blocks[pc] = block
 		switch instruction.Op {
 		case ir.OpStoreLocal:
-			local := locals[code.Descriptors.Local[instruction.Descriptor].Local]
+			payload := code.Descriptors.Local[instruction.Descriptor]
+			local := locals[payload.Local]
+			// Rebind is an observable cell write. Keep the write itself, while
+			// allowing later private reads to use the cell directly when the
+			// usual next-write and escape checks prove that safe.
+			if payload.Rebind {
+				candidates[local] = false
+			}
 			if writes[local] >= 0 {
 				candidates[local] = false
 			}
@@ -303,13 +316,21 @@ func promoteTemporaries(code *ir.SlotCode, function *hir.Function, table *types.
 	return rewriteSlotLocals(code, removed, replacements, symbols)
 }
 
-// directLocalResults commits a pure producer to its sole adjacent local store.
-// Labels cannot intervene, and no source boundary may enter the eliminated store.
+// directLocalResults commits each safely matched producer result to an adjacent
+// private local store. A producer may have results that are consumed by a
+// branch or another operation instead of a store; those outputs stay slots.
+// Matching by output identity lets MapIterNext fuse key/value even after an
+// earlier pass has removed the bool store used by its continuation branch.
 func directLocalResults(code *ir.SlotCode, function *hir.Function, table *types.TypeTable, symbols *ir.FunctionSymbols) error {
 	locals := make(map[string]int, len(function.Locals))
 	private := make([]bool, len(function.Locals))
 	for index, local := range function.Locals {
-		locals[local.ID], private[index] = index, ir.IsDirectOutputType(table, local.Type)
+		locals[local.ID], private[index] = index, true
+	}
+	for _, result := range function.ResultLocals {
+		if index, ok := locals[result]; ok {
+			private[index] = false
+		}
 	}
 	for _, address := range code.Descriptors.Address {
 		if address.Kind == "local" {
@@ -331,36 +352,90 @@ func directLocalResults(code *ir.SlotCode, function *hir.Function, table *types.
 			}
 		}
 	}
-	boundaries := make(map[int]bool)
-	if symbols != nil {
-		for _, location := range symbols.Locations {
-			boundaries[location.PC] = len(location.Points) != 0
-		}
-		for _, scope := range symbols.Scopes {
-			for _, span := range scope.Ranges {
-				boundaries[span.Start], boundaries[span.End] = true, true
-			}
-		}
-	}
+	boundaries := sourceBoundaries(symbols)
 	removed := make([]bool, len(code.Instructions))
 	changed := false
-	for pc := 1; pc < len(code.Instructions); pc++ {
-		store, producer := code.Instructions[pc], code.Instructions[pc-1]
-		if store.Op != ir.OpStoreLocal || !ir.HasDirectOutput(producer.Op) || boundaries[pc] {
+	relations := types.NewRelations(table)
+	for pc := 0; pc < len(code.Instructions); pc++ {
+		producer := code.Instructions[pc]
+		outputs := code.Operands[producer.Operands].Outputs
+		if !ir.AllowsDirectLocalOutputs(producer.Op, len(outputs)) || len(outputs) == 0 {
 			continue
 		}
-		localPayload := code.Descriptors.Local[store.Descriptor]
-		if localPayload.Rebind {
+		if pc+1 >= len(code.Instructions) {
 			continue
 		}
-		local := locals[localPayload.Local]
-		input, output := code.Operands[store.Operands].Inputs, code.Operands[producer.Operands].Outputs
-		if !private[local] || len(input) != 1 || input[0].Kind != ir.OperandSlot || len(output) != 1 ||
-			input[0].Index != output[0] || uses[output[0]] != 1 || code.Types[output[0]] != function.Locals[local].Type {
+		outputIndex := make(map[uint32]int, len(outputs))
+		for index, output := range outputs {
+			outputIndex[output] = index
+		}
+		matched := make([]int, len(outputs))
+		for index := range matched {
+			matched[index] = -1
+		}
+		matchedStore := make([]int, len(outputs))
+		for index := range matchedStore {
+			matchedStore[index] = -1
+		}
+		storeCounts := make(map[int]int, len(outputs))
+		seenLocals := make(map[int]bool, len(outputs))
+		readLocals := make(map[int]bool)
+		matchedCount := 0
+		for storePC := pc + 1; storePC < len(code.Instructions); storePC++ {
+			if boundaries[storePC] || code.Instructions[storePC].Op != ir.OpStoreLocal {
+				break
+			}
+			storeInputs := code.Operands[code.Instructions[storePC].Operands].Inputs
+			for _, input := range storeInputs {
+				if input.Kind == ir.OperandLocal {
+					readLocals[int(input.Index)] = true
+				}
+			}
+			localPayload := code.Descriptors.Local[code.Instructions[storePC].Descriptor]
+			local, ok := locals[localPayload.Local]
+			if !ok {
+				continue
+			}
+			storeCounts[local]++
+			if localPayload.Rebind {
+				continue
+			}
+			// Forwarded reads in earlier stores still observe the old value.
+			// Hoisting this write into the producer would change a parallel
+			// assignment such as a, b = b, a%b.
+			if !private[local] || seenLocals[local] || readLocals[local] {
+				continue
+			}
+			if len(storeInputs) != 1 || storeInputs[0].Kind != ir.OperandSlot {
+				continue
+			}
+			index, ok := outputIndex[storeInputs[0].Index]
+			if !ok || matched[index] >= 0 || uses[storeInputs[0].Index] != 1 ||
+				!relations.Identical(code.Types[storeInputs[0].Index], function.Locals[local].Type).OK {
+				continue
+			}
+			matched[index] = local
+			matchedStore[index] = storePC
+			seenLocals[local] = true
+			removed[storePC] = true
+			matchedCount++
+		}
+		for index, local := range matched {
+			if local >= 0 && storeCounts[local] != 1 {
+				removed[matchedStore[index]] = false
+				matched[index], matchedStore[index] = -1, -1
+				matchedCount--
+			}
+		}
+		if matchedCount == 0 {
 			continue
 		}
-		code.Operands[producer.Operands].Outputs[0] = ir.LocalOutput | uint32(local)
-		removed[pc], changed = true, true
+		for index, local := range matched {
+			if local >= 0 {
+				code.Operands[producer.Operands].Outputs[index] = ir.LocalOutput | uint32(local)
+			}
+		}
+		changed = true
 	}
 	if changed {
 		return rewriteSlotLocals(code, removed, nil, symbols)

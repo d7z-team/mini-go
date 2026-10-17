@@ -259,35 +259,9 @@ func (l *lowerer) semanticSwitchFact(stmt ast.Statement) (check.SwitchInfo, bool
 }
 
 func (l *lowerer) formatSemanticType(ref types.TypeRef) string {
-	if text, ok := l.semanticTypeText[ref]; ok {
-		return text
-	}
-	original := ref
 	if l.semantic == nil || !ref.Valid() {
 		return ""
 	}
 	ref = l.semantic.Relations.ResolveAlias(ref)
-	text := types.FormatWithTable(l.semantic.TypeTable, ref)
-	prefix := strings.TrimSpace(l.modulePath) + "."
-	rewritten, ok := types.RewriteCanonicalText(text, func(name string) (string, bool) {
-		name = strings.TrimSpace(name)
-		if prefix != "." && strings.HasPrefix(name, prefix) {
-			localName := strings.TrimPrefix(name, prefix)
-			if types.IsBuiltinTypeName(localName) {
-				return name, true
-			}
-			return localName, true
-		}
-		return name, true
-	})
-	if !ok {
-		return ""
-	}
-	text = l.resolveType(rewritten)
-	// The checked table is immutable throughout lowering. Start caching only
-	// after local aliases have been rewritten; each lowerer owns its entries.
-	if l.semanticTypeText != nil && text != "" {
-		l.semanticTypeText[original] = text
-	}
-	return text
+	return l.typeRefString(ref)
 }

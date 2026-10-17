@@ -8,22 +8,13 @@ func (vm *vm) sweepRetiredRevisions() {
 	if len(retired) == 0 {
 		return
 	}
-	retained := make(map[*instanceRevision]bool)
-	current := vm.revision.Load()
-	if current != nil && current.modules != nil {
-		walker := newRuntimeValueWalker(func(revision *instanceRevision) {
-			if revision != nil {
-				retained[revision] = true
-			}
-		})
-		for _, module := range current.modules.modules {
-			for _, cell := range module.state.globals {
-				walker.slot(cell)
-			}
+	if vm.retentionCollectionRequested.Swap(false) && vm.heap != nil {
+		if err := vm.collectMajorManaged(); err != nil {
+			vm.retentionCollectionRequested.Store(true)
 		}
 	}
 	for _, revision := range retired {
-		revision.setRootRetained(retained[revision])
+		revision.setRootRetained(revision.anchor.valid() && !revision.anchorReclaimed)
 	}
 	vm.retiredMu.Lock()
 	kept := vm.retiredRevisions[:0]
@@ -125,12 +116,18 @@ func (vm *vm) closeRevisions() {
 	vm.paused = nil
 	vm.reflectTypes.clear()
 	vm.reflectTypeValues.clear()
+	vm.clearReflectTypeMetadata()
 	vm.dynamicTypeCount = 0
 	vm.dynamicTypeBytes = 0
 	vm.timers = nil
 	vm.ffiCalls = nil
 	vm.machine = nil
-	vm.liveGuestBytes.Store(0)
-	vm.allocatedSinceSweep.Store(0)
+	if vm.heap != nil {
+		vm.heap.close()
+	}
+	vm.managedFunctions = nil
+	vm.managedWaitables = nil
+	vm.managedRevisions = nil
+	vm.valueLayouts = nil
 	vm.pendingBoundaryBytes.Store(0)
 }

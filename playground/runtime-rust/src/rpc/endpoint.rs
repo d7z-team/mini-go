@@ -665,7 +665,7 @@ impl EndpointState {
             } else {
                 frame.id = self
                     .next_request
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
                     .map_err(|_| Status::exhausted("RPC request ID exhausted"))?;
             }
             if let Some(deadline) = context.deadline {
@@ -1197,7 +1197,7 @@ impl EndpointState {
                 context.check()?;
                 let id = self
                     .next_binding
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
                     .map_err(|_| Status::exhausted("RPC binding IDs exhausted"))?;
                 reply.binding = id;
                 reply.epoch = routes.epoch;

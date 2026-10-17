@@ -1,0 +1,71 @@
+package main
+
+import "math"
+
+type Counter int8
+
+type Label string
+
+var order int
+
+func next(value int) int {
+	order = order * 10 + value
+	return value
+}
+
+func signed(a, b Counter) Counter {
+	return min(a, b)
+}
+
+func unsigned(a, b uint64) uint64 {
+	return max(a, b)
+}
+
+func text(a, b Label) Label {
+	return min(a, b)
+}
+
+func minimum(a, b float64) float64 {
+	return min(a, b)
+}
+
+func maximum(a, b float64) float64 {
+	return max(a, b)
+}
+
+func small(a, b float32) float32 {
+	return min(a, b)
+}
+
+func Main() int {
+	if signed(-128, 127) != -128 || unsigned(1 << 63, 1 << 63 + 3) != 1 << 63 + 3 {
+		return 1
+	}
+	if text("\xff", "\x80") != "\x80" || max("\x00x", "\x00y") != "\x00y" {
+		return 2
+	}
+	positive := math.Copysign(0, 1)
+	negative := math.Copysign(0, -1)
+	if !math.Signbit(minimum(positive, negative)) || !math.Signbit(minimum(negative, positive)) {
+		return 3
+	}
+	if math.Signbit(maximum(positive, negative)) || math.Signbit(maximum(negative, positive)) {
+		return 4
+	}
+	nan := math.NaN()
+	if !math.IsNaN(minimum(1, nan)) || !math.IsNaN(maximum(nan, 1)) || !math.IsNaN(float64(small(1, float32(nan)))) {
+		return 5
+	}
+	if minimum(math.Inf(1), math.Inf(-1)) != math.Inf(-1) || maximum(math.Inf(-1), math.Inf(1)) != math.Inf(1) {
+		return 6
+	}
+	order = 0
+	if min(next(3), next(1), next(2)) != 1 || order != 312 {
+		return 7
+	}
+	value := Counter(42)
+	if min(value) != value || max(value) != value {
+		return 8
+	}
+	return 42
+}

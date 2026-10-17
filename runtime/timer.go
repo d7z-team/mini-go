@@ -27,12 +27,13 @@ type runtimeTimer struct {
 func (timer *runtimeTimer) markReady() {
 	timer.mu.Lock()
 	wake := !timer.stopped
+	vm := timer.vm
 	if !timer.stopped {
 		timer.ready = true
 	}
 	timer.mu.Unlock()
-	if wake {
-		timer.vm.signalWake()
+	if wake && vm != nil {
+		vm.signalWake()
 	}
 }
 

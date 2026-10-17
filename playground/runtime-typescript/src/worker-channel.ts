@@ -7,7 +7,7 @@ export interface WorkerConnection<Input, Output> {
 
 /** A worker entry adapts its platform message port to this channel. */
 export interface WorkerPort<Input, Output> {
-  send(message: Output): void;
+  send(message: Output, transfer?: ArrayBuffer[]): void;
   listen(handler: (message: Input) => void): void;
 }
 

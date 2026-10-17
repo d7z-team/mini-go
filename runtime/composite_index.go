@@ -35,11 +35,6 @@ func makeSliceValue(module *moduleInstance, typ any, length, capacity vmValue) (
 	if err != nil {
 		return vmValue{}, err
 	}
-	if module.vm != nil {
-		if err := module.vm.chargeRuntimeObject(capacityInt, 0); err != nil {
-			return vmValue{}, err
-		}
-	}
 	elemType := module.sequenceElementType(typeText)
 	if module.sameRuntimeType(elemType, "Uint8") {
 		return newByteSliceHeaderValue(runtimeType, make([]byte, capacityInt), lengthValue, capacityInt), nil
@@ -63,7 +58,7 @@ func indexValue(module *moduleInstance, object, index vmValue) (vmValue, error) 
 		}
 		return indexValue(module, target, index)
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmSlice:
 		i, err := asInt64(index)
 		if err != nil {
@@ -113,7 +108,7 @@ func indexValue(module *moduleInstance, object, index vmValue) (vmValue, error) 
 		}
 		return newVMValue("Uint8", uint64(data[i])), nil
 	default:
-		if module.isMapType(object.Type) && object.Data == nil {
+		if module.isMapType(object.Type) && object.payload() == nil {
 			if _, err := module.normalizedMapKey(object, index); err != nil {
 				return vmValue{}, err
 			}
@@ -156,7 +151,7 @@ func mapIndexOKValues(module *moduleInstance, object, index vmValue) (vmValue, v
 	if err != nil {
 		return vmValue{}, vmValue{}, err
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmMap:
 		if data != nil {
 			if entry, exists := data.loadEntry(key); exists {
@@ -182,7 +177,7 @@ func mapIndexOKValues(module *moduleInstance, object, index vmValue) (vmValue, v
 }
 
 func stringRuneAtValue(object, index vmValue) (vmValue, error) {
-	data, ok := object.Data.(string)
+	data, ok := object.payload().(string)
 	if !ok {
 		return vmValue{}, fmt.Errorf("cannot read rune from %s", object.Type)
 	}
@@ -198,7 +193,7 @@ func stringRuneAtValue(object, index vmValue) (vmValue, error) {
 }
 
 func stringNextIndexValue(object, index vmValue) (vmValue, error) {
-	data, ok := object.Data.(string)
+	data, ok := object.payload().(string)
 	if !ok {
 		return vmValue{}, fmt.Errorf("cannot advance string index for %s", object.Type)
 	}
@@ -225,7 +220,9 @@ func sliceValue(module *moduleInstance, object, start, end, maxValue vmValue) (v
 		if err != nil {
 			return vmValue{}, err
 		}
-		if target.Type.ShapeKind() == types.Array {
+		array, managedArray := target.payload().(*vmArray)
+		managedArray = managedArray && array.managedHeap != nil && array.managedRef.valid()
+		if target.Type.ShapeKind() == types.Array && !managedArray {
 			if err := commitPointerMutation(object, target); err != nil {
 				return vmValue{}, err
 			}
@@ -258,7 +255,7 @@ func sliceValue(module *moduleInstance, object, start, end, maxValue vmValue) (v
 			return vmValue{}, newGuestPanic(fmt.Errorf("invalid full slice bounds [%d:%d:%d]", lo, hi, maxIndex))
 		}
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmSlice:
 		bound := hi
 		if full {
@@ -307,11 +304,6 @@ func sliceValue(module *moduleInstance, object, start, end, maxValue vmValue) (v
 			return vmValue{}, newGuestPanic(fmt.Errorf("slice bounds out of range [%d:%d] with length %d", lo, hi, len(data)))
 		}
 		text := data[int(lo):int(hi)]
-		if module.vm != nil {
-			if err := module.vm.chargeAllocationBytes(int64(len(text))); err != nil {
-				return vmValue{}, err
-			}
-		}
 		return newVMValue("String", text), nil
 	default:
 		return vmValue{}, fmt.Errorf("cannot slice %s", object.Type)
@@ -335,7 +327,7 @@ func lengthValue(module *moduleInstance, object vmValue) (int64, error) {
 			return length, nil
 		}
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmSlice:
 		if !module.isSliceType(object.Type) {
 			return 0, fmt.Errorf("invalid array backing for %s", object.Type)
@@ -359,10 +351,10 @@ func lengthValue(module *moduleInstance, object vmValue) (int64, error) {
 	case *waitableResource:
 		return int64(data.bufferLen()), nil
 	default:
-		if module.isMapType(object.Type) && object.Data == nil {
+		if module.isMapType(object.Type) && object.payload() == nil {
 			return 0, nil
 		}
-		if module.isWaitableTypeName(object.Type) && object.Data == nil {
+		if module.isWaitableTypeName(object.Type) && object.payload() == nil {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("cannot len %s", object.Type)
@@ -375,7 +367,7 @@ func capValue(module *moduleInstance, object vmValue) (vmValue, error) {
 			return newVMValue("Int", length), nil
 		}
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmSlice:
 		if !module.isSliceType(object.Type) {
 			return vmValue{}, fmt.Errorf("invalid array backing for %s", object.Type)
@@ -392,7 +384,7 @@ func capValue(module *moduleInstance, object vmValue) (vmValue, error) {
 	case *waitableResource:
 		return waitableCapValue(data), nil
 	default:
-		if module.isWaitableTypeName(object.Type) && object.Data == nil {
+		if module.isWaitableTypeName(object.Type) && object.payload() == nil {
 			return waitableCapValue(nil), nil
 		}
 		return vmValue{}, fmt.Errorf("cannot cap %s", object.Type)

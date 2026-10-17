@@ -17,17 +17,17 @@ var sha256Round = [64]uint32{
 }
 
 func sha256Block(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
-	array, ok := args[0].Data.(*vmArray)
+	array, ok := args[0].payload().(*vmArray)
 	if !ok || array.Len != 8 {
 		return nil, errors.New("sha256 block state must contain 8 uint32 values")
 	}
 	state := array.values()
-	input, ok := args[1].Data.(*vmSlice)
+	input, ok := args[1].payload().(*vmSlice)
 	if !ok || input == nil || input.Len%64 != 0 {
 		return nil, errors.New("sha256 block input length must be a multiple of 64")
 	}
 	var data []byte
-	if input.ByteBacked {
+	if input.byteBacked() {
 		data = input.bytes()
 	} else {
 		data = make([]byte, input.Len)
@@ -83,9 +83,6 @@ func sha256Block(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		digest[6] += g
 		digest[7] += h
 		data = data[64:]
-	}
-	if err := ctx.vm.chargeRuntimeObject(len(state), 0); err != nil {
-		return nil, err
 	}
 	out := make([]vmValue, len(state))
 	for i := range out {

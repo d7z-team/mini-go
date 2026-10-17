@@ -108,7 +108,7 @@ func BenchmarkCompilerImagePhases(b *testing.B) {
 						b.Fatal(err)
 					}
 					steps += scope.Steps
-					guestBytes += after.TotalAllocatedBytes - before.TotalAllocatedBytes
+					guestBytes += after.TotalGuestAllocatedBytes - before.TotalGuestAllocatedBytes
 					output, ok := result.Values[0].Bytes()
 					if !ok {
 						b.Fatal("compiler result is not bytes")

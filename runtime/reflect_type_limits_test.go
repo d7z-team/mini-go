@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/d7z-team/mini-go/compiler/types"
 )
 
 func TestDynamicReflectionMetadataBudgets(t *testing.T) {
@@ -14,7 +16,7 @@ func TestDynamicReflectionMetadataBudgets(t *testing.T) {
 	}{
 		{"count", Limits{MaxDynamicTypes: 2}, "execution.dynamic_type_limit"},
 		{"metadata", Limits{MaxDynamicTypeBytes: 1}, "execution.dynamic_type_bytes_limit"},
-		{"allocation", Limits{MaxAllocatedBytes: 1}, "execution.allocation_limit"},
+		{"allocation", Limits{MaxGuestBytes: 1}, "execution.allocation_limit"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			machine := &vm{limits: normalizeLimits(test.limits)}
@@ -35,10 +37,109 @@ func TestDynamicReflectionMetadataBudgets(t *testing.T) {
 					t.Fatal("type budget did not stop growth")
 				}
 			}
-			if got := machine.refreshLiveGuestBytes(); got != machine.dynamicTypeBytes {
-				t.Fatalf("metadata census = %d, want %d", got, machine.dynamicTypeBytes)
-			}
 		})
+	}
+}
+
+func TestDynamicReflectionMetadataFollowsManagedTypeOwner(t *testing.T) {
+	module := newManagedValueTestModule()
+	vm := module.vm
+	layout := managedTestLayout(t, vm.heap, managedLayout{stride: 8})
+	reservation, err := vm.heap.reserve(layout, 1, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := vmValue{Type: coerceRuntimeType("reflect.Type"), ref: reservation.commit(), heap: vm.heap}
+	vm.dynamicTypeCount, vm.dynamicTypeBytes = 1, 10
+	vm.reflectTypes.store("Array<7,Int>", TypeInfo{Key: "Array<7,Int>"})
+	vm.recordDynamicTypeCost("Array<7,Int>", 10)
+	vm.trackReflectTypeOwner(owned, "Array<7,Int>")
+	vm.controlRoots = []vmValue{owned}
+	if err := vm.collectMajorManaged(); err != nil {
+		t.Fatal(err)
+	}
+	if vm.dynamicTypeCount != 1 || len(vm.reflectTypes.snapshot()) != 1 {
+		t.Fatalf("live type metadata was reclaimed: count=%d cache=%d", vm.dynamicTypeCount, len(vm.reflectTypes.snapshot()))
+	}
+	vm.controlRoots = nil
+	if err := vm.collectMajorManaged(); err != nil {
+		t.Fatal(err)
+	}
+	if vm.dynamicTypeCount != 0 || vm.dynamicTypeBytes != 0 || len(vm.reflectTypes.snapshot()) != 0 {
+		t.Fatalf("dead type metadata retained: count=%d bytes=%d cache=%d", vm.dynamicTypeCount, vm.dynamicTypeBytes, len(vm.reflectTypes.snapshot()))
+	}
+	if stats := vm.heap.stats(); stats.occupiedBytes != 0 || stats.reservedBytes != 0 {
+		t.Fatalf("dead reflection owner retained ledger bytes: %+v", stats)
+	}
+}
+
+func TestUnpublishedDynamicReflectionMetadataIsReclaimedAtCollection(t *testing.T) {
+	vm := &vm{limits: normalizeLimits(Limits{MaxDynamicTypes: 4, MaxDynamicTypeBytes: 1 << 20}), heap: newManagedHeap()}
+	vm.heap.onReclaim = vm.reclaimManagedMetadata
+	if _, err := reflectRegisterDynamicType(intrinsicContext{vm: vm}, "Array<19,Int>", TypeInfo{}); err != nil {
+		t.Fatal(err)
+	}
+	if vm.dynamicTypeCount != 1 || len(vm.reflectTypes.snapshot()) != 1 {
+		t.Fatalf("dynamic type was not registered: count=%d cache=%d", vm.dynamicTypeCount, len(vm.reflectTypes.snapshot()))
+	}
+	if err := vm.collectMajorManaged(); err != nil {
+		t.Fatal(err)
+	}
+	if vm.dynamicTypeCount != 0 || vm.dynamicTypeBytes != 0 || len(vm.reflectTypes.snapshot()) != 0 || len(vm.reflectTypeValues.snapshot()) != 0 {
+		t.Fatalf("unpublished metadata retained after collection: count=%d bytes=%d types=%d values=%d", vm.dynamicTypeCount, vm.dynamicTypeBytes, len(vm.reflectTypes.snapshot()), len(vm.reflectTypeValues.snapshot()))
+	}
+}
+
+func TestInlineReflectTypeTracksConcreteManagedOwner(t *testing.T) {
+	module := newManagedValueTestModule()
+	info := TypeInfo{Key: "Array<23,Int>", Kind: "array", Type: "Array<23,Int>"}
+	if _, err := reflectRegisterDynamicType(intrinsicContext{vm: module.vm, module: module}, info.Key, info); err != nil {
+		t.Fatal(err)
+	}
+	// Use standalone structural views so this focused test does not require a
+	// complete stdlib module registry. The runtime path sees the same interface
+	// dynamic slot and concrete runtimeType record as the real reflect package.
+	table := &types.TypeTable{Nodes: []types.TypeNode{
+		{ID: "reflect.runtimeType.inline", Kind: types.Struct, Fields: []types.Field{{Name: "key", Type: types.Builtin(types.PrimitiveString)}}},
+	}}
+	if err := table.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	innerType := runtimeTypeWithTable(types.TypeRef{Kind: types.Struct, Node: "reflect.runtimeType.inline"}, table)
+	innerType.text = "reflect.runtimeType"
+	typeValue := vmValue{
+		Type: vmType{Ref: types.TypeRef{Kind: types.Interface, Node: "reflect.Type.inline"}, Table: table, text: "reflect.Type"},
+		Data: newRuntimeStructValue(nil, innerType, map[string]vmValue{"key": newVMValue("String", info.Key)}),
+	}
+	layout, err := module.vm.valueLayouts.layoutFor(typeValue.Type)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, layout.Stride)
+	if err := module.writeInlineValue(raw, typeValue, map[uintptr]guestRef{}); err != nil {
+		t.Fatal(err)
+	}
+	module.vm.reflectMetadataMu.Lock()
+	owners := make([]guestRef, 0, len(module.vm.reflectTypeOwners))
+	for ref := range module.vm.reflectTypeOwners {
+		owners = append(owners, ref)
+	}
+	module.vm.reflectMetadataMu.Unlock()
+	if len(owners) != 1 || !owners[0].valid() {
+		t.Fatalf("inline reflect.Type owner tickets = %v", owners)
+	}
+	if _, err := module.vm.heap.collect(owners, true); err != nil {
+		t.Fatal(err)
+	}
+	if module.vm.dynamicTypeCount != 1 {
+		t.Fatalf("rooted concrete reflect.Type was reclaimed: count=%d", module.vm.dynamicTypeCount)
+	}
+	if _, err := module.vm.heap.collect(nil, true); err != nil {
+		t.Fatal(err)
+	}
+	module.vm.drainReflectMetadataReleases()
+	if module.vm.dynamicTypeCount != 0 {
+		t.Fatalf("dead inline reflect.Type metadata retained: count=%d", module.vm.dynamicTypeCount)
 	}
 }
 
@@ -139,9 +240,6 @@ func FuzzDynamicReflectionTypeBudget(f *testing.F) {
 			if len(seen) != machine.dynamicTypeCount || len(machine.reflectTypes.snapshot()) != len(seen) {
 				t.Fatal("registration identity/accounting diverged")
 			}
-		}
-		if machine.refreshLiveGuestBytes() != machine.dynamicTypeBytes {
-			t.Fatal("metadata census diverged")
 		}
 	})
 }

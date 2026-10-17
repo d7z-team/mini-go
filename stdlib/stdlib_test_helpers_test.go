@@ -135,8 +135,8 @@ func prepareStdlibRunProgram(t testing.TB, root, sourceText string) *minigorunti
 
 func runFuzzString(program *minigoruntime.Program, arguments ...minigoruntime.HostValue) (string, string) {
 	instance, err := program.Instantiate(context.Background(), minigoruntime.InstanceOptions{Limits: minigoruntime.Limits{
-		MaxSteps: 500_000, MaxCallDepth: 256, MaxAllocatedBytes: 64 << 20,
-		MaxStringBytes: 1 << 20, MaxCollectionElements: 10_000,
+		MaxSteps: 500_000, MaxCallDepth: 256, MaxGuestBytes: 64 << 20,
+		MaxBoundaryBytes: 1 << 20,
 	}})
 	if err != nil {
 		return "", err.Error()

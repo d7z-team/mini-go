@@ -318,11 +318,75 @@ func TestDirectLocalOperandsRequirePrivateValueStorage(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-				} else if err == nil || !strings.Contains(err.Error(), "private scalar") {
+				} else if err == nil || !strings.Contains(err.Error(), "private value") {
 					t.Fatalf("shared local accepted as direct input: %v", err)
 				}
 			})
 		}
+	}
+}
+
+func TestDirectAggregateLocalInputsAndCallResults(t *testing.T) {
+	array := testType("Array<2, Int>")
+	targetSignature := testSignature("function() tuple(Array<2, Int>, Array<2, Int>)")
+	artifact := NewArtifact("example/module", "main")
+	returnCode := &SlotCode{Operands: []SlotOperands{{Inputs: []Operand{{Kind: OperandLocal, Index: 0}, {Kind: OperandLocal, Index: 1}}}}}
+	returnDescriptor, err := returnCode.Descriptors.Append(ReturnPayload{ResultCount: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	returnCode.Instructions = []SlotInstruction{{Op: OpReturn, Descriptor: returnDescriptor, Operands: 0}}
+	artifact.Functions = []Function{{
+		ID: "fn.target", Signature: targetSignature,
+		Locals: []Local{{ID: "first", Type: array}, {ID: "second", Type: array}}, Code: returnCode,
+	}}
+	callCode := &SlotCode{Operands: []SlotOperands{{Outputs: []uint32{LocalOutput, LocalOutput | 1}}}}
+	callDescriptor, err := callCode.Descriptors.Append(CallPayload{Function: "fn.target", ResultCount: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callCode.Instructions = []SlotInstruction{{Op: OpCallDirect, Descriptor: callDescriptor, Operands: 0}}
+	artifact.Functions = append(artifact.Functions, Function{
+		ID: "fn.main", Signature: types.FunctionSignature{},
+		Locals: []Local{{ID: "first", Type: array}, {ID: "second", Type: array}}, Code: callCode,
+	})
+	if err := testValidateArtifact(&artifact); err != nil {
+		t.Fatalf("aggregate direct local contract rejected: %v", err)
+	}
+}
+
+func TestDirectLocalAccessRejectsNamedResultCells(t *testing.T) {
+	integer := testType("Int")
+	for _, directOutput := range []bool{true, false} {
+		t.Run(map[bool]string{true: "output", false: "input"}[directOutput], func(t *testing.T) {
+			artifact := NewArtifact("example/module", "main")
+			code := &SlotCode{Types: []types.TypeRef{integer}, Operands: []SlotOperands{
+				{Outputs: []uint32{0}},
+				{Inputs: []Operand{{Kind: OperandLocal, Index: 0}}},
+			}}
+			zeroDescriptor, err := code.Descriptors.Append(TypePayload{Type: integer})
+			if err != nil {
+				t.Fatal(err)
+			}
+			returnDescriptor, err := code.Descriptors.Append(ReturnPayload{ResultCount: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			code.Instructions = []SlotInstruction{
+				{Op: OpZero, Descriptor: zeroDescriptor, Operands: 0},
+				{Op: OpReturn, Descriptor: returnDescriptor, Operands: 1},
+			}
+			if directOutput {
+				code.Operands[0].Outputs[0] = LocalOutput
+			}
+			artifact.Functions = []Function{{
+				ID: "fn.main", Signature: types.FunctionSignature{Results: []types.TypeRef{integer}},
+				Locals: []Local{{ID: "result", Type: integer}}, ResultLocals: []string{"result"}, Code: code,
+			}}
+			if err := testValidateArtifact(&artifact); err == nil || !strings.Contains(err.Error(), "private value storage") {
+				t.Fatalf("accepted direct %s access to named result: %v", map[bool]string{true: "output", false: "input"}[directOutput], err)
+			}
+		})
 	}
 }
 

@@ -74,7 +74,7 @@ func validateSlotCode(code *SlotCode, constants []Constant, locals []Local, vali
 		}
 		for _, slot := range operands.Outputs {
 			if slot&LocalOutput != 0 {
-				if !HasDirectOutput(instruction.Op) || len(operands.Outputs) != 1 || uint64(slot&^LocalOutput) >= uint64(len(locals)) {
+				if !AllowsDirectLocalOutputs(instruction.Op, len(operands.Outputs)) || uint64(slot&^LocalOutput) >= uint64(len(locals)) {
 					return fmt.Errorf("instruction %d: invalid direct local output", pc)
 				}
 			} else if uint64(slot) >= uint64(len(code.Types)) {

@@ -186,14 +186,18 @@ async fn shared_host_scenarios_and_precompiled_vm() {
                 worker.as_ref(),
             )
             .unwrap();
-            instance.start("default", Vec::new()).unwrap();
+            instance.start("default", &[]).unwrap();
             let wake = instance.wake();
             let deadline = Instant::now() + Duration::from_secs(15);
             let value = loop {
                 assert!(Instant::now() < deadline, "host image did not settle");
                 let epoch = wake.epoch();
                 match instance.poll_steps(4096).unwrap() {
-                    PollStatus::Ready => break instance.results()[0].integer().unwrap(),
+                    PollStatus::Ready => {
+                        break instance.snapshot_results(Default::default()).unwrap().roots[0]
+                            .integer()
+                            .unwrap();
+                    }
                     PollStatus::Pending => wake.wait(epoch, Duration::from_millis(10)),
                     PollStatus::Running => {}
                     PollStatus::Paused => panic!("unexpected debugger pause"),

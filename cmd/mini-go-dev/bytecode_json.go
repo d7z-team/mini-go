@@ -14,7 +14,7 @@ import (
 )
 
 func generateBytecodeJSON() error {
-	roots := []any{bytecode.Artifact{}, bytecode.ConstPayload{}, bytecode.LocalPayload{}, bytecode.UpvaluePayload{}, bytecode.GlobalPayload{}, bytecode.AddressPayload{}, bytecode.TypePayload{}, bytecode.OperatorPayload{}, bytecode.MakeSequencePayload{}, bytecode.MakeMapPayload{}, bytecode.MakeStructPayload{}, bytecode.MakeSlicePayload{}, bytecode.MakeWaitablePayload{}, bytecode.SelectPayload{}, bytecode.CountPayload{}, bytecode.FieldPayload{}, bytecode.ExportPayload{}, bytecode.InitModulePayload{}, bytecode.LabelPayload{}, bytecode.JumpPayload{}, bytecode.CallPayload{}, bytecode.CallInterfacePayload{}, bytecode.ClosurePayload{}, bytecode.ReturnPayload{}, bytecode.DeferPayload{}, bytecode.CallFFIPayload{}, bytecode.CallIntrinsicPayload{}}
+	roots := []any{bytecode.Artifact{}, bytecode.ConstPayload{}, bytecode.LocalPayload{}, bytecode.UpvaluePayload{}, bytecode.GlobalPayload{}, bytecode.AddressPayload{}, bytecode.TypePayload{}, bytecode.OperatorPayload{}, bytecode.MinMaxPayload{}, bytecode.MakeSequencePayload{}, bytecode.MakeMapPayload{}, bytecode.MakeStructPayload{}, bytecode.MakeSlicePayload{}, bytecode.MakeWaitablePayload{}, bytecode.SelectPayload{}, bytecode.CountPayload{}, bytecode.FieldPayload{}, bytecode.ExportPayload{}, bytecode.InitModulePayload{}, bytecode.LabelPayload{}, bytecode.JumpPayload{}, bytecode.CallPayload{}, bytecode.CallInterfacePayload{}, bytecode.ClosurePayload{}, bytecode.ReturnPayload{}, bytecode.DeferPayload{}, bytecode.CallFFIPayload{}, bytecode.CallIntrinsicPayload{}}
 	roots = append(roots, types.TypeRef{})
 	roots = append(roots, bytecode.Instruction{})
 	roots = append(roots, bytecode.TypeDispatchPayload{})

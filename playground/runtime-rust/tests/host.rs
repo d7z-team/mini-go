@@ -85,21 +85,28 @@ fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_meth
     for target in [updated, program] {
         for value in &values {
             instance
-                .start_host("default", std::slice::from_ref(value))
+                .start("default", std::slice::from_ref(value))
                 .unwrap();
             assert_eq!(instance.poll_steps(32).unwrap(), PollStatus::Ready);
-            assert!(matches!(value.data, HostData::Integer(expected)
-                if instance.results()[0].integer().unwrap() == expected));
+            assert!(matches!(&value.data, HostData::Integer(expected)
+                if instance.snapshot_results(Default::default()).unwrap().roots[0].integer().unwrap() == *expected));
         }
-        let result = instance.results()[0].integer().unwrap();
+        let result = instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap();
         assert_eq!(
             instance
-                .start_host("default", &[HostValue::int(42)])
+                .start("default", &[HostValue::int(42)])
                 .unwrap_err()
                 .code,
             "type_error"
         );
-        assert_eq!(instance.results()[0].integer().unwrap(), result);
+        assert_eq!(
+            instance.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            result
+        );
         let plan = instance.prepare_patch(target).unwrap();
         instance.apply_patch(plan).unwrap();
     }
@@ -134,7 +141,7 @@ fn slices_of_named_bytes_preserve_the_element_identity() {
         .unwrap();
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
     instance
-        .start_host(
+        .start(
             "default",
             &[HostValue {
                 typ,
@@ -146,11 +153,10 @@ fn slices_of_named_bytes_preserve_the_element_identity() {
         )
         .unwrap();
     assert_eq!(instance.poll_steps(4).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].typ(), &element);
     let snapshot = instance.snapshot_results(Default::default()).unwrap();
     instance.close().unwrap();
     assert_eq!(snapshot.roots[0].typ, element);
-    assert!(matches!(snapshot.roots[0].data, HostData::Unsigned(42)));
+    assert!(matches!(&snapshot.roots[0].data, HostData::Unsigned(42)));
 }
 
 #[test]
@@ -212,19 +218,103 @@ fn typed_host_collections_are_copied_and_failure_preserves_prior_results() {
         },
     ];
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start_host("default", &arguments).unwrap();
+    let idle_objects = instance.heap_stats().live_objects;
+    instance.start("default", &arguments).unwrap();
     arguments[1].data = HostData::Array(vec![HostValue::int(99)]);
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
-    assert_eq!(instance.collect_garbage().unwrap().live_objects, 0);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
+    assert_eq!(
+        instance.collect_garbage().unwrap().live_objects,
+        idle_objects
+    );
     arguments[1].data = HostData::Array(vec![HostValue::string("invalid integer")]);
-    assert!(instance.start_host("default", &arguments).is_err());
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
-    assert_eq!(instance.collect_garbage().unwrap().live_objects, 0);
+    assert!(instance.start("default", &arguments).is_err());
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
+    assert_eq!(
+        instance.collect_garbage().unwrap().live_objects,
+        idle_objects
+    );
     arguments[1].data = HostData::Array(vec![HostValue::int(20)]);
-    instance.start_host("default", &arguments).unwrap();
+    instance.start("default", &arguments).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 42);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
+    instance.close().unwrap();
+}
+
+#[test]
+fn host_struct_defaults_prepared_aggregate_fields_with_boundary_count_one() {
+    let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+    let padding = json!({"kind":wire::Array,"node":"padding"});
+    let structure = json!({"kind":wire::Struct,"node":"payload"});
+    let image = support::image(json!({
+        "type_table":{"nodes":[
+            {"id":"padding","kind":wire::Array,"length":2,"elem":integer},
+            {"id":"payload","kind":wire::Struct,"fields":[
+                {"name":"Value","type":integer},
+                {"name":"Padding","type":padding}
+            ]}
+        ]},
+        "functions":[{"id":"fn.Main","signature":{"params":[{"type":structure}],"results":[integer]},
+            "locals":[{"id":"payload","type":structure}],"code":slot_code(
+                json!([structure,integer]),
+                &[
+                    ("load_local",json!({"local":"payload"}),json!({"outputs":[0]})),
+                    ("load_field",json!({"field":"Value"}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
+                    ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))
+                ])}]
+    }));
+    let program = Arc::new(Program::load(&image, LoadOptions::default()).unwrap());
+    let structure_type = program
+        .types()
+        .resolve("test", &serde_json::from_value(structure).unwrap())
+        .unwrap();
+    let argument = HostValue {
+        typ: structure_type.clone(),
+        data: HostData::Struct(BTreeMap::from([("Value".to_owned(), HostValue::int(17))])),
+    };
+    let mut instance = Instance::new(
+        program,
+        ExecutionLimits {
+            max_boundary_elements: 1,
+            max_boundary_depth: 2,
+            ..ExecutionLimits::default()
+        },
+    )
+    .unwrap();
+    instance
+        .start("default", std::slice::from_ref(&argument))
+        .unwrap();
+    assert_eq!(instance.poll_steps(64).unwrap(), PollStatus::Ready);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        17
+    );
+
+    let live_objects = instance.heap_stats().live_objects;
+    let invalid = HostValue {
+        typ: structure_type,
+        data: HostData::Struct(BTreeMap::from([("Unknown".to_owned(), HostValue::int(17))])),
+    };
+    let error = instance.start("default", &[invalid]).unwrap_err();
+    assert_eq!(error.code, "host_type");
+    assert_eq!(instance.heap_stats().live_objects, live_objects);
     instance.close().unwrap();
 }
 
@@ -241,7 +331,10 @@ fn shared_host_byte_input_preserves_binary_data_and_validates_nil() {
     let instance = program
         .instantiate(InstanceOptions {
             limits: ExecutionLimits {
-                max_string_bytes: 1,
+                // A byte slice is one compact host payload: charge its
+                // boundary node once plus the payload length, rather than
+                // creating one budgeted Value per byte.
+                max_boundary_bytes: 19,
                 ..ExecutionLimits::default()
             },
             ..InstanceOptions::default()
@@ -249,7 +342,7 @@ fn shared_host_byte_input_preserves_binary_data_and_validates_nil() {
         .unwrap();
     let argument = HostValue::bytes(vec![0, 255, 128]);
     let execution = loop {
-        match instance.start_host("default", std::slice::from_ref(&argument)) {
+        match instance.start("default", std::slice::from_ref(&argument)) {
             Ok(execution) => break execution,
             Err(error) if error.code == "busy" => std::thread::yield_now(),
             Err(error) => panic!("{error}"),
@@ -258,17 +351,37 @@ fn shared_host_byte_input_preserves_binary_data_and_validates_nil() {
     let result = execution.wait(&Cancellation::default()).unwrap();
     instance.shutdown(&Cancellation::default()).unwrap();
     assert_eq!(result.bytes(&result.roots[0]).unwrap(), [0, 255, 128]);
-    assert!(matches!(argument.data, HostData::String(bytes) if bytes == [0, 255, 128]));
+    assert!(matches!(&argument.data, HostData::String(bytes) if bytes.as_slice() == [0, 255, 128]));
+
+    let mut rejected = Instance::new(
+        program.clone(),
+        ExecutionLimits {
+            max_boundary_bytes: 18,
+            ..ExecutionLimits::default()
+        },
+    )
+    .unwrap();
+    let rejected_baseline = rejected.heap_stats().live_objects;
+    assert_eq!(
+        rejected
+            .start("default", std::slice::from_ref(&argument))
+            .unwrap_err()
+            .code,
+        "boundary_limit"
+    );
+    assert_eq!(rejected.heap_stats().live_objects, rejected_baseline);
+    rejected.close().unwrap();
 
     let mut machine = Instance::new(program, ExecutionLimits::default()).unwrap();
+    let machine_baseline = machine.heap_stats().live_objects;
     let invalid = HostValue {
         typ: TypeIdentity::Primitive(wire::PrimitiveInt),
         data: HostData::Nil,
     };
     assert_eq!(
-        machine.start_host("default", &[invalid]).unwrap_err().code,
+        machine.start("default", &[invalid]).unwrap_err().code,
         "host_type"
     );
-    assert_eq!(machine.heap_stats().live_objects, 0);
+    assert_eq!(machine.heap_stats().live_objects, machine_baseline);
     machine.close().unwrap();
 }

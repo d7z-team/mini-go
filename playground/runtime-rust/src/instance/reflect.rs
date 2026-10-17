@@ -57,61 +57,94 @@ impl Instance {
             typ,
             self.limits.max_dynamic_types,
             self.limits.max_dynamic_type_bytes,
-            self.limits.max_value_depth,
+            types.traversal_limit(self.limits.max_dynamic_types),
         )?;
         let bytes = types.dynamic_stats().1;
         let previous_bytes = self.types.dynamic_stats().1;
-        if self.heap.set_external_bytes(bytes).is_err() {
-            self.collect_rooted()?;
-            self.heap.set_external_bytes(bytes)?;
-        }
-        if let Err(error) = self.charge_guest(bytes.saturating_sub(previous_bytes)) {
-            self.heap.set_external_bytes(previous_bytes)?;
-            return Err(error);
+        let added = bytes.saturating_sub(previous_bytes);
+        if added != 0 {
+            let key = types.canonical_text(
+                typ,
+                types.traversal_limit(self.limits.max_dynamic_types),
+                self.limits.max_dynamic_type_bytes,
+            )?;
+            self.dynamic_type_identities
+                .insert(key.clone(), typ.clone());
+            self.dynamic_type_costs.insert(key, added);
         }
         self.types = types;
+        // Heap decoding and logical sizing use a snapshot owned by Heap. Keep
+        // it in lockstep with the instance registry after publishing a
+        // runtime-created type; otherwise a later collection can decode a
+        // live payload against the pre-reflection catalog.
+        self.heap.set_type_registry(self.types.clone());
         Ok(())
     }
     pub(super) fn reflect_value_type(
         &mut self,
         value: &Value,
     ) -> Result<TypeIdentity, RuntimeError> {
-        let Data::Function(callee) = &value.data else {
-            return Ok(value.typ.clone());
+        if let Data::DynamicFunction(inner) = &value.data {
+            // MakeFunc's outer value owns the public signature; its nested
+            // callback has the host-facing `func([]Value) []Value` type.
+            // Only use the callback identity when the outer lane was erased
+            // by a managed Any/interface decode.
+            if value.typ != TypeIdentity::Any {
+                return Ok(value.typ.clone());
+            }
+            if inner.typ != TypeIdentity::Any {
+                return Ok(inner.typ.clone());
+            }
+        }
+        let (callee, bound_receiver) = match &value.data {
+            Data::Function(callee) => (callee, false),
+            Data::Method { function, receiver } => (function, receiver.is_some()),
+            _ => return Ok(value.typ.clone()),
         };
+        // A function value converted to a defined function type keeps that
+        // identity in its value lane.  Reconstructing every callable from
+        // its signature would erase the distinction between two defined
+        // function types, making reflection assignment accept an invalid
+        // named-to-named assignment.
+        if matches!(value.typ, TypeIdentity::Named(_))
+            && self
+                .types
+                .node(&value.typ)?
+                .is_some_and(|(_, node)| node.kind == wire::Function)
+        {
+            return Ok(value.typ.clone());
+        }
         let revision = callee.revision.as_ref().unwrap_or(&self.revision);
-        let signature = &revision
-            .program
-            .function(&callee.module, &callee.function)?
-            .declaration
-            .signature;
+        let function = self.resolve_function_binding(callee, revision)?;
+        let module = &function.module;
+        let signature = &function.declaration.signature;
         let params = signature
             .params
             .iter()
-            .map(|parameter| {
-                revision
-                    .program
-                    .types()
-                    .resolve(&callee.module, &parameter.r#type)
-            })
+            .enumerate()
+            .filter(|(index, _)| !(bound_receiver && *index == 0))
+            .map(|(_, parameter)| revision.program.types().resolve(module, &parameter.r#type))
             .collect::<Result<Vec<_>, _>>()?;
         let results = signature
             .results
             .iter()
-            .map(|reference| revision.program.types().resolve(&callee.module, reference))
+            .map(|reference| revision.program.types().resolve(module, reference))
             .collect::<Result<Vec<_>, _>>()?;
-        self.types.construct(
+        let mut types = self.types.clone();
+        let typ = types.construct(
             crate::types::ConstructedType::Function {
                 params,
                 results,
                 variadic: signature.variadic,
             },
-            self.limits.max_sequence_elements,
-            self.limits.max_value_depth,
-        )
+            self.limits.max_dynamic_types,
+            types.traversal_limit(self.limits.max_dynamic_types),
+        )?;
+        self.publish_dynamic_type(types, &typ)?;
+        Ok(typ)
     }
     pub(super) fn reflect_struct(
-        &self,
+        &mut self,
         name: &str,
         entries: impl IntoIterator<Item = (&'static str, Value)>,
     ) -> Result<Value, RuntimeError> {
@@ -119,21 +152,95 @@ impl Instance {
             module_path: "reflect".to_owned(),
             decl_id: name.to_owned(),
         }));
-        let mut value = self.zero(&typ, 0)?;
-        let Data::Struct(fields) = &mut value.data else {
+        let layout = self.heap.layout_for_type(&typ)?;
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        if layout.kind != wire::Struct {
             return Err(RuntimeError::new(
                 "invalid_reflect_schema",
                 name,
                 "expected runtime struct",
             ));
-        };
-        for (name, value) in entries {
-            let destination = fields.get_mut(name).ok_or_else(|| {
-                RuntimeError::new("invalid_reflect_schema", name, "missing runtime field")
-            })?;
-            *destination = self.coerce(value, &destination.typ)?;
         }
-        Ok(value)
+        let mut replacements = Vec::with_capacity(entries.len());
+        for (field_name, field_value) in entries {
+            let index = layout
+                .fields
+                .iter()
+                .position(|field| field.name.as_str() == field_name)
+                .ok_or_else(|| {
+                    RuntimeError::new(
+                        "invalid_reflect_schema",
+                        field_name,
+                        "missing runtime field",
+                    )
+                })?;
+            let field_value = self.coerce(field_value, &layout.fields[index].typ)?;
+            replacements.push((index, field_value));
+        }
+        self.construct_aggregate(typ, replacements)
+    }
+
+    pub(super) fn dynamic_type_owner_keys(
+        &self,
+        value: &Value,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let mut keys = Vec::new();
+        let mut pending = vec![value.clone()];
+        while let Some(value) = pending.pop() {
+            // A dynamic identity can be carried by a pointer or slice view
+            // without the view itself having been registered as a separate
+            // runtimeType.  Walk the type spine so the concrete payload type
+            // remains an owner of its metadata through collection.
+            let mut types = vec![&value.typ];
+            while let Some(typ) = types.pop() {
+                if let Some((key, _)) = self
+                    .dynamic_type_identities
+                    .iter()
+                    .find(|(_, identity)| *identity == typ)
+                    && !keys.iter().any(|existing| existing == key)
+                {
+                    keys.push(key.clone());
+                }
+                match typ {
+                    TypeIdentity::Pointer(element) | TypeIdentity::Slice(element) => {
+                        types.push(element);
+                    }
+                    _ => {}
+                }
+            }
+            if value
+                .data
+                .aggregate_shape()
+                .is_some_and(|(array, _)| !array)
+                && let Ok(Value {
+                    data: Data::String(key),
+                    ..
+                }) = value.field("key")
+                && let Ok(key) = std::str::from_utf8(&key)
+                && self.dynamic_type_costs.contains_key(key)
+                && !keys.iter().any(|existing| existing == key)
+            {
+                keys.push(key.to_owned());
+            }
+            match &value.data {
+                Data::Interface(inner) | Data::DynamicFunction(inner) => {
+                    pending.push((**inner).clone())
+                }
+                Data::Struct(fields) => pending.extend(fields.values().cloned()),
+                Data::Array(values) => pending.extend(values.iter().cloned()),
+                Data::Aggregate(aggregate) => {
+                    for value in aggregate.values() {
+                        pending.push(value?);
+                    }
+                }
+                Data::Method {
+                    function: _,
+                    receiver: Some(receiver),
+                } => pending.push((**receiver).clone()),
+                _ => {}
+            }
+        }
+        Ok(keys)
     }
 
     pub(super) fn reflect_type(&mut self, typ: &TypeIdentity) -> Result<Value, RuntimeError> {
@@ -142,35 +249,33 @@ impl Instance {
             decl_id: "Type".to_owned(),
         }));
         if *typ == TypeIdentity::Void {
-            return self.zero(&interface, 0);
+            return self.zero(&interface);
         }
         if let Some(index) = self.reflected_type_indices.get(typ) {
-            return Ok(self.reflected_types[*index].1.clone());
+            let key = &self.reflected_types[*index].1;
+            let value =
+                self.reflect_struct("runtimeType", [("key", Value::string(key.clone()))])?;
+            return self.coerce(value, &interface);
         }
-        for (existing, value) in &self.reflected_types {
+        for (existing, key) in &self.reflected_types {
             if self.types.identical(typ, existing)? {
-                return Ok(value.clone());
+                let value =
+                    self.reflect_struct("runtimeType", [("key", Value::string(key.clone()))])?;
+                return self.coerce(value, &interface);
             }
-        }
-        if self.reflected_types.len() >= self.limits.max_sequence_elements {
-            return Err(RuntimeError::new(
-                "type_limit",
-                "reflect",
-                "reflected type limit exceeded",
-            ));
         }
         let key = self.types.canonical_text(
             typ,
-            self.limits.max_value_depth,
-            self.limits.max_string_bytes as u64,
+            self.types.traversal_limit(self.limits.max_dynamic_types),
+            self.limits.max_guest_bytes,
         )?;
         let value = self.reflect_struct("runtimeType", [("key", Value::string(key.clone()))])?;
         let value = self.coerce(value, &interface)?;
         self.reflected_type_keys
-            .insert(key, self.reflected_types.len());
+            .insert(key.clone(), self.reflected_types.len());
         self.reflected_type_indices
             .insert(typ.clone(), self.reflected_types.len());
-        self.reflected_types.push((typ.clone(), value.clone()));
+        self.reflected_types.push((typ.clone(), key));
         Ok(value)
     }
 
@@ -179,17 +284,10 @@ impl Instance {
             Data::Interface(value) => &**value,
             _ => value,
         };
-        let Data::Struct(fields) = &value.data else {
-            return Err(RuntimeError::new(
-                "reflect",
-                "type",
-                "reflect: invalid Type",
-            ));
-        };
-        let Some(Value {
+        let Value {
             data: Data::String(key),
             ..
-        }) = fields.get("key")
+        } = value.field("key")?
         else {
             return Err(RuntimeError::new(
                 "reflect",
@@ -197,7 +295,7 @@ impl Instance {
                 "reflect: invalid type key",
             ));
         };
-        std::str::from_utf8(key)
+        std::str::from_utf8(&key)
             .ok()
             .and_then(|key| self.reflected_type_keys.get(key))
             .and_then(|index| self.reflected_types.get(*index))
@@ -210,7 +308,7 @@ impl Instance {
         typ: &TypeIdentity,
         depth: usize,
     ) -> Result<(u64, u64, u64), RuntimeError> {
-        if depth >= self.limits.max_value_depth {
+        if depth >= self.types.traversal_limit(self.limits.max_dynamic_types) {
             return Err(RuntimeError::new(
                 "type_limit",
                 "reflect",
@@ -295,7 +393,7 @@ impl Instance {
     }
 
     fn reflect_display(&self, typ: &TypeIdentity, depth: usize) -> Result<String, RuntimeError> {
-        if depth >= self.limits.max_value_depth {
+        if depth >= self.types.traversal_limit(self.limits.max_dynamic_types) {
             return Err(RuntimeError::new(
                 "type_limit",
                 "reflect",
@@ -569,13 +667,10 @@ impl Instance {
                 "invalid descriptor type",
             ));
         };
-        let Data::Struct(own_fields) = &own_type.data else {
-            unreachable!()
-        };
         self.reflect_struct(
             "runtimeTypeData",
             [
-                ("key", own_fields["key"].clone()),
+                ("key", own_type.field("key")?),
                 ("pkgPath", Value::string(package)),
                 ("typeName", Value::string(name)),
                 ("displayName", Value::string(display)),
@@ -682,7 +777,7 @@ impl Instance {
                         }
                         Err(error) => return Err(error),
                     },
-                    None if self.types.nil_assignable(&element)? => self.zero(&element, 0)?,
+                    None if self.types.nil_assignable(&element)? => self.zero(&element)?,
                     None => return Ok(vec![Value::boolean(false)]),
                 };
                 self.write_address(address, value)?;
@@ -745,18 +840,11 @@ impl Instance {
                         _ => {
                             let mut fields = Vec::new();
                             for value in self.slice_values(&arguments[0])? {
-                                let Data::Struct(values) = value.data else {
-                                    return Err(RuntimeError::new(
-                                        "reflect",
-                                        id,
-                                        "reflect.StructOf: invalid field",
-                                    ));
-                                };
                                 let text = |name: &str| -> Result<String, RuntimeError> {
-                                    let Some(Value {
+                                    let Value {
                                         data: Data::String(bytes),
                                         ..
-                                    }) = values.get(name)
+                                    } = value.field(name)?
                                     else {
                                         return Err(RuntimeError::new(
                                             "reflect",
@@ -779,18 +867,11 @@ impl Instance {
                                         "reflect.StructOf: unexported field",
                                     ));
                                 }
-                                let typ =
-                                    self.reflected_type(values.get("Type").ok_or_else(|| {
-                                        RuntimeError::new(
-                                            "reflect",
-                                            id,
-                                            "reflect.StructOf: missing field type",
-                                        )
-                                    })?)?;
-                                let Some(Value {
+                                let typ = self.reflected_type(&value.field("Type")?)?;
+                                let Value {
                                     data: Data::Bool(embedded),
                                     ..
-                                }) = values.get("Anonymous")
+                                } = value.field("Anonymous")?
                                 else {
                                     return Err(RuntimeError::new(
                                         "reflect",
@@ -802,7 +883,7 @@ impl Instance {
                                     name: text("Name")?,
                                     typ,
                                     tag: text("Tag")?,
-                                    embedded: *embedded,
+                                    embedded,
                                 });
                             }
                             ConstructedType::Struct(fields)
@@ -811,8 +892,8 @@ impl Instance {
                     let mut types = self.types.clone();
                     let typ = types.construct(
                         shape,
-                        self.limits.max_sequence_elements,
-                        self.limits.max_value_depth,
+                        self.limits.max_dynamic_types,
+                        self.types.traversal_limit(self.limits.max_dynamic_types),
                     )?;
                     self.publish_dynamic_type(types, &typ)?;
                     self.reflect_type(&typ)
@@ -837,7 +918,7 @@ impl Instance {
                 let answer = if id == "reflect.implements" {
                     self.types.implements(&source, &target)?
                 } else {
-                    let value = self.zero(&source, 0)?;
+                    let value = self.zero(&source)?;
                     self.coerce(value.clone(), &target).is_ok()
                         || id == "reflect.convertible_to"
                             && self.convert_value(value, target).is_ok()
@@ -1046,12 +1127,12 @@ mod inspect_tests {
         let mut vm = Instance::new(
             program,
             ExecutionLimits {
-                max_heap_bytes: 4096,
+                max_guest_bytes: 4096,
                 ..ExecutionLimits::default()
             },
         )
         .unwrap();
-        vm.start("default", vec![]).unwrap();
+        vm.start("default", &[]).unwrap();
         let root = vm.allocate(Value::string("original")).unwrap();
         let filler = vm.allocate(Value::string(vec![b'f'; 2500])).unwrap();
         let target = Value {
@@ -1072,7 +1153,10 @@ mod inspect_tests {
                 vec![target.clone(), source.clone()],
             )
             .unwrap_err();
-        assert_eq!(error.code, "allocation_limit");
+        // This calls the handler before the owner safepoint. The handler
+        // requests collection without publishing a partial assignment;
+        // the dispatch owner decides whether the budget is exhausted.
+        assert_eq!(error.code, "collection_required");
         assert!(
             matches!(&vm.heap.get(root).unwrap().data, Data::String(bytes) if bytes.as_ref() == b"original")
         );

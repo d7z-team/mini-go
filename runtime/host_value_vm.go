@@ -21,7 +21,7 @@ func hostResultContext(ctx context.Context, result vmResult, limits Limits) (Run
 		if err != nil {
 			return RunResult{}, fmt.Errorf("host result %d: %w", index, err)
 		}
-		if _, err := measureHostValue(ctx, converted, limits); err != nil {
+		if err := measureHostValue(ctx, converted, limits); err != nil {
 			return RunResult{}, fmt.Errorf("host result %d: %w", index, err)
 		}
 		values[index] = converted
@@ -226,7 +226,7 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 		}
 		return out, nil
 	}
-	switch data := value.Data.(type) {
+	switch data := value.payload().(type) {
 	case nil:
 		out = HostNil(typ)
 	case bool:
@@ -298,10 +298,10 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 		}
 		items, ok := sliceValues(value)
 		if !ok {
-			return HostValue{}, fmt.Errorf("invalid slice data %T", value.Data)
+			return HostValue{}, fmt.Errorf("invalid slice data %T", value.payload())
 		}
 		if typ == "Slice<Uint8>" {
-			if data.ByteBacked {
+			if data.byteBacked() {
 				out = HostValue{typ: "Slice<Uint8>", kind: HostBytesKind, bytes: data.bytes()}
 				break
 			}
@@ -380,7 +380,7 @@ func vmValueToHost(ctx context.Context, value vmValue, limits Limits, depth int)
 		}
 		out = HostValue{typ: typ, kind: HostStructKind, fields: fields}
 	default:
-		return HostValue{}, fmt.Errorf("runtime-only %T cannot cross host value boundary", value.Data)
+		return HostValue{}, fmt.Errorf("runtime-only %T cannot cross host value boundary", value.payload())
 	}
 	return out, nil
 }

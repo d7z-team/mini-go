@@ -107,12 +107,12 @@ func CurrentSpec() Spec {
 			{Name: "2", Type: "uint32", Required: true, Rule: "operand record index"},
 		},
 		SlotOperandFields: []FieldSpec{
-			{Name: "0", Type: "uint8", Required: true, Rule: "0: temporary slot; 1: package constant; 2: private scalar or pointer local; tuple has exactly two elements"},
+			{Name: "0", Type: "uint8", Required: true, Rule: "0: temporary slot; 1: package constant; 2: private local value; tuple has exactly two elements"},
 			{Name: "1", Type: "uint32", Required: true, Rule: "index in the selected storage domain"},
 		},
 		SlotOperandsFields: []FieldSpec{
 			{Name: "inputs", Type: "[]Operand", Rule: "values evaluated in source order; direct locals must not be addressable"},
-			{Name: "outputs", Type: "[]uint32", Rule: "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private fixed-size scalar local by the low 31 bits, only as the sole output of unary, binary, zero, len, cap, string-next-rune-index, index-convert, get-path, or a single-result direct call"},
+			{Name: "outputs", Type: "[]uint32", Rule: "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private local value by the low 31 bits. Unary, binary, zero, len, cap, string-next-rune-index, index-convert, get-path and single-result producers require one output; call_direct and map_iter_next may write multiple results directly to distinct private locals"},
 			{Name: "release", Type: "[]uint32", Rule: "clear after instruction completion, before entering the next instruction"},
 			{Name: "release_before", Type: "[]uint32", Rule: "clear on instruction entry, once across suspension and retries"},
 		},

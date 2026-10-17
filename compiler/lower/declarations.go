@@ -332,7 +332,7 @@ func (l *lowerer) lowerFuncDecl(decl ast.Decl, overrideID string) (ir.Function, 
 		Signature:     l.hirSignature(l.signatureOf(*decl.Func), funcDeclVariadic(*decl.Func)),
 	}
 	scope := newFuncScope(&fn, nil)
-	scope.resultTypes = l.typeRefsFromStrings(l.resultTypes(decl.Func.Results))
+	scope.resultTypes = fn.Signature.Results
 	scope.expectedReturns = len(decl.Func.Results)
 	if decl.Func.Receiver != nil {
 		receiverName := strings.TrimSpace(decl.Func.Receiver.Name)

@@ -4,8 +4,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func TestReflectSelectWaitingReportsCapturedRevision(t *testing.T) {
@@ -73,23 +71,16 @@ func TestReflectSelectWaitingOwnsSendValueUntilCancellation(t *testing.T) {
 	if !errors.As(err, &request) {
 		t.Fatalf("expected blocked selection, got %v", err)
 	}
-	resource := channel.Data.(*waitableResource)
+	resource, ok := materializeManagedWaitable(channel)
+	if !ok {
+		t.Fatal("managed channel did not materialize")
+	}
 	if request.selection.done || resource.bufferLen() != 0 {
 		t.Fatal("select sent before choosing a case")
 	}
 	task := &executionTask{blocked: &blockedOperation{kind: "select", selection: request.selection, reflectSelect: request}}
-	sizer := newRuntimeValueSizer()
-	sizer.task(task)
-	if !sizer.seenStorage[send.Data.(*vmSlice).vmSliceStorage] || sizer.bytes < size*ir.RuntimeByteBytes {
-		t.Fatal("waiting send storage missing from census")
-	}
 	instance.vm.machine.cancelBlockedOperation(task)
 	if task.blocked != nil || resource.selectHead != nil {
 		t.Fatal("cancel retained waiting registration")
-	}
-	sizer = newRuntimeValueSizer()
-	sizer.task(task)
-	if sizer.bytes != 0 {
-		t.Fatalf("canceled task retained %d bytes", sizer.bytes)
 	}
 }

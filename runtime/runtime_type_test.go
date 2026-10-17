@@ -91,6 +91,46 @@ func TestRuntimeNamedTypesWithLocalRefsRemainModuleDistinct(t *testing.T) {
 	}
 }
 
+func TestPreparedNamedTypeClassificationUsesItsOwnRevision(t *testing.T) {
+	identity := types.TypeKey{ModulePath: "example/value", DeclID: "Item"}
+	ref := types.TypeRef{Kind: types.Named, Named: identity}
+	for primitive := types.PrimitiveBool; primitive <= types.PrimitiveFunction; primitive++ {
+		t.Run(types.PrimitiveName(primitive), func(t *testing.T) {
+			underlying := types.Builtin(primitive)
+			table := types.NewTable(types.TypeNode{
+				ID: "item", Kind: types.Named, Identity: identity, Underlying: underlying,
+			})
+			prepared := runtimeTypeWithTable(ref, table)
+			// A second revision may reuse the named identity with a different
+			// definition. Classification belongs to the value's own type table.
+			otherTable := types.NewTable(types.TypeNode{
+				ID: "item", Kind: types.Named, Identity: identity, Underlying: types.AnyType(),
+			})
+			other := runtimeTypeWithTable(ref, otherTable)
+			for _, typ := range []vmType{prepared, {Ref: ref, Table: table}} {
+				if !typ.Is(types.Named) || !typ.Is(types.Primitive) || !typ.Primitive(primitive) {
+					t.Fatalf("classification lost named identity or underlying primitive: %s", typ)
+				}
+				wantKind := types.Primitive
+				if primitive == types.PrimitiveError {
+					wantKind = types.Interface
+				}
+				if typ.ShapeKind() != wantKind || typ.Underlying().Ref != underlying {
+					t.Fatalf("underlying = %v, shape = %v", typ.Underlying().Ref, typ.ShapeKind())
+				}
+				gotInfo, gotNumeric := typ.NumericInfo()
+				wantInfo, wantNumeric := types.NumericTypeInfo(table, ref)
+				if gotNumeric != wantNumeric || gotInfo != wantInfo {
+					t.Fatalf("numeric = %+v/%v, want %+v/%v", gotInfo, gotNumeric, wantInfo, wantNumeric)
+				}
+			}
+			if other.ShapeKind() != types.Interface || other.Primitive(primitive) {
+				t.Fatalf("classification leaked between revisions: %v", other.ShapeKind())
+			}
+		})
+	}
+}
+
 func TestRuntimeStructuredComparableShapes(t *testing.T) {
 	module := (*moduleInstance)(nil)
 	tests := []struct {
@@ -195,6 +235,19 @@ func TestRuntimeTypeRebindsImportedNamedTypeToOwnerCatalog(t *testing.T) {
 	resolved := consumerModule.resolvedRuntimeType(vmType{Ref: placeholder, Table: consumerTable})
 	if resolved.Table != &owner.Artifact.TypeTable || resolved.ShapeKind() != types.Interface {
 		t.Fatalf("imported named type was not rebound to owner catalog: type=%s shape=%d", resolved, resolved.ShapeKind())
+	}
+	standalone := consumerModule.resolvedRuntimeType(runtimeTypeFromText("example/dep.Reader"))
+	if standalone.Table != &owner.Artifact.TypeTable || standalone.ShapeKind() != types.Interface {
+		t.Fatalf("boundary named type was not rebound to owner catalog: type=%s shape=%d", standalone, standalone.ShapeKind())
+	}
+	layouts := newPreparedLayoutRegistry()
+	canonicalLayout, err := layouts.layoutFor(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundaryLayout, err := layouts.layoutFor(standalone)
+	if err != nil || boundaryLayout.ID != canonicalLayout.ID {
+		t.Fatalf("boundary layout differs from declaration: %+v, %v", boundaryLayout, err)
 	}
 }
 

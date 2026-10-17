@@ -101,9 +101,23 @@ session。
 
 ### 限额、统计与关闭
 
-`InstanceOptions.Limits` 控制步数、任务、帧、调用边界、动态类型和 guest 逻辑内存；零值使用
-默认值。`minigo.UnlimitedSteps` 只解除累计步数限制，取消和其他限额仍有效。`ScopeStats`、
+`InstanceOptions.Limits` 控制步数、任务、帧、调用边界、动态类型、guest 逻辑内存和受管存储的
+resident memory；零值使用默认值。`minigo.UnlimitedSteps` 只解除累计步数限制，取消和其他限额仍有效。`ScopeStats`、
 `RuntimeStats` 和 guest profile 用于观测，指标口径见 [开发指南的缓存与性能](DEVELOPMENT.md#缓存与性能)。
+
+`MaxGuestBytes` 计入 managed heap 已发布和预留的逻辑字节，包括 runtime control record；
+`MaxResidentBytes` 计入明确纳入物理接纳的 managed page、layout/directory、分配批次、frame
+缓存和 GC 工作空间。两项限额在所属存储发布前检查，失败的构造不会留下部分 guest 对象或
+reservation。resident 统计不等于整个宿主 heap 或进程 RSS；编译缓存和 provider 自有分配
+不属于 guest memory contract。
+
+`RuntimeStats` 的 `OccupiedGuestBytes` 包含尚未回收的垃圾，`ReservedGuestBytes` 是已接纳的
+未提交额度，`LastMajorReachableBytes` 是上次 major 的可达快照。`ManagedAllocations` 和
+`TotalGuestAllocatedBytes` 累计成功建立的逻辑存储；GC 复制和晋升分别记录，不重复计为 guest 分配。
+读取统计不会触发回收。
+
+启动入口或派生任务时，task 与首帧必须一起满足分配预算。接收 FFI 回复时若回收后 guest 存储预算仍不足，调用按
+`execution.allocation_limit` 失败；宿主操作已经执行，运行时只重试回复物化，并在失败清理时释放回复。
 
 关闭时先停止新调用和补丁，通知常驻脚本退出并等待相关 scope，再调用 `Shutdown`。共享 Host、
 Executor、连接和 backend 在实例终态后关闭。关闭等待使用的 context 只限制本次等待；超时后可以

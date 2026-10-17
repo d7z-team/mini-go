@@ -1,41 +1,6 @@
 package runtime
 
-import (
-	"fmt"
-	goruntime "runtime"
-	"strconv"
-	"testing"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
-)
-
-func TestPointerCensusCountsSharedByteStorage(t *testing.T) {
-	module := &moduleInstance{}
-	for _, size := range []int{1024, 65536, 1 << 20} {
-		source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), size, size)
-		pointer, ok, err := module.convertSliceToArrayPointer(source, runtimeTypeFromText(fmt.Sprintf("Ptr<Array<%d, Uint8>>", size)))
-		if !ok || err != nil {
-			t.Fatalf("convert: %v %v", ok, err)
-		}
-		var before, after goruntime.MemStats
-		goruntime.ReadMemStats(&before)
-		sizer := newRuntimeValueSizer()
-		sizer.value(pointer)
-		goruntime.ReadMemStats(&after)
-		if want := 2*ir.RuntimeNodeBytes + int64(size)*ir.RuntimeByteBytes; sizer.bytes != want {
-			t.Fatalf("backing=%d census=%d want=%d", size, sizer.bytes, want)
-		}
-		if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 256<<10 {
-			t.Fatalf("inspection expanded %d bytes into %d allocated bytes", size, allocated)
-		}
-		previous := sizer.bytes
-		sizer.value(source)
-		sizer.value(pointer)
-		if sizer.bytes != previous {
-			t.Fatal("shared storage counted twice")
-		}
-	}
-}
+import "testing"
 
 func TestPointerInspectionPreservesLazyStateAndFieldSelection(t *testing.T) {
 	module := &moduleInstance{}
@@ -93,41 +58,5 @@ func TestPointerInspectionBoundsNestedAddresses(t *testing.T) {
 	walker.value(value)
 	if !walker.stopped || nodes != 4 {
 		t.Fatalf("inspection budget: nodes=%d stopped=%v", nodes, walker.stopped)
-	}
-}
-
-func TestArrayPointerCensusKeepsBackingOutsideItsView(t *testing.T) {
-	source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, 128), 128, 128)
-	view := newSliceViewValue("Slice<Uint8>", source.Data.(*vmSlice), 32, 64, 96)
-	module := &moduleInstance{}
-	pointer, ok, err := module.convertSliceToArrayPointer(view, runtimeTypeFromText("Ptr<Array<8, Uint8>>"))
-	if !ok || err != nil {
-		t.Fatalf("conversion: %v %v", ok, err)
-	}
-	sizer := newRuntimeValueSizer()
-	sizer.value(pointer)
-	if want := int64(2*ir.RuntimeNodeBytes + 128*ir.RuntimeByteBytes); sizer.bytes != want {
-		t.Fatalf("view census=%d want=%d", sizer.bytes, want)
-	}
-	sizer.value(source)
-	if want := int64(3*ir.RuntimeNodeBytes + 128*ir.RuntimeByteBytes); sizer.bytes != want {
-		t.Fatalf("shared view census=%d want=%d", sizer.bytes, want)
-	}
-}
-
-func BenchmarkByteArrayPointerCensus(b *testing.B) {
-	for _, size := range []int{1024, 65536, 1 << 20} {
-		b.Run(strconv.Itoa(size), func(b *testing.B) {
-			module := &moduleInstance{}
-			source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, size), size, size)
-			pointer, _, err := module.convertSliceToArrayPointer(source, runtimeTypeFromText(fmt.Sprintf("Ptr<Array<%d, Uint8>>", size)))
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			for b.Loop() {
-				newRuntimeValueSizer().value(pointer)
-			}
-		})
 	}
 }

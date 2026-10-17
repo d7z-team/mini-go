@@ -55,3 +55,10 @@ test("JSON loader enforces UTF-8 and byte limits", async () => {
   await assert.rejects(() => decodeJson(Uint8Array.from([0xff]), 100), /valid UTF-8/);
   await assert.rejects(() => parse('{"x":"large"}', 5), /byte limit/);
 });
+
+test("JSON node budget scales with the admitted image bytes", async () => {
+  const small = `{"values":[${Array.from({ length: 100 }, () => "0").join(",")}]}`;
+  await parse(small, small.length * 4);
+  const dense = `{"values":[${Array.from({ length: 200 }, () => "0").join(",")}]}`;
+  await assert.rejects(() => parse(dense, small.length * 4), /node count/);
+});

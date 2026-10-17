@@ -44,7 +44,7 @@ fn detached_snapshot_preserves_cycles_and_survives_instance_close() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(32).unwrap(), PollStatus::Ready);
     let before = instance.heap_stats();
     assert_eq!(
@@ -63,16 +63,16 @@ fn detached_snapshot_preserves_cycles_and_survives_instance_close() {
         .unwrap();
     instance.close().unwrap();
     assert_eq!(instance.heap_stats().live_bytes, 0);
-    let HostData::Map(root) = snapshot.roots[0].data else {
+    let HostData::Map(root) = &snapshot.roots[0].data else {
         panic!("expected map root")
     };
-    let HostData::MapEntries(entries) = &snapshot.objects[root].data else {
+    let HostData::MapEntries(entries) = &snapshot.objects[*root].data else {
         panic!("expected map backing")
     };
     let HostData::Interface(value) = &entries[0].1.data else {
         panic!("expected dynamic map")
     };
-    assert!(matches!(value.data, HostData::Map(index) if index == root));
+    assert!(matches!(&value.data, HostData::Map(index) if index == root));
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn byte_snapshot_owns_binary_data_after_guest_storage_is_released() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(8).unwrap(), PollStatus::Ready);
     let snapshot = instance
         .snapshot_results(SnapshotLimits::default())

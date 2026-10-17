@@ -97,7 +97,7 @@ fn reflection_budget_failure_preserves_registered_metadata_until_close() {
     ] {
         let mut instance = Instance::new(program.clone(), limits).unwrap();
         instance
-            .start(&program.image().entries[0].name, vec![])
+            .start(&program.image().entries[0].name, &[])
             .unwrap();
         let error = loop {
             match instance.poll_steps(4096) {
@@ -164,7 +164,7 @@ fn reflection_callbacks_run_through_the_public_parallel_runtime() {
                 })
                 .unwrap();
             let execution = instance
-                .start(&program.image().entries[0].name, Vec::new())
+                .start(&program.image().entries[0].name, &[])
                 .unwrap();
             let result = execution.wait(&Cancellation::default()).unwrap();
             let mini_go::snapshot::HostData::Integer(value) = result.roots[0].data else {
@@ -208,7 +208,7 @@ fn execute_vectors(select: impl Fn(&Vector) -> bool) {
         let has_globals = instance.heap_stats().live_objects != 0;
         // Exercise precise polling and a warm instance with a larger quantum.
         for quantum in [1, 64] {
-            instance.start(&entry, Vec::new()).unwrap();
+            instance.start(&entry, &[]).unwrap();
             loop {
                 let status = instance.poll_steps(quantum).unwrap_or_else(|error| {
                     panic!("{} O{}: {error}", vector.name, vector.optimization)
@@ -220,7 +220,10 @@ fn execute_vectors(select: impl Fn(&Vector) -> bool) {
                 break;
             }
             assert_eq!(
-                instance.results()[0].integer().unwrap().to_string(),
+                instance.snapshot_results(Default::default()).unwrap().roots[0]
+                    .integer()
+                    .unwrap()
+                    .to_string(),
                 vector.result_integer,
                 "{} O{}",
                 vector.name,
@@ -266,24 +269,22 @@ fn polling_budget_and_cancellation_preserve_instance_lifecycle() {
         },
     )
     .unwrap();
-    instance.start(&entry, Vec::new()).unwrap();
+    let idle_objects = instance.heap_stats().live_objects;
+    instance.start(&entry, &[]).unwrap();
     assert_eq!(instance.poll_steps(0).unwrap(), PollStatus::Running);
     assert_eq!(instance.steps(), 0);
     assert_eq!(instance.poll_steps(3).unwrap(), PollStatus::Running);
     assert_eq!(instance.steps(), 3);
     instance.cancel().unwrap();
-    assert_eq!(instance.heap_stats().live_objects, 0);
-    instance.start(&entry, Vec::new()).unwrap();
+    assert_eq!(instance.heap_stats().live_objects, idle_objects);
+    instance.start(&entry, &[]).unwrap();
     assert_eq!(instance.poll_steps(11).unwrap_err().code, "step_limit");
     assert_eq!(instance.steps(), 13);
-    assert_eq!(instance.heap_stats().live_objects, 0);
-    instance.start(&entry, Vec::new()).unwrap();
+    assert_eq!(instance.heap_stats().live_objects, idle_objects);
+    instance.start(&entry, &[]).unwrap();
     assert_eq!(instance.poll_steps(2).unwrap(), PollStatus::Running);
     instance.cancel().unwrap();
     assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Ready);
     instance.close().unwrap();
-    assert_eq!(
-        instance.start(&entry, Vec::new()).unwrap_err().code,
-        "closed"
-    );
+    assert_eq!(instance.start(&entry, &[]).unwrap_err().code, "closed");
 }

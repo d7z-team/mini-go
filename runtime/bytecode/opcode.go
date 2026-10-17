@@ -76,6 +76,7 @@ const (
 	OpGetPath
 	OpIndexConvert
 	OpLenCompareBranch
+	OpMinMax
 )
 
 func IsKnownOpcode(op Opcode) bool { return op > OpInvalid && int(op) <= len(opcodeSpecs) }

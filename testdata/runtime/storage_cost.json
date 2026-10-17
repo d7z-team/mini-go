@@ -1,0 +1,15 @@
+[
+  {"name":"bool_cell","bytes":17,"allocations":1},
+  {"name":"int_cell","bytes":24,"allocations":1},
+  {"name":"empty_array_cell","bytes":16,"allocations":1},
+  {"name":"string_cell","bytes":59,"allocations":2},
+  {"name":"byte_slice_backing","bytes":19,"allocations":1},
+  {"name":"int_slice_backing","bytes":40,"allocations":1},
+  {"name":"function","bytes":24,"allocations":1},
+  {"name":"closure","bytes":32,"allocations":1},
+  {"name":"bound_method","bytes":48,"allocations":1},
+  {"name":"rendezvous_channel","bytes":40,"allocations":1},
+  {"name":"buffered_channel","bytes":72,"allocations":2},
+  {"name":"empty_map","bytes":48,"allocations":1},
+  {"name":"populated_map","bytes":2720,"allocations":4}
+]

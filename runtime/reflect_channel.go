@@ -25,7 +25,7 @@ func reflectMakeChan(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 		return reflectValueError("reflect.MakeChan: negative buffer size"), nil
 	}
 	module := reflectRelationModule(ctx)
-	value, err := makeWaitableValue(module, typ, newVMValue("Int", buffer))
+	value, err := makeWaitableValueWithBatch(module, typ, newVMValue("Int", buffer), ctx.batch)
 	if err != nil {
 		return reflectValueError(err.Error()), nil
 	}
@@ -52,7 +52,7 @@ func reflectValueSend(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if module == nil || !module.isWaitableTypeName(channel.Type) {
 		return []vmValue{newVMValue("String", "reflect: Send of non-chan Value"), newVMValue("Bool", false)}, nil
 	}
-	return nil, &reflectSendRequest{ctx: intrinsicContext{vm: ctx.vm, module: module}, waitable: channel, value: value}
+	return nil, &reflectSendRequest{ctx: intrinsicContext{vm: ctx.vm, module: module, task: ctx.task, batch: ctx.batch}, waitable: channel, value: value}
 }
 
 func reflectValueTryRecv(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
@@ -67,7 +67,7 @@ func reflectValueTryRecv(ctx intrinsicContext, args []vmValue) ([]vmValue, error
 	if module == nil || !module.isWaitableTypeName(channel.Type) {
 		return reflectValueRecvError("reflect: TryRecv of non-chan Value"), nil
 	}
-	value, received, closed, err := waitableTryRecvValue(module, channel)
+	value, received, closed, err := waitableTryRecvValue(module, channel, ctx.batch)
 	if err != nil {
 		return reflectValueRecvError(err.Error()), nil
 	}
@@ -97,7 +97,7 @@ func reflectValueTrySend(ctx intrinsicContext, args []vmValue) ([]vmValue, error
 	if module == nil || !module.isWaitableTypeName(channel.Type) {
 		return reflectTrySendError("reflect: TrySend of non-chan Value"), nil
 	}
-	selected, err := waitableTrySendValue(module, channel, value)
+	selected, err := waitableTrySendValue(module, channel, value, ctx.batch)
 	if err != nil {
 		return reflectTrySendError(err.Error()), nil
 	}

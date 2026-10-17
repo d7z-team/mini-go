@@ -30,7 +30,7 @@ func reflectSelect(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	cases := make([]reflectSelectCaseState, 0, len(values))
 	defaultIndex := -1
 	for index, value := range values {
-		fields, ok := materializeStructValue(value.Data)
+		fields, ok := materializeStructValue(value.payload())
 		if !ok {
 			return reflectSelectError(fmt.Sprintf("reflect.Select: invalid case %d", index)), nil
 		}

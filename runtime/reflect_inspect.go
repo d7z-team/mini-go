@@ -19,7 +19,7 @@ func reflectInspectDescribe(ctx intrinsicContext, args []vmValue) ([]vmValue, er
 	}
 	typ := value.Type
 	isNil := !present || isNilRuntimeValue(value)
-	if args[1].Data == true {
+	if boolean, ok := args[1].boolValue(); ok && boolean {
 		typ, present = module.resolvedRuntimeType(typ).Underlying().PointerElem()
 	}
 	var kind uint64

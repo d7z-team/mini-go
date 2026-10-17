@@ -411,7 +411,7 @@ impl CallContext {
             .map_err(|_| Status::exhausted("RPC resource limit exceeded"))?;
         let id = owner
             .next_resource
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |id| id.checked_add(1))
             .map_err(|_| Status::exhausted("RPC resource ID space exhausted"))?;
         let reference = ResourceRef {
             epoch: owner.epoch,
@@ -892,7 +892,7 @@ impl Binder for LocalBinder {
                 }
                 let epoch =
                     match NEXT_EPOCH
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
                     {
                         Ok(epoch) => epoch,
                         Err(_) => {

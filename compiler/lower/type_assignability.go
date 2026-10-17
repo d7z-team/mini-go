@@ -31,7 +31,7 @@ func (l *lowerer) typeDeclFor(typ string) (ast.TypeExpr, bool) {
 
 func (l *lowerer) interfaceType(typ string) (string, bool) {
 	typ = l.resolveType(strings.TrimSpace(typ))
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(typ))
+	view, ok := l.typeView(typ)
 	if !ok || view.Shape() != types.Interface {
 		return "", false
 	}
@@ -289,7 +289,7 @@ func (l *lowerer) isFunctionSignatureType(typ string) bool {
 }
 
 func (l *lowerer) functionSignatureParts(signature string) ([]string, []string, bool, bool) {
-	view, ok := l.typeView(l.resolveNamedUnderlyingType(signature))
+	view, ok := l.typeView(signature)
 	if !ok || view.Shape() != types.Function {
 		return nil, nil, false, false
 	}

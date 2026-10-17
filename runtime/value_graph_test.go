@@ -40,8 +40,8 @@ func TestRuntimeValueWalkerFindsNestedMethodRevision(t *testing.T) {
 	target := newVMValue("function() Int", reflectMethodTarget{Module: module, Receiver: newVMValue("Int", int64(1))})
 	dynamic := newVMValue("function() Int", reflectMakeFuncTarget{
 		functionType: coerceRuntimeType("function() Int"), handlerModule: module,
-		handler: functionRef{exact: module, upvalues: map[string]*slot{
-			"captured": {value: newVMValue("function() Int", functionRef{exact: resourceModule}), initialized: true},
+		handler: functionRef{exact: module, captureSlots: []*slot{
+			{value: newVMValue("function() Int", functionRef{exact: resourceModule}), initialized: true},
 		}},
 	})
 	slice := newSliceValue("Slice<Any>", []vmValue{target, dynamic})
@@ -51,22 +51,6 @@ func TestRuntimeValueWalkerFindsNestedMethodRevision(t *testing.T) {
 	newRuntimeValueWalker(func(found *instanceRevision) { seen[found] = true }).value(pointer)
 	if !seen[revision] || !seen[resourceRevision] {
 		t.Fatalf("nested values retained revisions = %#v", seen)
-	}
-}
-
-func TestPointerViewCensusRetainsOriginalStorage(t *testing.T) {
-	cell := &slot{value: newVMValue("String", "retained"), initialized: true}
-	root := newSlotPointerValue("String", "cell", cell)
-	view := newVMValue(root.Type, &vmPointer{Type: coerceRuntimeType("String"), original: root.Data.(*vmPointer)})
-	sizer := newRuntimeValueSizer()
-	sizer.value(view)
-	if !sizer.seenSlots[cell] || !sizer.seenPointers[root.Data.(*vmPointer)] {
-		t.Fatal("view did not retain original storage in census")
-	}
-	before := sizer.bytes
-	sizer.value(root)
-	if sizer.bytes != before {
-		t.Fatal("original storage counted twice")
 	}
 }
 

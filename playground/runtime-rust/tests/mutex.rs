@@ -4,7 +4,7 @@ use mini_go::{
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
-    value::Data,
+    snapshot::HostData,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -32,11 +32,18 @@ fn mutex_zero_state_try_lock_and_reuse() {
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-    vm.start("default", Vec::new()).unwrap();
+    let idle_objects = vm.heap_stats().live_objects;
+    vm.start("default", &[]).unwrap();
     while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
-    assert!(matches!(vm.results()[0].data(), Data::Bool(true)));
-    assert!(matches!(vm.results()[1].data(), Data::Bool(false)));
+    assert!(matches!(
+        &vm.snapshot_results(Default::default()).unwrap().roots[0].data,
+        HostData::Bool(true)
+    ));
+    assert!(matches!(
+        &vm.snapshot_results(Default::default()).unwrap().roots[1].data,
+        HostData::Bool(false)
+    ));
     vm.collect_garbage().unwrap();
-    assert_eq!(vm.heap_stats().live_objects, 0);
+    assert_eq!(vm.heap_stats().live_objects, idle_objects);
     vm.close().unwrap();
 }

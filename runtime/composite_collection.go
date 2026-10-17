@@ -3,11 +3,13 @@ package runtime
 import (
 	"errors"
 	"fmt"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
 func appendValue(module *moduleInstance, object vmValue, values []vmValue, expand bool) (vmValue, error) {
+	return appendValueWithBatch(module, object, values, expand, nil)
+}
+
+func appendValueWithBatch(module *moduleInstance, object vmValue, values []vmValue, expand bool, batch *managedAllocationBatch) (vmValue, error) {
 	if module.isSliceType(object.Type) && module.sameRuntimeType(module.sequenceElementType(object.Type), "Uint8") {
 		var bytes []byte
 		expandedBytes := false
@@ -18,9 +20,9 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 			if _, _, ok := module.arrayType(values[0].Type); ok {
 				return vmValue{}, fmt.Errorf("expanded append source must be slice, got array %s", values[0].Type)
 			}
-			if text, ok := values[0].Data.(string); ok {
+			if text, ok := values[0].payload().(string); ok {
 				bytes, expandedBytes = []byte(text), true
-			} else if slice, ok := values[0].Data.(*vmSlice); ok && slice != nil && slice.ByteBacked {
+			} else if slice, ok := values[0].payload().(*vmSlice); ok && slice != nil && slice.byteBacked() {
 				bytes, expandedBytes = slice.bytes(), true
 			} else {
 				expanded, ok := module.sliceValues(values[0])
@@ -44,7 +46,7 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 				bytes[index] = byte(n)
 			}
 		}
-		return appendByteValues(module, object, bytes)
+		return appendByteValuesWithBatch(module, object, bytes, batch)
 	}
 	if _, _, ok := module.arrayType(object.Type); ok {
 		return vmValue{}, fmt.Errorf("cannot append to array %s", object.Type)
@@ -56,7 +58,7 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 		if _, _, ok := module.arrayType(values[0].Type); ok {
 			return vmValue{}, fmt.Errorf("expanded append source must be slice, got array %s", values[0].Type)
 		}
-		if _, ok := values[0].Data.(string); ok {
+		if _, ok := values[0].payload().(string); ok {
 			return vmValue{}, fmt.Errorf("expanded string append requires a byte slice, got %s", object.Type)
 		}
 		expanded, ok := module.sliceValues(values[0])
@@ -77,8 +79,8 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 		}
 		normalizedValues[i] = module.cloneValueForStore(normalized)
 	}
-	source, valid := object.Data.(*vmSlice)
-	if !valid && object.Data != nil {
+	source, valid := object.payload().(*vmSlice)
+	if !valid && object.payload() != nil {
 		return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
 	}
 	oldLen, oldCap := 0, 0
@@ -90,7 +92,11 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 		return vmValue{}, err
 	}
 	if source == nil && newLen == 0 {
-		return newSliceHeaderValue(object.Type, nil, 0, 0, 0), nil
+		result := newSliceHeaderValue(object.Type, nil, 0, 0, 0)
+		if batch == nil {
+			return result, nil
+		}
+		return module.importDetachedValueWithBatch(result, map[uintptr]guestRef{}, batch)
 	}
 	var result vmValue
 	if source != nil && newLen <= oldCap {
@@ -105,21 +111,24 @@ func appendValue(module *moduleInstance, object vmValue, values []vmValue, expan
 		}
 		result = newSliceHeaderValue(object.Type, backing, 0, newLen, newCap)
 	}
-	destination := result.Data.(*vmSlice)
+	destination := result.payload().(*vmSlice)
 	for i, value := range normalizedValues {
 		if err := destination.setValueAt(oldLen+i, value); err != nil {
 			return vmValue{}, fmt.Errorf("append element %d: %w", i, err)
 		}
 	}
-	return result, nil
+	if batch == nil {
+		return result, nil
+	}
+	return module.importDetachedValueWithBatch(result, map[uintptr]guestRef{}, batch)
 }
 
-func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmValue, error) {
+func appendByteValuesWithBatch(module *moduleInstance, object vmValue, bytes []byte, batch *managedAllocationBatch) (vmValue, error) {
 	if !module.isSliceType(object.Type) || !module.sameRuntimeType(module.sequenceElementType(object.Type), "Uint8") {
 		return vmValue{}, fmt.Errorf("expected byte slice, got %s", object.Type)
 	}
-	source, ok := object.Data.(*vmSlice)
-	if !ok && object.Data != nil {
+	source, ok := object.payload().(*vmSlice)
+	if !ok && object.payload() != nil {
 		return vmValue{}, fmt.Errorf("invalid slice backing for %s", object.Type)
 	}
 	oldLen, oldCap := 0, 0
@@ -131,7 +140,11 @@ func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmV
 		return vmValue{}, err
 	}
 	if source == nil && newLen == 0 {
-		return newSliceHeaderValue(object.Type, nil, 0, 0, 0), nil
+		result := newSliceHeaderValue(object.Type, nil, 0, 0, 0)
+		if batch == nil {
+			return result, nil
+		}
+		return module.importDetachedValueWithBatch(result, map[uintptr]guestRef{}, batch)
 	}
 	var result vmValue
 	if source != nil && newLen <= oldCap {
@@ -139,7 +152,7 @@ func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmV
 	} else {
 		backing := make([]byte, newCap)
 		if source != nil {
-			if source.ByteBacked {
+			if source.byteBacked() {
 				copy(backing, source.bytes())
 			} else {
 				for i, value := range source.values() {
@@ -153,8 +166,11 @@ func appendByteValues(module *moduleInstance, object vmValue, bytes []byte) (vmV
 		}
 		result = newByteSliceHeaderValue(object.Type, backing, newLen, newCap)
 	}
-	result.Data.(*vmSlice).writeBytes(oldLen, bytes)
-	return result, nil
+	result.payload().(*vmSlice).writeBytes(oldLen, bytes)
+	if batch == nil {
+		return result, nil
+	}
+	return module.importDetachedValueWithBatch(result, map[uintptr]guestRef{}, batch)
 }
 
 // reserveSliceAppend validates growth and charges the added logical slots before
@@ -168,23 +184,24 @@ func (vm *vm) reserveSliceAppend(length, capacity, added int) (int, int, error) 
 	if err != nil {
 		return 0, 0, err
 	}
-	if newCap > capacity {
-		if err := vm.chargeAllocationBytes(int64(newCap-capacity) * ir.RuntimeSlotBytes); err != nil {
-			return 0, 0, err
-		}
-	}
 	return newLen, newCap, nil
 }
 
 func deleteValue(module *moduleInstance, object, key vmValue) error {
+	return deleteValueWithBatch(module, object, key, nil)
+}
+
+func deleteValueWithBatch(module *moduleInstance, object, key vmValue, batch *managedAllocationBatch) error {
 	mapKey, err := module.normalizedMapKey(object, key)
 	if err != nil {
 		return err
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmMap:
 		if data != nil {
-			data.deleteEntry(mapKey)
+			if err := data.deleteEntryWithBatch(mapKey, batch); err != nil {
+				return err
+			}
 		}
 	case nil:
 		if !module.isMapType(object.Type) {
@@ -202,7 +219,7 @@ func mapKeysValue(module *moduleInstance, object vmValue) (vmValue, error) {
 		keyType = parsedKeyType
 	}
 	var values []vmValue
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmMap:
 		entries := data.snapshot()
 		keys := sortedVMMapKeys(entries)
@@ -221,10 +238,14 @@ func mapKeysValue(module *moduleInstance, object vmValue) (vmValue, error) {
 }
 
 func clearValue(module *moduleInstance, object vmValue) error {
+	return clearValueWithBatch(module, object, nil)
+}
+
+func clearValueWithBatch(module *moduleInstance, object vmValue, batch *managedAllocationBatch) error {
 	if _, _, ok := module.arrayType(object.Type); ok {
 		return fmt.Errorf("cannot clear array %s", object.Type)
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmSlice:
 		if data == nil {
 			return nil
@@ -263,7 +284,9 @@ func clearValue(module *moduleInstance, object vmValue) error {
 		return nil
 	case *vmMap:
 		if data != nil {
-			data.clear()
+			if err := data.clearWithBatch(batch); err != nil {
+				return err
+			}
 		}
 		return nil
 	case nil:
@@ -287,7 +310,7 @@ func copyValue(module *moduleInstance, dst, src vmValue) (vmValue, error) {
 		return vmValue{}, fmt.Errorf("copy destination must be array or slice, got %s", dst.Type)
 	}
 	elemType := module.sequenceElementType(dst.Type)
-	dstSlice, ok := dst.Data.(*vmSlice)
+	dstSlice, ok := dst.payload().(*vmSlice)
 	if !ok {
 		return vmValue{}, fmt.Errorf("copy destination must be slice, got %s", dst.Type)
 	}
@@ -295,7 +318,7 @@ func copyValue(module *moduleInstance, dst, src vmValue) (vmValue, error) {
 	if dstSlice != nil {
 		dstLen = dstSlice.Len
 	}
-	switch data := src.Data.(type) {
+	switch data := src.payload().(type) {
 	case *vmSlice:
 		if !module.sameRuntimeType(module.sequenceElementType(src.Type), elemType) {
 			return vmValue{}, fmt.Errorf("copy element 0: %s is not %s", module.sequenceElementType(src.Type), elemType)
@@ -305,7 +328,7 @@ func copyValue(module *moduleInstance, dst, src vmValue) (vmValue, error) {
 			srcLen = data.Len
 		}
 		count := min(dstLen, srcLen)
-		if count > 0 && dstSlice.ByteBacked && data.ByteBacked {
+		if count > 0 && dstSlice.byteBacked() && data.byteBacked() {
 			dstSlice.copyBytesFrom(data, count)
 			return newVMValue("Int", int64(count)), nil
 		}
@@ -326,7 +349,7 @@ func copyValue(module *moduleInstance, dst, src vmValue) (vmValue, error) {
 		return newVMValue("Int", int64(count)), nil
 	case string:
 		count := min(dstLen, len(data))
-		if dstSlice != nil && dstSlice.ByteBacked && module.sameRuntimeType(elemType, "Uint8") {
+		if dstSlice != nil && dstSlice.byteBacked() && module.sameRuntimeType(elemType, "Uint8") {
 			dstSlice.writeBytes(0, []byte(data[:count]))
 			return newVMValue("Int", int64(count)), nil
 		}

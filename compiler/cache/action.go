@@ -16,7 +16,7 @@ import (
 
 const (
 	Format  = "mini-go-compile-cache"
-	Version = 29
+	Version = 30
 
 	packageActionDomain   = "mini-go/package-action/binary/v1"
 	packageManifestDomain = "minigo/package-manifest/v5\x00"
@@ -222,15 +222,7 @@ func (a PrepareAction) normalized() (PrepareAction, error) {
 	canonical.Compiler = strings.TrimSpace(canonical.Compiler)
 	canonical.Contract = strings.TrimSpace(canonical.Contract)
 	canonical.Entries = append([]EntryPoint(nil), a.Entries...)
-	sort.Slice(canonical.Entries, func(i, j int) bool {
-		if canonical.Entries[i].Name != canonical.Entries[j].Name {
-			return canonical.Entries[i].Name < canonical.Entries[j].Name
-		}
-		if canonical.Entries[i].ModulePath != canonical.Entries[j].ModulePath {
-			return canonical.Entries[i].ModulePath < canonical.Entries[j].ModulePath
-		}
-		return canonical.Entries[i].Function < canonical.Entries[j].Function
-	})
+	sortEntryPoints(canonical.Entries)
 	canonical.Artifacts = append([]PrepareArtifact(nil), a.Artifacts...)
 	sort.Slice(canonical.Artifacts, func(i, j int) bool {
 		return canonical.Artifacts[i].ModulePath < canonical.Artifacts[j].ModulePath

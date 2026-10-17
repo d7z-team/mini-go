@@ -349,7 +349,7 @@ impl SessionState {
                     .map_err(|_| Status::exhausted("RPC lease limit exceeded"))?;
                 let id = self
                     .next_lease
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
                     .map_err(|_| Status::exhausted("RPC lease IDs exhausted"))?;
                 let value = if request.operation == "open_provider" {
                     let publisher = self.options.publish_provider.as_ref().ok_or_else(|| {
@@ -460,7 +460,7 @@ impl SessionState {
                         .map_err(|_| Status::exhausted("RPC pending result byte limit exceeded"))?;
                     let id = self
                         .next_result
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
                         .map_err(|_| Status::exhausted("RPC result IDs exhausted"))?;
                     let mut results = self.results.lock().unwrap();
                     if lease.closing.is_cancelled() || self.closing.is_cancelled() {

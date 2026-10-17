@@ -11,6 +11,7 @@ type DescriptorTables struct {
 	Address       []AddressPayload       `json:"address,omitempty"`
 	Type          []TypePayload          `json:"type,omitempty"`
 	Operator      []OperatorPayload      `json:"operator,omitempty"`
+	MinMax        []MinMaxPayload        `json:"minmax,omitempty"`
 	MakeSequence  []MakeSequencePayload  `json:"makesequence,omitempty"`
 	MakeMap       []MakeMapPayload       `json:"makemap,omitempty"`
 	MakeStruct    []MakeStructPayload    `json:"makestruct,omitempty"`
@@ -87,6 +88,13 @@ func (t *DescriptorTables) Append(value Payload) (uint32, error) {
 		}
 		index := uint32(len(t.Operator))
 		t.Operator = append(t.Operator, v)
+		return index, nil
+	case MinMaxPayload:
+		if uint64(len(t.MinMax)) >= 1<<32 {
+			return 0, fmt.Errorf("descriptor table exceeds uint32")
+		}
+		index := uint32(len(t.MinMax))
+		t.MinMax = append(t.MinMax, v)
 		return index, nil
 	case MakeSequencePayload:
 		if uint64(len(t.MakeSequence)) >= 1<<32 {
@@ -531,6 +539,10 @@ func (t *DescriptorTables) Payload(op Opcode, index uint32) (Payload, error) {
 		if uint64(index) < uint64(len(t.CompareBranch)) {
 			return t.CompareBranch[index], nil
 		}
+	case Opcode(72):
+		if uint64(index) < uint64(len(t.MinMax)) {
+			return t.MinMax[index], nil
+		}
 	}
 	return nil, fmt.Errorf("invalid descriptor %d for opcode %s", index, op)
 }
@@ -576,6 +588,12 @@ func (t *DescriptorTables) Clone() DescriptorTables {
 		out.Operator = make([]OperatorPayload, len(t.Operator))
 		for i, v := range t.Operator {
 			out.Operator[i] = clonePayload(v).(OperatorPayload)
+		}
+	}
+	if t.MinMax != nil {
+		out.MinMax = make([]MinMaxPayload, len(t.MinMax))
+		for i, v := range t.MinMax {
+			out.MinMax[i] = clonePayload(v).(MinMaxPayload)
 		}
 	}
 	if t.MakeSequence != nil {
@@ -733,6 +751,9 @@ func (t *DescriptorTables) Bytes() int {
 		total += v.descriptorBytes()
 	}
 	for _, v := range t.Operator {
+		total += v.descriptorBytes()
+	}
+	for _, v := range t.MinMax {
 		total += v.descriptorBytes()
 	}
 	for _, v := range t.MakeSequence {

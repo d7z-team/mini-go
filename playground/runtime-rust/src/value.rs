@@ -6,41 +6,13 @@ use crate::{
     heap::{Handle, Trace},
     types::TypeIdentity,
 };
-
-mod map;
-pub use map::MapStorage;
 mod string;
 pub use string::ByteString;
 mod structure;
 pub use structure::StructStorage;
+mod aggregate;
+pub use aggregate::PreparedAggregate;
 mod zero;
-
-pub(crate) enum ValueRead<'a> {
-    Borrowed(&'a Value),
-    Owned(Value),
-    Shared(std::sync::Arc<Value>),
-}
-
-impl std::ops::Deref for ValueRead<'_> {
-    type Target = Value;
-    fn deref(&self) -> &Value {
-        match self {
-            Self::Borrowed(value) => value,
-            Self::Owned(value) => value,
-            Self::Shared(value) => value,
-        }
-    }
-}
-
-impl ValueRead<'_> {
-    pub(crate) fn into_owned(self) -> Value {
-        match self {
-            Self::Borrowed(value) => value.clone(),
-            Self::Owned(value) => value,
-            Self::Shared(value) => std::sync::Arc::unwrap_or_clone(value),
-        }
-    }
-}
 
 pub(crate) fn decode_rune(bytes: &[u8]) -> (u32, usize) {
     let bytes = &bytes[..bytes.len().min(4)];
@@ -54,17 +26,7 @@ pub(crate) fn decode_rune(bytes: &[u8]) -> (u32, usize) {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum PathElement {
-    Field(String),
-    Index(usize),
-    ArrayView {
-        start: usize,
-        length: usize,
-        typ: TypeIdentity,
-    },
-    TypeView(TypeIdentity),
-}
+pub(crate) use crate::snapshot::PathElement;
 
 /// Resolve a path into compact backing without expanding it into scalar slots.
 pub(crate) fn byte_projection(
@@ -108,12 +70,16 @@ pub struct Address {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PointerIdentity {
-    // Most address temporaries disappear before a census or typed view needs
+    // Most address temporaries disappear before a snapshot or typed view needs
     // an origin. Publish the stable key only when that origin is observed.
     pub key: std::sync::OnceLock<std::sync::Arc<()>>,
     pub original: Option<PointerOrigin>,
     pub path_root: Option<(Handle, usize)>,
     pub array_capacity: Option<usize>,
+    /// Prepared pointer location retained across decode.  The host-facing
+    /// path remains optional boundary data; execution uses this compact
+    /// offset/type descriptor directly.
+    pub numeric: Option<(u64, u32, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +106,7 @@ impl Address {
         identity.original = None;
         identity.path_root = path_root;
         identity.array_capacity = None;
+        identity.numeric = None;
     }
 
     pub(crate) fn pointer_origin(&self) -> PointerOrigin {
@@ -181,7 +148,18 @@ impl Address {
                     length: 0,
                     typ: TypeIdentity::Any,
                 }),
-                PathElement::Index(index) => path.push(PathElement::Index(*index)),
+                PathElement::Index(index) => {
+                    let absolute = match path.last() {
+                        Some(PathElement::ArrayView { start, .. }) => start.checked_add(*index),
+                        _ => None,
+                    };
+                    if let Some(index) = absolute {
+                        path.pop();
+                        path.push(PathElement::Index(index));
+                    } else {
+                        path.push(PathElement::Index(*index));
+                    }
+                }
                 PathElement::Field(name) => path.push(PathElement::Field(name.clone())),
                 PathElement::TypeView(_) => {}
             }
@@ -192,30 +170,40 @@ impl Address {
 
 impl PartialEq for Address {
     fn eq(&self, other: &Self) -> bool {
-        self.root == other.root
-            && (self.path == other.path || self.location_path() == other.location_path())
+        if self.root != other.root {
+            return false;
+        }
+        match (self.identity.numeric, other.identity.numeric) {
+            (Some(left), Some(right)) => left == right,
+            // A pointer loaded from a prepared record keeps its numeric view
+            // alongside the detached path used by an address operation. A
+            // path-only origin is equivalent when both still identify the
+            // same derived location; an empty path cannot prove that a
+            // numeric view targets the complete root value.
+            (Some(_), None) | (None, Some(_)) => {
+                !self.path.is_empty()
+                    && !other.path.is_empty()
+                    && (self.path == other.path || self.location_path() == other.location_path())
+            }
+            (None, None) => {
+                self.path == other.path || self.location_path() == other.location_path()
+            }
+        }
     }
 }
 impl Eq for Address {}
 impl std::hash::Hash for Address {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.root.hash(state);
-        self.path
-            .iter()
-            .filter(|segment| !matches!(segment, PathElement::TypeView(_)))
-            .count()
-            .hash(state);
-        for segment in &self.path {
-            match segment {
-                PathElement::ArrayView { start, .. } => PathElement::ArrayView {
-                    start: *start,
-                    length: 0,
-                    typ: TypeIdentity::Any,
-                }
-                .hash(state),
-                PathElement::TypeView(_) => {}
-                _ => segment.hash(state),
-            }
+        // A prepared pointer may carry both its compact numeric location and
+        // a detached path. When it is compared with a path-only address, the
+        // path is the equality key, so use the same key for hashing.
+        if self.identity.numeric.is_some() && !self.path.is_empty() {
+            self.location_path().hash(state);
+        } else if let Some(numeric) = self.identity.numeric {
+            numeric.hash(state);
+        } else {
+            self.location_path().hash(state);
         }
     }
 }
@@ -224,6 +212,13 @@ impl std::hash::Hash for Address {
 pub struct FunctionValue {
     pub(crate) index: Option<usize>,
     pub(crate) revision: Option<std::sync::Arc<crate::program::Revision>>,
+    /// Numeric revision identity persisted in managed payloads. The Arc is an
+    /// owner-side execution cache; the managed anchor below retains the code
+    /// generation without making the revision table an implicit GC root.
+    pub(crate) revision_generation: Option<u64>,
+    /// Managed edge to the revision anchor. The collector follows this edge
+    /// directly, so retired revisions do not require a graph-wide decode.
+    pub(crate) revision_anchor: Option<Handle>,
     pub(crate) module: std::sync::Arc<str>,
     pub(crate) function: std::sync::Arc<str>,
     pub(crate) captures: Vec<Address>,
@@ -254,6 +249,7 @@ pub enum Data {
     String(ByteString),
     OpaqueJSON(std::sync::Arc<[u8]>),
     Struct(StructStorage),
+    Aggregate(PreparedAggregate),
     /// Value copies share storage; writes detach through `Arc::make_mut`.
     /// Logical allocation accounting counts each guest array independently.
     Array(std::sync::Arc<Vec<Value>>),
@@ -261,7 +257,6 @@ pub enum Data {
     Bytes(Vec<u8>),
     Slice(std::sync::Arc<SliceValue>),
     Map(Handle),
-    MapEntries(Box<MapStorage>),
     ResourceRef(Handle),
     Resource(Box<crate::instance::scheduler::Resource>),
     Interface(std::sync::Arc<Value>),
@@ -297,6 +292,104 @@ impl std::fmt::Display for Value {
 }
 
 impl Value {
+    pub(crate) fn field(&self, name: &str) -> Result<Value, RuntimeError> {
+        match &self.data {
+            Data::Aggregate(value) if !value.is_array() => value.get_field(name),
+            Data::Struct(fields) => fields.get(name).cloned().ok_or_else(|| {
+                RuntimeError::new("field_not_found", "value", format!("unknown field {name}"))
+            }),
+            _ => Err(RuntimeError::new("type_error", "value", "expected struct")),
+        }
+    }
+
+    pub(crate) fn element(&self, index: usize) -> Result<Value, RuntimeError> {
+        match &self.data {
+            Data::Aggregate(value) => value.get(index),
+            Data::Array(values) => values.get(index).cloned().ok_or_else(|| {
+                RuntimeError::new(
+                    "index_out_of_range",
+                    "value",
+                    "array index exceeds its length",
+                )
+            }),
+            Data::Struct(fields) => fields.field_at(index).cloned().ok_or_else(|| {
+                RuntimeError::new(
+                    "index_out_of_range",
+                    "value",
+                    "field ordinal exceeds its layout",
+                )
+            }),
+            _ => Err(RuntimeError::new(
+                "type_error",
+                "value",
+                "expected aggregate",
+            )),
+        }
+    }
+
+    pub(crate) fn with_element(&self, index: usize, value: Value) -> Result<Value, RuntimeError> {
+        let mut result = self.clone();
+        match &mut result.data {
+            Data::Aggregate(aggregate) => *aggregate = aggregate.with_value(index, &value)?,
+            Data::Array(values) => {
+                *std::sync::Arc::make_mut(values)
+                    .get_mut(index)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            "index_out_of_range",
+                            "value",
+                            "array index exceeds its length",
+                        )
+                    })? = value
+            }
+            Data::Struct(fields) => {
+                *fields.field_at_mut(index).ok_or_else(|| {
+                    RuntimeError::new(
+                        "index_out_of_range",
+                        "value",
+                        "field ordinal exceeds its layout",
+                    )
+                })? = value
+            }
+            _ => {
+                return Err(RuntimeError::new(
+                    "type_error",
+                    "value",
+                    "expected aggregate",
+                ));
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn array_range(
+        &self,
+        start: usize,
+        length: usize,
+        typ: &TypeIdentity,
+    ) -> Result<Value, RuntimeError> {
+        let data = match &self.data {
+            Data::Aggregate(value) => Data::Aggregate(value.array_range(start, length, typ)?),
+            Data::Array(values) => Data::Array(
+                values
+                    .get(
+                        start..start.checked_add(length).ok_or_else(|| {
+                            RuntimeError::new("invalid_address", "array", "range overflows")
+                        })?,
+                    )
+                    .ok_or_else(|| {
+                        RuntimeError::new("invalid_address", "array", "range exceeds backing")
+                    })?
+                    .to_vec()
+                    .into(),
+            ),
+            _ => return Err(RuntimeError::new("type_error", "value", "expected array")),
+        };
+        Ok(Value {
+            typ: typ.clone(),
+            data,
+        })
+    }
     pub fn string(value: impl Into<Vec<u8>>) -> Self {
         Self {
             typ: TypeIdentity::Primitive(crate::contract_generated::PrimitiveString),
@@ -314,80 +407,6 @@ impl Value {
     }
     pub fn data(&self) -> &Data {
         &self.data
-    }
-    pub(crate) fn logical_bytes(&self) -> Result<u64, RuntimeError> {
-        if matches!(
-            self.data,
-            Data::Uninitialized
-                | Data::Nil
-                | Data::Bool(_)
-                | Data::Integer(_)
-                | Data::Unsigned(_)
-                | Data::Float(_)
-                | Data::Complex { .. }
-                | Data::Map(_)
-                | Data::ResourceRef(_)
-        ) {
-            return Ok(16);
-        }
-        let mut bytes = 16u64;
-        let mut pending = Vec::new();
-        let mut value = self;
-        loop {
-            if let Data::Interface(inner) | Data::DynamicFunction(inner) = &value.data {
-                bytes = bytes.checked_add(16).ok_or_else(|| {
-                    RuntimeError::new("allocation_limit", "value", "logical size overflow")
-                })?;
-                value = inner;
-                continue;
-            }
-            let extra = match &value.data {
-                Data::String(bytes) => bytes.len() as u64,
-                Data::OpaqueJSON(bytes) => bytes.len() as u64,
-                Data::Bytes(bytes) => 128 + bytes.len() as u64,
-                Data::Struct(fields) => {
-                    if let Some(bytes) = fields.cached_bytes() {
-                        bytes - 16
-                    } else {
-                        pending.extend(fields.values());
-                        128 + fields.len() as u64 * 16
-                    }
-                }
-                Data::Array(values) => {
-                    pending.extend(values.iter());
-                    128 + values.len() as u64 * 16
-                }
-                Data::MapEntries(entries) => {
-                    for (key, value) in entries.iter() {
-                        pending.push(key);
-                        pending.push(value);
-                    }
-                    128 + entries.len() as u64 * 32
-                }
-                Data::Function(function) => function.captures.len() as u64 * 16,
-                Data::Pointer(address) => {
-                    128 + address.path.len() as u64 * 16
-                        + u64::from(address.identity.original.is_some()) * 128
-                }
-                Data::Method { function, receiver } => {
-                    if let Some(receiver) = receiver {
-                        pending.push(receiver);
-                    }
-                    function.captures.len() as u64 * 16
-                }
-                Data::Resource(resource) => resource.logical_bytes(),
-                _ => 0,
-            };
-            bytes = bytes.checked_add(extra).ok_or_else(|| {
-                RuntimeError::new("allocation_limit", "value", "logical size overflow")
-            })?;
-            let Some(next) = pending.pop() else { break };
-            value = next;
-        }
-        if let Data::Struct(fields) = &self.data {
-            fields.cache_bytes(bytes);
-        }
-        Ok(bytes)
     }
     pub fn integer(&self) -> Result<i64, RuntimeError> {
         match self.data {
@@ -407,18 +426,46 @@ impl Value {
     }
 }
 
-impl Trace for Value {
-    fn stable_edges(&self) -> bool {
-        true
+impl Data {
+    pub(crate) fn aggregate_shape(&self) -> Option<(bool, usize)> {
+        match self {
+            Self::Aggregate(value) => Some((value.is_array(), value.len())),
+            Self::Array(values) => Some((true, values.len())),
+            Self::Struct(fields) => Some((false, fields.len())),
+            _ => None,
+        }
     }
+    pub(crate) fn field_name(&self, index: usize) -> Option<&str> {
+        match self {
+            Self::Aggregate(value) => value.field_name(index),
+            Self::Struct(fields) => fields.keys().nth(index).map(String::as_str),
+            _ => None,
+        }
+    }
+}
+
+impl Trace for Value {
     fn trace(&self, visit: &mut dyn FnMut(Handle)) {
         self.data.trace(visit);
+    }
+
+    fn payload_type(&self) -> Option<TypeIdentity> {
+        Some(self.typ.clone())
+    }
+
+    fn payload_initialized(&self) -> bool {
+        !matches!(self.data, Data::Uninitialized)
     }
 }
 
 impl Trace for Data {
     fn trace(&self, visit: &mut dyn FnMut(Handle)) {
         match self {
+            Data::String(bytes) => {
+                if let Some((_, handle, _)) = bytes.managed_backing() {
+                    visit(handle);
+                }
+            }
             Data::Pointer(address) => {
                 visit(address.root);
                 if let Some((root, _)) = address.identity.path_root {
@@ -438,18 +485,18 @@ impl Trace for Data {
             Data::ResourceRef(handle) => visit(*handle),
             Data::Resource(resource) => resource.trace(visit),
             Data::Interface(value) | Data::DynamicFunction(value) => value.trace(visit),
-            Data::MapEntries(entries) => {
-                for (key, value) in entries.iter() {
-                    key.trace(visit);
-                    value.trace(visit);
-                }
-            }
             Data::Function(function) => {
+                if let Some(anchor) = function.revision_anchor {
+                    visit(anchor);
+                }
                 for address in &function.captures {
                     visit(address.root);
                 }
             }
             Data::Method { function, receiver } => {
+                if let Some(anchor) = function.revision_anchor {
+                    visit(anchor);
+                }
                 for address in &function.captures {
                     visit(address.root);
                 }
@@ -467,6 +514,7 @@ impl Trace for Data {
                     value.trace(visit);
                 }
             }
+            Data::Aggregate(value) => value.trace(visit),
             _ => {}
         }
     }
@@ -478,9 +526,73 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn array_view_element_identity_matches_the_backing_element() {
+        use std::hash::{Hash, Hasher};
+        let root = crate::managed_storage::StorageRef {
+            slot: 1,
+            generation: 1,
+        };
+        let direct = Address {
+            root,
+            path: vec![PathElement::Index(3)],
+            identity: Arc::default(),
+        };
+        let view = Address {
+            root,
+            path: vec![
+                PathElement::ArrayView {
+                    start: 2,
+                    length: 2,
+                    typ: TypeIdentity::Any,
+                },
+                PathElement::TypeView(TypeIdentity::Any),
+                PathElement::Index(1),
+            ],
+            identity: Arc::default(),
+        };
+        assert_eq!(direct, view);
+        let mut direct_hash = std::collections::hash_map::DefaultHasher::new();
+        let mut view_hash = std::collections::hash_map::DefaultHasher::new();
+        direct.hash(&mut direct_hash);
+        view.hash(&mut view_hash);
+        assert_eq!(direct_hash.finish(), view_hash.finish());
+    }
+
+    #[test]
+    fn numeric_and_detached_pointer_paths_share_an_equality_key() {
+        use std::hash::{Hash, Hasher};
+        let root = crate::managed_storage::StorageRef {
+            slot: 1,
+            generation: 1,
+        };
+        let path = vec![PathElement::Index(3)];
+        let numeric = Address {
+            root,
+            path: path.clone(),
+            identity: Arc::new(PointerIdentity {
+                numeric: Some((12, 7, 0)),
+                ..PointerIdentity::default()
+            }),
+        };
+        let detached = Address {
+            root,
+            path,
+            identity: Arc::default(),
+        };
+        assert_eq!(numeric, detached);
+        let mut numeric_hash = std::collections::hash_map::DefaultHasher::new();
+        let mut detached_hash = std::collections::hash_map::DefaultHasher::new();
+        numeric.hash(&mut numeric_hash);
+        detached.hash(&mut detached_hash);
+        assert_eq!(numeric_hash.finish(), detached_hash.finish());
+    }
+
+    #[test]
     fn pointer_origins_survive_shared_address_reset() {
-        let heap = crate::heap::Heap::new(1, 128).unwrap();
-        let root = heap.allocate(Value::int(42), 128).unwrap();
+        let root = crate::managed_storage::StorageRef {
+            slot: 1,
+            generation: 1,
+        };
         let mut address = Address {
             root,
             path: Vec::new(),
@@ -499,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn array_copies_detach_on_mutation_and_preserve_logical_size() {
+    fn nested_array_copies_detach_on_mutation() {
         let nested = Value {
             typ: TypeIdentity::Any,
             data: Data::Array(vec![Value::string(b"old".to_vec())].into()),
@@ -508,9 +620,7 @@ mod tests {
             typ: TypeIdentity::Any,
             data: Data::Array(vec![nested; 2].into()),
         };
-        let bytes = original.logical_bytes().unwrap();
         let mut copied = original.clone();
-        assert_eq!(copied.logical_bytes().unwrap(), bytes);
         let (Data::Array(original_items), Data::Array(copied_items)) =
             (&original.data, &mut copied.data)
         else {
@@ -521,8 +631,7 @@ mod tests {
             unreachable!()
         };
         Arc::make_mut(nested)[0] = Value::string(b"changed".to_vec());
-        assert_eq!(original.logical_bytes().unwrap(), bytes);
-        assert_eq!(copied.logical_bytes().unwrap(), bytes + 4);
+        assert!(matches!(&nested[0].data, Data::String(text) if &text[..] == b"changed"));
         for value in original_items.iter() {
             let Data::Array(nested) = &value.data else {
                 unreachable!()

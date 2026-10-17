@@ -92,7 +92,7 @@ func Exercise(ctx context.Context, binder rpc.Binder) (Report, error) {
 	var report Report
 	client, err := service.BindLaboratoryClient(ctx, binder, rpc.BindOptions{})
 	if err != nil {
-		return report, err
+		return report, fmt.Errorf("bind Laboratory client: %w", err)
 	}
 	defer client.Close()
 	for _, data := range [][]byte{nil, {}, {0, 255}} {
@@ -100,7 +100,7 @@ func Exercise(ctx context.Context, binder rpc.Binder) (Report, error) {
 		packet.Scalars = &types.Scalars{I8: math.MinInt8, I16: math.MinInt16, I32: math.MinInt32, I64: math.MinInt64, U8: math.MaxUint8, U16: math.MaxUint16, U32: math.MaxUint32, U64: math.MaxUint64, F32: math.Float32frombits(0x80000000), F64: math.Float64frombits(1), C64: complex(float32(math.Inf(1)), float32(math.Inf(-1))), C128: complex(math.Float64frombits(1), math.Copysign(0, -1)), Flags: map[bool]string{false: "no", true: "yes"}, Numbers: map[int64]string{math.MinInt64: "low", math.MaxInt64: "high"}, Type: "keyword"}
 		got, err := client.Echo(ctx, packet)
 		if err != nil {
-			return report, err
+			return report, fmt.Errorf("Echo: %w", err)
 		}
 		if !reflect.DeepEqual(got, packet) {
 			return report, errors.New("packet round trip mismatch")
@@ -113,7 +113,7 @@ func Exercise(ctx context.Context, binder rpc.Binder) (Report, error) {
 	node := service.Node{Value: 1, Next: &service.Node{Value: 2}}
 	got, err := client.Tree(ctx, node)
 	if err != nil {
-		return report, err
+		return report, fmt.Errorf("Tree: %w", err)
 	}
 	if !reflect.DeepEqual(got, node) {
 		return report, errors.New("recursive message mismatch")
@@ -121,21 +121,21 @@ func Exercise(ctx context.Context, binder rpc.Binder) (Report, error) {
 	report.Recursive = true
 	resource, details, err := client.Open(ctx, 40)
 	if err != nil {
-		return report, err
+		return report, fmt.Errorf("Open: %w", err)
 	}
 	if details.Label != "counter" {
 		return report, errors.New("resource metadata mismatch")
 	}
 	value, err := resource.Add(ctx, 2)
 	if err != nil {
-		return report, err
+		return report, fmt.Errorf("counter Add: %w", err)
 	}
 	if value != 42 {
 		return report, fmt.Errorf("resource value %d", value)
 	}
 	report.Resource, err = client.Read(ctx, resource)
 	if err != nil {
-		return report, err
+		return report, fmt.Errorf("Read: %w", err)
 	}
 	if report.Resource != 42 {
 		return report, errors.New("resource argument mismatch")

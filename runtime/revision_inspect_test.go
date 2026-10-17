@@ -13,25 +13,34 @@ import (
 )
 
 func TestRevisionRootsByteArrayPointerRespectsBudget(t *testing.T) {
-	program := patchTestProgram(t, patchGlobalArtifact(1), "byte-pointer-budget")
-	instance, err := program.Instantiate(t.Context(), InstanceOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cleanupTestInstance(t, instance)
 	for _, length := range []int{1024, 1024 * 1024} {
+		typ := fmt.Sprintf("Ptr<Array<%d, Uint8>>", length)
+		artifact := patchGlobalArtifact(1)
+		artifact.Globals[0].Type = testType(typ)
+		artifact.Functions[0].Signature = testSignature("function() Void")
+		artifact.Functions[0].Code = testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+		program := patchTestProgram(t, artifact, "byte-pointer-budget")
+		instance, err := program.Instantiate(t.Context(), InstanceOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanupTestInstance(t, instance)
 		if err := instance.vm.enterOwnerContext(t.Context()); err != nil {
 			t.Fatal(err)
 		}
-		module := instance.vm.rootModule()
-		source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, length), length, length)
-		pointer, ok, err := module.convertSliceToArrayPointer(source, runtimeTypeFromText(fmt.Sprintf("Ptr<Array<%d, Uint8>>", length)))
-		if err != nil || !ok {
-			t.Fatalf("conversion: %v %v", ok, err)
-		}
-		cell := module.state.globals["global.total"]
-		cell.value, cell.initialized = pointer, true
-		instance.vm.leaveOwner()
+		func() {
+			defer instance.vm.leaveOwner()
+			module := instance.vm.rootModule()
+			source := newByteSliceHeaderValue("Slice<Uint8>", make([]byte, length), length, length)
+			pointer, ok, err := module.convertSliceToArrayPointer(source, runtimeTypeFromText(typ))
+			if err != nil || !ok {
+				t.Fatalf("conversion: %v %v", ok, err)
+			}
+			cell := module.state.globals["global.total"]
+			if err := cell.store(pointer); err != nil {
+				t.Fatal(err)
+			}
+		}()
 		goruntime.GC()
 		var before, after goruntime.MemStats
 		goruntime.ReadMemStats(&before)
@@ -122,7 +131,11 @@ func TestRevisionInspectionExplainsFramesClosuresAndPendingTarget(t *testing.T) 
 }
 
 func TestRevisionRootsBoundsCyclicAndSharedGlobalValues(t *testing.T) {
-	program := patchTestProgram(t, patchGlobalArtifact(1), "global-roots")
+	artifact := patchGlobalArtifact(1)
+	artifact.Globals[0].Type = testType("Any")
+	artifact.Functions[0].Signature = testSignature("function() Void")
+	artifact.Functions[0].Code = testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	program := patchTestProgram(t, artifact, "global-roots")
 	instance, err := program.Instantiate(t.Context(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -134,9 +147,8 @@ func TestRevisionRootsBoundsCyclicAndSharedGlobalValues(t *testing.T) {
 	}
 	module := vm.rootModule()
 	cell := module.state.globals["global.total"]
-	ref := functionRef{FunctionID: "fn.entry", exact: module, upvalues: map[string]*slot{"cycle": cell}}
-	cell.value = newVMValue("Any", []vmValue{newVMValue("Function", ref), newVMValue("Function", ref)})
-	cell.initialized = true
+	ref := functionRef{FunctionID: "fn.entry", exact: module, captureSlots: []*slot{cell}}
+	cell.publish(newVMValue("Any", newVMValue("Array<2, Function>", []vmValue{newVMValue("Function", ref), newVMValue("Function", ref)})))
 	vm.leaveOwner()
 	full, err := instance.RevisionRoots(t.Context(), 1, RevisionRootLimits{})
 	if err != nil || !full.Complete {
@@ -149,7 +161,7 @@ func TestRevisionRootsBoundsCyclicAndSharedGlobalValues(t *testing.T) {
 	if !found {
 		t.Fatalf("global: %+v", full)
 	}
-	for _, limits := range []RevisionRootLimits{{MaxDepth: 1}, {MaxRoots: 1}, {MaxNodes: 3}} {
+	for _, limits := range []RevisionRootLimits{{MaxTraversalDepth: 1}, {MaxRoots: 1}, {MaxNodes: 3}} {
 		out, err := instance.RevisionRoots(t.Context(), 1, limits)
 		if err != nil || out.Complete {
 			t.Fatalf("limit %+v: %+v %v", limits, out, err)
@@ -173,8 +185,7 @@ func TestRevisionRootsGlobalReferenceReleasesRetiredCodeNaturally(t *testing.T) 
 	}
 	module := instance.vm.rootModule()
 	cell := module.state.globals["global.total"]
-	cell.value = newVMValue("Function", functionRef{FunctionID: "fn.entry", exact: module})
-	cell.initialized = true
+	cell.publish(newVMValue("Function", functionRef{FunctionID: "fn.entry", exact: module}))
 	instance.vm.leaveOwner()
 	plan, err := instance.PreparePatch(t.Context(), next)
 	if err != nil {
@@ -194,7 +205,10 @@ func TestRevisionRootsGlobalReferenceReleasesRetiredCodeNaturally(t *testing.T) 
 	if err := instance.vm.enterOwnerContext(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	cell.value = newVMValue("Any", nil)
+	cell.publish(newVMValue("Any", nil))
+	if err := instance.vm.collectMajorManaged(); err != nil {
+		t.Fatal(err)
+	}
 	instance.vm.sweepRetiredRevisions()
 	instance.vm.leaveOwner()
 	summary, err = instance.RevisionRetention(t.Context())

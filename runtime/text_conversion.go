@@ -21,7 +21,7 @@ func convertStringToByteSlice(value vmValue, target any) (vmValue, error) {
 	if !value.Type.Primitive(types.PrimitiveString) {
 		return vmValue{}, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 	}
-	text, ok := value.Data.(string)
+	text, ok := value.payload().(string)
 	if !ok {
 		return vmValue{}, errors.New("invalid String value")
 	}
@@ -32,7 +32,7 @@ func convertStringToRuneSlice(value vmValue, target any) (vmValue, error) {
 	if !value.Type.Primitive(types.PrimitiveString) {
 		return vmValue{}, fmt.Errorf("cannot convert %s to %s", value.Type, target)
 	}
-	text, ok := value.Data.(string)
+	text, ok := value.payload().(string)
 	if !ok {
 		return vmValue{}, errors.New("invalid String value")
 	}
@@ -47,17 +47,12 @@ func (m *moduleInstance) convertByteSliceToString(value vmValue) (vmValue, bool,
 	if !m.isByteSliceType(value.Type) {
 		return vmValue{}, false, nil
 	}
-	slice, ok := value.Data.(*vmSlice)
+	slice, ok := value.payload().(*vmSlice)
 	if !ok {
 		return vmValue{}, true, fmt.Errorf("invalid %s value", value.Type)
 	}
-	if slice != nil && slice.ByteBacked {
+	if slice != nil && slice.byteBacked() {
 		text := string(slice.bytes())
-		if m.vm != nil {
-			if err := m.vm.chargeAllocationBytes(int64(len(text))); err != nil {
-				return vmValue{}, true, err
-			}
-		}
 		return newVMValue("String", text), true, nil
 	}
 	items, _ := sliceValues(value)
@@ -72,11 +67,6 @@ func (m *moduleInstance) convertByteSliceToString(value vmValue) (vmValue, bool,
 			return vmValue{}, true, fmt.Errorf("byte slice element %d: %w", i, err)
 		}
 		out[i] = byte(n)
-	}
-	if m.vm != nil {
-		if err := m.vm.chargeAllocationBytes(int64(len(out))); err != nil {
-			return vmValue{}, true, err
-		}
 	}
 	return newVMValue("String", string(out)), true, nil
 }
@@ -102,10 +92,5 @@ func (m *moduleInstance) convertRuneSliceToString(value vmValue) (vmValue, bool,
 		out[i] = rune(n)
 	}
 	text := string(out)
-	if m.vm != nil {
-		if err := m.vm.chargeAllocationBytes(int64(len(text))); err != nil {
-			return vmValue{}, true, err
-		}
-	}
 	return newVMValue("String", text), true, nil
 }

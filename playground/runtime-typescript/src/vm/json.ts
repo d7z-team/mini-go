@@ -105,7 +105,7 @@ export async function decodeJson(input: Uint8Array, maxBytes: number): Promise<J
   } catch {
     fail("image is not valid UTF-8", "image");
   }
-  return new StrictJsonParser(text!).parse();
+  return new StrictJsonParser(text!, Math.max(1, Math.ceil(maxBytes / 8))).parse();
 }
 
 class StrictJsonParser {
@@ -116,7 +116,10 @@ class StrictJsonParser {
   private imageSpan!: Span;
   private imageHashSpan: Span | undefined;
 
-  constructor(private readonly source: string) {}
+  constructor(
+    private readonly source: string,
+    private readonly maxNodes: number,
+  ) {}
 
   parse(): JsonDocument {
     const value = this.value(0, "$", true, Track.Image);
@@ -137,7 +140,7 @@ class StrictJsonParser {
   private value(depth: number, path: string, count: boolean, track = Track.None): JsonValue {
     this.space();
     if (depth > 128) fail("JSON nesting exceeds limit", path, "load_limit");
-    if (count && ++this.nodes > 2_000_000)
+    if (count && ++this.nodes > this.maxNodes)
       fail("JSON node count exceeds limit", path, "load_limit");
     switch (this.source[this.offset]) {
       case "{":

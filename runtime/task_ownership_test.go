@@ -82,7 +82,7 @@ func TestEntryAdmissionCountsBackgroundTasksBeforeAllocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocked := len(instance.vm.machine.blocked)
-	before := instance.vm.totalAllocatedBytes.Load()
+	before := instance.vm.heap.stats().totalAllocatedBytes
 	instance.vm.leaveOwner()
 	if outcome.state != ExecutionPending || outcome.err != nil || blocked != 2 {
 		t.Fatalf("background tasks not parked: state=%s blocked=%d err=%v", outcome.state, blocked, outcome.err)
@@ -92,12 +92,12 @@ func TestEntryAdmissionCountsBackgroundTasksBeforeAllocation(t *testing.T) {
 	if !errors.As(err, &limit) || limit.Code != "execution.task_limit" {
 		t.Fatalf("entry exceeded task limit: %v", err)
 	}
-	if instance.vm.totalAllocatedBytes.Load() != before {
+	if instance.vm.heap.stats().totalAllocatedBytes != before {
 		t.Fatal("rejected task allocated a frame")
 	}
 }
 
-func TestTaskHandoffKeepsCensusAndRevisionRoots(t *testing.T) {
+func TestTaskHandoffKeepsRevisionRoots(t *testing.T) {
 	instance, err := patchTestProgram(t, patchGlobalArtifact(1), "task-handoff-roots").Instantiate(t.Context(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -116,8 +116,11 @@ func TestTaskHandoffKeepsCensusAndRevisionRoots(t *testing.T) {
 		machine.pushRunnable(task)
 	}()
 	const bytes = 65536
-	task.frames[0].frame.slotValues[0] = newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes)
-	if retained := instance.vm.refreshLiveGuestBytes(); retained < bytes {
+	task.sliceValues = []vmValue{task.frames[0].frame.module.adoptValue(newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes))}
+	if err := instance.vm.collectMajorManaged(); err != nil {
+		t.Fatal(err)
+	}
+	if retained := instance.vm.heap.stats().lastMajorReachableBytes; retained < bytes {
 		t.Fatalf("task outside queues lost its guest roots: %d", retained)
 	}
 	roots, err := instance.RevisionRoots(t.Context(), 1, RevisionRootLimits{})
@@ -159,11 +162,12 @@ func TestReturningFrameKeepsValuesRootedUntilContinuationAcceptsThem(t *testing.
 	}()
 	const bytes = 65536
 	current := task.frames[0]
-	current.setCompletion(frameCompletion{returnValues: []vmValue{newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes)}})
+	current.setCompletion(frameCompletion{returnValues: []vmValue{current.frame.module.adoptValue(newByteSliceHeaderValue("Slice<Uint8>", make([]byte, bytes), bytes, bytes))}})
 	var retained int64
 	current.resume = func(*executionTask, *executionFrame, []vmValue) error {
-		retained = instance.vm.refreshLiveGuestBytes()
-		return nil
+		err := instance.vm.collectMajorManaged()
+		retained = int64(instance.vm.heap.stats().lastMajorReachableBytes)
+		return err
 	}
 	values, done, err := machine.advanceCompletion(task)
 	if err != nil || !done || len(values) != 1 {

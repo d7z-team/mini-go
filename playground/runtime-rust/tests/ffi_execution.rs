@@ -100,7 +100,7 @@ fn public_parallel_runtime_delivers_async_ffi_and_releases_its_scope() {
                 ..Default::default()
             })
             .unwrap();
-        let execution = instance.start("default", Vec::new()).unwrap();
+        let execution = instance.start("default", &[]).unwrap();
         let result = std::thread::scope(|scope| {
             let waiting = scope.spawn(|| execution.wait(&Cancellation::default()));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -143,7 +143,7 @@ fn pending_host_call_keeps_its_revision_until_delivery_or_cancellation() {
         let host = Host::default();
         let mut instance =
             Instance::with_bridge(original.clone(), ExecutionLimits::default(), &host).unwrap();
-        instance.start("default", vec![]).unwrap();
+        instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Pending);
         let plan = instance.prepare_patch(target.clone()).unwrap();
         instance.apply_patch(plan).unwrap();
@@ -161,15 +161,25 @@ fn pending_host_call_keeps_its_revision_until_delivery_or_cancellation() {
             .complete(Reply::new(vec![1, 2, 3], None, None));
         if !cancel {
             assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-            assert_eq!(instance.results()[0].integer().unwrap(), 3);
+            assert_eq!(
+                instance.snapshot_results(Default::default()).unwrap().roots[0]
+                    .integer()
+                    .unwrap(),
+                3
+            );
         }
         instance.collect_garbage().unwrap();
         assert_eq!(instance.retained_revisions(), [instance.revision()]);
         assert_eq!(instance.stats().pending_ffi_calls, 0);
         assert_eq!(host.canceled.load(Ordering::SeqCst), usize::from(cancel));
-        instance.start("default", vec![]).unwrap();
+        instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-        assert_eq!(instance.results()[0].integer().unwrap(), 42);
+        assert_eq!(
+            instance.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            42
+        );
         instance.close().unwrap();
     }
 }
@@ -178,7 +188,7 @@ fn pending_host_call_keeps_its_revision_until_delivery_or_cancellation() {
 fn asynchronous_reply_is_consumed_by_owner_and_close_settles_session() {
     let host = Host::default();
     let mut instance = Instance::with_bridge(program(), ExecutionLimits::default(), &host).unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Pending);
     let discarded = Arc::new(AtomicUsize::new(0));
     let cleanup = discarded.clone();
@@ -194,9 +204,20 @@ fn asynchronous_reply_is_consumed_by_owner_and_close_settles_session() {
                 cleanup.fetch_add(1, Ordering::SeqCst);
             })),
         ));
-    assert!(instance.results().is_empty());
+    assert!(
+        instance
+            .snapshot_results(Default::default())
+            .unwrap()
+            .roots
+            .is_empty()
+    );
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.results()[0].integer().unwrap(), 3);
+    assert_eq!(
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        3
+    );
     instance.close().unwrap();
     assert_eq!(discarded.load(Ordering::SeqCst), 0);
     assert_eq!(host.canceled.load(Ordering::SeqCst), 0);
@@ -209,7 +230,7 @@ fn asynchronous_reply_is_consumed_by_owner_and_close_settles_session() {
 fn closing_blocked_execution_cancels_call_and_discards_late_reply() {
     let host = Host::default();
     let mut instance = Instance::with_bridge(program(), ExecutionLimits::default(), &host).unwrap();
-    instance.start("default", Vec::new()).unwrap();
+    instance.start("default", &[]).unwrap();
     assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Pending);
     instance.close().unwrap();
     let discarded = Arc::new(AtomicUsize::new(0));
@@ -232,7 +253,7 @@ fn closing_blocked_execution_cancels_call_and_discards_late_reply() {
 }
 
 #[test]
-fn result_allocation_failure_returns_host_status_and_preserves_instance() {
+fn result_admission_transfers_or_discards_reply_exactly_once() {
     let bytes = support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"echo"}],
@@ -250,20 +271,20 @@ fn result_allocation_failure_returns_host_status_and_preserves_instance() {
     let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
     for limits in [
         ExecutionLimits {
-            max_heap_bytes: 512,
+            max_guest_bytes: 512,
             ..ExecutionLimits::default()
         },
         ExecutionLimits {
-            max_allocated_bytes: 512,
+            max_guest_bytes: 512,
             ..ExecutionLimits::default()
         },
     ] {
-        let host = Host::default();
-        let mut instance = Instance::with_bridge(program.clone(), limits, &host).unwrap();
-        let discarded = Arc::new(AtomicUsize::new(0));
-        let consumed = Arc::new(AtomicUsize::new(0));
-        for (payload, expected) in [(vec![1; 256], 2), (vec![42], 0)] {
-            instance.start("default", vec![]).unwrap();
+        for (payload, admitted) in [(vec![1; 256], false), (vec![42], true)] {
+            let host = Host::default();
+            let mut instance = Instance::with_bridge(program.clone(), limits, &host).unwrap();
+            let discarded = Arc::new(AtomicUsize::new(0));
+            let consumed = Arc::new(AtomicUsize::new(0));
+            instance.start("default", &[]).unwrap();
             assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Pending);
             let cleanup = discarded.clone();
             let receipt = consumed.clone();
@@ -279,13 +300,23 @@ fn result_allocation_failure_returns_host_status_and_preserves_instance() {
                     receipt.fetch_add(1, Ordering::SeqCst);
                 }),
             );
-            assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-            assert_eq!(instance.results()[0].integer().unwrap(), expected);
+            let outcome = instance.poll_steps(100);
+            if admitted {
+                assert_eq!(outcome.unwrap(), PollStatus::Ready);
+                assert_eq!(
+                    instance.snapshot_results(Default::default()).unwrap().roots[0]
+                        .integer()
+                        .unwrap(),
+                    0
+                );
+            } else {
+                assert_eq!(outcome.unwrap_err().code, "allocation_limit");
+            }
+            instance.close().unwrap();
+            assert_eq!(discarded.load(Ordering::SeqCst), usize::from(!admitted));
+            assert_eq!(consumed.load(Ordering::SeqCst), usize::from(admitted));
+            assert_eq!(instance.heap_stats().live_bytes, 0);
         }
-        assert_eq!(discarded.load(Ordering::SeqCst), 1);
-        assert_eq!(consumed.load(Ordering::SeqCst), 1);
-        instance.close().unwrap();
-        assert_eq!(instance.heap_stats().live_bytes, 0);
     }
 }
 
@@ -353,7 +384,7 @@ fn construction_waits_for_initialization_and_cancellation_closes_its_session() {
             completion.complete(Reply::new(vec![1, 2, 3], None, None));
             let instance = worker.join().unwrap().unwrap();
             let execution = loop {
-                match instance.start("default", vec![]) {
+                match instance.start("default", &[]) {
                     Ok(execution) => break execution,
                     Err(error) if error.code == "busy" => std::thread::yield_now(),
                     Err(error) => panic!("{error}"),

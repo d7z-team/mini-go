@@ -89,8 +89,8 @@ func (target reflectMakeFuncTarget) callbackRequest(vm *vm, args []vmValue) (*ar
 	}
 	request := &artifactCallbackRequest{
 		module: target.handlerModule, functionID: target.handler.FunctionID,
-		args:     []vmValue{newSliceValue("Slice<reflect.Value>", reflected)},
-		upvalues: target.handler.upvalues, resultCount: len(handlerFunction.ResultTypes),
+		args:         []vmValue{newSliceValue("Slice<reflect.Value>", reflected)},
+		captureSlots: target.handler.captureSlots, resultCount: len(handlerFunction.ResultTypes),
 	}
 	request.result = reflectCallResult{module: target.handlerModule, makeFunc: true, types: target.results}
 	return request, nil

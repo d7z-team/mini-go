@@ -179,7 +179,7 @@ func TestVMReturnNamedStructCopiesValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load returned field: %v", err)
 	}
-	if got.Type.String() != "String" || got.Data != "Ada" {
+	if got.Type.String() != "String" || got.materializedData() != "Ada" {
 		t.Fatalf("return value mutation leaked into VM global, got %#v", got)
 	}
 }

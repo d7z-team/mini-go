@@ -1,21 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { Kind, PrimitiveKind } from "../src/vm/contract.generated";
+import { prepareStorageLayout } from "../src/vm/aggregate-storage";
 import {
+  advanceAddress,
   TypeRegistry,
+  assign,
   boolValue,
   cell,
   cloneValue,
-  createGuestMap,
   decodeRune,
-  guestMapDelete,
-  guestMapGet,
-  guestMapSet,
+  dereference,
   guestEqual,
+  hashValue,
   importHostValue,
   nilValue,
   normalize,
   primitive,
+  snapshot,
+  storageAddress,
   stringValue,
 } from "../src/vm/value";
 import { convert } from "../src/vm/operators";
@@ -31,10 +34,198 @@ function values() {
   };
 }
 
+test("managed addresses use handle and byte offset for equality, hashing, and snapshots", () => {
+  const { registry, int } = values();
+  const empty = registry.runtime({
+    kind: Kind.Struct,
+    primitive: 0,
+    named: { module_path: "", decl_id: "Empty" },
+    node: "empty",
+  });
+  empty.dynamic = { kind: Kind.Struct, fields: [] };
+  const pair = registry.runtime({
+    kind: Kind.Struct,
+    primitive: 0,
+    named: { module_path: "", decl_id: "Pair" },
+    node: "pair",
+  });
+  pair.dynamic = {
+    kind: Kind.Struct,
+    fields: [
+      { name: "Count", type: int, tag: "", embedded: false },
+      { name: "Tail", type: empty, tag: "", embedded: false },
+    ],
+  };
+  const layout = prepareStorageLayout(pair);
+  const handle = { slot: 31, generation: 7 };
+  const root = cell({
+    type: pair,
+    kind: "struct",
+    value: new Map([
+      ["Count", { type: int, kind: "int", value: 3n }],
+      ["Tail", { type: empty, kind: "struct", value: new Map() }],
+    ]),
+  });
+  root.managedHandle = handle;
+  root.managedLocation = { handle, offset: 0, type: pair, layout };
+  let directWrite;
+  root.readLocation = (location) =>
+    location.offset === layout.fields[0].offset
+      ? { type: int, kind: "int", value: 17n }
+      : undefined;
+  root.writeLocation = (location, value) => {
+    if (location.offset !== layout.fields[0].offset) return false;
+    directWrite = value;
+    return true;
+  };
+  const base = { root, path: [] };
+  const count = advanceAddress(base, { kind: "field", name: "Count" });
+  const sameCount = {
+    root,
+    path: [],
+    location: {
+      handle,
+      offset: layout.fields[0].offset,
+      type: int,
+      layout: prepareStorageLayout(int),
+    },
+  };
+  assert.equal(dereference({ root, path: [{ kind: "field", name: "Count" }] }).value, 17n);
+  assign(
+    { root, path: [{ kind: "field", name: "Count" }] },
+    { type: int, kind: "int", value: 23n },
+  );
+  assert.equal(directWrite.value, 23n);
+  const tail = advanceAddress(base, { kind: "field", name: "Tail" });
+  assert.deepEqual(storageAddress(count), storageAddress(sameCount));
+  assert.equal(
+    guestEqual(
+      { type: int, kind: "pointer", value: count },
+      { type: int, kind: "pointer", value: sameCount },
+    ),
+    true,
+  );
+  assert.equal(
+    hashValue({ type: int, kind: "pointer", value: count }),
+    hashValue({ type: int, kind: "pointer", value: sameCount }),
+  );
+  assert.equal(storageAddress(tail).offset, layout.fields[1].offset);
+
+  const encoded = snapshot([{ type: int, kind: "pointer", value: count }]);
+  assert.deepEqual(encoded.roots[0].data, {
+    Pointer: { object: 0n, path: [{ Field: "Count" }] },
+  });
+  assert.equal(encoded.objects.length, 1);
+});
+
 test("normalization reuses static integer widths", () => {
   const { int32 } = values();
   const value = normalize({ type: int32, kind: "int", value: 0x1_0000_0001n });
   assert.equal(value.value, 1n);
+});
+
+test("nested pointer and slice writes reach their owning cells", () => {
+  const { registry, int } = values();
+  const structType = registry.runtime({
+    kind: Kind.Struct,
+    primitive: 0,
+    named: { module_path: "", decl_id: "Pair" },
+    node: "pair",
+  });
+  structType.dynamic = {
+    kind: Kind.Struct,
+    fields: [
+      { name: "value", type: int, tag: "", embedded: false },
+      { name: "next", type: int, tag: "", embedded: false },
+    ],
+  };
+  const pointerType = registry.runtime({
+    kind: Kind.Pointer,
+    primitive: 0,
+    named: { module_path: "", decl_id: "" },
+    node: "",
+  });
+  const pair = (value, next) => ({
+    type: structType,
+    kind: "struct",
+    value: new Map([
+      ["value", { type: int, kind: "int", value: BigInt(value) }],
+      ["next", { type: int, kind: "int", value: BigInt(next) }],
+    ]),
+  });
+  const target = cell(pair(1, 2));
+  const outer = cell({
+    type: structType,
+    kind: "struct",
+    value: new Map([
+      ["value", { type: int, kind: "int", value: 0n }],
+      [
+        "next",
+        {
+          type: pointerType,
+          kind: "pointer",
+          value: { root: target, path: [] },
+        },
+      ],
+    ]),
+  });
+  assign(
+    {
+      root: outer,
+      path: [
+        { kind: "field", name: "next" },
+        { kind: "field", name: "value" },
+      ],
+    },
+    { type: int, kind: "int", value: 9n },
+  );
+  assert.equal(dereference({ root: target, path: [{ kind: "field", name: "value" }] }).value, 9n);
+  assert.equal(dereference({ root: outer, path: [{ kind: "field", name: "value" }] }).value, 0n);
+
+  const arrayType = registry.runtime({
+    kind: Kind.Array,
+    primitive: 0,
+    named: { module_path: "", decl_id: "" },
+    node: "pair-array",
+  });
+  arrayType.dynamic = { kind: Kind.Array, elem: structType, length: 2 };
+  const backing = cell({
+    type: arrayType,
+    kind: "array",
+    value: [pair(3, 4), pair(5, 6)],
+  });
+  const sliceType = registry.runtime({
+    kind: Kind.Slice,
+    primitive: 0,
+    named: { module_path: "", decl_id: "" },
+    node: "pair-slice",
+  });
+  sliceType.dynamic = { kind: Kind.Slice, elem: structType };
+  const slice = cell({
+    type: sliceType,
+    kind: "slice",
+    value: { storage: { root: backing, path: [] }, start: 0, length: 2, capacity: 2 },
+  });
+  assign(
+    {
+      root: slice,
+      path: [
+        { kind: "index", index: 1 },
+        { kind: "field", name: "next" },
+      ],
+    },
+    { type: int, kind: "int", value: 11n },
+  );
+  assert.equal(
+    dereference({
+      root: backing,
+      path: [
+        { kind: "index", index: 1 },
+        { kind: "field", name: "next" },
+      ],
+    }).value,
+    11n,
+  );
 });
 
 test("decodeRune consumes one byte for invalid and truncated UTF-8", () => {
@@ -101,7 +292,7 @@ test("String to rune slice follows the unicode_rune_range cases", () => {
     const converted = convert({ type: string, kind: "string", value: item.bytes }, runeSlice);
     assert.equal(converted.kind, "slice");
     const slice = converted.value;
-    const backing = slice.storage.root.value.value;
+    const backing = slice.storage.root.read().value;
     assert.deepEqual(
       backing.map((value) => value.value),
       item.runes,
@@ -154,53 +345,13 @@ test("identical uses primitive and named fast paths", () => {
   );
 });
 
-test("guest map indexing preserves update, deletion, and iterator identity", () => {
-  const { registry, int, float, string } = values();
-  const map = createGuestMap();
+test("comparable value equality agrees with hashing", () => {
+  const { registry, int, string } = values();
   const first = { type: int, kind: "int", value: 7n };
-  const second = { type: int, kind: "int", value: 7n };
-  const firstEntry = guestMapSet(map, first, boolValue(registry, true));
-  assert.equal(guestMapGet(map, second)?.value.value, true);
-  assert.equal(map.entries.length, 1);
-  const updatedEntry = guestMapSet(map, second, boolValue(registry, false));
-  assert.equal(updatedEntry, firstEntry);
-  assert.equal(guestMapGet(map, first)?.value.value, false);
-
-  const zero = { type: float, kind: "float", value: -0 };
-  const positiveZero = { type: float, kind: "float", value: 0 };
-  guestMapSet(map, zero, boolValue(registry, false));
-  assert.equal(guestMapGet(map, positiveZero)?.value.value, false);
-
-  assert.equal(guestMapDelete(map, second), true);
-  assert.equal(guestMapGet(map, first), undefined);
-  const deletedEntry = guestMapSet(map, first, boolValue(registry, true));
-  assert.notEqual(deletedEntry, firstEntry);
-  assert.equal(map.entries.includes(firstEntry), false);
-
-  const snapshot = [...map.entries];
-  assert.equal(guestMapDelete(map, first), true);
-  assert.equal(snapshot.includes(deletedEntry), true);
-  assert.equal(map.entries.includes(deletedEntry), false);
-
-  const text = new TextEncoder().encode("shared");
-  const original = { type: string, kind: "string", value: text };
-  const cloned = cloneValue(original);
-  assert.notEqual(cloned, original);
-  assert.equal(cloned.value, text);
-  assert.equal(guestEqual(original, cloned), true);
-
-  const nan = { type: float, kind: "float", value: Number.NaN };
-  const otherNan = { type: float, kind: "float", value: Number.NaN };
-  const entriesBeforeNaN = map.entries.length;
-  guestMapSet(map, nan, boolValue(registry, true));
-  guestMapSet(map, otherNan, boolValue(registry, false));
-  assert.equal(map.entries.length, entriesBeforeNaN + 2);
-  assert.equal(
-    [...map.buckets.values()].some((bucket) => bucket.size === 2),
-    true,
-  );
-  assert.equal(guestMapGet(map, nan), undefined);
-
+  const equalKeys = (left, right) => {
+    assert.equal(guestEqual(left, right), true);
+    assert.equal(hashValue(left), hashValue(right));
+  };
   const arrayType = registry.runtime({
     kind: Kind.Array,
     primitive: 0,
@@ -213,8 +364,7 @@ test("guest map indexing preserves update, deletion, and iterator identity", () 
     kind: "array",
     value: [{ type: int, kind: "int", value: 7n }],
   };
-  guestMapSet(map, arrayKey, boolValue(registry, true));
-  assert.equal(guestMapGet(map, equalArrayKey)?.value.value, true);
+  equalKeys(arrayKey, equalArrayKey);
 
   const structType = registry.runtime({
     kind: Kind.Struct,
@@ -238,19 +388,7 @@ test("guest map indexing preserves update, deletion, and iterator identity", () 
       ["value", { type: int, kind: "int", value: 7n }],
     ]),
   };
-  guestMapSet(map, structKey, boolValue(registry, true));
-  assert.equal(guestMapGet(map, equalStructKey)?.value.value, true);
-
-  const bytesType = registry.runtime({
-    kind: Kind.Slice,
-    primitive: 0,
-    named: { module_path: "", decl_id: "" },
-    node: "bytes-key",
-  });
-  const bytes = { type: bytesType, kind: "bytes", value: new Uint8Array([1, 2]) };
-  const equalBytes = { type: bytesType, kind: "bytes", value: new Uint8Array([1, 2]) };
-  guestMapSet(map, bytes, boolValue(registry, true));
-  assert.equal(guestMapGet(map, equalBytes)?.value.value, true);
+  equalKeys(structKey, equalStructKey);
 
   const channelType = registry.runtime({
     kind: Kind.Waitable,
@@ -261,8 +399,7 @@ test("guest map indexing preserves update, deletion, and iterator identity", () 
   const channel = { capacity: 0, closed: false, queue: [], senders: [], receivers: [] };
   const channelKey = { type: channelType, kind: "channel", value: channel };
   const equalChannelKey = { type: channelType, kind: "channel", value: channel };
-  guestMapSet(map, channelKey, boolValue(registry, true));
-  assert.equal(guestMapGet(map, equalChannelKey)?.value.value, true);
+  equalKeys(channelKey, equalChannelKey);
 
   const namedType = registry.runtime({
     kind: Kind.Named,
@@ -281,8 +418,7 @@ test("guest map indexing preserves update, deletion, and iterator identity", () 
     kind: "int",
     value: 9n,
   };
-  guestMapSet(map, namedKey, boolValue(registry, true));
-  assert.equal(guestMapGet(map, equalNamedKey)?.value.value, true);
+  equalKeys(namedKey, equalNamedKey);
 
   const anyType = registry.runtime({
     kind: Kind.Any,
@@ -297,8 +433,7 @@ test("guest map indexing preserves update, deletion, and iterator identity", () 
     value: { type: equalNamedKey.type, kind: "int", value: 9n },
   };
   assert.equal(guestEqual(boxedKey, namedKey), true);
-  guestMapSet(map, boxedKey, boolValue(registry, true));
-  assert.equal(guestMapGet(map, equalBoxedKey)?.value.value, true);
+  equalKeys(boxedKey, equalBoxedKey);
 
   const nilType = registry.runtime({
     kind: Kind.Pointer,
@@ -315,8 +450,7 @@ test("guest map indexing preserves update, deletion, and iterator identity", () 
       node: "nil-key",
     }),
   );
-  guestMapSet(map, nilKey, boolValue(registry, true));
-  assert.equal(guestMapGet(map, equalNilKey)?.value.value, true);
+  equalKeys(nilKey, equalNilKey);
 
   const pointerType = registry.runtime({
     kind: Kind.Pointer,
@@ -356,9 +490,11 @@ test("guest map indexing preserves update, deletion, and iterator identity", () 
   assert.equal(guestEqual(pointerWithView, pointerWithIndex), false);
   assert.equal(guestEqual(pointerWithViewAndIndex, pointerWithIndex), true);
   assert.equal(guestEqual(pointerWithIndex, pointerWithOtherIndex), false);
-  guestMapSet(map, pointerWithView, boolValue(registry, true));
-  assert.equal(guestMapGet(map, pointerWithNoPath)?.value.value, true);
-  assert.equal(guestMapGet(map, pointerWithIndex), undefined);
+  equalKeys(pointerWithView, pointerWithNoPath);
+  equalKeys(pointerWithViewAndIndex, pointerWithIndex);
+  const text = new TextEncoder().encode("shared");
+  const original = { type: string, kind: "string", value: text };
+  equalKeys(original, cloneValue(original));
 });
 
 test("host and byte conversions own mutable byte input while guest clones share", () => {
@@ -405,10 +541,24 @@ test("host and byte conversions own mutable byte input while guest clones share"
   mutableBacking[0] = 98;
   assert.deepEqual([...converted.value], [97]);
 
-  const map = createGuestMap();
-  guestMapSet(map, cloned, boolValue(registry, true));
   assert.equal(
-    guestMapGet(map, { type: string, kind: "string", value: new Uint8Array([97]) })?.value.value,
+    guestEqual(cloned, { type: string, kind: "string", value: new Uint8Array([97]) }),
     true,
   );
+});
+
+test("host type identities preserve pointer and slice element descriptors", () => {
+  const { registry, int32 } = values();
+  const slice = importHostValue(
+    { typ: { Slice: { Primitive: PrimitiveKind.PrimitiveInt32 } }, data: "Nil" },
+    registry,
+  );
+  const pointer = importHostValue(
+    { typ: { Pointer: { Primitive: PrimitiveKind.PrimitiveInt32 } }, data: "Nil" },
+    registry,
+  );
+  assert.equal(registry.underlying(slice.type).ref.kind, Kind.Slice);
+  assert.equal(registry.element(slice.type), int32);
+  assert.equal(registry.underlying(pointer.type).ref.kind, Kind.Pointer);
+  assert.equal(registry.element(pointer.type), int32);
 });

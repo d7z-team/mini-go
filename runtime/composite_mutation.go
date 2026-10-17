@@ -4,26 +4,34 @@ import (
 	"errors"
 	"fmt"
 
-	artifact "github.com/d7z-team/mini-go/runtime/bytecode"
+	"github.com/d7z-team/mini-go/compiler/types"
 )
 
 func setIndexValue(module *moduleInstance, object, index, value vmValue) (vmValue, error) {
-	return setIndexValueMode(module, object, index, value, true)
+	return setIndexValueModeWithBatch(module, object, index, value, true, nil)
 }
 
 func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clone bool) (vmValue, error) {
+	return setIndexValueModeWithBatch(module, object, index, value, clone, nil)
+}
+
+func setIndexValueWithBatch(module *moduleInstance, object, index, value vmValue, batch *managedAllocationBatch) (vmValue, error) {
+	return setIndexValueModeWithBatch(module, object, index, value, true, batch)
+}
+
+func setIndexValueModeWithBatch(module *moduleInstance, object, index, value vmValue, clone bool, batch *managedAllocationBatch) (vmValue, error) {
 	if _, ok := object.Type.PointerElem(); ok {
 		target, err := derefPointer(object)
 		if err != nil {
 			return vmValue{}, err
 		}
-		updated, err := setIndexValueMode(module, target, index, value, clone)
+		updated, err := setIndexValueModeWithBatch(module, target, index, value, clone, batch)
 		if err != nil {
 			return vmValue{}, err
 		}
 		return object, commitPointerMutation(object, updated)
 	}
-	switch data := object.Data.(type) {
+	switch data := object.payload().(type) {
 	case *vmSlice:
 		i, err := asInt64(index)
 		if err != nil {
@@ -37,11 +45,18 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 		if err != nil {
 			return vmValue{}, fmt.Errorf("slice element: %w", err)
 		}
-		if clone {
+		if clone && data.managedHeap == nil && data.inlineRaw == nil {
 			normalized = module.cloneValueForStore(normalized)
 			normalized = module.assignPreparedValue(data.valueAt(int(i)), normalized)
 		}
-		return object, data.setValueAt(int(i), normalized)
+		if data.managedHeap == nil && data.inlineRaw == nil {
+			normalized = module.adoptChild(normalized)
+		}
+		if err := data.setValueAt(int(i), normalized); err != nil {
+			return vmValue{}, err
+		}
+		object.setPayload(data)
+		return object, nil
 	case *vmArray:
 		i, err := asInt64(index)
 		if err != nil {
@@ -55,11 +70,18 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 		if err != nil {
 			return vmValue{}, fmt.Errorf("array element: %w", err)
 		}
-		if clone {
+		if clone && data.managedHeap == nil && data.inlineRaw == nil {
 			normalized = module.cloneValueForStore(normalized)
 			normalized = module.assignPreparedValue(data.valueAt(int(i)), normalized)
 		}
-		return object, data.setValueAt(int(i), normalized)
+		if data.managedHeap == nil && data.inlineRaw == nil {
+			normalized = module.adoptChild(normalized)
+		}
+		if err := data.setValueAt(int(i), normalized); err != nil {
+			return vmValue{}, err
+		}
+		object.setPayload(data)
+		return object, nil
 	case *vmMap:
 		if data == nil {
 			return vmValue{}, newGuestPanic(errors.New("assignment to entry in nil map"))
@@ -78,37 +100,72 @@ func setIndexValueMode(module *moduleInstance, object, index, value vmValue, clo
 			}
 			valueToStore = normalizedValue
 		}
-		key, err := module.mapKey(keyValue)
-		if err != nil {
-			return vmValue{}, err
-		}
-		key = data.keyForStore(key)
-		limit := 0
-		if module.vm != nil {
-			limit = module.vm.limits.MaxCollectionElements
-		}
-		if _, exists := data.loadEntry(key); !exists && module.vm != nil {
-			count := int64(data.length()) + 1
-			if _, _, err := module.vm.checkCollectionSize(count, count); err != nil {
+		mutationBatch := batch
+		var ownedBatch *managedAllocationBatch
+		if mutationBatch == nil && data.managed != nil &&
+			managedMapValueNeedsAllocation(keyValue, valueToStore) {
+			var err error
+			ownedBatch, err = data.managed.acquireMutationBatch()
+			if err != nil {
 				return vmValue{}, err
 			}
-			if err := module.vm.chargeAllocationBytes(artifact.RuntimeMapEntryBytes); err != nil {
+			mutationBatch = ownedBatch
+		}
+		result, mutationErr := func() (vmValue, error) {
+			valueToStore = module.adoptValueWithBatch(valueToStore, mutationBatch)
+			if mutationBatch != nil && mutationBatch.failure != nil {
+				return vmValue{}, mutationBatch.failure
+			}
+			keyValue = module.adoptValueWithBatch(keyValue, mutationBatch)
+			if mutationBatch != nil && mutationBatch.failure != nil {
+				return vmValue{}, mutationBatch.failure
+			}
+			key, err := module.mapKey(keyValue)
+			if err != nil {
+				return vmValue{}, err
+			}
+			key = data.keyForStore(key)
+			if data.managed == nil {
+				keyValue = module.cloneValueForStore(keyValue)
+				valueToStore = module.cloneValueForStore(valueToStore)
+			}
+			if err := data.storeWithBatch(key, vmMapEntry{
+				Key:   keyValue,
+				Value: valueToStore,
+			}, mutationBatch); err != nil {
+				return vmValue{}, err
+			}
+			return object, nil
+		}()
+		if ownedBatch != nil {
+			if mutationErr != nil {
+				_ = rollbackMutationBatch(ownedBatch)
+				return vmValue{}, mutationErr
+			}
+			if err := ownedBatch.flush(); err != nil {
+				_ = rollbackMutationBatch(ownedBatch)
 				return vmValue{}, err
 			}
 		}
-		if err := data.storeWithinLimit(key, vmMapEntry{
-			Key:   module.cloneValueForStore(keyValue),
-			Value: module.cloneValueForStore(valueToStore),
-		}, limit); err != nil {
-			return vmValue{}, err
-		}
-		return object, nil
+		return result, mutationErr
 	default:
-		if module.isMapType(object.Type) && object.Data == nil {
+		if module.isMapType(object.Type) && object.payload() == nil {
 			return vmValue{}, newGuestPanic(errors.New("assignment to entry in nil map"))
 		}
 		return vmValue{}, fmt.Errorf("cannot set index on %s", object.Type)
 	}
+}
+
+func managedMapValueNeedsAllocation(values ...vmValue) bool {
+	for _, value := range values {
+		aggregateZero := value.Data == nil &&
+			(value.Type.ShapeKind() == types.Array || value.Type.ShapeKind() == types.Struct)
+		if value.scalarKind == 0 && !value.Type.Primitive(types.PrimitiveBool) &&
+			!value.ref.valid() && !(value.Data == nil && !aggregateZero) {
+			return true
+		}
+	}
+	return false
 }
 
 func loadFieldValue(module *moduleInstance, object vmValue, field string) (vmValue, error) {
@@ -119,20 +176,26 @@ func loadFieldValue(module *moduleInstance, object vmValue, field string) (vmVal
 		}
 		return loadFieldValue(module, value, field)
 	}
-	if !isStructValue(object.Data) {
+	payload := object.payload()
+	if !isStructValue(payload) {
 		return vmValue{}, fmt.Errorf("cannot read member %q from %s", field, object.Type)
 	}
-	value, ok := structValueField(object.Data, field)
+	storage := payload.(*vmStruct)
+	fieldInfo, schemaKnown := module.structFieldInfo(object.Type, storage, field)
+	value, ok := structValueField(payload, field)
 	if !ok {
-		if fieldInfo, ok := module.structValueFieldInfo(object, field); ok {
-			storage := object.Data.(*vmStruct)
+		if schemaKnown {
 			index, _, _ := storage.schema.field(field)
 			return storage.initializeField(index, module.zeroValue(fieldInfo.RuntimeType)), nil
 		}
 		return vmValue{}, fmt.Errorf("missing field %q in %s", field, object.Type)
 	}
-	if fieldInfo, ok := module.structValueFieldInfo(object, field); ok && !value.Type.Equal(fieldInfo.RuntimeType) {
-		return module.convertValue(value, fieldInfo.RuntimeType)
+	if schemaKnown && !value.Type.Equal(fieldInfo.RuntimeType) {
+		converted, err := module.convertValue(value, fieldInfo.RuntimeType)
+		if err != nil {
+			return vmValue{}, err
+		}
+		value = converted
 	}
 	return value, nil
 }
@@ -153,11 +216,13 @@ func storeFieldValueMode(module *moduleInstance, object vmValue, field string, v
 		}
 		return object, commitPointerMutation(object, updated)
 	}
-	if !isStructValue(object.Data) {
+	payload := object.payload()
+	if !isStructValue(payload) {
 		return vmValue{}, fmt.Errorf("cannot set member %q on %s", field, object.Type)
 	}
-	fieldInfo, schemaKnown := module.structValueFieldInfo(object, field)
-	if _, exists := structValueField(object.Data, field); !exists && !schemaKnown {
+	storage := payload.(*vmStruct)
+	fieldInfo, schemaKnown := module.structFieldInfo(object.Type, storage, field)
+	if _, exists := structValueField(payload, field); !exists && !schemaKnown {
 		return vmValue{}, fmt.Errorf("missing field %q", field)
 	}
 	stored := value
@@ -168,12 +233,16 @@ func storeFieldValueMode(module *moduleInstance, object vmValue, field string, v
 		}
 		stored = normalized
 	}
-	if clone {
+	if clone && storage.managedHeap == nil && storage.inlineRaw == nil {
 		stored = module.cloneValueForStore(stored)
-		if current, ok := structValueField(object.Data, field); ok {
+		if current, ok := structValueField(payload, field); ok {
 			stored = module.assignPreparedValue(current, stored)
 		}
 	}
-	object.Data, _ = updatedStructValue(object.Data, field, stored)
+	if storage.managedHeap == nil && storage.inlineRaw == nil {
+		stored = module.adoptChild(stored)
+	}
+	updated, _ := updatedStructValue(payload, field, stored)
+	object.setPayload(updated)
 	return object, nil
 }

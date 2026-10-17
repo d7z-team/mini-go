@@ -4,79 +4,36 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
-
-	artifact "github.com/d7z-team/mini-go/runtime/bytecode"
 )
-
-type guestCensusRequest struct{ bytes int64 }
-
-func (request *guestCensusRequest) Error() string { return "guest memory census required" }
-
-func findGuestCensusRequest(err error) (*guestCensusRequest, bool) {
-	for err != nil {
-		if request, ok := err.(*guestCensusRequest); ok {
-			return request, true
-		}
-		switch wrapped := err.(type) {
-		case interface{ Unwrap() error }:
-			err = wrapped.Unwrap()
-		case interface{ Unwrap() []error }:
-			for _, nested := range wrapped.Unwrap() {
-				if request, ok := findGuestCensusRequest(nested); ok {
-					return request, true
-				}
-			}
-			return nil, false
-		default:
-			return nil, false
-		}
-	}
-	return nil, false
-}
 
 func allocationLimitError(limit int64) ResourceLimitError {
 	return ResourceLimitError{Code: "execution.allocation_limit", Message: fmt.Sprintf("execution allocation byte limit exceeded: max %d", limit)}
 }
 
-func (vm *vm) validateRuntimeValue(value vmValue) error {
-	switch data := value.Data.(type) {
-	case string:
-		if len(data) > vm.limits.MaxStringBytes {
-			return ResourceLimitError{Code: "execution.string_limit", Message: fmt.Sprintf("execution string byte limit exceeded: max %d", vm.limits.MaxStringBytes)}
-		}
-	case *vmArray:
-		if data.Len > vm.limits.MaxCollectionElements {
-			return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements)}
-		}
-	case *vmStruct:
-		if data != nil && data.schema != nil && len(data.schema.fields) > vm.limits.MaxCollectionElements {
-			return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements)}
-		}
-	case *vmSlice:
-		if data != nil && data.Len > vm.limits.MaxCollectionElements {
-			return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements)}
-		}
-	case *vmMap:
-		if data != nil && data.length() > vm.limits.MaxCollectionElements {
-			return ResourceLimitError{Code: "execution.collection_limit", Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements)}
-		}
+func (vm *vm) recordAllocationFailure(err error) {
+	if vm == nil || err == nil {
+		return
 	}
-	return nil
+	if errors.Is(err, errManagedCollection) && vm.heap != nil {
+		// A worker can only report allocation pressure. The owner observes this
+		// bit at the next scheduler boundary and performs the major collection
+		// required to reclaim dead old/control records.
+		vm.heap.collectionRequested.Store(true)
+	}
+	vm.allocationFailureMu.Lock()
+	vm.allocationFailure = err
+	vm.allocationFailureMu.Unlock()
 }
 
-func (vm *vm) chargeAllocation() error {
-	return vm.chargeAllocationBytes(artifact.RuntimeNodeBytes)
-}
-
-func (vm *vm) chargeRuntimeObject(slots, mapEntries int) error {
-	if slots < 0 || mapEntries < 0 {
-		return ResourceLimitError{Code: "execution.allocation_limit", Message: "execution allocation size overflow"}
+func (vm *vm) takeAllocationFailure() error {
+	if vm == nil {
+		return nil
 	}
-	logicalBytes := artifact.RuntimeNodeBytes + int64(slots)*artifact.RuntimeSlotBytes + int64(mapEntries)*artifact.RuntimeMapEntryBytes
-	if logicalBytes < 0 {
-		return ResourceLimitError{Code: "execution.allocation_limit", Message: "execution allocation size overflow"}
-	}
-	return vm.chargeAllocationBytes(logicalBytes)
+	vm.allocationFailureMu.Lock()
+	err := vm.allocationFailure
+	vm.allocationFailure = nil
+	vm.allocationFailureMu.Unlock()
+	return err
 }
 
 func (vm *vm) checkCollectionSize(length, capacity int64) (int, int, error) {
@@ -87,49 +44,68 @@ func (vm *vm) checkCollectionSize(length, capacity int64) (int, int, error) {
 	if length > maxInt || capacity > maxInt {
 		return 0, 0, newGuestPanic(fmt.Errorf("collection length/capacity out of range: %d/%d", length, capacity))
 	}
-	if vm != nil && vm.limits.MaxCollectionElements > 0 && capacity > int64(vm.limits.MaxCollectionElements) {
-		return 0, 0, ResourceLimitError{
-			Code:    "execution.collection_limit",
-			Message: fmt.Sprintf("execution collection element limit exceeded: max %d", vm.limits.MaxCollectionElements),
-		}
-	}
 	return int(length), int(capacity), nil
 }
 
-func (vm *vm) chargeAllocationBytes(logicalBytes int64) error {
+func (vm *vm) chargeAllocationBytes(logicalBytes int64, batches ...*managedAllocationBatch) error {
+	reservation, err := vm.reserveControlBytes(logicalBytes, batches...)
+	if err != nil {
+		return err
+	}
+	reservation.commit()
+	return nil
+}
+
+func (vm *vm) reserveControlBytes(logicalBytes int64, batches ...*managedAllocationBatch) (managedControlReservation, error) {
 	if logicalBytes < 0 {
-		return ResourceLimitError{Code: "execution.allocation_limit", Message: "execution allocation size overflow"}
+		return managedControlReservation{}, ResourceLimitError{Code: "execution.allocation_limit", Message: "execution allocation size overflow"}
 	}
 	if vm == nil || logicalBytes == 0 {
-		return nil
+		return managedControlReservation{}, nil
 	}
-	limit := vm.limits.MaxAllocatedBytes
-	if limit == 0 {
-		limit = defaultLimits.MaxAllocatedBytes
+	if vm.heap == nil {
+		// Unit-level embedders may construct a VM directly. Initialize the
+		// same managed ledger used by normal instances before admitting any
+		// control storage; this keeps the accounting path single-sourced.
+		vm.hostMu.Lock()
+		if vm.heap == nil {
+			heap := newManagedHeap()
+			limits := normalizeLimits(vm.limits)
+			heap.maxGuestBytes = uint64(limits.MaxGuestBytes)
+			heap.maxResidentBytes = uint64(limits.MaxResidentBytes)
+			vm.heap = heap
+		}
+		vm.hostMu.Unlock()
 	}
-	refreshed := false
-	for {
-		allocated := vm.allocatedSinceSweep.Load()
-		current := vm.liveGuestBytes.Load() + allocated
-		if logicalBytes > limit-current {
-			if !refreshed && vm.owner.Load() {
-				vm.refreshLiveGuestBytes()
-				refreshed = true
-				continue
-			}
-			vm.leaseMu.Lock()
-			running := vm.activeSlices != 0
-			vm.leaseMu.Unlock()
-			if running {
-				return &guestCensusRequest{bytes: logicalBytes}
-			}
-			return allocationLimitError(limit)
+	limit := normalizeLimits(vm.limits).MaxGuestBytes
+	for attempt := 0; attempt < 2; attempt++ {
+		reservation, err := vm.heap.reserveControl(uint64(logicalBytes), batches...)
+		if err == nil {
+			return reservation, nil
 		}
-		if vm.allocatedSinceSweep.CompareAndSwap(allocated, allocated+logicalBytes) {
-			addAtomicSaturating(&vm.totalAllocatedBytes, logicalBytes)
-			updateAtomicMaximum(&vm.peakGuestBytes, current+logicalBytes)
-			return nil
+		if err != errManagedCollection || attempt != 0 || !vm.owner.Load() {
+			return managedControlReservation{}, allocationLimitError(limit)
 		}
+		if err := vm.collectMajorManaged(); err != nil {
+			if errors.Is(err, errManagedCollectorBusy) {
+				// The current owner slice still owns an allocation lease. Defer
+				// collection until the scheduler flushes that lease, then retry the
+				// exact instruction at its safepoint.
+				vm.heap.collectionRequested.Store(true)
+				return managedControlReservation{}, errManagedCollection
+			}
+			return managedControlReservation{}, err
+		}
+	}
+	return managedControlReservation{}, allocationLimitError(limit)
+}
+
+func (vm *vm) releaseAllocationBytes(logicalBytes int64) {
+	if vm == nil || logicalBytes <= 0 {
+		return
+	}
+	if vm.heap != nil {
+		vm.heap.releaseControl(uint64(logicalBytes))
 	}
 }
 
@@ -185,36 +161,23 @@ func updateAtomicMaximum(value *atomic.Int64, candidate int64) {
 	}
 }
 
-func addAtomicSaturating(value *atomic.Int64, delta int64) {
-	for current := value.Load(); ; current = value.Load() {
-		next := current + delta
-		if delta > 0 && next < current {
-			next = int64(^uint64(0) >> 1)
-		}
-		if value.CompareAndSwap(current, next) {
-			return
-		}
-	}
-}
-
 const (
 	defaultPollQuantum     = 64 * 1024
 	taskInstructionQuantum = 1024
 )
 
 var defaultLimits = Limits{
-	MaxSteps:              100_000_000,
-	MaxCallDepth:          1024,
-	MaxTasks:              4096,
-	MaxAllocatedBytes:     8 << 30,
-	MaxStringBytes:        64 << 20,
-	MaxCollectionElements: 1_000_000,
-	MaxPendingEvents:      65_536,
-	MaxBoundaryDepth:      128,
-	MaxBoundaryBytes:      64 << 20,
-	MaxRetainedRevisions:  128,
-	MaxDynamicTypes:       4096,
-	MaxDynamicTypeBytes:   16 << 20,
+	MaxSteps:             100_000_000,
+	MaxCallDepth:         1024,
+	MaxTasks:             4096,
+	MaxGuestBytes:        8 << 30,
+	MaxResidentBytes:     0,
+	MaxPendingEvents:     65_536,
+	MaxBoundaryDepth:     128,
+	MaxBoundaryBytes:     64 << 20,
+	MaxRetainedRevisions: 128,
+	MaxDynamicTypes:      4096,
+	MaxDynamicTypeBytes:  16 << 20,
 }
 
 // UnlimitedSteps disables the cumulative instruction budget for each scope.
@@ -228,9 +191,8 @@ func validateLimits(limits Limits) error {
 		{"MaxSteps", limits.MaxSteps},
 		{"MaxCallDepth", int64(limits.MaxCallDepth)},
 		{"MaxTasks", int64(limits.MaxTasks)},
-		{"MaxAllocatedBytes", limits.MaxAllocatedBytes},
-		{"MaxStringBytes", int64(limits.MaxStringBytes)},
-		{"MaxCollectionElements", int64(limits.MaxCollectionElements)},
+		{"MaxGuestBytes", limits.MaxGuestBytes},
+		{"MaxResidentBytes", limits.MaxResidentBytes},
 		{"MaxPendingEvents", int64(limits.MaxPendingEvents)},
 		{"MaxBoundaryDepth", int64(limits.MaxBoundaryDepth)},
 		{"MaxBoundaryBytes", limits.MaxBoundaryBytes},
@@ -256,14 +218,8 @@ func normalizeLimits(limits Limits) Limits {
 	if limits.MaxTasks == 0 {
 		limits.MaxTasks = defaultLimits.MaxTasks
 	}
-	if limits.MaxAllocatedBytes == 0 {
-		limits.MaxAllocatedBytes = defaultLimits.MaxAllocatedBytes
-	}
-	if limits.MaxStringBytes == 0 {
-		limits.MaxStringBytes = defaultLimits.MaxStringBytes
-	}
-	if limits.MaxCollectionElements == 0 {
-		limits.MaxCollectionElements = defaultLimits.MaxCollectionElements
+	if limits.MaxGuestBytes == 0 {
+		limits.MaxGuestBytes = defaultLimits.MaxGuestBytes
 	}
 	if limits.MaxPendingEvents == 0 {
 		limits.MaxPendingEvents = defaultLimits.MaxPendingEvents

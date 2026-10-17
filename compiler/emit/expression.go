@@ -236,6 +236,12 @@ func (l *slotLowerer) expression(expr hir.Expression) ([]ir.Operand, error) {
 			return l.logical(expr)
 		}
 		op, payload, children = ir.OpBinary, ir.OperatorPayload{Operator: expr.Operator}, []hir.Expression{*expr.Left, *expr.Right}
+	case hir.ExprMinMax:
+		if len(expr.Args) == 0 || (expr.Operator != "min" && expr.Operator != "max") {
+			return nil, errors.New("min/max expression has invalid operator or no arguments")
+		}
+		children = expr.Args
+		op, payload = ir.OpMinMax, ir.MinMaxPayload{Type: expr.Type, Operator: expr.Operator, ArgCount: len(expr.Args)}
 	case hir.ExprCallDirect, hir.ExprCallValue, hir.ExprCallInterface, hir.ExprCallFFI, hir.ExprCallIntrinsic:
 		if expr.Kind == hir.ExprCallValue || expr.Kind == hir.ExprCallInterface {
 			if expr.Operand == nil {

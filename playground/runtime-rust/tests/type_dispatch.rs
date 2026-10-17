@@ -4,7 +4,7 @@ use mini_go::{
     instance::{ExecutionLimits, Instance, PollStatus},
     loader::LoadLimits,
     program::Program,
-    value::Data,
+    snapshot::HostData,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ fn type_dispatch_resumes_candidates_and_preserves_the_matching_binding() {
         let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
         for quantum in [1, 2, 64] {
             let mut vm = Instance::new(program.clone(), ExecutionLimits::default()).unwrap();
-            vm.start("default", Vec::new()).unwrap();
+            vm.start("default", &[]).unwrap();
             let mut status = PollStatus::Running;
             for _ in 0..32 {
                 let before = vm.steps();
@@ -53,7 +53,10 @@ fn type_dispatch_resumes_candidates_and_preserves_the_matching_binding() {
                 }
             }
             assert_eq!(status, PollStatus::Ready);
-            assert!(matches!(vm.results()[0].data(), Data::Integer(42)));
+            assert!(matches!(
+                &vm.snapshot_results(Default::default()).unwrap().roots[0].data,
+                HostData::Integer(42)
+            ));
             vm.close().unwrap();
         }
     }

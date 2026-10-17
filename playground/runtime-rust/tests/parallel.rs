@@ -374,17 +374,15 @@ fn public_parallel_runtime_preserves_shared_cells_channels_mutexes_and_gc_roots(
                 parallelism: workers,
                 executor: Some(executor.clone()),
                 limits: ExecutionLimits {
-                    max_objects: 32,
-                    max_heap_bytes: 16 * 1024,
-                    max_allocated_bytes: 2 << 20,
+                    max_guest_bytes: 2 << 20,
                     ..Default::default()
                 },
                 ..Default::default()
             })
             .unwrap();
-        let execution = instance.start("default", Vec::new()).unwrap();
+        let execution = instance.start("default", &[]).unwrap();
         let result = execution.wait(&Cancellation::default()).unwrap();
-        assert!(matches!(result.roots[0].data, HostData::Integer(4)));
+        assert!(matches!(&result.roots[0].data, HostData::Integer(4)));
         instance.collect_garbage().unwrap();
         instance.shutdown(&Cancellation::default()).unwrap();
         executor.shutdown(&Cancellation::default()).unwrap();
@@ -403,9 +401,9 @@ fn calls_returns_defers_and_recovery_cross_parallel_task_quanta() {
                 ..Default::default()
             })
             .unwrap();
-        let execution = instance.start("default", Vec::new()).unwrap();
+        let execution = instance.start("default", &[]).unwrap();
         let result = execution.wait(&Cancellation::default()).unwrap();
-        assert!(matches!(result.roots[0].data, HostData::Integer(168)));
+        assert!(matches!(&result.roots[0].data, HostData::Integer(168)));
         execution.wait_scope(&Cancellation::default()).unwrap();
         instance.shutdown(&Cancellation::default()).unwrap();
         executor.shutdown(&Cancellation::default()).unwrap();
@@ -436,9 +434,11 @@ fn shared_go_fixtures_run_through_the_public_parallel_runtime() {
                     ..Default::default()
                 })
                 .unwrap();
-            let execution = instance.start("default", Vec::new()).unwrap();
+            let execution = instance.start("default", &[]).unwrap();
             let result = execution.wait(&Cancellation::default()).unwrap();
-            assert!(matches!(result.roots[0].data, HostData::Integer(value) if value == expected));
+            assert!(
+                matches!(&result.roots[0].data, HostData::Integer(value) if *value == expected)
+            );
             execution.wait_scope(&Cancellation::default()).unwrap();
             instance.shutdown(&Cancellation::default()).unwrap();
             executor.shutdown(&Cancellation::default()).unwrap();

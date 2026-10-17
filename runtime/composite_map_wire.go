@@ -52,7 +52,7 @@ func (m *moduleInstance) mapKey(value vmValue) (vmMapKey, error) {
 		return vmMapKey{Kind: vmMapKeyUint, TypeIdentity: typeIdentity, Uint64: data}, nil
 	}
 	if m.isReferenceComparableType(value.Type) {
-		identity, err := referenceComparableMapKeyIdentity(value.Data)
+		identity, err := referenceComparableMapKeyIdentity(value.payload())
 		if err != nil {
 			return vmMapKey{}, err
 		}
@@ -94,7 +94,7 @@ func (m *moduleInstance) mapKeyWire(value vmValue, seen map[string]struct{}) (ma
 	}
 	wire := mapKeyWire{Type: m.runtimeTypeIdentity(value.Type)}
 	if m.isReferenceComparableType(value.Type) {
-		identity, err := referenceComparableMapKeyIdentity(value.Data)
+		identity, err := referenceComparableMapKeyIdentity(value.payload())
 		if err != nil {
 			return mapKeyWire{}, err
 		}
@@ -136,7 +136,7 @@ func (m *moduleInstance) mapKeyWire(value vmValue, seen map[string]struct{}) (ma
 		return wire, nil
 	}
 	if _, _, ok := m.arrayType(value.Type); ok {
-		array, ok := value.Data.(*vmArray)
+		array, ok := value.payload().(*vmArray)
 		if !ok {
 			return mapKeyWire{}, fmt.Errorf("invalid array map key %s", value.Type)
 		}
@@ -159,7 +159,7 @@ func (m *moduleInstance) mapKeyWire(value vmValue, seen map[string]struct{}) (ma
 		}
 		seen[identity] = struct{}{}
 		defer delete(seen, identity)
-		if _, ok := value.Data.(*vmStruct); !ok {
+		if _, ok := value.payload().(*vmStruct); !ok {
 			return mapKeyWire{}, fmt.Errorf("invalid struct map key %s", value.Type)
 		}
 		wire.Struct = make([]mapKeyWireField, 0, len(fields))

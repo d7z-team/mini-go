@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = Cancellation::default();
     let outcome = (|| -> Result<(), Box<dyn std::error::Error>> {
         for input in arguments {
-            let execution = instance.start_host("default", &[HostValue::int(input.parse()?)])?;
+            let execution = instance.start("default", &[HostValue::int(input.parse()?)])?;
             let result = execution.wait(&cancellation)?;
             println!("{:?}", result.roots);
         }

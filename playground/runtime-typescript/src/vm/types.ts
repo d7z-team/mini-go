@@ -60,13 +60,10 @@ export interface ExecutionLimits {
   maxRetainedRevisions?: number;
   maxDynamicTypes?: number;
   maxDynamicTypeBytes?: number | bigint;
-  maxObjects?: number;
-  maxHeapBytes?: number | bigint;
-  /** Live guest bytes plus allocations observed since the previous census. */
-  maxAllocatedBytes?: number | bigint;
-  maxStringBytes?: number;
-  maxValueDepth?: number;
-  maxSequenceElements?: number;
+  /** Maximum admitted logical guest storage, including pending reservations. */
+  maxGuestBytes?: number | bigint;
+  /** Maximum resident payload, directory, card, and scratch capacity. */
+  maxResidentBytes?: number | bigint;
   maxTasks?: number;
   maxPendingCalls?: number;
   maxFfiBytes?: number;
@@ -120,21 +117,21 @@ export interface Frame {
 export interface Stats {
   state: string;
   steps: bigint;
-  liveHeapBytes: bigint;
-  liveHeapObjects: bigint;
-  peakHeapBytes: bigint;
-  totalHeapAllocatedBytes: bigint;
-  gcCollections: bigint;
-  gcScannedObjects: bigint;
-  gcTracedObjects: bigint;
-  gcScannedEdges: bigint;
-  gcReclaimedBytes: bigint;
+  occupiedBytes: bigint;
+  reservedBytes: bigint;
+  lastMajorReachableBytes: bigint;
+  residentPageBytes: bigint;
+  totalAllocatedBytes: bigint;
+  totalAllocations: bigint;
+  minorCollections: bigint;
+  majorCollections: bigint;
+  copiedBytes: bigint;
+  promotedBytes: bigint;
+  reclaimedBytes: bigint;
+  scannedRoots: bigint;
+  scannedCards: bigint;
+  scannedReferences: bigint;
   gcNanos: bigint;
-  liveGuestBytes: bigint;
-  peakGuestBytes: bigint;
-  totalGuestAllocatedBytes: bigint;
-  guestAllocatedSinceCensusBytes: bigint;
-  guestAllocations: bigint;
   activeScopes: bigint;
   tasks: bigint;
   timers: bigint;

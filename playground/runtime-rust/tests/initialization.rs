@@ -150,16 +150,16 @@ fn tasks_share_initialization_and_resume_without_recharging_the_call() {
                 ..Default::default()
             })
             .unwrap();
-        let execution = instance.start("default", Vec::new()).unwrap();
+        let execution = instance.start("default", &[]).unwrap();
         let result = execution.wait(&Cancellation::default()).unwrap();
-        assert!(matches!(result.roots[0].data, HostData::Integer(42)));
+        assert!(matches!(&result.roots[0].data, HostData::Integer(42)));
         execution.wait_scope(&Cancellation::default()).unwrap();
         // Init: 259, root: 4, worker: 3, dependency calls: 2 * 2.
         assert_eq!(execution.scope_stats().steps, 270);
 
-        let read = instance.start("read", Vec::new()).unwrap();
+        let read = instance.start("read", &[]).unwrap();
         let result = read.wait(&Cancellation::default()).unwrap();
-        assert!(matches!(result.roots[0].data, HostData::Integer(42)));
+        assert!(matches!(&result.roots[0].data, HostData::Integer(42)));
         assert_eq!(read.scope_stats().steps, 2);
         instance.shutdown(&Cancellation::default()).unwrap();
         executor.shutdown(&Cancellation::default()).unwrap();

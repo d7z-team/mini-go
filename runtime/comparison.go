@@ -60,13 +60,13 @@ func compareString(operator preparedOperator, left, right string) bool {
 }
 
 func isStringValue(value vmValue) bool {
-	_, ok := value.Data.(string)
+	_, ok := value.payload().(string)
 	return ok
 }
 
 func asInt64(value vmValue) (int64, error) {
 	if !isIntegerValue(value) {
-		return 0, fmt.Errorf("expected integer value, got %s data=%#v", value.Type, value.Data)
+		return 0, fmt.Errorf("expected integer value, got %s data=%#v", value.Type, value.payload())
 	}
 	return numericAsInt64(value)
 }

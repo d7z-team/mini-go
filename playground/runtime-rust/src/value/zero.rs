@@ -6,7 +6,7 @@ use crate::{
     error::RuntimeError,
     types::{TypeIdentity, TypeRegistry},
 };
-use std::collections::BTreeMap;
+use std::sync::Arc;
 
 impl Value {
     pub(crate) fn zero_with_budget(
@@ -25,6 +25,16 @@ impl Value {
             ));
         }
         let underlying = types.underlying(typ)?;
+        let aggregate = matches!(&underlying, TypeIdentity::Structural { .. })
+            && types
+                .node(&underlying)?
+                .is_some_and(|(_, node)| matches!(node.kind, wire::Struct | wire::Array));
+        if !aggregate {
+            let bytes = types.storage_logical_bytes(typ)?;
+            *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
+                RuntimeError::new("allocation_limit", "zero", "value exceeds heap budget")
+            })?;
+        }
         let data = match underlying {
             TypeIdentity::Primitive(wire::PrimitiveBool) => Data::Bool(false),
             TypeIdentity::Primitive(wire::PrimitiveString) => Data::String((&[][..]).into()),
@@ -51,7 +61,7 @@ impl Value {
                 let (module, node) = types.node(typ)?.unwrap();
                 match node.kind {
                     wire::Struct => {
-                        if let Some((mut value, construction_bytes)) =
+                        if let Some((value, construction_bytes)) =
                             types.cached_zero(typ, max_depth - depth, max_elements)
                         {
                             *remaining =
@@ -62,45 +72,30 @@ impl Value {
                                         "struct layout exceeds heap budget",
                                     )
                                 })?;
-                            if let Data::Struct(fields) = &mut value.data {
-                                // Sharing zero storage must not merge two guest
-                                // objects in the live-memory census.
-                                *fields = fields.fresh_zero();
-                            }
                             return Ok(value);
                         }
                         let budget_before = *remaining;
-                        *remaining = (node.fields.len() as u64)
-                            .checked_mul(16)
-                            .and_then(|bytes| bytes.checked_add(128))
-                            .and_then(|bytes| remaining.checked_sub(bytes))
-                            .ok_or_else(|| {
-                                RuntimeError::new(
-                                    "allocation_limit",
-                                    "zero",
-                                    "struct layout exceeds heap budget",
-                                )
-                            })?;
-                        let mut fields = BTreeMap::new();
+                        let mut names = Vec::with_capacity(node.fields.len());
+                        let mut fields = Vec::with_capacity(node.fields.len());
                         for field in node.fields.iter() {
                             let typ = types.resolve(module, &field.r#type)?;
-                            fields.insert(
-                                field.name.clone(),
-                                Self::zero_with_budget(
-                                    types,
-                                    &typ,
-                                    depth + 1,
-                                    max_depth,
-                                    max_elements,
-                                    remaining,
-                                )?,
-                            );
+                            names.push(field.name.clone());
+                            fields.push(Self::zero_with_budget(
+                                types,
+                                &typ,
+                                depth + 1,
+                                max_depth,
+                                max_elements,
+                                remaining,
+                            )?);
                         }
                         let value = Value {
                             typ: typ.clone(),
-                            data: Data::Struct(super::StructStorage::zero(fields)),
+                            data: Data::Struct(super::StructStorage::with_layout(
+                                Arc::new(names),
+                                fields,
+                            )),
                         };
-                        value.logical_bytes()?;
                         types.cache_zero(
                             &value,
                             max_depth - depth,
@@ -121,17 +116,6 @@ impl Value {
                                 )
                             })?;
                         let element = types.resolve(module, &node.elem)?;
-                        *remaining = (length as u64)
-                            .checked_mul(16)
-                            .and_then(|bytes| bytes.checked_add(128))
-                            .and_then(|bytes| remaining.checked_sub(bytes))
-                            .ok_or_else(|| {
-                                RuntimeError::new(
-                                    "allocation_limit",
-                                    "zero",
-                                    "array layout exceeds heap budget",
-                                )
-                            })?;
                         if length == 0 {
                             Data::Array(Vec::new().into())
                         } else {
@@ -143,9 +127,8 @@ impl Value {
                                 max_elements,
                                 remaining,
                             )?;
-                            let copies = zero
-                                .logical_bytes()?
-                                .saturating_sub(16)
+                            let copies = types
+                                .storage_logical_bytes(&element)?
                                 .checked_mul(length as u64 - 1)
                                 .ok_or_else(|| {
                                     RuntimeError::new(
@@ -227,11 +210,22 @@ mod tests {
             )
             .unwrap();
         let mut cold_remaining = 4096;
-        Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut cold_remaining).unwrap();
+        let value = Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut cold_remaining).unwrap();
+        let Data::Struct(fields) = value.data else {
+            panic!("expected struct zero");
+        };
+        assert_eq!(
+            fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["_", "_", "Value"]
+        );
+        assert!(fields.values().all(|value| value.integer() == Ok(0)));
         let mut warm_remaining = 4096;
         Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut warm_remaining).unwrap();
         assert_eq!(cold_remaining, warm_remaining);
-        assert_eq!(4096 - cold_remaining, 128 + 3 * 16);
+        assert_eq!(
+            4096 - cold_remaining,
+            types.storage_logical_bytes(&typ).unwrap()
+        );
         let mut budget = 4096 - cold_remaining - 1;
         assert_eq!(
             Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut budget)
@@ -272,7 +266,10 @@ mod tests {
         let mut warm_remaining = 4096;
         let warm = Value::zero_with_budget(&types, &typ, 0, 16, 32, &mut warm_remaining).unwrap();
         assert_eq!(cold_remaining, warm_remaining);
-        assert_eq!(cold.logical_bytes().unwrap(), 4096 - cold_remaining + 16);
+        assert_eq!(
+            types.storage_logical_bytes(&cold.typ).unwrap(),
+            4096 - cold_remaining
+        );
         let Data::Struct(fields) = &mut cold.data else {
             unreachable!()
         };

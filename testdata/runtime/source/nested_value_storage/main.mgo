@@ -1,0 +1,105 @@
+package main
+
+type Leaf struct {
+	Value int
+}
+
+type Inner struct {
+	Values []int
+	Index map[string]int
+	Ptr *Leaf
+}
+
+type Envelope struct {
+	Body Inner
+	Boxed any
+}
+
+type Record struct {
+	Name string
+	Service string
+	Method string
+	Contract string
+	Resource string
+}
+
+func suffix(index int) string {
+	if index == 0 { return "a" }
+	if index == 1 { return "b" }
+	return "c"
+}
+
+func panicRecord() {
+	panic(Record{Name: "preserved after unwind", Method: "recover"})
+}
+
+func recoveredRecord() (result Record) {
+	defer func() {
+		if value := recover(); value != nil { result = value.(Record) }
+	}()
+	panicRecord()
+	return
+}
+
+func Main() int {
+	leaf := &Leaf{Value: 5}
+	original := Envelope{
+		Body: Inner{Values: []int{1, 2}, Index: map[string]int{"a": 3}, Ptr: leaf},
+		Boxed: Inner{Values: []int{7, 8}, Index: map[string]int{"b": 4}, Ptr: leaf},
+	}
+	copy := original
+	copy.Body.Values[0] = 20
+	copy.Body.Index["c"] = 2
+	copy.Body.Ptr.Value = 7
+	boxed := original.Boxed.(Inner)
+	boxed.Values[1] = 9
+	boxed.Ptr = &Leaf{Value: 11}
+	if original.Body.Values[0] != 20 || original.Body.Index["c"] != 2 || original.Body.Ptr.Value != 7 {
+		return -1
+	}
+	if original.Boxed.(Inner).Values[1] != 9 || original.Boxed.(Inner).Ptr.Value != 7 {
+		return -2
+	}
+	records := []Record{
+		{Name: "write", Service: "console", Method: "Write", Contract: "format"},
+		{Name: "read", Service: "console", Method: "Read", Contract: "format"},
+	}
+	for index, record := range records {
+		if record.Name != records[index].Name || record.Method != records[index].Method {
+			return -3
+		}
+		record.Name = "local copy"
+		if records[index].Name == "local copy" {
+			return -4
+		}
+	}
+	pointers := map[int]*Leaf{1: leaf}
+	saved := pointers[1]
+	delete(pointers, 1)
+	for index := 0; index < 100; index++ {
+		pointers[index] = &Leaf{Value: index}
+	}
+	clear(pointers)
+	if saved != leaf || saved.Value != 7 {
+		return -5
+	}
+	var nilSlice []int
+	var nilSliceRecord Inner
+	emptySliceRecord := Inner{Values: []int{}}
+	if nilSlice != nil || nilSliceRecord.Values != nil || emptySliceRecord.Values == nil {
+		return -6
+	}
+	joined := ""
+	for index := 0; index < 3; index++ {
+		joined += suffix(index)
+		joined += "|"
+	}
+	if joined != "a|b|c|" {
+		return -7
+	}
+	recovered := recoveredRecord()
+	if recovered.Name != "preserved after unwind" || recovered.Method != "recover" {
+		return -8
+	}
+	return original.Body.Values[0] + original.Body.Index["c"] + original.Body.Ptr.Value + original.Boxed.(Inner).Values[1] + original.Boxed.(Inner).Index["b"]
+}

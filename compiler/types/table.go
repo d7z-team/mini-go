@@ -9,13 +9,13 @@ import (
 
 func NewTable(nodes ...TypeNode) *TypeTable {
 	table := &TypeTable{Nodes: append([]TypeNode(nil), nodes...)}
-	if err := table.index(); err != nil {
+	if err := table.rebuildIndexes(); err != nil {
 		return nil
 	}
 	return table
 }
 
-func (t *TypeTable) index() error {
+func (t *TypeTable) rebuildIndexes() error {
 	if t == nil {
 		return errors.New("nil type table")
 	}
@@ -46,14 +46,33 @@ func (t *TypeTable) index() error {
 	return nil
 }
 
-func (t *TypeTable) Reindex() error { return t.index() }
+func (t *TypeTable) Reindex() error { return t.rebuildIndexes() }
+
+// Add preserves successful exactness queries because their reachable nodes are
+// already complete. Replace changes that graph and also invalidates exactness.
+func (t *TypeTable) resetDerivedCaches(clearExact bool) {
+	if t.cache == nil {
+		t.cache = &typeTableCache{
+			underlying: make(map[TypeRef]TypeRef),
+			formatted:  make(map[TypeRef]string),
+		}
+		return
+	}
+	t.cache.Lock()
+	clear(t.cache.underlying)
+	clear(t.cache.formatted)
+	if clearExact {
+		clear(t.cache.exact)
+	}
+	t.cache.Unlock()
+}
 
 func (t *TypeTable) Node(ref TypeRef) (TypeNode, bool) {
 	if t == nil || ref.Node == "" {
 		return TypeNode{}, false
 	}
 	if t.byID == nil || t.indexOwner != t {
-		if err := t.index(); err != nil {
+		if err := t.rebuildIndexes(); err != nil {
 			return TypeNode{}, false
 		}
 	}
@@ -76,7 +95,7 @@ func (t *TypeTable) Named(key TypeKey) (TypeNode, bool) {
 		return TypeNode{}, false
 	}
 	if t.byName == nil || t.indexOwner != t {
-		if err := t.index(); err != nil {
+		if err := t.rebuildIndexes(); err != nil {
 			return TypeNode{}, false
 		}
 	}
@@ -96,7 +115,7 @@ func (t *TypeTable) Add(node TypeNode) error {
 		return errors.New("type node has no id")
 	}
 	if t.byID == nil || t.indexOwner != t {
-		if err := t.index(); err != nil {
+		if err := t.rebuildIndexes(); err != nil {
 			return err
 		}
 	}
@@ -112,14 +131,7 @@ func (t *TypeTable) Add(node TypeNode) error {
 	}
 	index := len(t.Nodes)
 	t.Nodes = append(t.Nodes, node)
-	if t.cache == nil {
-		t.cache = &typeTableCache{underlying: make(map[TypeRef]TypeRef), formatted: make(map[TypeRef]string)}
-	} else {
-		t.cache.Lock()
-		clear(t.cache.underlying)
-		clear(t.cache.formatted)
-		t.cache.Unlock()
-	}
+	t.resetDerivedCaches(false)
 	t.byID[node.ID] = index
 	if !emptyTypeKey(identity) {
 		t.byName[identity] = node.ID
@@ -138,7 +150,7 @@ func (t *TypeTable) Replace(node TypeNode) error {
 		return errors.New("type node has no id")
 	}
 	if t.byID == nil || t.indexOwner != t {
-		if err := t.index(); err != nil {
+		if err := t.rebuildIndexes(); err != nil {
 			return err
 		}
 	}
@@ -151,15 +163,7 @@ func (t *TypeTable) Replace(node TypeNode) error {
 		return fmt.Errorf("type node %q identity changed", node.ID)
 	}
 	t.Nodes[index] = node
-	if t.cache == nil {
-		t.cache = &typeTableCache{underlying: make(map[TypeRef]TypeRef), formatted: make(map[TypeRef]string)}
-	} else {
-		t.cache.Lock()
-		clear(t.cache.underlying)
-		clear(t.cache.formatted)
-		clear(t.cache.exact)
-		t.cache.Unlock()
-	}
+	t.resetDerivedCaches(true)
 	return nil
 }
 

@@ -1,17 +1,56 @@
 package runtime
 
-import "errors"
+import (
+	"errors"
+
+	ir "github.com/d7z-team/mini-go/runtime/bytecode"
+)
 
 // mutexResource is owned by the synchronization control transaction. A grant
 // reserves a waiter without making it a lock holder until its continuation runs.
 type mutexResource struct {
+	vm     *vm
+	ref    guestRef
 	locked bool
 	grant  *mutexWaiter
 	head   *mutexWaiter
 	tail   *mutexWaiter
 }
 
-type mutexWaiter struct{ next *mutexWaiter }
+func (module *moduleInstance) importManagedMutex(value vmValue, resource *mutexResource, batch *managedAllocationBatch) (vmValue, error) {
+	ownedType, err := ownedStorageType(value.Type, module.resolvedRuntimeType)
+	if err != nil {
+		return vmValue{}, err
+	}
+	if !resource.ref.valid() {
+		layout, err := module.vm.heap.registerLayout(managedLayout{stride: managedWaitableIdentityBytes})
+		if err != nil {
+			return vmValue{}, err
+		}
+		defer module.vm.heap.releaseLayout(layout)
+		reservation, err := module.vm.heap.reserve(layout, 1, ir.StorageControlRecordBytes, batch)
+		if err != nil {
+			return vmValue{}, err
+		}
+		ref := reservation.commit()
+		if !ref.valid() {
+			return vmValue{}, errors.New("mutex publication failed")
+		}
+		resource.ref = ref
+		module.vm.managedWaitablesMu.Lock()
+		if module.vm.managedWaitables == nil {
+			module.vm.managedWaitables = make(map[guestRef]*waitableResource)
+		}
+		module.vm.managedWaitables[ref] = &waitableResource{Type: ownedType, mutex: resource}
+		module.vm.managedWaitablesMu.Unlock()
+	}
+	return vmValue{Type: value.Type, ref: resource.ref, heap: module.vm.heap, owner: module.vm, module: module, layouts: module.vm.valueLayouts}, nil
+}
+
+type mutexWaiter struct {
+	next          *mutexWaiter
+	admittedBytes int64
+}
 
 type mutexLockRequest struct {
 	resource *mutexResource
@@ -25,21 +64,18 @@ func mutexState(ctx intrinsicContext, address vmValue, create bool) (*mutexResou
 	if err != nil {
 		return nil, err
 	}
-	if value.Data == nil {
+	if value.payload() == nil {
 		if !create {
 			return nil, nil
 		}
-		if err := ctx.vm.chargeRuntimeObject(0, 0); err != nil {
-			return nil, err
-		}
-		resource := &mutexResource{}
-		value.Data = resource
+		resource := &mutexResource{vm: ctx.vm}
+		value.setPayload(resource)
 		if err := storePointer(address, value); err != nil {
 			return nil, err
 		}
 		return resource, nil
 	}
-	resource, ok := value.Data.(*mutexResource)
+	resource, ok := value.payload().(*mutexResource)
 	if !ok {
 		return nil, errors.New("invalid mutex resource")
 	}
@@ -51,15 +87,19 @@ func mutexLock(ctx intrinsicContext, args []vmValue) ([]vmValue, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resource.vm == nil {
+		resource.vm = ctx.vm
+	}
 	if !resource.locked && resource.grant == nil {
 		resource.locked = true
 		return nil, nil
 	}
 	// Every waiter owns one queue slot; allocation is checked before publishing it.
-	if err := ctx.vm.chargeRuntimeObject(1, 0); err != nil {
+	logicalBytes := int64(ir.StorageRecordHeaderBytes + ir.StorageDynamicBytes)
+	if err := ctx.vm.chargeAllocationBytes(logicalBytes, ctx.batch); err != nil {
 		return nil, err
 	}
-	waiter := &mutexWaiter{}
+	waiter := &mutexWaiter{admittedBytes: logicalBytes}
 	if resource.tail == nil {
 		resource.head = waiter
 	} else {
@@ -109,6 +149,7 @@ func (resource *mutexResource) grantNext() {
 func (resource *mutexResource) cancel(waiter *mutexWaiter) {
 	if resource.grant == waiter {
 		resource.grant = nil
+		waiter.release(resource.vm)
 		resource.grantNext()
 		return
 	}
@@ -124,8 +165,19 @@ func (resource *mutexResource) cancel(waiter *mutexWaiter) {
 				resource.tail = previous
 			}
 			queued.next = nil
+			queued.release(resource.vm)
 			return
 		}
 		previous = queued
 	}
+}
+
+func (waiter *mutexWaiter) release(vm *vm) {
+	if waiter == nil || waiter.admittedBytes == 0 {
+		return
+	}
+	if vm != nil {
+		vm.releaseAllocationBytes(waiter.admittedBytes)
+	}
+	waiter.admittedBytes = 0
 }

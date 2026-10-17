@@ -105,7 +105,7 @@ fn external_driver_initializes_asynchronously_and_retains_cleanup_until_complete
         PollStatus::Ready
     );
     let instance = Instance::externally_driven(machine).unwrap();
-    let execution = instance.start("default", vec![]).unwrap();
+    let execution = instance.start("default", &[]).unwrap();
     instance.drive(256).unwrap();
     assert!(execution.scope_settled());
     assert!(execution.result().is_ok());
@@ -144,7 +144,7 @@ fn external_driver_cancels_running_work() {
     let mut machine = Machine::new(program, Limits::default()).unwrap();
     machine.initialize_root(&Cancellation::default()).unwrap();
     let instance = Instance::externally_driven(machine).unwrap();
-    let execution = instance.start("default", vec![]).unwrap();
+    let execution = instance.start("default", &[]).unwrap();
     assert!(instance.drive(8).unwrap());
     execution.cancel();
     instance.drive(8).unwrap();

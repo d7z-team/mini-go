@@ -153,6 +153,7 @@ func TestLowererPreservesChannelTypeSemantics(t *testing.T) {
 			"Send":    {Kind: ast.TypeChan, Direction: "send", Elem: &intType},
 		},
 	}
+	registerTestTypeDecls(&l)
 	if !l.isChannelType("Both") || !l.isChannelType("Recv") || !l.isChannelType("Send") {
 		t.Fatal("named waitable types should be recognized")
 	}
@@ -191,6 +192,7 @@ func TestLowererPreservesArrayAndSliceTypeSemantics(t *testing.T) {
 			"Scores": {Kind: ast.TypeSlice, Elem: &ast.TypeExpr{Kind: ast.TypeName, Name: "Counter"}},
 		},
 	}
+	registerTestTypeDecls(&l)
 	if !l.isArrayType("Vector") {
 		t.Fatal("named array should be recognized")
 	}

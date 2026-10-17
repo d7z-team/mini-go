@@ -202,7 +202,7 @@ impl DebugSession {
                 if self.configured {
                     return Err(failure("configuration already completed"));
                 }
-                self.execution = Some(target.start(&self.entry, vec![])?);
+                self.execution = Some(target.start(&self.entry, &[])?);
                 self.configured = true;
                 Ok(json!({}))
             }

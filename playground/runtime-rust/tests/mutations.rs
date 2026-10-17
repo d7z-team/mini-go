@@ -52,8 +52,7 @@ fn bounded_image_mutations_and_patch_failures_preserve_the_active_revision() {
         original,
         ExecutionLimits {
             max_steps: 128,
-            max_objects: 64,
-            max_heap_bytes: 64 << 10,
+            max_guest_bytes: 64 << 10,
             ..Default::default()
         },
     )
@@ -91,10 +90,16 @@ fn bounded_image_mutations_and_patch_failures_preserve_the_active_revision() {
                 assert_eq!(instance.heap_stats(), heap);
             }
         }
-        instance.start("default", vec![]).unwrap();
+        instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Running);
         assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Ready);
-        assert_eq!(instance.results()[0].integer().unwrap(), expected);
+        assert_eq!(
+            instance.snapshot_results(Default::default()).unwrap().roots[0]
+                .integer()
+                .unwrap(),
+            expected
+        );
+        instance.collect_garbage().unwrap();
         assert_eq!(instance.retained_revisions(), [instance.revision()]);
     }
     instance.close().unwrap();

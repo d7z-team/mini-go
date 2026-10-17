@@ -87,7 +87,7 @@ func reflectValueFieldByIndex(ctx intrinsicContext, args []vmValue) ([]vmValue, 
 		if err != nil {
 			return reflectValueError(err.Error()), nil
 		}
-		setRuntimeStructField(out.Data.(*vmStruct), "embeddedReadOnly", newBoolValue(embeddedReadOnly))
+		setRuntimeStructField(out.payload().(*vmStruct), "embeddedReadOnly", newBoolValue(embeddedReadOnly))
 		return []vmValue{out, newVMValue("String", ""), newVMValue("Bool", true)}, nil
 	}
 	fieldPtr, interfaceable, embeddedReadOnly, err := reflectFieldPointerByIndex(reflectRelationModule(ctx), target, index, nil, reflectBoolField(value.get("interfaceable")) || reflectBoolField(value.get("embeddedReadOnly")))
@@ -102,7 +102,7 @@ func reflectValueFieldByIndex(ctx intrinsicContext, args []vmValue) ([]vmValue, 
 	if err != nil {
 		return reflectValueError(err.Error()), nil
 	}
-	setRuntimeStructField(out.Data.(*vmStruct), "embeddedReadOnly", newBoolValue(embeddedReadOnly))
+	setRuntimeStructField(out.payload().(*vmStruct), "embeddedReadOnly", newBoolValue(embeddedReadOnly))
 	return []vmValue{out, newVMValue("String", ""), newVMValue("Bool", true)}, nil
 }
 
@@ -133,7 +133,7 @@ func reflectValueIndex(ctx intrinsicContext, args []vmValue) ([]vmValue, error) 
 		module := reflectRelationModule(ctx)
 		if module != nil && module.isSliceType(current.Type) {
 			cell := current
-			pointer := reflectCellPointer(module, current.Type.String(), fmt.Sprintf("reflect-slice-index:%p", current.Data), cell)
+			pointer := reflectCellPointer(module, current.Type.String(), fmt.Sprintf("reflect-slice-index:%p", current.payload()), cell)
 			indexPtr, indexErr := reflectIndexPointer(module, pointer, index)
 			if indexErr != nil {
 				return reflectValueError(indexErr.Error()), nil

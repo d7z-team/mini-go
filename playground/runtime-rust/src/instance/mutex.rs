@@ -15,7 +15,6 @@ impl Instance {
                     "sync: unlock of unlocked mutex",
                 ));
             }
-            self.charge_guest_object(0, 0)?;
             let handle = self.allocate(Value {
                 typ: TypeIdentity::Any,
                 data: Data::Resource(Box::new(Resource::Mutex {
@@ -50,7 +49,6 @@ impl Instance {
                     *locked = true;
                     self.store_resource(handle, resource)?;
                 } else {
-                    self.charge_guest_object(1, 0)?;
                     waiters.push_back(self.running.id);
                     self.store_resource(handle, resource)?;
                     self.park(Blocked::Mutex(handle));
@@ -61,11 +59,7 @@ impl Instance {
                     *locked = true;
                     self.store_resource(handle, resource)?;
                 }
-                self.running
-                    .frames
-                    .last_mut()
-                    .unwrap()
-                    .push_result(Value::boolean(available));
+                self.push_result(Value::boolean(available))?;
             }
             "sync.mutex_unlock" => {
                 if !*locked {
@@ -114,7 +108,7 @@ mod tests {
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
-        vm.start("default", Vec::new()).unwrap();
+        vm.start("default", &[]).unwrap();
         let task = vm.running.id;
         let first = task + 1;
         let removed = task + 2;

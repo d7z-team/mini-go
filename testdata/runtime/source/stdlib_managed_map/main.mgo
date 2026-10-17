@@ -1,0 +1,39 @@
+package main
+
+import "math"
+
+func Main() int {
+	values := map[int]int{7: 20}
+	for i := 0; i < 64; i++ {
+		values[i] = i + 1
+	}
+	delete(values, 7)
+	values[7] = 22
+	stableCount := 0
+	stableValue := 0
+	for key, value := range values {
+		if key == 7 {
+			stableCount++
+			stableValue = value
+		}
+	}
+
+	nanValues := map[float64]int{}
+	nanValues[math.NaN()] = 1
+	nanValues[math.NaN()] = 2
+	nanCount := 0
+	nanSum := 0
+	for key, value := range nanValues {
+		if math.IsNaN(key) {
+			nanCount++
+			nanSum += value
+		}
+	}
+	if stableCount != 1 || stableValue != 22 || len(values) != 64 {
+		return -1
+	}
+	if nanCount != 2 || nanSum != 3 {
+		return -2
+	}
+	return 42
+}

@@ -46,7 +46,7 @@ func TestTaskFragmentsShareFrameStorageAcrossExecutorWorkers(t *testing.T) {
 			tasks := make([]*executionTask, taskCount)
 			for index := range tasks {
 				id := int64(index + 1)
-				frame, err := vm.newExecutionFrame(module, "fn.entry", nil, nil, id, -1, false)
+				frame, err := vm.newExecutionFrame(module, "fn.entry", nil, nil, id, -1, false, 0)
 				if err != nil {
 					t.Fatal(err)
 				}

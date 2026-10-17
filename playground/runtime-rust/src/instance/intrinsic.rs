@@ -49,11 +49,7 @@ impl Instance {
                     "result count mismatch",
                 ));
             }
-            self.running
-                .frames
-                .last_mut()
-                .unwrap()
-                .extend_results(results);
+            self.extend_results(results)?;
             return Ok(());
         }
         let mut results = Vec::new();
@@ -122,10 +118,7 @@ impl Instance {
                 });
             }
             CryptoSha256Block => {
-                let Data::Array(state) = &arguments[0].data else {
-                    return Err(RuntimeError::new("type_error", id, "expected digest state"));
-                };
-                if state.len() != 8 {
+                if arguments[0].data.aggregate_shape() != Some((true, 8)) {
                     return Err(RuntimeError::new(
                         "type_error",
                         id,
@@ -133,8 +126,8 @@ impl Instance {
                     ));
                 }
                 let mut words = [0u32; 8];
-                for (word, value) in words.iter_mut().zip(state.iter()) {
-                    let Data::Unsigned(value) = value.data else {
+                for (index, word) in words.iter_mut().enumerate() {
+                    let Data::Unsigned(value) = arguments[0].element(index)?.data else {
                         return Err(RuntimeError::new(
                             "type_error",
                             id,
@@ -154,7 +147,6 @@ impl Instance {
                 for block in values.as_chunks::<64>().0 {
                     sha2::compress256(&mut words, &[(*block).into()]);
                 }
-                self.charge_guest_object(words.len(), 0)?;
                 results.push(Value {
                     typ: arguments[0].typ.clone(),
                     data: Data::Array(
@@ -288,11 +280,7 @@ impl Instance {
                 "result count mismatch",
             ));
         }
-        self.running
-            .frames
-            .last_mut()
-            .unwrap()
-            .extend_results(results.drain(..));
+        self.extend_results(results.drain(..))?;
         self.frame_pool
             .recycle_operands(arguments, self.limits.max_frame_cache_bytes);
         self.frame_pool

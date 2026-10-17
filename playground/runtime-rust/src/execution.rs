@@ -7,8 +7,7 @@ use crate::{
     heap::HeapStats,
     instance::{ExecutionLimits, Instance, PollStatus},
     program::Program,
-    snapshot::{HostSnapshot, SnapshotLimits},
-    value::Value,
+    snapshot::{HostSnapshot, HostValue, SnapshotLimits},
 };
 use std::sync::Weak;
 use std::{
@@ -550,6 +549,26 @@ impl Owner {
         Ok(true)
     }
 
+    /// A supervisor-side VM error must terminate the affected scopes before
+    /// returning the machine. Marking the public record failed alone leaves
+    /// its task/ffi counters live, so `Owner::Drop` has no inactive scope to
+    /// release and `Execution::wait_scope` can wait forever after the error.
+    fn fail_scopes(&mut self, error: RuntimeError) {
+        let scopes = self.records.keys().copied().collect::<Vec<_>>();
+        for scope in scopes {
+            self.fail_scope(scope, error.clone());
+        }
+        self.notify = true;
+    }
+
+    fn fail_scope(&mut self, scope: u64, error: RuntimeError) {
+        let cancel_error = self.machine.as_mut().unwrap().cancel_scope(scope).err();
+        if let Some(record) = self.records.get(&scope) {
+            record.fail(cancel_error.unwrap_or(error), false);
+        }
+        self.notify = true;
+    }
+
     fn poll(
         &mut self,
         record: &Arc<Record>,
@@ -606,6 +625,7 @@ impl Owner {
                     match machine.snapshot_results(SnapshotLimits::default()) {
                         Ok(result) => outcome.result = Some(Arc::new(result)),
                         Err(error) => {
+                            let _ = machine.cancel_scope(record.scope);
                             outcome.state = ExecutionState::Failed;
                             outcome.error = Some(error.clone());
                             return Err(error);
@@ -614,6 +634,7 @@ impl Owner {
                 }
             }
             Err(error) => {
+                let _ = machine.cancel_scope(record.scope);
                 self.notify = true;
                 record.fail(error.clone(), false);
                 return Err(error);
@@ -629,6 +650,12 @@ impl Drop for Owner {
     fn drop(&mut self) {
         OWNER_DEPTH.with(|depth| depth.set(depth.get() - 1));
         let mut machine = self.machine.take().unwrap();
+        // The next owner may run on another thread.  Publish the current
+        // thread's worker-local nursery before returning the machine to the
+        // shared execution state.
+        if machine.publish_worker_storage().is_err() {
+            self.notify = true;
+        }
         if self.batch.is_some() {
             let mut state = self.control.state.lock().unwrap();
             state.records = std::mem::take(&mut self.records);
@@ -739,6 +766,12 @@ impl SharedInstance {
         executor: Executor,
         task_observer: Option<Arc<dyn Fn(u64, bool) + Send + Sync>>,
     ) -> Result<Self, RuntimeError> {
+        // Root initialization runs on the construction thread.  The
+        // supervised owner may immediately move the machine to an executor
+        // worker, so publish that thread's nursery before the first control
+        // handoff; otherwise shutdown could wait forever on a foreign TLS
+        // lease that no worker can flush.
+        machine.publish_worker_storage()?;
         let wake = machine.wake();
         let pause = machine.debug.pause.clone();
         let (close_sender, close_receiver) = std::sync::mpsc::channel();
@@ -810,8 +843,11 @@ impl SharedInstance {
                         }
                     }
                     Err(error) => {
-                        for record in owner.records.values() {
-                            record.fail(error.clone(), false);
+                        let scope = owner.machine.as_mut().unwrap().take_last_error_scope();
+                        if let Some(scope) = scope {
+                            owner.fail_scope(scope, error);
+                        } else {
+                            owner.fail_scopes(error);
                         }
                     }
                     Ok(true) => {
@@ -830,14 +866,20 @@ impl SharedInstance {
                                     Ok(PollStatus::Running) => return Next::Ready,
                                     Ok(_) => {}
                                     Err(error) => {
-                                        for record in owner.records.values() {
-                                            record.fail(error.clone(), false);
+                                        let scope = machine.take_last_error_scope();
+                                        if let Some(scope) = scope {
+                                            owner.fail_scope(scope, error);
+                                        } else {
+                                            owner.fail_scopes(error);
                                         }
                                     }
                                 },
                                 Err(error) => {
-                                    for record in owner.records.values() {
-                                        record.fail(error.clone(), false);
+                                    let scope = machine.take_last_error_scope();
+                                    if let Some(scope) = scope {
+                                        owner.fail_scope(scope, error);
+                                    } else {
+                                        owner.fail_scopes(error);
                                     }
                                 }
                             }
@@ -878,11 +920,15 @@ impl SharedInstance {
                 .poll(&record, count)
                 .map(|(state, _)| state == ExecutionState::Running);
         }
-        match owner.machine.as_mut().unwrap().poll_background(count) {
+        let result = owner.machine.as_mut().unwrap().poll_background(count);
+        match result {
             Ok(status) => Ok(status == PollStatus::Running),
             Err(error) => {
-                for record in owner.records.values() {
-                    record.fail(error.clone(), false);
+                let scope = owner.machine.as_mut().unwrap().take_last_error_scope();
+                if let Some(scope) = scope {
+                    owner.fail_scope(scope, error.clone());
+                } else {
+                    owner.fail_scopes(error.clone());
                 }
                 Err(error)
             }
@@ -907,16 +953,8 @@ impl SharedInstance {
         self.control.state.lock().unwrap().shutdown.clone()
     }
 
-    pub fn start(&self, entry: &str, arguments: Vec<Value>) -> Result<Execution, RuntimeError> {
+    pub fn start(&self, entry: &str, arguments: &[HostValue]) -> Result<Execution, RuntimeError> {
         self.start_invocation(|machine| machine.start(entry, arguments))
-    }
-
-    pub fn start_host(
-        &self,
-        entry: &str,
-        arguments: &[crate::snapshot::HostValue],
-    ) -> Result<Execution, RuntimeError> {
-        self.start_invocation(|machine| machine.start_host(entry, arguments))
     }
 
     fn start_invocation(
@@ -1588,7 +1626,7 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            let execution = instance.start("default", Vec::new()).unwrap();
+            let execution = instance.start("default", &[]).unwrap();
             drive_until_root_waits_with_four_ready_children(&instance, &execution);
             gate.arm();
             std::thread::scope(|scope| {
@@ -1669,7 +1707,7 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            let execution = instance.start("background", Vec::new()).unwrap();
+            let execution = instance.start("background", &[]).unwrap();
             execution.wait(&Cancellation::default()).unwrap();
             execution.wait_scope(&Cancellation::default()).unwrap();
             instance.shutdown(&Cancellation::default()).unwrap();
@@ -1696,7 +1734,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 let executions = instances
                     .iter()
-                    .map(|instance| instance.start("default", Vec::new()).unwrap())
+                    .map(|instance| instance.start("default", &[]).unwrap())
                     .collect::<Vec<_>>();
                 std::thread::scope(|scope| {
                     let waits = executions
@@ -1735,7 +1773,7 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            let execution = instance.start("default", Vec::new()).unwrap();
+            let execution = instance.start("default", &[]).unwrap();
             let (_, stats) =
                 run_control_while_slices_are_active(&instance, &execution, &gate, || {
                     instance.collect_garbage()
@@ -1760,7 +1798,7 @@ mod tests {
             let patch = instance
                 .prepare_patch(parallel_program_with_limit(2_001))
                 .unwrap();
-            let execution = instance.start("default", Vec::new()).unwrap();
+            let execution = instance.start("default", &[]).unwrap();
             let patch_instance = instance.clone();
             let (_, result) =
                 run_control_while_slices_are_active(&instance, &execution, &gate, move || {
@@ -1783,7 +1821,7 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            let execution = instance.start("default", Vec::new()).unwrap();
+            let execution = instance.start("default", &[]).unwrap();
             let debugger = instance.debugger();
             let (_, threads) =
                 run_control_while_slices_are_active(&instance, &execution, &gate, || {
@@ -1809,7 +1847,7 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let execution = instance.start("default", Vec::new()).unwrap();
+        let execution = instance.start("default", &[]).unwrap();
         std::thread::scope(|scope| {
             let poll = scope.spawn(|| poll_after_supervisor_handoff(&execution, 4096));
             gate.wait_until_entered();
@@ -1849,7 +1887,7 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            let execution = instance.start("default", Vec::new()).unwrap();
+            let execution = instance.start("default", &[]).unwrap();
             let mut total = 0usize;
             loop {
                 let (state, steps) = poll_after_supervisor_handoff(&execution, 17).unwrap();

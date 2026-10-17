@@ -258,8 +258,11 @@ func TestReflectDynamicChannelsAndSelect(t *testing.T) {
 		}
 	}()
 	chosen, _, ok = reflect.Select([]reflect.SelectCase{{Dir: reflect.SelectSend, Chan: sending, Send: reflect.ValueOf(9)}})
-	if chosen != 0 || ok || <-received != 9 {
-		t.Fatalf("blocking Select send returned the wrong result")
+	if chosen != 0 || ok {
+		t.Fatalf("blocking Select send returned index=%d received=%t", chosen, ok)
+	}
+	if item := <-received; item != 9 {
+		t.Fatalf("blocking Select send delivered %d, want 9", item)
 	}
 	channel.Close()
 	value, ok = channel.TryRecv()

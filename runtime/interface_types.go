@@ -82,22 +82,24 @@ func (m *moduleInstance) unwrapDynamicInterfaceValue(value vmValue, target strin
 	for i := 0; i < 64; i++ {
 		switch {
 		case value.Type.Ref.Kind == types.Any:
-			if value.Data == nil {
+			payload := value.payload()
+			if payload == nil {
 				return vmValue{}, false, nil
 			}
-			inner, ok := value.Data.(vmValue)
+			inner, ok := payload.(vmValue)
 			if !ok {
 				return vmValue{}, false, errors.New("invalid Any value")
 			}
 			value = inner
 			continue
 		case m.isInterfaceType(value.Type):
-			if value.Data == nil {
+			payload := value.payload()
+			if payload == nil {
 				return vmValue{}, false, nil
 			}
-			inner, ok := value.Data.(vmValue)
+			inner, ok := payload.(vmValue)
 			if !ok {
-				return vmValue{}, false, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, value.Data)
+				return vmValue{}, false, fmt.Errorf("invalid interface value: type=%s data=%T", value.Type, payload)
 			}
 			value = inner
 			continue
