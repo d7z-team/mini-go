@@ -292,6 +292,7 @@ func TestEndpointRequestContextDoesNotWaitForBlockedMessageWrite(t *testing.T) {
 		if err := client.Ready(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+		synctest.Wait()
 		clientConn.blocked.Store(true)
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
@@ -299,7 +300,12 @@ func TestEndpointRequestContextDoesNotWaitForBlockedMessageWrite(t *testing.T) {
 		go func() { _, bindErr := client.Bind(ctx, testBindRequest(method)); done <- bindErr }()
 		<-clientConn.entered
 		cancel()
-		err = <-done
+		synctest.Wait()
+		select {
+		case err = <-done:
+		default:
+			t.Fatal("request cancellation waited for the blocked transport write")
+		}
 		if codeOf(err) != CodeCanceled {
 			t.Fatalf("blocked write error = %v", err)
 		}

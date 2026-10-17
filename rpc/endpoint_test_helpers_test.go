@@ -22,11 +22,9 @@ func (conn *blockedWriteConn) Write(ctx context.Context, message []byte) error {
 			default:
 			}
 		}
-		select {
-		case <-conn.release:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		// Keep an active write blocked until Close, even after its context is
+		// canceled, so request cancellation is tested independently of transport cleanup.
+		<-conn.release
 	}
 	return conn.MessageConn.Write(ctx, message)
 }
