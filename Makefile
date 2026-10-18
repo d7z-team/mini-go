@@ -33,7 +33,7 @@ runtime_execution_image := testdata/runtime/execution.json.gz
 runtime_stdlib_image := testdata/runtime/stdlib.json.gz
 runtime_images := $(runtime_execution_image) $(runtime_stdlib_image)
 compiler_image := $(rust_dir)/assets/compiler.json.gz
-.PHONY: help check generate doc artifacts runtime-images runtime-execution-image runtime-stdlib-image compiler-image _check-identity _check-runtime-images _check-execution-image _check-artifacts
+.PHONY: help check generate doc artifacts runtime-images runtime-execution-image runtime-stdlib-image compiler-image _check-identity _check-runtime-images _check-execution-image _check-compiler-image _check-artifacts
 help: ## 显示常用目标与说明
 	@awk 'BEGIN { print "用法：make <目标> [变量=值]\n" } /^[a-zA-Z][a-zA-Z0-9_-]*:.*## / { split($$0, parts, ":"); sub(/^.*## /, ""); printf "  %-24s %s\n", parts[1], $$0 }' $(MAKEFILE_LIST)
 
@@ -74,8 +74,10 @@ _check-runtime-images: _check-identity
 _check-execution-image: _check-identity
 	@test -f "$(runtime_execution_image)" || { echo "Missing $(runtime_execution_image); run make runtime-execution-image" >&2; exit 1; }
 
-_check-artifacts: _check-runtime-images
+_check-compiler-image: _check-identity
 	@test -f "$(compiler_image)" || { echo "Missing $(compiler_image); run make compiler-image" >&2; exit 1; }
+
+_check-artifacts: _check-runtime-images _check-compiler-image
 
 # 常规 Go 任务由 Go testing 自动发现。
 .PHONY: build test coverage race fmt lint fuzz fuzz-list
@@ -155,7 +157,7 @@ build-typescript: _typescript-compiler-assets ## 构建 TypeScript runtime、Wor
 lint-typescript: build-typescript ## SDK strict 类型、生成绑定与格式检查
 	@$(npm) run lint
 
-test-typescript: _check-execution-image lint-typescript _rpc-go-peer ## Node、浏览器、RPC、Go compiler、debug 与安装包测试
+test-typescript: _check-execution-image _check-compiler-image lint-typescript _rpc-go-peer ## Node、浏览器、RPC、Go compiler、debug 与安装包测试
 	@MINIGO_RPC_GO_PEER="$(CURDIR)/bin/mini-go-rpc-peer-go" $(npm) test
 
 bench-typescript: _check-execution-image build-typescript ## TypeScript VM 与 Worker SDK 诊断基准（不设性能门槛）

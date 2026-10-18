@@ -219,12 +219,29 @@ test("Make consumes prepared artifacts and uses Cargo's target directory for pee
     /Missing testdata\/runtime\/stdlib.json.gz; run make runtime-images/,
   );
 
-  const missingTypeScript = spawnSync("make", ["test-typescript"], {
+  const compilerImage = path.join(
+    context.directory,
+    "playground/runtime-rust/assets/compiler.json.gz",
+  );
+  await rm(compilerImage);
+  const missingCompiler = spawnSync("make", ["test-typescript"], {
     cwd: context.directory,
     env: context.env,
     encoding: "utf8",
   });
-  assert.equal(missingTypeScript.status, 0, missingTypeScript.stderr);
+  assert.notEqual(missingCompiler.status, 0);
+  assert.match(
+    missingCompiler.stderr,
+    /Missing playground\/runtime-rust\/assets\/compiler.json.gz; run make compiler-image/,
+  );
+
+  await writeFile(compilerImage, "prepared fixture");
+  const preparedTypeScript = spawnSync("make", ["test-typescript"], {
+    cwd: context.directory,
+    env: context.env,
+    encoding: "utf8",
+  });
+  assert.equal(preparedTypeScript.status, 0, preparedTypeScript.stderr);
 });
 
 test("Make packs TypeScript without runtime test images and preserves shared caches", async (t) => {

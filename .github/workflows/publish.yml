@@ -104,7 +104,7 @@ jobs:
             vscode-ext/package-lock.json
       - run: make deps
       - run: npm exec --prefix playground/runtime-typescript -- playwright install --with-deps chromium firefox
-      - run: make runtime-execution-image
+      - run: make runtime-execution-image compiler-image
       - run: make test-typescript test-vscode
 
   plan:

@@ -116,7 +116,7 @@ TypeScript VM 执行 bytecode，源码工具在独立 Worker 中运行 Go compil
 Playwright 浏览器，此后使用根 Makefile 完成构建与验证：
 
 ```bash
-make deps runtime-execution-image
+make deps runtime-execution-image compiler-image
 npm exec --prefix playground/runtime-typescript -- playwright install chromium firefox
 make test-typescript
 ```
