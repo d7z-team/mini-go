@@ -9,7 +9,7 @@ import (
 
 func TestInstructionDescriptorsRoundTripAndCloneWithoutSharingTables(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{Code: testSlotCode(nil, []Instruction{
+	artifact.Functions = []Function{{Code: testMicroCode(nil, []Instruction{
 		{Op: OpAddressOf, Payload: AddressPayload{Kind: "local", Local: "x", Path: []AddressPathSegment{{Kind: "field", Field: "Value"}}}},
 		{Op: OpMakeClosure, Payload: ClosurePayload{Function: "f", Captures: []AddressPayload{{Kind: "local", Local: "x", Path: []AddressPathSegment{{Kind: "field", Field: "Value"}}}}}},
 		{Op: OpMakeStruct, Payload: MakeStructPayload{Fields: []string{"Value"}}},

@@ -1,9 +1,9 @@
 use super::*;
 use crate::contract::{canonical_hash, canonical_json};
 
-#[path = "../../tests/support/slots.rs"]
-mod slots;
-pub(crate) use slots::slot_code;
+#[path = "../../tests/support/microcode.rs"]
+mod microcode;
+pub(crate) use microcode::{complete_blocks, micro_code};
 
 /// Rebuild a real, validated execution image after changing its single artifact.
 pub(super) fn program_with_artifact(update: impl FnOnce(&mut serde_json::Value)) -> Arc<Program> {
@@ -19,6 +19,8 @@ pub(super) fn program_with_artifact(update: impl FnOnce(&mut serde_json::Value))
     let mut artifact: serde_json::Value =
         serde_json::from_str(package.artifact.as_ref().unwrap().get()).unwrap();
     update(&mut artifact);
+    let contract: serde_json::Value = serde_json::from_str(wire::CONTRACT_JSON).unwrap();
+    microcode::complete_blocks(&mut artifact, &contract);
     let artifact: wire::Artifact = serde_json::from_value(artifact).unwrap();
     package.artifact_hash = canonical_hash(&artifact).unwrap();
     package.artifact = Some(

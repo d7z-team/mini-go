@@ -10,7 +10,7 @@ import (
 )
 
 func TestProgramMainReturnStopsSpawnedTasks(t *testing.T) {
-	artifact := lifecycleArtifact(delayedLifecycleChild(testSlotCode([]string{"String"}, []ir.Instruction{
+	artifact := lifecycleArtifact(delayedLifecycleChild(testMicroCode([]string{"String"}, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.failure"}},
 		{Op: ir.OpPanic},
 	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})))
@@ -45,7 +45,7 @@ func TestProgramMainReturnStopsSpawnedTasks(t *testing.T) {
 }
 
 func TestCancelProgramMainClosesOtherScopes(t *testing.T) {
-	artifact := lifecycleArtifact(testSlotCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
+	artifact := lifecycleArtifact(testMicroCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
 		{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
 		{Op: ir.OpWaitableRecv},
 		{Op: ir.OpPop},
@@ -85,7 +85,7 @@ func TestCancelProgramMainClosesOtherScopes(t *testing.T) {
 }
 
 func TestProgramChildPanicBeforeMainReturnFails(t *testing.T) {
-	artifact := lifecycleArtifact(testSlotCode([]string{"String"}, []ir.Instruction{
+	artifact := lifecycleArtifact(testMicroCode([]string{"String"}, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.failure"}},
 		{Op: ir.OpPanic},
 	}, [][2][]uint32{{nil, {0}}, {{0}, nil}}))

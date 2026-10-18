@@ -6,7 +6,6 @@ import {
   encodeStorage,
   fieldLocation,
   indexLocation,
-  layoutAtStorageOffset,
   pathForStorageOffset,
   packedField,
   packedIndex,
@@ -18,7 +17,7 @@ import { TypeRegistry, primitive, nilValue, cloneValue } from "../src/vm/value";
 import { FrameStorage } from "../src/vm/frame-storage";
 import { storageFixture } from "./support/storage-owner.js";
 
-test("zero-sized addresses retain their layout at root and aggregate boundaries", () => {
+test("zero-sized direct locations retain their target layout", () => {
   const registry = new TypeRegistry("empty-address", undefined);
   const empty = registry.runtime({
     kind: Kind.Struct,
@@ -37,21 +36,28 @@ test("zero-sized addresses retain their layout at root and aggregate boundaries"
       ],
     },
   };
-  const emptyLayout = prepareStorageLayout(empty);
   const layout = prepareStorageLayout(outer);
-  assert.equal(layoutAtStorageOffset(emptyLayout, empty, empty, 0), emptyLayout);
-  assert.equal(layoutAtStorageOffset(layout, outer, empty, layout.size), layout.fields[1].layout);
+  const handle = { slot: 1, generation: 1 };
+  const tail = resolveStorageLocation({ handle, offset: 0, type: outer, layout }, layout, [
+    { kind: "field", name: "Tail" },
+  ]);
+  assert.equal(tail.offset, layout.size);
+  assert.equal(tail.layout, layout.fields[1].layout);
   assert.deepEqual(pathForStorageOffset(layout, outer, empty, layout.size), [
     { kind: "field", name: "Tail" },
   ]);
-  assert.equal(layoutAtStorageOffset(layout, outer, empty, layout.size + 1), undefined);
   const array = {
     ...empty,
     ref: { ...empty.ref, kind: Kind.Array },
     dynamic: { kind: Kind.Array, elem: empty, length: 2 },
   };
   const arrayLayout = prepareStorageLayout(array);
-  assert.equal(layoutAtStorageOffset(arrayLayout, array, empty, 0), arrayLayout.element);
+  const first = resolveStorageLocation(
+    { handle, offset: 0, type: array, layout: arrayLayout },
+    arrayLayout,
+    [{ kind: "index", index: 0 }],
+  );
+  assert.equal(first.layout, arrayLayout.element);
   assert.deepEqual(pathForStorageOffset(arrayLayout, array, empty, 0), [
     { kind: "index", index: 0 },
   ]);

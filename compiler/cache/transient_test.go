@@ -68,7 +68,7 @@ func TestTransientEstimatesIncludeVariablePayloads(t *testing.T) {
 		}}}),
 	}
 	artifact := ir.NewArtifact("slots", "slots")
-	artifact.Functions = []ir.Function{{ID: "main", Code: &ir.SlotCode{Operands: []ir.SlotOperands{{}}}}}
+	artifact.Functions = []ir.Function{{ID: "main", Code: &ir.MicroCode{Operands: []ir.RegisterFlow{{}}}}}
 	before := estimateArtifactBytes(artifact)
 	artifact.Functions[0].Code.Operands[0].ReleaseBefore = make([]uint32, 1024)
 	if growth := estimateArtifactBytes(artifact) - before; growth < 4096 {

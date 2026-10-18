@@ -70,6 +70,18 @@ type CompareBranchPayload struct {
 	When     bool          `json:"when"`
 }
 
+// UpdateCompareBranchPayload describes a fused private-local update followed
+// by a comparison and conditional branch. The three operands are the current
+// local value, update operand and comparison operand; the first operand must
+// name the same direct local that receives the update.
+type UpdateCompareBranchPayload struct {
+	Update     string        `json:"update"`
+	Comparison string        `json:"comparison"`
+	Type       types.TypeRef `json:"type"`
+	Label      string        `json:"label"`
+	When       bool          `json:"when"`
+}
+
 type MakeSequencePayload struct {
 	Type         types.TypeRef `json:"type"`
 	ElementCount int           `json:"element_count"`

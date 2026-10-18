@@ -325,11 +325,10 @@ func (l *lowerer) lowerFuncDecl(decl ast.Decl, overrideID string) (ir.Function, 
 		id = methodID(l.methodReceiverType(decl.Func.Receiver.Type), name)
 	}
 	fn := ir.Function{
-		ID:            id,
-		Name:          name,
-		RevisionLocal: strings.TrimSpace(overrideID) != "",
-		Declaration:   hirLocationPtr(decl.Span),
-		Signature:     l.hirSignature(l.signatureOf(*decl.Func), funcDeclVariadic(*decl.Func)),
+		ID:          id,
+		Name:        name,
+		Declaration: hirLocationPtr(decl.Span),
+		Signature:   l.hirSignature(l.signatureOf(*decl.Func), funcDeclVariadic(*decl.Func)),
 	}
 	scope := newFuncScope(&fn, nil)
 	scope.resultTypes = fn.Signature.Results

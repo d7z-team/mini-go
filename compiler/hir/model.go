@@ -46,17 +46,16 @@ type Global struct {
 }
 
 type Function struct {
-	ID            string
-	Name          string
-	RevisionLocal bool
-	Generated     bool
-	Declaration   *Location
-	Signature     types.FunctionSignature
-	Locals        []Local
-	ResultLocals  []string
-	Upvalues      []Upvalue
-	DebugScopes   []DebugScope
-	Body          []Statement
+	ID           string
+	Name         string
+	Generated    bool
+	Declaration  *Location
+	Signature    types.FunctionSignature
+	Locals       []Local
+	ResultLocals []string
+	Upvalues     []Upvalue
+	DebugScopes  []DebugScope
+	Body         []Statement
 }
 
 type Local struct {

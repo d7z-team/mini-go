@@ -194,6 +194,345 @@ export function binary(operator: string, left: Value, right: Value): Value {
   return binaryCode(operatorCode(operator), left, right);
 }
 
+export type ScalarValue = boolean | bigint | number;
+
+function integerWidth(kind: number): number {
+  switch (kind) {
+    case PrimitiveKind.PrimitiveInt8:
+    case PrimitiveKind.PrimitiveUint8:
+      return 8;
+    case PrimitiveKind.PrimitiveInt16:
+    case PrimitiveKind.PrimitiveUint16:
+      return 16;
+    case PrimitiveKind.PrimitiveInt32:
+    case PrimitiveKind.PrimitiveUint32:
+      return 32;
+    default:
+      return 64;
+  }
+}
+
+function signedInteger(kind: number): boolean {
+  return kind >= PrimitiveKind.PrimitiveInt && kind <= PrimitiveKind.PrimitiveInt64;
+}
+
+function normalizeIntegerBits(kind: number, output: Uint32Array, offset: number): void {
+  const width = integerWidth(kind);
+  if (width === 64) return;
+  const mask = width === 32 ? 0xffff_ffff : 2 ** width - 1;
+  let low = (output[offset]! & mask) >>> 0;
+  const negative = signedInteger(kind) && (low & (2 ** (width - 1))) !== 0;
+  if (negative && width < 32) low = (low | ~mask) >>> 0;
+  output[offset] = low;
+  output[offset + 1] = negative ? 0xffff_ffff : 0;
+}
+
+function pairBigInt(low: number, high: number, signed: boolean): bigint {
+  const bits = (BigInt(high) << 32n) | BigInt(low);
+  return signed ? BigInt.asIntN(64, bits) : bits;
+}
+
+function writePairBigInt(value: bigint, output: Uint32Array, offset: number): void {
+  const bits = BigInt.asUintN(64, value);
+  output[offset] = Number(bits & 0xffff_ffffn);
+  output[offset + 1] = Number(bits >> 32n);
+}
+
+/** Compare normalized pair-u32 lanes without constructing BigInt values. */
+export function compareIntegerBits(
+  code: number,
+  kind: number,
+  leftLow: number,
+  leftHigh: number,
+  rightLow: number,
+  rightHigh: number,
+): boolean {
+  const equal = leftLow === rightLow && leftHigh === rightHigh;
+  if (code === OperatorCode.Equal || code === OperatorCode.NotEqual)
+    return code === OperatorCode.Equal ? equal : !equal;
+  const signed = signedInteger(kind);
+  const leftOrder = signed ? (leftHigh ^ 0x8000_0000) >>> 0 : leftHigh;
+  const rightOrder = signed ? (rightHigh ^ 0x8000_0000) >>> 0 : rightHigh;
+  const less = leftOrder < rightOrder || (leftOrder === rightOrder && leftLow < rightLow);
+  const greater = leftOrder > rightOrder || (leftOrder === rightOrder && leftLow > rightLow);
+  switch (code) {
+    case OperatorCode.Less:
+      return less;
+    case OperatorCode.LessEqual:
+      return less || equal;
+    case OperatorCode.Greater:
+      return greater;
+    case OperatorCode.GreaterEqual:
+      return greater || equal;
+    default:
+      invalid(operatorName(code));
+  }
+}
+
+/** Execute the common integer operations directly on pair-u32 lanes. */
+export function binaryIntegerBits(
+  code: number,
+  kind: number,
+  leftLow: number,
+  leftHigh: number,
+  rightLow: number,
+  rightHigh: number,
+  output: Uint32Array,
+  offset: number,
+): void {
+  let low = 0;
+  let high = 0;
+  switch (code) {
+    case OperatorCode.Add:
+      low = (leftLow + rightLow) >>> 0;
+      high = (leftHigh + rightHigh + (low < leftLow ? 1 : 0)) >>> 0;
+      break;
+    case OperatorCode.Subtract:
+      low = (leftLow - rightLow) >>> 0;
+      high = (leftHigh - rightHigh - (leftLow < rightLow ? 1 : 0)) >>> 0;
+      break;
+    case OperatorCode.Multiply: {
+      low = Math.imul(leftLow, rightLow) >>> 0;
+      const leftLow16 = leftLow & 0xffff;
+      const leftHigh16 = leftLow >>> 16;
+      const rightLow16 = rightLow & 0xffff;
+      const rightHigh16 = rightLow >>> 16;
+      const carry =
+        Math.floor((leftLow16 * rightLow16) / 0x1_0000) +
+        leftHigh16 * rightLow16 +
+        leftLow16 * rightHigh16;
+      const upper = leftHigh16 * rightHigh16 + Math.floor(carry / 0x1_0000);
+      high = (upper + Math.imul(leftHigh, rightLow) + Math.imul(leftLow, rightHigh)) >>> 0;
+      break;
+    }
+    case OperatorCode.BitAnd:
+      low = leftLow & rightLow;
+      high = leftHigh & rightHigh;
+      break;
+    case OperatorCode.BitOr:
+      low = leftLow | rightLow;
+      high = leftHigh | rightHigh;
+      break;
+    case OperatorCode.BitXor:
+      low = leftLow ^ rightLow;
+      high = leftHigh ^ rightHigh;
+      break;
+    case OperatorCode.BitClear:
+      low = leftLow & ~rightLow;
+      high = leftHigh & ~rightHigh;
+      break;
+    case OperatorCode.ShiftLeft:
+    case OperatorCode.ShiftRight: {
+      const shift = rightHigh === 0 ? rightLow : 64;
+      if (shift >= 64) {
+        low =
+          code === OperatorCode.ShiftRight && signedInteger(kind) && (leftHigh & 0x8000_0000) !== 0
+            ? 0xffff_ffff
+            : 0;
+        high = low;
+      } else if (shift === 0) {
+        low = leftLow;
+        high = leftHigh;
+      } else if (code === OperatorCode.ShiftLeft) {
+        if (shift < 32) {
+          low = leftLow << shift;
+          high = (leftHigh << shift) | (leftLow >>> (32 - shift));
+        } else {
+          low = 0;
+          high = leftLow << (shift - 32);
+        }
+      } else if (shift < 32) {
+        low = (leftLow >>> shift) | (leftHigh << (32 - shift));
+        high = signedInteger(kind) ? leftHigh >> shift : leftHigh >>> shift;
+      } else {
+        low = signedInteger(kind) ? leftHigh >> (shift - 32) : leftHigh >>> (shift - 32);
+        high = signedInteger(kind) && (leftHigh & 0x8000_0000) !== 0 ? 0xffff_ffff : 0;
+      }
+      break;
+    }
+    case OperatorCode.Divide:
+    case OperatorCode.Remainder: {
+      if (rightLow === 0 && rightHigh === 0)
+        fail("integer divide by zero", operatorName(code), "panic");
+      const signed = signedInteger(kind);
+      const left = pairBigInt(leftLow, leftHigh, signed);
+      const right = pairBigInt(rightLow, rightHigh, signed);
+      writePairBigInt(code === OperatorCode.Divide ? left / right : left % right, output, offset);
+      normalizeIntegerBits(kind, output, offset);
+      return;
+    }
+    default:
+      invalid(operatorName(code));
+  }
+  output[offset] = low;
+  output[offset + 1] = high;
+  normalizeIntegerBits(kind, output, offset);
+}
+
+export function unaryIntegerBits(
+  code: number,
+  kind: number,
+  low: number,
+  high: number,
+  output: Uint32Array,
+  offset: number,
+): void {
+  if (code === UnaryOperatorCode.Plus) {
+    output[offset] = low;
+    output[offset + 1] = high;
+  } else if (code === UnaryOperatorCode.Minus) {
+    const nextLow = -low >>> 0;
+    output[offset] = nextLow;
+    output[offset + 1] = (~high + (nextLow === 0 ? 1 : 0)) >>> 0;
+  } else if (code === UnaryOperatorCode.Complement) {
+    output[offset] = ~low;
+    output[offset + 1] = ~high;
+  } else invalid(unaryOperatorName(code));
+  normalizeIntegerBits(kind, output, offset);
+}
+
+function normalizeScalar(kind: number, value: ScalarValue): ScalarValue {
+  if (
+    kind >= PrimitiveKind.PrimitiveInt &&
+    kind <= PrimitiveKind.PrimitiveInt64 &&
+    typeof value === "bigint"
+  )
+    return BigInt.asIntN(integerWidth(kind), value);
+  if (
+    kind >= PrimitiveKind.PrimitiveUint &&
+    kind <= PrimitiveKind.PrimitiveUintptr &&
+    typeof value === "bigint"
+  )
+    return BigInt.asUintN(integerWidth(kind), value);
+  if (kind === PrimitiveKind.PrimitiveFloat32 && typeof value === "number")
+    return Math.fround(value);
+  return value;
+}
+
+/** Execute a verified unary operation directly on a typed frame lane. */
+export function unaryScalar(code: number, kind: number, operand: ScalarValue): ScalarValue {
+  switch (code) {
+    case UnaryOperatorCode.Plus:
+      return operand;
+    case UnaryOperatorCode.Minus:
+      if (typeof operand === "bigint" || typeof operand === "number")
+        return normalizeScalar(kind, -operand);
+      break;
+    case UnaryOperatorCode.Not:
+      if (typeof operand === "boolean") return !operand;
+      break;
+    case UnaryOperatorCode.Complement:
+      if (typeof operand === "bigint") return normalizeScalar(kind, ~operand);
+      break;
+  }
+  fail("operand type does not support operator", unaryOperatorName(code), "invalid_operation");
+}
+
+/** Compare verified primitive lanes without allocating temporary Values. */
+export function compareScalar(code: number, left: ScalarValue, right: ScalarValue): boolean {
+  if (code === OperatorCode.Equal || code === OperatorCode.NotEqual) {
+    const equal = left === right;
+    return code === OperatorCode.Equal ? equal : !equal;
+  }
+  if (
+    (typeof left !== "bigint" && typeof left !== "number") ||
+    typeof left !== typeof right ||
+    (typeof left === "number" && (Number.isNaN(left) || Number.isNaN(right as number)))
+  )
+    return false;
+  switch (code) {
+    case OperatorCode.Less:
+      return left < (right as never);
+    case OperatorCode.LessEqual:
+      return left <= (right as never);
+    case OperatorCode.Greater:
+      return left > (right as never);
+    case OperatorCode.GreaterEqual:
+      return left >= (right as never);
+    default:
+      invalid(operatorName(code));
+  }
+}
+
+/** Execute a verified non-string, non-complex binary operation on frame lanes. */
+export function binaryScalar(
+  code: number,
+  kind: number,
+  left: ScalarValue,
+  right: ScalarValue,
+): ScalarValue {
+  if (code >= OperatorCode.Equal && code <= OperatorCode.GreaterEqual)
+    return compareScalar(code, left, right);
+  if (typeof left === "boolean" && typeof right === "boolean") {
+    if (code === OperatorCode.LogicalAnd) return left && right;
+    if (code === OperatorCode.LogicalOr) return left || right;
+    invalid(operatorName(code));
+  }
+  if (typeof left === "number" && typeof right === "number") {
+    const result =
+      code === OperatorCode.Add
+        ? left + right
+        : code === OperatorCode.Subtract
+          ? left - right
+          : code === OperatorCode.Multiply
+            ? left * right
+            : code === OperatorCode.Divide
+              ? left / right
+              : undefined;
+    if (result === undefined) invalid(operatorName(code));
+    return normalizeScalar(kind, result);
+  }
+  if (typeof left !== "bigint" || typeof right !== "bigint") invalid(operatorName(code));
+  if (code === OperatorCode.ShiftLeft || code === OperatorCode.ShiftRight) {
+    if (right < 0n) fail("negative shift count", operatorName(code), "panic");
+    const signed = kind >= PrimitiveKind.PrimitiveInt && kind <= PrimitiveKind.PrimitiveInt64;
+    const result =
+      right >= 64n
+        ? code === OperatorCode.ShiftRight && signed && left < 0n
+          ? -1n
+          : 0n
+        : code === OperatorCode.ShiftLeft
+          ? left << right
+          : left >> right;
+    return normalizeScalar(kind, result);
+  }
+  if ((code === OperatorCode.Divide || code === OperatorCode.Remainder) && right === 0n)
+    fail("integer divide by zero", operatorName(code), "panic");
+  let result: bigint;
+  switch (code) {
+    case OperatorCode.Add:
+      result = left + right;
+      break;
+    case OperatorCode.Subtract:
+      result = left - right;
+      break;
+    case OperatorCode.Multiply:
+      result = left * right;
+      break;
+    case OperatorCode.Divide:
+      result = left / right;
+      break;
+    case OperatorCode.Remainder:
+      result = left % right;
+      break;
+    case OperatorCode.BitAnd:
+      result = left & right;
+      break;
+    case OperatorCode.BitOr:
+      result = left | right;
+      break;
+    case OperatorCode.BitXor:
+      result = left ^ right;
+      break;
+    case OperatorCode.BitClear:
+      result = left & ~right;
+      break;
+    default:
+      invalid(operatorName(code));
+  }
+  return normalizeScalar(kind, result);
+}
+
 /** Execute the prepared binary operator directly on its numeric discriminator. */
 export function binaryCode(code: number, left: Value, right: Value): Value {
   const registry = left.type.registry;

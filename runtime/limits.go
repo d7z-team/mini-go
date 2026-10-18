@@ -3,7 +3,6 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"sync/atomic"
 )
 
 func allocationLimitError(limit int64) ResourceLimitError {
@@ -153,17 +152,11 @@ func (vm *vm) releasePendingEvent(logicalBytes int64) {
 	}
 }
 
-func updateAtomicMaximum(value *atomic.Int64, candidate int64) {
-	for current := value.Load(); candidate > current; current = value.Load() {
-		if value.CompareAndSwap(current, candidate) {
-			return
-		}
-	}
-}
-
+// Larger Go slices amortize owner handoff and allocation-batch setup in
+// CPU-bound task workloads; explicit PollSteps budgets still bound each call.
 const (
-	defaultPollQuantum     = 64 * 1024
-	taskInstructionQuantum = 1024
+	defaultPollQuantum     = 8192
+	taskInstructionQuantum = 8192
 )
 
 var defaultLimits = Limits{

@@ -9,7 +9,7 @@ import (
 )
 
 func TestDebuggerSchemaPanicAfterDeferredCleanup(t *testing.T) {
-	artifact := deferredPanicTestArtifact(testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}))
+	artifact := deferredPanicTestArtifact(testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}))
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.main", pc: 3, line: 9, column: 2})
 
 	debugger := NewDebugger()
@@ -58,7 +58,7 @@ func TestDebuggerSchemaNestedDeferredRecoverThenTail(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"function() Void", "String"}, []ir.Instruction{{
 			Op:      ir.OpMakeClosure,
 			Payload: ir.ClosurePayload{Function: "fn.tail"},
 		}, {
@@ -77,7 +77,7 @@ func TestDebuggerSchemaNestedDeferredRecoverThenTail(t *testing.T) {
 	}, {
 		ID:        "fn.recover",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Any"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Any"}, []ir.Instruction{{
 			Op: ir.OpRecover,
 		}, {
 			Op: ir.OpPop,
@@ -88,7 +88,7 @@ func TestDebuggerSchemaNestedDeferredRecoverThenTail(t *testing.T) {
 	}, {
 		ID:        "fn.tail",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []ir.Instruction{{
+		Code: testMicroCode([]string{}, []ir.Instruction{{
 			Op:      ir.OpReturn,
 			Payload: ir.ReturnPayload{ResultCount: 0},
 		}}, [][2][]uint32{{nil, nil}}),
@@ -187,7 +187,7 @@ func TestDebuggerSchemaRecoverContextClearedForLaterDefer(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"function() Void", "String"}, []ir.Instruction{{
 			Op:      ir.OpMakeClosure,
 			Payload: ir.ClosurePayload{Function: "fn.observe"},
 		}, {
@@ -206,7 +206,7 @@ func TestDebuggerSchemaRecoverContextClearedForLaterDefer(t *testing.T) {
 	}, {
 		ID:        "fn.recover",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Any"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Any"}, []ir.Instruction{{
 			Op: ir.OpRecover,
 		}, {
 			Op: ir.OpPop,
@@ -218,7 +218,7 @@ func TestDebuggerSchemaRecoverContextClearedForLaterDefer(t *testing.T) {
 		ID:        "fn.observe",
 		Signature: testSignature("function() Void"),
 		Locals:    []ir.Local{{ID: "local.recovered", Type: testType("Any")}},
-		Code: testSlotCode([]string{"Any"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Any"}, []ir.Instruction{{
 			Op: ir.OpRecover,
 		}, {
 			Op:      ir.OpStoreLocal,
@@ -284,7 +284,7 @@ func TestDebuggerSchemaDeferredRepanicReplacesOwnerPanic(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"function() Void", "String"}, []ir.Instruction{{
 			Op:      ir.OpMakeClosure,
 			Payload: ir.ClosurePayload{Function: "fn.repanic"},
 		}, {
@@ -298,7 +298,7 @@ func TestDebuggerSchemaDeferredRepanicReplacesOwnerPanic(t *testing.T) {
 	}, {
 		ID:        "fn.repanic",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Any", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Any", "String"}, []ir.Instruction{{
 			Op: ir.OpRecover,
 		}, {
 			Op: ir.OpPop,

@@ -48,7 +48,7 @@ func (f *frame) integerOperand(operand ir.Operand, info types.NumericInfo) (uint
 	return 0, false
 }
 
-func (f *frame) beginSlotInstruction(pc int, inst *preparedInstruction) {
+func (f *frame) beginMicroInstruction(pc int, inst *preparedInstruction) {
 	if f.slotPC != pc && f.slotOperands != nil {
 		for _, slot := range f.slotOperands.Release {
 			f.clearSlotValue(int(slot))

@@ -66,7 +66,7 @@ TypeScript 提供各自的运行时和源码工具 API。
 | 理解组件边界 | [架构](./ARCHITECTURE.md) |
 | 构建、测试、诊断和发布 | [开发指南](./DEVELOPMENT.md) |
 
-维护流程和贡献约定见[开发指南](./DEVELOPMENT.md)及 [AGENTS.md](./AGENTS.md)。
+维护流程见[开发指南](./DEVELOPMENT.md)。
 
 ## 许可证
 

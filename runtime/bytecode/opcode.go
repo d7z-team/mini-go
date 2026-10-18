@@ -77,6 +77,7 @@ const (
 	OpIndexConvert
 	OpLenCompareBranch
 	OpMinMax
+	OpUpdateCompareBranch
 )
 
 func IsKnownOpcode(op Opcode) bool { return op > OpInvalid && int(op) <= len(opcodeSpecs) }

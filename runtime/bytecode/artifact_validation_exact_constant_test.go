@@ -51,7 +51,7 @@ func TestArtifactValidationRejectsUntypedConstantInRuntimeInstruction(t *testing
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Float64"}, []Instruction{{
+		Code: testMicroCode([]string{"Float64"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{Constant: "const.Third"},
 		}}, [][2][]uint32{{nil, {0}}}),

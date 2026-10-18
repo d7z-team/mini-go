@@ -418,6 +418,16 @@ impl Value {
             )),
         }
     }
+    pub(crate) fn index(&self) -> Result<usize, RuntimeError> {
+        match self.data {
+            Data::Integer(value) => usize::try_from(value),
+            Data::Unsigned(value) => usize::try_from(value),
+            _ => {
+                return Err(RuntimeError::new("type_error", "index", "expected integer"));
+            }
+        }
+        .map_err(|_| RuntimeError::new("panic", "index", "index is outside addressable range"))
+    }
     pub(crate) fn boolean(value: bool) -> Self {
         Self {
             typ: TypeIdentity::Primitive(crate::contract_generated::PrimitiveBool),

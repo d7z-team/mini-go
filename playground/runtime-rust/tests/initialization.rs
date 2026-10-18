@@ -37,8 +37,8 @@ fn tasks_share_initialization_and_resume_without_recharging_the_call() {
         ),
         ("return", json!({}), json!({})),
     ]);
-    let initialization = support::slot_code(json!([integer]), &initialization);
-    let dependency_main = support::slot_code(
+    let initialization = support::micro_code(json!([integer]), &initialization);
+    let dependency_main = support::micro_code(
         json!([integer]),
         &[
             (
@@ -62,7 +62,7 @@ fn tasks_share_initialization_and_resume_without_recharging_the_call() {
             {"id":"fn.Main","signature":{"results":[integer]},"code":dependency_main}
         ]
     }));
-    let main = support::slot_code(
+    let main = support::micro_code(
         json!([{"kind":wire::Function,"node":"worker.signature"},integer]),
         &[
             (
@@ -83,7 +83,7 @@ fn tasks_share_initialization_and_resume_without_recharging_the_call() {
             ),
         ],
     );
-    let worker = support::slot_code(
+    let worker = support::micro_code(
         json!([integer]),
         &[
             (
@@ -99,7 +99,7 @@ fn tasks_share_initialization_and_resume_without_recharging_the_call() {
             ("return", json!({}), json!({})),
         ],
     );
-    let read = support::slot_code(
+    let read = support::micro_code(
         json!([integer]),
         &[
             (

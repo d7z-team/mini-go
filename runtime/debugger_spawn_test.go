@@ -13,7 +13,7 @@ func TestDebuggerSchemaSpawnedContext(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpMakeClosure,
 			Payload: ir.ClosurePayload{Function: "fn.child"},
 		}, {
@@ -29,7 +29,7 @@ func TestDebuggerSchemaSpawnedContext(t *testing.T) {
 	}, {
 		ID:        "fn.child",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []ir.Instruction{{
+		Code: testMicroCode([]string{}, []ir.Instruction{{
 			Op:      ir.OpReturn,
 			Payload: ir.ReturnPayload{ResultCount: 0},
 		}}, [][2][]uint32{{nil, nil}}),
@@ -65,12 +65,12 @@ func TestDebuggerSchemaSpawnedContext(t *testing.T) {
 func TestStepAfterSpawnStaysWithTheSelectedTask(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Functions = []ir.Function{
-		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, []ir.Instruction{
+		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"function() Void"}, []ir.Instruction{
 			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
 			{Op: ir.OpSpawn, Payload: ir.CallPayload{ArgCount: 0}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
-		{ID: "fn.child", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{
+		{ID: "fn.child", Signature: testSignature("function() Void"), Code: testMicroCode([]string{}, []ir.Instruction{
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
 		}, [][2][]uint32{{nil, nil}})},
 	}

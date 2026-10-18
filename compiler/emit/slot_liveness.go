@@ -19,7 +19,7 @@ type slotBlock struct {
 // allocateSlots conservatively extends intervals across CFG edges, then
 // reuses only temporaries of the same type. Addressable cells are not part of
 // this allocation domain. Release happens after instruction completion.
-func allocateSlots(code *ir.SlotCode) error {
+func allocateSlots(code *ir.MicroCode) error {
 	count := len(code.Instructions)
 	if count == 0 {
 		return nil
@@ -39,7 +39,7 @@ func allocateSlots(code *ir.SlotCode) error {
 			labels[name], leaders[pc] = pc, true
 		}
 		switch instruction.Op {
-		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpTypeDispatch, ir.OpReturn, ir.OpPanic, ir.OpTailCallDirect:
+		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpUpdateCompareBranch, ir.OpTypeDispatch, ir.OpReturn, ir.OpPanic, ir.OpTailCallDirect:
 			if pc+1 < count {
 				leaders[pc+1] = true
 			}
@@ -96,6 +96,8 @@ func allocateSlots(code *ir.SlotCode) error {
 		switch last.Op {
 		case ir.OpCompareBranch, ir.OpLenCompareBranch:
 			targets = []string{payload.(ir.CompareBranchPayload).Label}
+		case ir.OpUpdateCompareBranch:
+			targets = []string{payload.(ir.UpdateCompareBranchPayload).Label}
 		case ir.OpJump, ir.OpJumpIf:
 			targets = []string{payload.(ir.JumpPayload).Label}
 			fallsThrough = last.Op == ir.OpJumpIf

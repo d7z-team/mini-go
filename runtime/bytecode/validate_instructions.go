@@ -56,6 +56,22 @@ func validateInstructionPayload(path string, inst *Instruction) error {
 		default:
 			return newValidationError(path, errors.New("invalid comparison operator"))
 		}
+	case OpUpdateCompareBranch:
+		payload, err := validationPayload[UpdateCompareBranchPayload](path, inst)
+		if err != nil {
+			return err
+		}
+		if payload.Label == "" || !payload.Type.Valid() {
+			return missingValidationError(path, errors.New("update comparison requires a type and target"))
+		}
+		if payload.Update != "+" && payload.Update != "-" {
+			return newValidationError(path, errors.New("update comparison requires + or - update"))
+		}
+		switch payload.Comparison {
+		case "==", "!=", "<", "<=", ">", ">=":
+		default:
+			return newValidationError(path, errors.New("invalid update comparison operator"))
+		}
 	case OpTypeDispatch:
 		payload, err := validationPayload[TypeDispatchPayload](path, inst)
 		if err != nil {

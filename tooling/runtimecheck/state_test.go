@@ -14,7 +14,7 @@ import (
 )
 
 func TestStateVectorsPreserveFailedStartAccountingAndDeterminism(t *testing.T) {
-	input := []byte(fmt.Sprintf(`{"module":{"path":"test","package":"main"},"constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],"functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":{"types":[{"kind":3,"primitive":3}],"instructions":[[%d,0,0],[%d,0,1]],"descriptors":{"const":[{"constant":"answer"}],"return":[{"result_count":1}]},"operands":[{"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]}}]}`, bytecode.OpConst, bytecode.OpReturn))
+	input := []byte(fmt.Sprintf(`{"module":{"path":"test","package":"main"},"constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],"functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":{"types":[{"kind":3,"primitive":3}],"instructions":[[%d,0,0,1],[%d,0,1,1]],"blocks":[{"first":0,"count":1,"fallthrough":1,"cost":1},{"first":1,"count":1,"fallthrough":4294967295,"cost":1}],"descriptors":{"const":[{"constant":"answer"}],"return":[{"result_count":1}]},"operands":[{"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]}}]}`, bytecode.OpConst, bytecode.OpReturn))
 	inputs := map[string][]byte{"entry": input}
 	encoded, err := GenerateStateVectors(context.Background(), inputs)
 	if err != nil {

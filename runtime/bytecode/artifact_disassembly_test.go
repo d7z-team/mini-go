@@ -32,7 +32,7 @@ func TestDisassembleProducesStableSnapshot(t *testing.T) {
 		Signature:    testSignature("function() Int64"),
 		Locals:       []Local{{ID: "local.tmp", Type: testType("Int64")}},
 		ResultLocals: []string{"local.tmp"},
-		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{Constant: "c.answer"},
 		}, {
@@ -70,7 +70,7 @@ func TestDisassembleProducesStableSnapshot(t *testing.T) {
 func TestDisassemblePreservesVariadicFunctionMetadata(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
-		Code:      &SlotCode{},
+		Code:      &MicroCode{},
 		ID:        "fn.Sum",
 		Signature: testSignature("function(variadic Slice<Int64>) Int64"),
 	}}
@@ -97,7 +97,7 @@ func TestDisassembleDerivesVariadicMetadataFromTypes(t *testing.T) {
 	}})
 	artifact.Globals = []Global{{ID: "global.handler", Type: testType("function(Int64, variadic Slice<Int64>) Int64")}}
 	artifact.Functions = []Function{{
-		Code:      &SlotCode{},
+		Code:      &MicroCode{},
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 		Locals:    []Local{{ID: "local.handler", Type: testType("function(Int64, variadic Slice<Int64>) Int64")}},
@@ -138,7 +138,7 @@ func TestDisassembleShowsUntypedConstantExport(t *testing.T) {
 
 func TestWriteDisassemblyMatchesDisassemble(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	got, err := Disassemble(&artifact)
 	if err != nil {

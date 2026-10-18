@@ -702,19 +702,16 @@ impl Instance {
                             data: Data::Pointer(std::sync::Arc::new(address)),
                         };
                     }
-                    let max = if id == "reflect.value_slice3" {
-                        arguments[3].clone()
+                    let maximum = if id == "reflect.value_slice3" {
+                        Some(arguments[3].index()?)
                     } else {
-                        Value {
-                            typ: TypeIdentity::Void,
-                            data: Data::Nil,
-                        }
+                        None
                     };
                     let value = self.slice_value(
                         current,
-                        arguments[1].integer()?,
-                        arguments[2].integer()?,
-                        max,
+                        arguments[1].index()?,
+                        arguments[2].index()?,
+                        maximum,
                     )?;
                     view.target = None;
                     view.addressable = false;

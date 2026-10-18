@@ -127,7 +127,7 @@ func patchDeclarations(module *executable) [4]map[string]any {
 		groups[1][global.ID] = global
 	}
 	for _, declaration := range module.Artifact.TypeTable.DefinedNamed(module.Artifact.Module.Path) {
-		groups[2][string(declaration.Identity.DeclID)] = typeDeclarationShape(module, declaration)
+		groups[2][string(declaration.Identity.DeclID)] = declaration
 	}
 	for _, export := range module.Artifact.Exports {
 		groups[3][export.Name] = export

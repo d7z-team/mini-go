@@ -1121,7 +1121,7 @@ mod inspect_tests {
     fn assignment_budget_failure_preserves_target_and_retry_succeeds() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(

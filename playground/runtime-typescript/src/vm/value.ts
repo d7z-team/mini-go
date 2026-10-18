@@ -114,6 +114,7 @@ export interface TypeFacts {
 export class TypeRegistry {
   private readonly nodes = new Map<string, TypeNode>();
   private readonly named = new Map<string, TypeNode>();
+  private readonly staticTypes = new Map<string, RuntimeType>();
   private readonly typeKeys = new WeakMap<object, string>();
   private readonly underlyingTypes = new WeakMap<RuntimeType, RuntimeType>();
   private readonly primitiveTypes: (RuntimeType | undefined)[] = [];
@@ -180,13 +181,17 @@ export class TypeRegistry {
 
   runtime(ref: TypeRef): RuntimeType {
     if (ref.kind === Kind.Primitive && Number.isSafeInteger(ref.primitive) && ref.primitive >= 0) {
-      const cached = this.primitiveTypes[ref.primitive];
-      if (cached) return cached;
-      const value = { module: this.module, ref, registry: this };
-      this.primitiveTypes[ref.primitive] = value;
-      return value;
+      const primitive = this.primitiveTypes[ref.primitive];
+      if (primitive) return primitive;
     }
-    return { module: this.module, ref, registry: this };
+    const key = `${ref.kind}\0${ref.primitive}\0${ref.named.module_path}\0${ref.named.decl_id}\0${ref.node}`;
+    const cached = this.staticTypes.get(key);
+    if (cached) return cached;
+    const value = { module: this.module, ref, registry: this };
+    this.staticTypes.set(key, value);
+    if (ref.kind === Kind.Primitive && ref.primitive >= 0)
+      this.primitiveTypes[ref.primitive] = value;
+    return value;
   }
 
   facts(type: RuntimeType): TypeFacts {
@@ -1875,25 +1880,21 @@ function importType(identity: TypeIdentity, registry: TypeRegistry): RuntimeType
     });
   if ("Pointer" in identity) {
     const element = importType(identity.Pointer, registry);
-    const type = registry.runtime({
-      kind: Kind.Pointer,
-      primitive: 0,
-      named: emptyKey(),
-      node: "",
-    });
-    type.dynamic = { kind: Kind.Pointer, elem: element };
-    return type;
+    return {
+      module: registry.module,
+      registry,
+      ref: { kind: Kind.Pointer, primitive: 0, named: emptyKey(), node: "" },
+      dynamic: { kind: Kind.Pointer, elem: element },
+    };
   }
   if ("Slice" in identity) {
     const element = importType(identity.Slice, registry);
-    const type = registry.runtime({
-      kind: Kind.Slice,
-      primitive: 0,
-      named: emptyKey(),
-      node: "",
-    });
-    type.dynamic = { kind: Kind.Slice, elem: element };
-    return type;
+    return {
+      module: registry.module,
+      registry,
+      ref: { kind: Kind.Slice, primitive: 0, named: emptyKey(), node: "" },
+      dynamic: { kind: Kind.Slice, elem: element },
+    };
   }
   if ("Named" in identity)
     return registry.runtime({ kind: Kind.Named, primitive: 0, named: identity.Named, node: "" });

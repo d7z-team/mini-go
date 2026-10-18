@@ -17,7 +17,7 @@ func TestMapIteratorTracksEntriesAcrossMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &frame{module: module, mapIteratorSlots: make([]*mapIterator, 1), slotValues: make([]vmValue, 3), slotOperands: &ir.SlotOperands{Outputs: []uint32{0, 1, 2}}}
+	f := &frame{module: module, mapIteratorSlots: make([]*mapIterator, 1), slotValues: make([]vmValue, 3), slotOperands: &ir.RegisterFlow{Outputs: []uint32{0, 1, 2}}}
 	if err = f.initMapIteratorAt(0, "range", object); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestPreparedMapIteratorUsesIndexedCursor(t *testing.T) {
 		localCells:       []*slot{newSlot(predeclaredRuntimeTypes["Int"], module, false)},
 		mapIteratorSlots: make([]*mapIterator, 1),
 		slotValues:       make([]vmValue, 3),
-		slotOperands:     &ir.SlotOperands{Outputs: []uint32{0, 1, 2}},
+		slotOperands:     &ir.RegisterFlow{Outputs: []uint32{0, 1, 2}},
 	}
 	if err := f.initMapIteratorAt(0, "range", object); err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestMapIteratorReplacementAdmissionFailureKeepsPreviousOwner(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &frame{module: module, mapIteratorSlots: make([]*mapIterator, 1), slotValues: make([]vmValue, 3), slotOperands: &ir.SlotOperands{Outputs: []uint32{0, 1, 2}}}
+	f := &frame{module: module, mapIteratorSlots: make([]*mapIterator, 1), slotValues: make([]vmValue, 3), slotOperands: &ir.RegisterFlow{Outputs: []uint32{0, 1, 2}}}
 	defer f.recycle()
 	if err := f.initMapIteratorAt(0, "range", object); err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestMapIteratorSkipsReinsertedKeyAndObservesUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &frame{module: module, mapIteratorSlots: make([]*mapIterator, 1), slotValues: make([]vmValue, 3), slotOperands: &ir.SlotOperands{Outputs: []uint32{0, 1, 2}}}
+	f := &frame{module: module, mapIteratorSlots: make([]*mapIterator, 1), slotValues: make([]vmValue, 3), slotOperands: &ir.RegisterFlow{Outputs: []uint32{0, 1, 2}}}
 	if err = f.initMapIteratorAt(0, "range", object); err != nil {
 		t.Fatal(err)
 	}

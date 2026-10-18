@@ -11,7 +11,7 @@ func TestLoaderValidatesSlotDestinationsForStructuredAndJSONInputs(t *testing.T)
 	artifact := ir.NewArtifact("test/slots", "slots")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.value", Signature: testSignature("function() Bool"),
-		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Bool"}, []ir.Instruction{
 			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
@@ -51,7 +51,7 @@ func TestLoaderRemovesLabelsAndRelocatesJumps(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []ir.Instruction{
+		Code: testMicroCode([]string{}, []ir.Instruction{
 			{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "entry"}},
 			{Op: ir.OpJump, Payload: ir.JumpPayload{Label: "exit"}},
 			{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "exit"}},

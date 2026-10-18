@@ -58,7 +58,9 @@ buffer 的所有权。调用参数中的宿主值可以共享子对象，但不�
 import { createRuntime } from "@d7z-team/mini-go";
 
 const response = await fetch("/program.json.gz");
-const runtime = await createRuntime(new Uint8Array(await response.arrayBuffer()));
+const runtime = await createRuntime(
+  new Uint8Array(await response.arrayBuffer()),
+);
 try {
   const execution = runtime.start("default");
   console.log(await execution.result);
@@ -91,13 +93,14 @@ const runtime = await createRuntime(image, {
 也可以使用 `providerModule`，让运行时 Worker 加载导出 `call` 和可选 `close` 的模块。provider 应及时响应
 `AbortSignal`，并在关闭时释放自己的资源。
 
-`runtime.patch(nextImage)` 会先校验候选镜像，再在安全点原子发布。准备失败时当前程序继续运行；已有 frame、
-closure 和 defer 保持原 revision，新启动的普通命名调用使用当前 revision，`revision_local` 调用跟随 caller
-frame 的 revision。
+`runtime.patch(nextImage)` 会先校验候选镜像，再在安全点原子发布。准备失败时当前程序继续运行。每个
+execution 在开始时固定其 revision；它的 frame、后续命名调用、closure 和 defer 都使用该 revision，
+补丁提交后新启动的 execution 使用新 revision。相同 ID 且类型相同的 global 保持状态，新增或类型变化的
+global 使用新存储。
 
 `limits` 中的 `maxGuestBytes`、`maxResidentBytes`、`maxTasks` 和 `maxSteps` 可限制实例资源。需要放开累计步数
-时使用导出的 `UNLIMITED_STEPS`；任务、宿主调用和内存限额仍然有效。`stats()` 用于查看实例状态和累计执行
-统计，不会因为读取而触发回收。
+时使用导出的 `UNLIMITED_STEPS`；任务、宿主调用和内存限额仍然有效。`stats()` 返回实例状态和累计执行
+统计。
 
 ## 源码工具与调试
 
@@ -111,16 +114,25 @@ const service = await createLanguageService({ timeoutMs: 30_000 });
 try {
   await service.open({
     Root: "example",
-    Packages: [{
-      Namespace: "module:example",
-      ModulePath: "example",
-      Files: [{ Path: "answer.mgo", Text: "package example\nfunc Answer() int { return 42 }" }],
-    }],
+    Packages: [
+      {
+        Namespace: "module:example",
+        ModulePath: "example",
+        Files: [
+          {
+            Path: "answer.mgo",
+            Text: "package example\nfunc Answer() int { return 42 }",
+          },
+        ],
+      },
+    ],
   });
   const analysis = await service.analyze();
   const build = await service.prepare({
     Symbols: true,
-    EntryPoints: [{ Name: "default", ModulePath: "example", Function: "Answer" }],
+    EntryPoints: [
+      { Name: "default", ModulePath: "example", Function: "Answer" },
+    ],
   });
   console.log(analysis.Diagnostics, build.Image, build.Symbols);
 } finally {
@@ -130,8 +142,7 @@ try {
 
 `createLanguageService` 支持 `workerUrl` 和 `compilerUrl` 覆盖 Worker 与 WASM 资源，也支持通过 `AbortSignal`
 取消请求。`createDebugSession` 创建并拥有一个运行时，`attachDebugSession` 连接已有运行时；调试符号必须与
-执行镜像匹配。取消或超时后，会话按已确认输入恢复 Worker；`upgrade` 在候选 Worker 恢复和身份校验成功后
-才切换，升级准备失败保留当前会话。
+执行镜像匹配。会话恢复和 `upgrade` 只使用已经确认的输入，准备失败时保留当前会话。
 
 ## MRPC
 

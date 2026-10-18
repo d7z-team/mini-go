@@ -18,7 +18,7 @@ func TestRevisionRootsByteArrayPointerRespectsBudget(t *testing.T) {
 		artifact := patchGlobalArtifact(1)
 		artifact.Globals[0].Type = testType(typ)
 		artifact.Functions[0].Signature = testSignature("function() Void")
-		artifact.Functions[0].Code = testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+		artifact.Functions[0].Code = testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 		program := patchTestProgram(t, artifact, "byte-pointer-budget")
 		instance, err := program.Instantiate(t.Context(), InstanceOptions{})
 		if err != nil {
@@ -134,7 +134,7 @@ func TestRevisionRootsBoundsCyclicAndSharedGlobalValues(t *testing.T) {
 	artifact := patchGlobalArtifact(1)
 	artifact.Globals[0].Type = testType("Any")
 	artifact.Functions[0].Signature = testSignature("function() Void")
-	artifact.Functions[0].Code = testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	artifact.Functions[0].Code = testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 	program := patchTestProgram(t, artifact, "global-roots")
 	instance, err := program.Instantiate(t.Context(), InstanceOptions{})
 	if err != nil {
@@ -172,7 +172,7 @@ func TestRevisionRootsBoundsCyclicAndSharedGlobalValues(t *testing.T) {
 func TestRevisionRootsGlobalReferenceReleasesRetiredCodeNaturally(t *testing.T) {
 	artifact := patchGlobalArtifact(1)
 	artifact.Globals[0].Type = testType("Any")
-	artifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
+	artifact.Functions[0].Code = testMicroCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 	base := patchTestProgram(t, artifact, "global-pin-old")
 	next := patchTestProgram(t, artifact, "global-pin-new")
 	instance, err := base.Instantiate(t.Context(), InstanceOptions{})

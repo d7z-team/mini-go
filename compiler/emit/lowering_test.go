@@ -15,10 +15,9 @@ func TestLowerProducesExecutableInstructions(t *testing.T) {
 		ModulePath: "example/module",
 		Package:    "main",
 		Functions: []hir.Function{{
-			ID:            "fn.main",
-			Name:          "main",
-			RevisionLocal: true,
-			Signature:     testHIRSignature("function() Int64"),
+			ID:        "fn.main",
+			Name:      "main",
+			Signature: testHIRSignature("function() Int64"),
 			Body: []hir.Statement{{
 				Kind: hir.StmtReturn,
 				Results: []hir.Expression{{
@@ -36,9 +35,6 @@ func TestLowerProducesExecutableInstructions(t *testing.T) {
 	}
 	if len(artifact.Constants) != 2 {
 		t.Fatalf("expected two constants, got %d", len(artifact.Constants))
-	}
-	if !artifact.Functions[0].RevisionLocal {
-		t.Fatal("revision-local function metadata was not emitted")
 	}
 	if got := functionOperations(t, artifact.Functions[0])[0].Op; got != ir.OpBinary {
 		t.Fatalf("expected binary instruction, got %q", got)

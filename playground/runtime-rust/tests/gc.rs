@@ -12,7 +12,7 @@ use std::sync::Arc;
 fn frame_owned_map_iterator_is_traced_and_released_on_completion_cancel_and_close() {
     let integer = json!({"kind":3,"primitive":3});
     let map = json!({"kind":7,"node":"map"});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([integer,integer,map,integer,integer,{"kind":3,"primitive":1}]),
         &[
             ("const", json!({"constant":"key"}), json!({"outputs":[0]})),
@@ -129,8 +129,8 @@ fn allocation_pressure_preserves_popped_arguments_and_unpublished_frame_slots() 
             json!({"inputs":[[0,1]],"release":[1]}),
         ),
     ]);
-    let code = support::slot_code(json!([slice, integer]), &operations);
-    let read = support::slot_code(
+    let code = support::micro_code(json!([slice, integer]), &operations);
+    let read = support::micro_code(
         json!([slice, integer, integer]),
         &[
             (

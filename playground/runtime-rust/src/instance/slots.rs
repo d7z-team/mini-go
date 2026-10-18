@@ -814,7 +814,7 @@ impl Instance {
         Ok(())
     }
 
-    pub(super) fn begin_slot_instruction(&mut self, pc: usize) -> Result<(), RuntimeError> {
+    pub(super) fn begin_micro_instruction(&mut self, pc: usize) -> Result<(), RuntimeError> {
         let frame = self.running.frames.last_mut().unwrap();
         frame.begin_slots(pc);
         if !frame.prepared.lazy_slot_inputs[pc] {

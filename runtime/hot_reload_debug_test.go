@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"testing"
 )
 
@@ -42,71 +41,6 @@ func TestPatchReportsPinnedRevisionWhenOldFramePauses(t *testing.T) {
 	}
 	if event.Generation != 1 || event.ProgramHash != "debug-old" || event.Frame.Generation != 1 || event.Frame.ProgramHash != "debug-old" {
 		t.Fatalf("pause event revision = %#v", event)
-	}
-}
-
-func TestStepIntoCodeOnlyRevisionPausesAtProgramCounter(t *testing.T) {
-	oldArtifact := patchCallArtifact(10, 1)
-	callPC := len(oldArtifact.Functions[0].Code.Instructions) - 3
-	setTestInstructionLocations(t, &oldArtifact, testInstructionLocation{function: "fn.entry", pc: callPC, line: 8, column: 1})
-	oldProgram := patchTestProgram(t, oldArtifact, "mixed-step-old")
-	newProgram := patchTestProgram(t, patchCallArtifact(100, 2), "mixed-step-new").WithoutSymbols()
-	instance, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cleanupTestInstance(t, instance)
-	execution, err := instance.Start("run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state, _, err := execution.PollSteps(1); err != nil || state != ExecutionRunning {
-		t.Fatalf("initial poll = %s, %v", state, err)
-	}
-	plan, err := instance.PreparePatch(context.Background(), newProgram)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := instance.ApplyPatch(plan); err != nil {
-		t.Fatal(err)
-	}
-	if err := execution.RequestPause(); err != nil {
-		t.Fatal(err)
-	}
-	if state, err := execution.Poll(); err != nil || state != ExecutionPaused {
-		t.Fatalf("pause poll = %s, %v", state, err)
-	}
-	if _, err := execution.StepInto(); err != nil {
-		t.Fatal(err)
-	}
-	for polls := 0; polls < 4 && execution.State() == ExecutionRunning; polls++ {
-		if _, err := execution.Poll(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if execution.State() != ExecutionPaused {
-		t.Fatalf("step to call state = %s", execution.State())
-	}
-	if _, err := execution.StepInto(); err != nil {
-		t.Fatal(err)
-	}
-	for polls := 0; polls < 4 && execution.State() == ExecutionRunning; polls++ {
-		if _, err := execution.Poll(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if execution.State() != ExecutionPaused {
-		t.Fatalf("step into code-only frame state = %s", execution.State())
-	}
-	snapshot, err := execution.DebugSnapshot()
-	if err != nil || len(snapshot.Frames) == 0 || snapshot.Frames[0].Generation != 2 || snapshot.Frames[0].HasSymbols || snapshot.Frames[0].FunctionID != "fn.value" {
-		t.Fatalf("code-only step snapshot = %#v, %v", snapshot, err)
-	}
-	if _, err := execution.StepInto(); !errors.Is(err, ErrDebugSymbolsUnavailable) || execution.State() != ExecutionPaused {
-		t.Fatalf("second code-only step = state %s, error %v", execution.State(), err)
-	}
-	if _, err := execution.Continue(); err != nil {
-		t.Fatal(err)
 	}
 }
 

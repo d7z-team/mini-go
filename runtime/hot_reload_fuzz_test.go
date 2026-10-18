@@ -12,32 +12,32 @@ import (
 
 func FuzzPatchTransaction(f *testing.F) {
 	for _, seed := range []struct {
-		oldDelta, newDelta    int64
-		shape, apply, symbols uint8
+		oldDelta, newDelta       int64
+		mutation, apply, symbols uint8
 	}{{1, 2, 0, 0, 0}, {-3, 5, 1, 0, 1}, {1, 2, 2, 0, 2}, {1, 2, 3, 0, 3}, {1, 2, 4, 0, 0}, {1, 2, 5, 0, 1}, {1, 2, 6, 0, 2}, {1, 2, 7, 0, 3}, {1, 2, 0, 1, 0}, {1, 2, 0, 2, 1}, {1, 2, 0, 3, 2}} {
-		f.Add(seed.oldDelta, seed.newDelta, seed.shape, seed.apply, seed.symbols)
+		f.Add(seed.oldDelta, seed.newDelta, seed.mutation, seed.apply, seed.symbols)
 	}
-	f.Fuzz(func(t *testing.T, oldInput, newInput int64, shapeInput, applyInput, symbolInput uint8) {
+	f.Fuzz(func(t *testing.T, oldInput, newInput int64, mutationInput, applyInput, symbolInput uint8) {
 		oldDelta, newDelta := oldInput%1000, newInput%1000
 		if newDelta == oldDelta {
 			newDelta++
 		}
-		shapeMode, applyMode := shapeInput%8, applyInput%3
+		mutationMode, applyMode := mutationInput%8, applyInput%3
 		base := patchTestProgram(t, patchGlobalArtifact(oldDelta), "fuzz-base")
 		if symbolInput&1 != 0 {
 			base = base.WithoutSymbols()
 		}
 		targetArtifact := patchGlobalArtifact(newDelta)
-		compatible := shapeMode < 2
-		switch shapeMode {
+		compatible := mutationMode != 4
+		switch mutationMode {
 		case 1:
 			targetArtifact.Functions = append(targetArtifact.Functions, ir.Function{
 				ID: "fn.added", Signature: testSignature("function() Void"),
-				Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+				Code: testMicroCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 			})
 		case 2:
 			targetArtifact.Globals[0].Type = testType("String")
-			targetArtifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
+			targetArtifact.Functions[0].Code = testMicroCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 		case 3:
 			targetArtifact.Exports = nil
 		case 5:
@@ -55,7 +55,7 @@ func FuzzPatchTransaction(f *testing.F) {
 			target = target.WithoutSymbols()
 		}
 		target.code.image.Target.Tags = append([]string(nil), base.code.image.Target.Tags...)
-		if shapeMode == 4 {
+		if mutationMode == 4 {
 			target.code.image.Root = "fuzz/other"
 		}
 
@@ -78,13 +78,13 @@ func FuzzPatchTransaction(f *testing.F) {
 		plan, err := instance.PreparePatch(context.Background(), target)
 		if !compatible {
 			if err == nil {
-				t.Fatalf("shape mode %d unexpectedly prepared", shapeMode)
+				t.Fatalf("mutation mode %d unexpectedly prepared", mutationMode)
 			}
 			requireUnchangedPatchInstance(t, instance, baseRevision, baseRevisionState, cell, baseEntries, oldDelta+oldDelta)
 			return
 		}
 		if err != nil {
-			t.Fatalf("compatible shape failed to prepare: %v", err)
+			t.Fatalf("valid mutation failed to prepare: %v", err)
 		}
 
 		switch applyMode {
@@ -95,15 +95,27 @@ func FuzzPatchTransaction(f *testing.F) {
 			if instance.Revision().SymbolsHash != target.SymbolsHash() {
 				t.Fatalf("patched symbols = %q, want %q", instance.Revision().SymbolsHash, target.SymbolsHash())
 			}
-			if instance.vm.rootModule().state.globals["global.total"] != cell {
-				t.Fatal("successful patch replaced global slot")
+			globalID := "global.total"
+			preserved := mutationMode != 2 && mutationMode != 6
+			if mutationMode == 6 {
+				globalID = "global.changed"
+			}
+			reused := instance.vm.rootModule().state.globals[globalID] == cell
+			if reused != preserved {
+				t.Fatalf("global reuse for mutation %d = %v, want %v", mutationMode, reused, preserved)
 			}
 			result, err := instance.Call(context.Background(), "run")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if value, ok := result.Values[0].Int64(); !ok || value != oldDelta+newDelta {
-				t.Fatalf("patched value = %#v, want %d", result.Values, oldDelta+newDelta)
+			want := oldDelta + newDelta
+			if mutationMode == 2 {
+				want = 0
+			} else if mutationMode == 6 {
+				want = newDelta
+			}
+			if value, ok := result.Values[0].Int64(); !ok || value != want {
+				t.Fatalf("patched value = %#v, want %d", result.Values, want)
 			}
 		case 1:
 			instance.vm.rootModule().state.beginInitialization()

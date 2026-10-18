@@ -298,13 +298,13 @@ closing:
 	}
 }
 
-func TestRPCFailedPatchKeepsPendingCallAndSession(t *testing.T) {
+func TestRPCPatchKeepsPendingCallAndSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	const root = "rpcfixture/hot_patch_failed"
 	backend := cache.NewMemoryBackend()
 	oldProgram := prepareRPCPatchProgram(t, root, rpcPatchMainSource("0"), backend)
-	invalidProgram := prepareRPCPatchProgram(t, root, rpcPatchInvalidMainSource(), backend)
+	nextProgram := prepareRPCPatchProgram(t, root, rpcPatchExtendedMainSource(), backend)
 	handler := &hotPatchLaboratory{started: make(chan struct{}), release: make(chan struct{})}
 	provider, err := service.NewLaboratoryProvider(handler)
 	if err != nil {
@@ -345,11 +345,15 @@ func TestRPCFailedPatchKeepsPendingCallAndSession(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 pending:
-	if _, err := instance.PreparePatch(ctx, invalidProgram); err == nil {
-		t.Fatal("incompatible patch was accepted")
+	plan, err := instance.PreparePatch(ctx, nextProgram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.ApplyPatch(plan); err != nil {
+		t.Fatal(err)
 	}
 	if got := bridge.opens.Load(); got != 1 {
-		t.Fatalf("failed patch changed FFI session count: %d", got)
+		t.Fatalf("patch changed FFI session count: %d", got)
 	}
 	handler.releaseWait()
 	result, err := execution.Wait(ctx)
@@ -357,14 +361,14 @@ pending:
 		t.Fatal(err)
 	}
 	if value, ok := result.Values[0].Int64(); !ok || value != 73 {
-		t.Fatalf("pending RPC result after failed patch = %#v, want 73", result.Values)
+		t.Fatalf("pending RPC result across patch = %#v, want 73", result.Values)
 	}
 	retained, err := instance.Call(ctx, "ReadRetained")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if value, ok := retained.Values[0].Int64(); !ok || value != 40 {
-		t.Fatalf("resource after failed patch = %#v, want 40", retained.Values)
+		t.Fatalf("resource after patch = %#v, want 40", retained.Values)
 	}
 }
 
@@ -448,7 +452,7 @@ func CloseRetained() int64 {
 `
 }
 
-func rpcPatchInvalidMainSource() string {
+func rpcPatchExtendedMainSource() string {
 	return rpcPatchMainSource("0") + `
 var incompatible int64
 `

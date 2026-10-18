@@ -55,10 +55,31 @@ export function runtimeVector(name, optimization = 2) {
 }
 
 export function sealImage(image) {
-  for (const archive of Object.values(image.packages))
+  for (const archive of Object.values(image.packages)) {
+    for (const fn of archive.artifact.functions ?? []) {
+      const code = fn.code;
+      if (!code) continue;
+      code.instructions = (code.instructions ?? []).map((instruction) =>
+        instruction.length === 3 ? [...instruction, 1] : instruction,
+      );
+      if (!code.blocks) {
+        let executablePC = 0;
+        code.blocks = [];
+        for (const instruction of code.instructions) {
+          if ((instruction[0] & 0xffff) === 14) continue;
+          code.blocks.push({
+            first: executablePC++,
+            count: 1,
+            fallthrough: 0xffff_ffff,
+            cost: instruction[3],
+          });
+        }
+      }
+    }
     archive.artifact_hash = createHash("sha256")
       .update(JSON.stringify(archive.artifact))
       .digest("hex");
+  }
   image.hash = "";
   image.hash = createHash("sha256").update(JSON.stringify(image)).digest("hex");
   return new TextEncoder().encode(JSON.stringify(image));

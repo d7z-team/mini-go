@@ -16,7 +16,7 @@ func FuzzArtifactJSONRoundTrip(f *testing.F) {
 	codeArtifact.Functions = []Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
 		Locals: []Local{{ID: "local.value", Type: testType("Int")}},
-		Code:   testSlotCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+		Code:   testMicroCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	codeJSON, err := EncodeJSON(&codeArtifact)
 	if err != nil {

@@ -111,7 +111,7 @@ func FuzzDebuggerBreakpointUpdates(f *testing.F) {
 			ir.Instruction{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
 		)
 		operands = append(operands, [2][]uint32{nil, {0}}, [2][]uint32{{0}, nil}, [2][]uint32{})
-		artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Bool"}, instructions, operands)}}
+		artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"Bool"}, instructions, operands)}}
 		artifact.Exports = []ir.Export{{Name: "Run", Kind: "function", ID: "fn.entry"}}
 		locations = append(locations, testInstructionLocation{function: "fn.entry", pc: len(instructions) - 3, file: "other.mgo", line: 5, column: 1})
 		setTestInstructionLocations(t, &artifact, locations...)

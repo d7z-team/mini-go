@@ -328,6 +328,8 @@ func retainReachableCode(ctx context.Context, source map[string]ir.Artifact, ent
 			switch instruction.Op {
 			case ir.OpCompareBranch, ir.OpLenCompareBranch:
 				enqueueReachableType(index.table, index.reachableTypes, instruction.Payload.(ir.CompareBranchPayload).Type)
+			case ir.OpUpdateCompareBranch:
+				enqueueReachableType(index.table, index.reachableTypes, instruction.Payload.(ir.UpdateCompareBranchPayload).Type)
 			case ir.OpTypeDispatch:
 				for _, match := range instruction.Payload.(ir.TypeDispatchPayload).Cases {
 					if match.Type.Valid() {

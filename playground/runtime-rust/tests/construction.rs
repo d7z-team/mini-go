@@ -16,7 +16,7 @@ fn struct_construction_fills_defaults_and_preserves_copied_array_fields() {
     let array = json!({"kind":wire::Array,"node":"pair"});
     let record = json!({"kind":wire::Struct,"node":"record"});
     let pointer = json!({"kind":wire::Pointer,"node":"pair.pointer"});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([integer, integer, array, record, pointer]),
         &[
             (
@@ -133,7 +133,7 @@ fn struct_layout_rejects_unknown_and_duplicate_initializers_during_preparation()
         ));
         let mut types = vec![integer.clone(); names.len()];
         types.push(record.clone());
-        let code = support::slot_code(json!(types), &operations);
+        let code = support::micro_code(json!(types), &operations);
         let image = support::image(json!({
             "type_table":{"nodes":[{"id":"record","kind":wire::Struct,
                 "fields":[{"name":"Value","type":integer}]}]},
@@ -151,7 +151,7 @@ fn struct_layout_rejects_unknown_and_duplicate_initializers_during_preparation()
 fn struct_field_paths_follow_declaration_order_across_local_and_temporary_storage() {
     let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
     let record = json!({"kind":wire::Struct,"node":"record"});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([integer, integer, record, integer, integer]),
         &[
             ("const", json!({"constant":"first"}), json!({"outputs":[0]})),

@@ -65,10 +65,9 @@ make doc
 `docs/reference/`。仅补齐未随 Git 分发且 identity 已匹配的镜像时使用 `make artifacts`。
 派生物从事实源生成；改变 schema、envelope 或缓存格式时同步更新所属版本或 identity，并核对 Git 差异。
 
-新增或调整指令时，从 [opcode_contract.go](runtime/bytecode/opcode_contract.go) 更新契约，再生成
-三端描述。验证规则和 slot 生命周期也是格式的一部分：同步检查 compiler 求值顺序、三个 loader、
-执行语义、引用活跃性及调试映射，并补充共享有效与无效语料。数值边界、别名、存储复用和分配失败
-属于跨端行为测试，具体构造留在所属测试中。
+新增或调整指令时，从 [opcode_contract.go](runtime/bytecode/opcode_contract.go) 更新契约并重新生成三端
+描述。同步检查 compiler 求值顺序、三个 loader、执行语义、资源计费和调试映射；跨端输入和预期放入
+[共享测试数据](testdata/README.md)，后端特有构造留在所属测试中。
 
 ### 外部参考
 
@@ -124,7 +123,7 @@ make test-typescript
 
 `make build-typescript` 生成 Go compiler WASM，并通过 Vite 构建 Browser/Node 入口、Worker、WASM
 资源和类型声明。`make test-typescript` 包含严格类型检查与 Vitest 测试，覆盖 Node、浏览器、compiler、
-RPC、Worker 生命周期，以及安装包在 Vite 开发与生产模式下的使用。
+RPC、Worker 生命周期和安装包消费。
 `MINIGO_BROWSERS` 可筛选浏览器；`make pack-typescript` 生成 npm 包。
 SDK 接入与部署见 [TypeScript README](playground/runtime-typescript/README.md)。
 
@@ -158,29 +157,25 @@ MINIGO_DEBUG=cachehash=1,cacheverify=1 go run ./cmd/mini-go check main.mgo
 ### 性能测量
 
 使用 Go benchmark/pprof、`make bench-rust` 或 `make bench-typescript`。固定输入、预期结果、构建参数、
-镜像 identity 和并行度，串行保留多轮原始采样；消融一次只改变一个机制。VM 核心与公开 API、
-load/initialize 与热调用、冷启动与缓存命中分别测量。原始结果和临时 profile 放在 `/tmp`。
+镜像 identity 和并行度，串行保留多轮原始采样；消融一次只改变一个机制。分别测量 VM 核心与公开 API、
+加载与热调用、冷启动与缓存命中。原始结果和临时 profile 放在 `/tmp`。
 
-联合比较 elapsed、总 steps、steps/s、opcode、分配与 GC 工作量，保持结果、资源归属和计费契约。
-运行时消融使用同一镜像，编译优化使用等价源码；执行器改动覆盖 Go、Rust、Node、Chromium 和 Firefox。
-性能测量用于诊断，正确性测试以结果与预算断言验收。
+报告至少包含 elapsed、逻辑 steps、dispatch、steps/s、高频 opcode、分配和回收工作量。运行时消融使用
+同一镜像，编译优化使用等价源码；执行器改动覆盖 Go、Rust、Node、Chromium 和 Firefox。性能测量用于诊断，
+正确性测试仍以结果、生命周期和预算契约验收。
 
-TypeScript 的 `profile: true` 统计 opcode、函数调用和步数，`profileTiming: true` 增加逐步 self time。
-宿主成本使用 CPU/heap sampling 分析；guest allocation、JavaScript heap 差值和采样次数均不能代表
-宿主精确分配次数。GC 计时只覆盖回收阶段，整体耗时还包含编码、句柄访问、分配和宿主 GC。
+TypeScript 的 `profile: true` 记录 step、dispatch、opcode 和函数调用；`profileTiming: true` 增加逐步
+self time。宿主分配使用 CPU/heap sampling 分析，不能用 guest allocation 或 JavaScript heap 差值替代。
 
 ### 观测口径
 
 | 指标 | 含义 |
 | --- | --- |
-| scope steps / opcode | guest 工作量与指令构成 |
+| logical steps / dispatch / opcode | guest 工作量、解释器调度和指令构成 |
 | PC profile | 函数、revision 和源码热点 |
-| occupied / reserved bytes | 当前逻辑存储占用与尚未提交的预留；占用包含尚未回收的垃圾 |
-| last major reachable bytes | 上次 major 回收时的可达快照 |
-| total allocated bytes / allocations | 已成功建立的逻辑存储累计量，GC 搬迁不增加该量 |
-| minor / major、roots / cards / references、copy / promote | 回收频率、扫描和搬迁工作量 |
-| resident page bytes | 受管页、目录、frame 与回收工作空间等实际接纳容量 |
-| RSS / JavaScript heap / WASM 线性内存 | 宿主资源，不属于 guest 计费 |
+| occupied / reserved / total allocated | 当前逻辑占用、待提交预留和累计分配 |
+| collection、roots、references、copy | 回收频率与扫描、搬迁工作量 |
+| resident bytes / RSS / JavaScript heap | VM 保留容量与宿主资源 |
 
 逻辑存储成本的事实源是 [storage_cost.go](runtime/bytecode/storage_cost.go)，由生成器同步到三端；
 物理布局与 guest 计费分开。共享向量见 [storage_cost.json](testdata/runtime/storage_cost.json)，

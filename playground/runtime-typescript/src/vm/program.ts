@@ -37,12 +37,7 @@ import {
   type TypeRef,
   type Value,
 } from "./value";
-import {
-  operatorCode,
-  unaryOperatorCode,
-  type OperatorCode,
-  type UnaryOperatorCode,
-} from "./operators";
+import { OperatorCode, operatorCode, unaryOperatorCode, type UnaryOperatorCode } from "./operators";
 import type { FrameReferences } from "./reference-plan";
 import { prepareFrameReferences } from "./reference-plan";
 
@@ -67,8 +62,46 @@ export interface PreparedSelectCase {
   ok?: number;
 }
 
+export type PreparedAddressPath =
+  | { readonly kind: "field"; readonly field: string }
+  | { readonly kind: "index"; readonly local: number }
+  | { readonly kind: "indirect" };
+
+export interface PreparedAddressPlan {
+  readonly kind: "local" | "upvalue" | "global" | "export";
+  readonly index: number;
+  readonly module?: PreparedModule;
+  readonly path: readonly PreparedAddressPath[];
+  readonly targetType: RuntimeType;
+}
+
+export interface PreparedTypeCase {
+  readonly type?: RuntimeType;
+  readonly binding?: number;
+  readonly target: number;
+  readonly original: boolean;
+}
+
+export interface PreparedTypeDispatch {
+  readonly subject: number;
+  readonly defaultBinding?: number;
+  readonly defaultTarget: number;
+  readonly cases: readonly PreparedTypeCase[];
+}
+
+export interface PreparedExport {
+  readonly kind: string;
+  readonly id: string;
+  readonly type?: RuntimeType;
+  readonly untyped: boolean;
+}
+
 export interface PreparedInstruction {
   opcode: number;
+  /** Compiler-selected primitive lanes: input in low byte, output in high byte. */
+  mode: number;
+  /** Source-level fuel represented by this dispatch. */
+  logicalCost: number;
   name: string;
   /** Index in the wire instruction array, retained for source/debug mapping. */
   wirePC: number;
@@ -78,6 +111,8 @@ export interface PreparedInstruction {
   inputScratch: boolean;
   /** Effects not already accounted for at a value storage boundary. */
   changesReachability: boolean;
+  /** Loader-proven private scalar operation with no allocation or fault exit. */
+  fastScalar?: boolean;
   target?: number;
   local?: number;
   upvalue?: number;
@@ -87,9 +122,27 @@ export interface PreparedInstruction {
   /** First two operands and first two outputs are read without inputScratch. */
   input0?: readonly [number, number];
   input1?: readonly [number, number];
+  input2?: readonly [number, number];
   output0?: number;
   output1?: number;
   operatorCode?: OperatorCode | UnaryOperatorCode;
+  updateOperatorCode?: OperatorCode;
+  /** Source primitive for the allocation-free scalar lane path. */
+  scalarPrimitive?: number;
+  rebind?: boolean;
+  negate?: boolean;
+  when?: boolean;
+  ownerDepth?: number;
+  expand?: boolean;
+  hasCapacity?: boolean;
+  elementCount?: number;
+  entryCount?: number;
+  minMax?: "min" | "max";
+  modulePath?: string;
+  functionID?: string;
+  exportName?: string;
+  structFields?: readonly string[];
+  selectDefault?: boolean;
   /** Valid only in the caller's source Program; old logical calls resolve current by identity. */
   callTarget?: PreparedFunction;
   method?: string;
@@ -98,26 +151,39 @@ export interface PreparedInstruction {
   fieldPath?: readonly number[];
   /** Prepared frame-local index for map iterator state. */
   iteratorLocal?: number;
-  captures?: readonly Record<string, unknown>[];
+  address?: PreparedAddressPlan;
+  captures?: readonly PreparedAddressPlan[];
+  typeDispatch?: PreparedTypeDispatch;
+  exportModule?: PreparedModule;
+  exported?: PreparedExport;
   selectIndex?: number;
   selectCases?: readonly PreparedSelectCase[];
+}
+
+export interface PreparedBlock {
+  readonly first: number;
+  readonly count: number;
+  readonly fallthrough?: number;
+  readonly logicalCost: number;
 }
 
 export interface PreparedFunction {
   readonly id: string;
   readonly module: PreparedModule;
-  readonly revisionLocal: boolean;
   readonly signature: FunctionSignature;
   readonly localTypes: RuntimeType[];
-  readonly localIndexes: Map<string, number>;
+  readonly localIndexes: ReadonlyMap<string, number>;
   readonly cellLocals: ReadonlySet<number>;
   readonly resultLocals: number[];
   readonly upvalueTypes: RuntimeType[];
-  readonly upvalueIndexes: Map<string, number>;
+  readonly upvalueIndexes: ReadonlyMap<string, number>;
   readonly slotTypes: RuntimeType[];
   readonly maxInputArity: number;
   readonly instructions: PreparedInstruction[];
-  readonly labels: Map<string, number>;
+  readonly blocks: readonly PreparedBlock[];
+  readonly blockAtPC: readonly number[];
+  readonly fastRunEnd: readonly number[];
+  readonly labels: ReadonlyMap<string, number>;
   /** Wire-to-executable mapping after label-only instructions are stripped. */
   readonly wireToExecutablePC: readonly number[];
   /** Executable instruction to original wire PC mapping. */
@@ -130,13 +196,15 @@ export interface PreparedModule {
   readonly packageName: string;
   readonly registry: TypeRegistry;
   readonly constants: Value[];
+  /** Pair-u32 cache for integer constants; two words per constant. */
+  readonly constantIntegerBits: Uint32Array;
   readonly constantUntyped: boolean[];
-  readonly constantIndexes: Map<string, number>;
+  readonly constantIndexes: ReadonlyMap<string, number>;
   readonly globals: Cell[];
-  readonly globalIndexes: Map<string, number>;
-  readonly functions: Map<string, PreparedFunction>;
-  readonly exports: Map<string, { kind: string; id: string; type?: RuntimeType; untyped: boolean }>;
-  readonly requirements: Set<string>;
+  readonly globalIndexes: ReadonlyMap<string, number>;
+  readonly functions: ReadonlyMap<string, PreparedFunction>;
+  readonly exports: ReadonlyMap<string, PreparedExport>;
+  readonly requirements: ReadonlySet<string>;
   readonly artifactHash: string;
 }
 
@@ -182,16 +250,85 @@ export interface ProgramEntry {
   function: string;
 }
 
+class ReadonlyMapSnapshot<K, V> implements ReadonlyMap<K, V> {
+  readonly #values: Map<K, V>;
+
+  constructor(source: ReadonlyMap<K, V>) {
+    this.#values = new Map(source);
+  }
+
+  get size(): number {
+    return this.#values.size;
+  }
+  get(key: K): V | undefined {
+    return this.#values.get(key);
+  }
+  has(key: K): boolean {
+    return this.#values.has(key);
+  }
+  entries(): MapIterator<[K, V]> {
+    return this.#values.entries();
+  }
+  keys(): MapIterator<K> {
+    return this.#values.keys();
+  }
+  values(): MapIterator<V> {
+    return this.#values.values();
+  }
+  forEach(callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void, thisArg?: unknown): void {
+    for (const [key, value] of this.#values) callback.call(thisArg, value, key, this);
+  }
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.#values[Symbol.iterator]();
+  }
+}
+
+class ReadonlySetSnapshot<T> implements ReadonlySet<T> {
+  readonly #values: Set<T>;
+
+  constructor(source: ReadonlySet<T>) {
+    this.#values = new Set(source);
+  }
+
+  get size(): number {
+    return this.#values.size;
+  }
+  has(value: T): boolean {
+    return this.#values.has(value);
+  }
+  entries(): SetIterator<[T, T]> {
+    return this.#values.entries();
+  }
+  keys(): SetIterator<T> {
+    return this.#values.keys();
+  }
+  values(): SetIterator<T> {
+    return this.#values.values();
+  }
+  forEach(callback: (value: T, key: T, set: ReadonlySet<T>) => void, thisArg?: unknown): void {
+    for (const value of this.#values) callback.call(thisArg, value, value, this);
+  }
+  [Symbol.iterator](): SetIterator<T> {
+    return this.#values[Symbol.iterator]();
+  }
+}
+
 export class Program {
+  readonly #entries: Map<string, ProgramEntry>;
+  readonly #modules: Map<string, PreparedModule>;
+
   private constructor(
     readonly hash: string,
     readonly root: string,
     readonly compilerID: string,
     readonly targetTags: readonly string[],
     readonly capabilities: readonly string[],
-    readonly entries: Map<string, ProgramEntry>,
-    readonly modules: Map<string, PreparedModule>,
-  ) {}
+    entries: Map<string, ProgramEntry>,
+    modules: Map<string, PreparedModule>,
+  ) {
+    this.#entries = new Map(entries);
+    this.#modules = new Map(modules);
+  }
 
   static async load(bytes: Uint8Array, limits: LoadOptions): Promise<Program> {
     const document = await decodeJson(bytes, limits.maxImageBytes);
@@ -295,6 +432,9 @@ export class Program {
         packageName,
         registry,
         constants: [],
+        constantIntegerBits: new Uint32Array(
+          array(artifact.constants, `${archivePath}.artifact.constants`).length * 2,
+        ),
         constantUntyped: [],
         constantIndexes: new Map(),
         globals: [],
@@ -318,6 +458,7 @@ export class Program {
           fn.localTypes.map((type) => hasManagedReference(type)),
           fn.slotTypes.map((type) => hasManagedReference(type)),
         );
+    sealPreparedProgram(modules);
 
     const entries = new Map<string, ProgramEntry>();
     for (const [index, item] of array(image.entries, "image.entries").entries()) {
@@ -334,7 +475,7 @@ export class Program {
         fail("entry must belong to the root module", `${path}.module_path`, "link_error");
       if (!modules.get(prepared.module)?.functions.has(prepared.function))
         fail("entry function does not exist", path);
-      entries.set(prepared.name, prepared);
+      entries.set(prepared.name, Object.freeze(prepared));
     }
     if (!entries.size) fail("execution image contains no entries", "image.entries");
     const imageHash = string(image.hash, "image.hash");
@@ -344,9 +485,21 @@ export class Program {
   }
 
   function(module: string, id: string): PreparedFunction {
-    const fn = this.modules.get(module)?.functions.get(id);
+    const fn = this.#modules.get(module)?.functions.get(id);
     if (!fn) throw new VMError(`unknown function ${module}.${id}`, "link_error", "function");
     return fn;
+  }
+
+  entry(name: string): ProgramEntry | undefined {
+    return this.#entries.get(name);
+  }
+
+  module(path: string): PreparedModule | undefined {
+    return this.#modules.get(path);
+  }
+
+  moduleValues(): IterableIterator<PreparedModule> {
+    return this.#modules.values();
   }
 }
 
@@ -358,8 +511,14 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     if (module.constantIndexes.has(id)) fail("duplicate constant", `${path}.id`);
     if (!constant.type || constant.value === undefined) fail("invalid constant", path);
     const type = module.registry.runtime(parseTypeRef(constant.type, `${path}.type`));
-    module.constantIndexes.set(id, module.constants.length);
-    module.constants.push(decodeConstant(type, constant.value));
+    (module.constantIndexes as Map<string, number>).set(id, module.constants.length);
+    const decoded = decodeConstant(type, constant.value);
+    module.constants.push(decoded);
+    if (decoded.kind === "int" || decoded.kind === "uint") {
+      const bits = BigInt.asUintN(64, decoded.value as bigint);
+      module.constantIntegerBits[index * 2] = Number(bits & 0xffff_ffffn);
+      module.constantIntegerBits[index * 2 + 1] = Number(bits >> 32n);
+    }
     module.constantUntyped.push(boolean(constant.untyped, `${path}.untyped`));
   }
   for (const [index, item] of array(artifact.globals, `${module.path}.globals`).entries()) {
@@ -369,7 +528,7 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     if (module.globalIndexes.has(id)) fail("duplicate global", `${path}.id`);
     if (!global.type) fail("global is missing type", `${path}.type`);
     const type = module.registry.runtime(parseTypeRef(global.type, `${path}.type`));
-    module.globalIndexes.set(id, module.globals.length);
+    (module.globalIndexes as Map<string, number>).set(id, module.globals.length);
     module.globals.push(cell(zero(type)));
   }
   for (const [index, item] of array(artifact.exports, `${module.path}.exports`).entries()) {
@@ -384,7 +543,12 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     };
     if (exported.type)
       declaration.type = module.registry.runtime(parseTypeRef(exported.type, `${path}.type`));
-    module.exports.set(name, declaration);
+    (
+      module.exports as Map<
+        string,
+        { kind: string; id: string; type?: RuntimeType; untyped: boolean }
+      >
+    ).set(name, declaration);
   }
 
   const functions = array(artifact.functions, `${module.path}.functions`);
@@ -394,7 +558,7 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     const id = string(raw.id, `${path}.id`);
     if (module.functions.has(id)) fail("duplicate function", `${path}.id`);
     if (!raw.signature || !raw.code) fail("function is incomplete", path);
-    const code = schemaObject(raw.code, `${path}.code`, WIRE_FIELDS.SlotCode);
+    const code = schemaObject(raw.code, `${path}.code`, WIRE_FIELDS.MicroCode);
     const localTypes: RuntimeType[] = [];
     const localIndexes = new Map<string, number>();
     for (const [localIndex, localValue] of array(raw.locals, `${path}.locals`).entries()) {
@@ -436,11 +600,22 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     let maxInputArity = 0;
     for (const [pc, item] of array(code.instructions, `${path}.code.instructions`).entries()) {
       const instructionPath = `${path}.code.instructions[${pc}]`;
-      if (!Array.isArray(item) || item.length !== 3)
-        fail("instruction must contain opcode, descriptor and operands", instructionPath);
-      const opcode = integer(item[0], `${instructionPath}[0]`);
+      if (!Array.isArray(item) || item.length !== 4)
+        fail(
+          "instruction must contain packed opcode/mode, descriptor, operands and cost",
+          instructionPath,
+        );
+      const opcodeAndMode = integer(item[0], `${instructionPath}[0]`);
+      validateU32(opcodeAndMode, `${instructionPath}[0]`);
+      const opcode = opcodeAndMode & 0xffff;
+      const mode = opcodeAndMode >>> 16;
       const descriptorIndex = integer(item[1], `${instructionPath}[1]`);
       const operandIndex = integer(item[2], `${instructionPath}[2]`);
+      const logicalCost = integer(item[3], `${instructionPath}[3]`);
+      validateU32(descriptorIndex, `${instructionPath}[1]`);
+      validateU32(operandIndex, `${instructionPath}[2]`);
+      validateU32(logicalCost, `${instructionPath}[3]`);
+      if (logicalCost === 0) fail("instruction cost must be positive", `${instructionPath}[3]`);
       const name = OPCODE_NAMES[opcode];
       if (!name || opcode === 0) fail("unknown opcode", `${instructionPath}[0]`);
       const tableName = OPCODE_DESCRIPTOR_TABLES[opcode]!;
@@ -476,6 +651,8 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
       executableToWirePC.push(pc);
       const prepared = {
         opcode,
+        mode,
+        logicalCost,
         name,
         wirePC: pc,
         descriptor,
@@ -501,13 +678,54 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
           "select",
         ].includes(name),
         inputScratch:
-          arity[0] > 2 ||
+          (arity[0] > 2 && name !== "update_compare_branch") ||
           [17, 21, 22, 23, 24, 26, 27, 28, 29, 35, 38, 65, 66, 67, 72].includes(opcode),
       });
       maxInputArity = Math.max(maxInputArity, prepared.operands.inputs.length);
       executablePC++;
     }
     wireToExecutablePC.push(executablePC);
+    const blocks: PreparedBlock[] = [];
+    const blockAtPC = new Array<number>(instructions.length);
+    let expectedFirst = 0;
+    for (const [blockIndex, item] of array(code.blocks, `${path}.code.blocks`).entries()) {
+      const blockPath = `${path}.code.blocks[${blockIndex}]`;
+      const rawBlock = schemaObject(item, blockPath, WIRE_FIELDS.BasicBlock);
+      const first = integer(rawBlock.first, `${blockPath}.first`);
+      const count = integer(rawBlock.count, `${blockPath}.count`);
+      const fallthrough = integer(rawBlock.fallthrough, `${blockPath}.fallthrough`);
+      const logicalCost = integer(rawBlock.cost, `${blockPath}.cost`);
+      for (const [value, field] of [
+        [first, "first"],
+        [count, "count"],
+        [fallthrough, "fallthrough"],
+        [logicalCost, "cost"],
+      ] as const)
+        validateU32(value, `${blockPath}.${field}`);
+      if (first !== expectedFirst || count === 0 || first + count > instructions.length)
+        fail("basic blocks must be contiguous non-empty executable ranges", blockPath);
+      let calculatedCost = 0;
+      for (let pc = first; pc < first + count; pc++) {
+        calculatedCost += instructions[pc]!.logicalCost;
+        blockAtPC[pc] = blockIndex;
+      }
+      if (logicalCost !== calculatedCost) fail("basic block cost mismatch", `${blockPath}.cost`);
+      const prepared: PreparedBlock = {
+        first,
+        count,
+        logicalCost,
+        ...(fallthrough === MAX_U32 ? {} : { fallthrough }),
+      };
+      if (
+        prepared.fallthrough !== undefined &&
+        prepared.fallthrough >= array(code.blocks, `${path}.code.blocks`).length
+      )
+        fail("basic block fallthrough is out of range", `${blockPath}.fallthrough`);
+      blocks.push(Object.freeze(prepared));
+      expectedFirst += count;
+    }
+    if (instructions.length !== 0 && (blocks.length === 0 || expectedFirst !== instructions.length))
+      fail("basic blocks do not cover executable instructions", `${path}.code.blocks`);
     const seenResults = new Set<string>();
     const resultLocals = array(raw.result_locals, `${path}.result_locals`).map(
       (result, resultIndex) => {
@@ -549,7 +767,6 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
     const fn: PreparedFunction = {
       id,
       module,
-      revisionLocal: boolean(raw.revision_local, `${path}.revision_local`),
       signature,
       localTypes,
       localIndexes,
@@ -560,11 +777,60 @@ function prepareModule(module: PreparedModule, artifact: Record<string, JsonValu
       slotTypes,
       maxInputArity,
       instructions,
+      blocks,
+      blockAtPC,
+      fastRunEnd: new Array<number>(instructions.length).fill(0),
       labels,
       wireToExecutablePC,
       executableToWirePC,
     };
-    module.functions.set(id, fn);
+    (module.functions as Map<string, PreparedFunction>).set(id, fn);
+  }
+}
+
+function sealPreparedProgram(modules: Map<string, PreparedModule>): void {
+  for (const module of modules.values()) {
+    for (const fn of module.functions.values()) {
+      Object.defineProperties(fn, {
+        localIndexes: { value: new ReadonlyMapSnapshot(fn.localIndexes) },
+        upvalueIndexes: { value: new ReadonlyMapSnapshot(fn.upvalueIndexes) },
+        labels: { value: new ReadonlyMapSnapshot(fn.labels) },
+      });
+      Object.freeze(fn.localTypes);
+      Object.freeze(fn.resultLocals);
+      Object.freeze(fn.upvalueTypes);
+      Object.freeze(fn.slotTypes);
+      Object.freeze(fn.wireToExecutablePC);
+      Object.freeze(fn.executableToWirePC);
+      Object.freeze(fn.blocks);
+      Object.freeze(fn.blockAtPC);
+      Object.freeze(fn.fastRunEnd);
+      for (const instruction of fn.instructions) {
+        Object.freeze(instruction.operands.inputs);
+        Object.freeze(instruction.operands.outputs);
+        Object.freeze(instruction.operands.release);
+        Object.freeze(instruction.operands.releaseBefore);
+        Object.freeze(instruction.operands);
+        // The verifier has compiled every static field into typed metadata.
+        // Drop the wire object so execution cannot retain a second decoding
+        // path or observe mutable descriptor state.
+        instruction.descriptor = undefined;
+        Object.freeze(instruction);
+      }
+      Object.freeze(fn.instructions);
+      Object.freeze(fn);
+    }
+    Object.defineProperties(module, {
+      constantIndexes: { value: new ReadonlyMapSnapshot(module.constantIndexes) },
+      globalIndexes: { value: new ReadonlyMapSnapshot(module.globalIndexes) },
+      functions: { value: new ReadonlyMapSnapshot(module.functions) },
+      exports: { value: new ReadonlyMapSnapshot(module.exports) },
+      requirements: { value: new ReadonlySetSnapshot(module.requirements) },
+    });
+    for (const exported of module.exports.values()) Object.freeze(exported);
+    Object.freeze(module.constants);
+    Object.freeze(module.constantUntyped);
+    Object.freeze(module);
   }
 }
 
@@ -603,7 +869,7 @@ function validateRequirements(
         if (!dependency.exports.has(name) && !dependency.registry.hasNamed(dependencyPath, name))
           fail("required export is missing", `${path}.exports[${exportIndex}]`, "missing_export");
       }
-      owner.requirements.add(dependencyPath);
+      (owner.requirements as Set<string>).add(dependencyPath);
     }
   }
 
@@ -648,6 +914,79 @@ function isIntegerScalar(type: RuntimeType): boolean {
   );
 }
 
+function underlyingKind(type: RuntimeType): number {
+  return type.registry.underlying(type).ref.kind;
+}
+
+function resolveAlias(type: RuntimeType): RuntimeType {
+  const seen = new Set<string>();
+  for (;;) {
+    const node = type.registry.node(type);
+    if (!node?.alias || !node.alias_target) return type;
+    const key = `${type.module}\0${node.id}`;
+    if (seen.has(key)) fail("recursive type alias", `${type.module}.type_table`);
+    seen.add(key);
+    type = type.registry.runtime(node.alias_target);
+  }
+}
+
+function primitiveKind(type: RuntimeType): number | undefined {
+  const ref = type.registry.underlying(type).ref;
+  return ref.kind === Kind.Primitive ? ref.primitive : undefined;
+}
+
+function elementType(type: RuntimeType): RuntimeType | undefined {
+  return type.registry.element(type);
+}
+
+function fieldsOfType(
+  type: RuntimeType,
+): readonly { name: string; type: RuntimeType; embedded: boolean }[] {
+  const underlying = type.registry.underlying(type);
+  const node = underlying.registry.node(underlying);
+  return (
+    underlying.dynamic?.fields ??
+    (node?.fields ?? []).map((field) => ({
+      name: field.name,
+      type: underlying.registry.runtime(field.type),
+      embedded: field.embedded,
+    }))
+  );
+}
+
+function functionTypeSignature(
+  type: RuntimeType,
+): { params: RuntimeType[]; results: RuntimeType[]; variadic: boolean } | undefined {
+  const underlying = type.registry.underlying(type);
+  if (underlying.ref.kind !== Kind.Function) return undefined;
+  if (underlying.dynamic)
+    return {
+      params: [...(underlying.dynamic.params ?? [])],
+      results: [...(underlying.dynamic.results ?? [])],
+      variadic: underlying.dynamic.variadic ?? false,
+    };
+  const signature = underlying.registry.node(underlying)?.signature;
+  return signature
+    ? {
+        params: signature.params.map((item) => underlying.registry.runtime(item.type)),
+        results: signature.results.map((item) => underlying.registry.runtime(item)),
+        variadic: signature.variadic,
+      }
+    : undefined;
+}
+
+function isNilAssignable(type: RuntimeType): boolean {
+  return new Set<number>([
+    Kind.Any,
+    Kind.Interface,
+    Kind.Pointer,
+    Kind.Slice,
+    Kind.Map,
+    Kind.Function,
+    Kind.Waitable,
+  ]).has(underlyingKind(type));
+}
+
 function validatePreparedProgram(modules: Map<string, PreparedModule>): void {
   for (const module of modules.values()) {
     for (const [name, exported] of module.exports) {
@@ -675,18 +1014,54 @@ function validateFunction(fn: PreparedFunction, modules: Map<string, PreparedMod
     const path = `${fn.module.path}.${fn.id}.instructions[${pc}]`;
     validateOperands(fn, instruction, path);
     validateDescriptor(fn, instruction, modules, path);
-    prepareInstructionMetadata(instruction);
+    validateInstructionTypes(fn, instruction, path);
+    prepareInstructionMetadata(fn, instruction);
   }
   validateSlotInitialization(fn);
+  for (const block of fn.blocks) {
+    const end = block.first + block.count;
+    for (let start = block.first; start < end; ) {
+      if (!fn.instructions[start]!.fastScalar) {
+        start++;
+        continue;
+      }
+      let runEnd = start + 1;
+      while (runEnd < end && fn.instructions[runEnd]!.fastScalar) runEnd++;
+      for (let pc = start; pc < runEnd; pc++) (fn.fastRunEnd as number[])[pc] = runEnd;
+      start = runEnd;
+    }
+  }
 }
 
-function prepareInstructionMetadata(instruction: PreparedInstruction): void {
+function prepareAddressPlan(descriptor: Record<string, unknown>): PreparedAddressPlan {
+  const path = descriptorList(descriptor, "path", "address").map((raw) => {
+    const segment = descriptorRecord(raw, "address path");
+    const kind = segment.kind;
+    if (kind === "field")
+      return Object.freeze({ kind, field: segment.field as string }) satisfies PreparedAddressPath;
+    if (kind === "index")
+      return Object.freeze({ kind, local: segment.$index as number }) satisfies PreparedAddressPath;
+    return Object.freeze({ kind: "indirect" }) satisfies PreparedAddressPath;
+  });
+  const plan = {
+    kind: descriptor.kind as PreparedAddressPlan["kind"],
+    index: descriptor.$index as number,
+    path: Object.freeze(path),
+    targetType: descriptor.$targetType as RuntimeType,
+  };
+  const module = descriptor.$module as PreparedModule | undefined;
+  return Object.freeze(module ? { ...plan, module } : plan);
+}
+
+function prepareInstructionMetadata(fn: PreparedFunction, instruction: PreparedInstruction): void {
   const input0 = instruction.operands.inputs[0];
   const input1 = instruction.operands.inputs[1];
+  const input2 = instruction.operands.inputs[2];
   const output0 = instruction.operands.outputs[0];
   const output1 = instruction.operands.outputs[1];
   if (input0 !== undefined) instruction.input0 = input0;
   if (input1 !== undefined) instruction.input1 = input1;
+  if (input2 !== undefined) instruction.input2 = input2;
   if (output0 !== undefined) instruction.output0 = output0;
   if (output1 !== undefined) instruction.output1 = output1;
   const descriptor = instruction.descriptor;
@@ -697,6 +1072,11 @@ function prepareInstructionMetadata(instruction: PreparedInstruction): void {
         ? unaryOperatorCode(descriptor.operator)
         : operatorCode(descriptor.operator);
   }
+  if (instruction.name === "update_compare_branch") {
+    instruction.updateOperatorCode = operatorCode(String(descriptor.update));
+    instruction.operatorCode = operatorCode(String(descriptor.comparison));
+  }
+  if (instruction.name === "min_max") instruction.minMax = descriptor.operator as "min" | "max";
   if (typeof descriptor.$target === "number") instruction.target = descriptor.$target;
   if (typeof descriptor.$local === "number") instruction.local = descriptor.$local;
   if (typeof descriptor.$upvalue === "number") instruction.upvalue = descriptor.$upvalue;
@@ -707,6 +1087,23 @@ function prepareInstructionMetadata(instruction: PreparedInstruction): void {
   if (typeof descriptor.method === "string") instruction.method = descriptor.method;
   if (typeof descriptor.id === "string") instruction.intrinsic = descriptor.id;
   if (typeof descriptor.field === "string") instruction.field = descriptor.field;
+  if (typeof descriptor.module_path === "string")
+    instruction.modulePath = descriptor.module_path || fn.module.path;
+  if (typeof descriptor.function === "string") instruction.functionID = descriptor.function;
+  if (typeof descriptor.export === "string") instruction.exportName = descriptor.export;
+  if (descriptor.rebind === true) instruction.rebind = true;
+  if (descriptor.negate === true) instruction.negate = true;
+  if (descriptor.when === true) instruction.when = true;
+  if (typeof descriptor.owner_depth === "number") instruction.ownerDepth = descriptor.owner_depth;
+  if (descriptor.expand === true) instruction.expand = true;
+  if (descriptor.has_capacity === true) instruction.hasCapacity = true;
+  if (typeof descriptor.element_count === "number")
+    instruction.elementCount = descriptor.element_count;
+  if (typeof descriptor.entry_count === "number") instruction.entryCount = descriptor.entry_count;
+  if (instruction.name === "make_struct")
+    instruction.structFields = Object.freeze(
+      descriptorList(descriptor, "fields", instruction.name).map(String),
+    );
   if (
     (instruction.name === "map_iter_init" ||
       instruction.name === "map_iter_next" ||
@@ -721,11 +1118,38 @@ function prepareInstructionMetadata(instruction: PreparedInstruction): void {
   if (instruction.name === "make_closure") {
     instruction.captures = Object.freeze(
       descriptorList(descriptor, "captures", instruction.name).map((capture) =>
-        descriptorRecord(capture, instruction.name),
+        prepareAddressPlan(descriptorRecord(capture, instruction.name)),
       ),
     );
   }
+  if (instruction.name === "address_of") instruction.address = prepareAddressPlan(descriptor);
+  if (instruction.name === "type_dispatch") {
+    const defaultBinding = descriptor.$default_local as number | undefined;
+    instruction.typeDispatch = Object.freeze({
+      subject: descriptor.$subject as number,
+      ...(defaultBinding === undefined ? {} : { defaultBinding }),
+      defaultTarget: descriptor.$target as number,
+      cases: Object.freeze(
+        descriptorList(descriptor, "cases", instruction.name).map((raw) => {
+          const candidate = descriptorRecord(raw, instruction.name);
+          const type = candidate.$type as RuntimeType | undefined;
+          const binding = candidate.$binding as number | undefined;
+          return Object.freeze({
+            ...(type === undefined ? {} : { type }),
+            ...(binding === undefined ? {} : { binding }),
+            target: candidate.$target as number,
+            original: candidate.original === true,
+          });
+        }),
+      ),
+    });
+  }
+  if (instruction.name === "load_export") {
+    instruction.exportModule = descriptor.$module as PreparedModule;
+    instruction.exported = descriptor.$export as PreparedExport;
+  }
   if (instruction.name === "select") {
+    instruction.selectDefault = descriptor.default === true;
     instruction.selectIndex = descriptor.$index as number;
     instruction.selectCases = Object.freeze(
       descriptorList(descriptor, "cases", instruction.name).map((value) => {
@@ -738,6 +1162,68 @@ function prepareInstructionMetadata(instruction: PreparedInstruction): void {
       }),
     );
   }
+  const inputType = (index: number): RuntimeType | undefined => {
+    const operand = instruction.operands.inputs[index];
+    if (!operand) return undefined;
+    if (operand[0] === 0) return fn.slotTypes[operand[1]];
+    if (operand[0] === 1) return fn.module.constants[operand[1]]?.type;
+    return fn.localTypes[operand[1]];
+  };
+  const scalar = inputType(0) ? primitiveKind(inputType(0)!) : undefined;
+  const directPrimitive =
+    scalar !== undefined &&
+    scalar !== PrimitiveKind.PrimitiveString &&
+    scalar !== PrimitiveKind.PrimitiveComplex64 &&
+    scalar !== PrimitiveKind.PrimitiveComplex128;
+  if (
+    directPrimitive &&
+    instruction.operatorCode !== OperatorCode.Complex &&
+    (["unary", "binary", "compare_branch", "update_compare_branch", "jump_if"].includes(
+      instruction.name,
+    ) ||
+      (instruction.name === "load_local" && !fn.cellLocals.has(instruction.local!)) ||
+      (instruction.name === "store_local" &&
+        !fn.cellLocals.has(instruction.local!) &&
+        !instruction.rebind))
+  )
+    instruction.scalarPrimitive = scalar;
+  else if (["const", "zero"].includes(instruction.name)) {
+    const output = instruction.operands.outputs[0];
+    const type =
+      output === undefined
+        ? undefined
+        : output >= LOCAL_OUTPUT
+          ? fn.localTypes[output - LOCAL_OUTPUT]
+          : fn.slotTypes[output];
+    const outputPrimitive = type ? primitiveKind(type) : undefined;
+    if (
+      outputPrimitive !== undefined &&
+      outputPrimitive !== PrimitiveKind.PrimitiveString &&
+      outputPrimitive !== PrimitiveKind.PrimitiveComplex64 &&
+      outputPrimitive !== PrimitiveKind.PrimitiveComplex128
+    )
+      instruction.scalarPrimitive = outputPrimitive;
+  }
+  const riskyOperator =
+    instruction.operatorCode === OperatorCode.Divide ||
+    instruction.operatorCode === OperatorCode.Remainder ||
+    instruction.operatorCode === OperatorCode.ShiftLeft ||
+    instruction.operatorCode === OperatorCode.ShiftRight;
+  instruction.fastScalar =
+    instruction.logicalCost > 0 &&
+    (instruction.name === "jump" ||
+      (instruction.scalarPrimitive !== undefined &&
+        !riskyOperator &&
+        [
+          "zero",
+          "unary",
+          "binary",
+          "load_local",
+          "store_local",
+          "jump_if",
+          "compare_branch",
+          "update_compare_branch",
+        ].includes(instruction.name)));
 }
 
 function validateOperands(
@@ -950,37 +1436,99 @@ function validateDescriptor(
   };
   const outputType = (output: number): RuntimeType =>
     output >= LOCAL_OUTPUT ? fn.localTypes[output - LOCAL_OUTPUT]! : fn.slotTypes[output]!;
-  const validateAddress = (value: unknown, addressPath: string, allowExport: boolean): void => {
+  const validateAddress = (
+    value: unknown,
+    addressPath: string,
+    allowExport: boolean,
+  ): RuntimeType => {
     const address = descriptorRecord(value, addressPath);
     assertAllowedFields(address, WIRE_FIELDS.AddressPayload, addressPath);
     const kind = descriptorString(address, "kind", addressPath);
-    if (kind === "local")
-      address.$index = localFrom(address, "local", fn.localIndexes, addressPath);
-    else if (kind === "upvalue")
-      address.$index = localFrom(address, "upvalue", fn.upvalueIndexes, addressPath);
-    else if (kind === "global")
-      address.$index = localFrom(address, "global", fn.module.globalIndexes, addressPath);
-    else if (kind === "export" && allowExport) {
+    let current: RuntimeType;
+    if (kind === "local") {
+      const index = localFrom(address, "local", fn.localIndexes, addressPath)!;
+      address.$index = index;
+      current = fn.localTypes[index]!;
+    } else if (kind === "upvalue") {
+      const index = localFrom(address, "upvalue", fn.upvalueIndexes, addressPath)!;
+      address.$index = index;
+      current = fn.upvalueTypes[index]!;
+    } else if (kind === "global") {
+      const index = localFrom(address, "global", fn.module.globalIndexes, addressPath)!;
+      address.$index = index;
+      current = fn.module.globals[index]!.read().type;
+    } else if (kind === "export" && allowExport) {
       const modulePath = descriptorString(address, "module_path", addressPath);
       if (!fn.module.requirements.has(modulePath))
         fail("export address module is not a dependency", addressPath, "link_error");
-      const exported = modules
-        .get(modulePath)
-        ?.exports.get(descriptorString(address, "export", addressPath));
+      const target = modules.get(modulePath);
+      const exported = target?.exports.get(descriptorString(address, "export", addressPath));
       if (exported?.kind !== "global")
         fail("export address does not resolve to a global", addressPath, "link_error");
+      const index = target!.globalIndexes.get(exported.id);
+      if (index === undefined) fail("export global does not exist", addressPath, "link_error");
+      address.$module = target;
+      address.$index = index;
+      current = target!.globals[index]!.read().type;
     } else fail("invalid address kind", `${addressPath}.kind`, "invalid_operand");
     for (const [index, raw] of descriptorList(address, "path", addressPath).entries()) {
       const segmentPath = `${addressPath}.path[${index}]`;
       const segment = descriptorRecord(raw, segmentPath);
       assertAllowedFields(segment, WIRE_FIELDS.AddressPathSegment, segmentPath);
       const segmentKind = descriptorString(segment, "kind", segmentPath);
-      if (segmentKind === "field") descriptorString(segment, "field", segmentPath);
-      else if (segmentKind === "index")
-        segment.$index = localFrom(segment, "local", fn.localIndexes, segmentPath);
-      else if (segmentKind !== "indirect")
-        fail("invalid address path segment", `${segmentPath}.kind`, "invalid_operand");
+      if (segmentKind === "field") {
+        const name = descriptorString(segment, "field", segmentPath);
+        if (underlyingKind(current) === Kind.Pointer) {
+          const pointee = elementType(current);
+          if (!pointee) fail("address field pointer has no target", segmentPath, "invalid_operand");
+          current = pointee;
+        }
+        const findField = (type: RuntimeType, active: Set<string>): RuntimeType | undefined => {
+          const key = `${type.module}\0${type.registry.key(type)}`;
+          if (active.has(key)) return undefined;
+          active.add(key);
+          const fields = fieldsOfType(type);
+          const direct = fields.find((candidate) => candidate.name === name);
+          if (direct) return direct.type;
+          for (const candidate of fields) {
+            if (!candidate.embedded) continue;
+            let embedded = candidate.type;
+            if (underlyingKind(embedded) === Kind.Pointer)
+              embedded = elementType(embedded) ?? embedded;
+            const found = findField(embedded, active);
+            if (found) return found;
+          }
+          return undefined;
+        };
+        const field = findField(current, new Set());
+        if (!field) fail("address field does not exist", segmentPath, "invalid_operand");
+        current = field;
+      } else if (segmentKind === "index") {
+        const localIndex = localFrom(segment, "local", fn.localIndexes, segmentPath)!;
+        segment.$index = localIndex;
+        if (!isIntegerScalar(fn.localTypes[localIndex]!))
+          fail("address index local must be an integer", segmentPath, "invalid_operand");
+        if (underlyingKind(current) === Kind.Pointer) {
+          const pointee = elementType(current);
+          if (!pointee || underlyingKind(pointee) !== Kind.Array)
+            fail("address index pointer does not target an array", segmentPath, "invalid_operand");
+          current = pointee;
+        }
+        const element = elementType(current);
+        const currentKind = underlyingKind(current);
+        if (!element || (currentKind !== Kind.Array && currentKind !== Kind.Slice))
+          fail("address index targets a non-sequence", segmentPath, "invalid_operand");
+        current = element;
+      } else if (segmentKind === "indirect") {
+        const element = elementType(current);
+        if (!element || underlyingKind(current) !== Kind.Pointer)
+          fail("address indirect segment targets a non-pointer", segmentPath, "invalid_operand");
+        current = element;
+      } else fail("invalid address path segment", `${segmentPath}.kind`, "invalid_operand");
     }
+    current = resolveAlias(current);
+    address.$targetType = current;
+    return current;
   };
 
   switch (instruction.name) {
@@ -1077,6 +1625,21 @@ function validateDescriptor(
       descriptor.$target = label(descriptor.label, `${path}.label`);
       break;
     }
+    case "update_compare_branch": {
+      const type = validateTypeDescriptor(fn.module, descriptor.type, `${path}.type`);
+      if (!type) fail("update comparison type is unavailable", `${path}.type`, "invalid_operand");
+      if (descriptorString(descriptor, "update", path) !== "+" && descriptor.update !== "-")
+        fail("update comparison requires + or -", `${path}.update`, "invalid_operand");
+      if (
+        !["==", "!=", "<", "<=", ">", ">="].includes(
+          descriptorString(descriptor, "comparison", path),
+        )
+      )
+        fail("invalid update comparison operator", `${path}.comparison`, "invalid_operand");
+      descriptor.$type = type;
+      descriptor.$target = label(descriptor.label, `${path}.label`);
+      break;
+    }
     case "type_dispatch":
       descriptor.$subject = local("subject");
       descriptor.$default_local = local("default_local", true);
@@ -1148,11 +1711,20 @@ function validateDescriptor(
     case "call_value":
       nonNegativeCounts(descriptor, path);
       break;
-    case "spawn":
+    case "spawn": {
       nonNegativeCounts(descriptor, path);
       if (descriptorInteger(descriptor, "result_count", path, true) !== 0)
         fail("spawn cannot produce results", path, "invalid_call");
+      if (descriptor.function !== undefined) {
+        const target = targetModule();
+        const callee = target.functions.get(descriptorString(descriptor, "function", path));
+        if (!callee) fail("spawn target does not exist", path, "link_error");
+        instruction.callTarget = callee;
+        if (descriptorInteger(descriptor, "arg_count", path) !== callee.signature.params.length)
+          fail("spawn contract does not match target signature", path, "invalid_call");
+      }
       break;
+    }
     case "call_interface":
       nonNegativeCounts(descriptor, path);
       descriptorString(descriptor, "method", path);
@@ -1166,12 +1738,15 @@ function validateDescriptor(
       const target = targetModule();
       const callee = target.functions.get(descriptorString(descriptor, "function", path));
       if (!callee) fail("closure target does not exist", path, "link_error");
+      instruction.callTarget = callee;
       const captures = descriptorList(descriptor, "captures", path);
       if (captures.length !== callee.upvalueTypes.length)
         fail("closure capture count does not match target", path, "invalid_call");
-      captures.forEach((capture, index) =>
-        validateAddress(capture, `${path}.captures[${index}]`, false),
-      );
+      captures.forEach((capture, index) => {
+        const type = validateAddress(capture, `${path}.captures[${index}]`, false);
+        if (!callee.upvalueTypes[index]!.registry.identical(type, callee.upvalueTypes[index]!))
+          fail("closure capture type does not match target", path, "invalid_call");
+      });
       break;
     }
     case "make_sequence":
@@ -1215,8 +1790,10 @@ function validateDescriptor(
       break;
     case "load_export": {
       const target = targetModule("module_path", false);
-      if (!target.exports.has(descriptorString(descriptor, "export", path)))
-        fail("export does not exist", path, "link_error");
+      const exported = target.exports.get(descriptorString(descriptor, "export", path));
+      if (!exported) fail("export does not exist", path, "link_error");
+      descriptor.$module = target;
+      descriptor.$export = exported;
       break;
     }
     case "call_ffi":
@@ -1269,6 +1846,697 @@ function validateDescriptor(
   }
 }
 
+function validateInstructionTypes(
+  fn: PreparedFunction,
+  instruction: PreparedInstruction,
+  path: string,
+): void {
+  const descriptor = instruction.descriptor ?? {};
+  const input = (index: number): RuntimeType => {
+    const operand = instruction.operands.inputs[index];
+    if (!operand) fail("instruction input is missing", path, "invalid_operand");
+    if (operand[0] === 0) return fn.slotTypes[operand[1]]!;
+    if (operand[0] === 1) return fn.module.constants[operand[1]]!.type;
+    return fn.localTypes[operand[1]]!;
+  };
+  const output = (index: number): RuntimeType => {
+    const target = instruction.operands.outputs[index];
+    if (target === undefined) fail("instruction output is missing", path, "invalid_operand");
+    return target >= LOCAL_OUTPUT ? fn.localTypes[target - LOCAL_OUTPUT]! : fn.slotTypes[target]!;
+  };
+  const identical = (left: RuntimeType, right: RuntimeType): boolean =>
+    left.registry.identical(left, right);
+  const methodsOf = (type: RuntimeType) => {
+    const direct = type.registry.node(type);
+    if (direct?.methods.length) return direct.methods;
+    const underlying = type.registry.underlying(type);
+    if (underlying.ref.kind === Kind.Pointer) {
+      const element = elementType(underlying);
+      const node = element && element.registry.node(element);
+      if (node?.methods.length) return node.methods;
+    }
+    return underlying.registry.node(underlying)?.methods ?? [];
+  };
+  const implementsInterface = (source: RuntimeType, target: RuntimeType): boolean => {
+    const required = methodsOf(target);
+    if (!required.length) return true;
+    const available = methodsOf(source);
+    return required.every((method) => {
+      const candidate = available.find((item) => item.name === method.name);
+      if (!candidate) return false;
+      const left = candidate.signature;
+      const right = method.signature;
+      if (
+        left.variadic !== right.variadic ||
+        left.params.length !== right.params.length ||
+        left.results.length !== right.results.length
+      )
+        return false;
+      return (
+        left.params.every((item, index) =>
+          identical(
+            source.registry.runtime(item.type),
+            target.registry.runtime(right.params[index]!.type),
+          ),
+        ) &&
+        left.results.every((item, index) =>
+          identical(source.registry.runtime(item), target.registry.runtime(right.results[index]!)),
+        )
+      );
+    });
+  };
+  const assignable = (source: RuntimeType, target: RuntimeType, index: number): boolean => {
+    if (identical(source, target)) return true;
+    if (underlyingKind(source) === Kind.Void) return isNilAssignable(target);
+    if (underlyingKind(target) === Kind.Any) return true;
+    if (underlyingKind(target) === Kind.Interface) return implementsInterface(source, target);
+    const sourceUnderlying = source.registry.underlying(source);
+    const targetUnderlying = target.registry.underlying(target);
+    if (sourceUnderlying.registry.identical(sourceUnderlying, targetUnderlying)) return true;
+    if (
+      sourceUnderlying.ref.kind === Kind.Waitable &&
+      targetUnderlying.ref.kind === Kind.Waitable
+    ) {
+      const sourceElement = elementType(sourceUnderlying);
+      const targetElement = elementType(targetUnderlying);
+      const sourceDirection = channelDirection(sourceUnderlying);
+      const targetDirection = channelDirection(targetUnderlying);
+      if (
+        sourceElement &&
+        targetElement &&
+        identical(sourceElement, targetElement) &&
+        (sourceDirection === targetDirection || sourceDirection === 1)
+      )
+        return true;
+    }
+    if (primitiveKind(source) !== undefined && primitiveKind(source) === primitiveKind(target))
+      return true;
+    const operand = instruction.operands.inputs[index];
+    if (operand?.[0] !== 1 || !fn.module.constantUntyped[operand[1]]) return false;
+    const sourcePrimitive = primitiveKind(source);
+    const targetPrimitive = primitiveKind(target);
+    if (sourcePrimitive === undefined || targetPrimitive === undefined) return false;
+    if (sourcePrimitive === PrimitiveKind.PrimitiveBool)
+      return targetPrimitive === PrimitiveKind.PrimitiveBool;
+    if (sourcePrimitive === PrimitiveKind.PrimitiveString)
+      return targetPrimitive === PrimitiveKind.PrimitiveString;
+    return (
+      sourcePrimitive >= PrimitiveKind.PrimitiveInt &&
+      sourcePrimitive <= PrimitiveKind.PrimitiveComplex128 &&
+      targetPrimitive >= PrimitiveKind.PrimitiveInt &&
+      targetPrimitive <= PrimitiveKind.PrimitiveComplex128
+    );
+  };
+  const expectInputs = (types: readonly RuntimeType[]): void => {
+    if (types.length !== instruction.operands.inputs.length)
+      fail("instruction input signature mismatch", path, "invalid_operand");
+    types.forEach((type, index) => {
+      if (!assignable(input(index), type, index))
+        fail(`instruction input ${index} type mismatch`, path, "invalid_operand");
+    });
+  };
+  const expectOutputs = (types: readonly RuntimeType[]): void => {
+    if (types.length !== instruction.operands.outputs.length)
+      fail("instruction output signature mismatch", path, "invalid_operand");
+    types.forEach((type, index) => {
+      const actual = output(index);
+      const actualUnderlying = actual.registry.underlying(actual);
+      const expectedUnderlying = type.registry.underlying(type);
+      const actualPrimitive = primitiveKind(actual);
+      const expectedPrimitive = primitiveKind(type);
+      if (
+        !identical(actual, type) &&
+        !actualUnderlying.registry.identical(actualUnderlying, expectedUnderlying) &&
+        (actualPrimitive === undefined || actualPrimitive !== expectedPrimitive)
+      )
+        fail(`instruction output ${index} type mismatch`, path, "invalid_operand");
+    });
+  };
+  const boolType = primitive(fn.module.registry, PrimitiveKind.PrimitiveBool);
+  const intType = primitive(fn.module.registry, PrimitiveKind.PrimitiveInt);
+  const declaredType = descriptor.$type as RuntimeType | undefined;
+  const integerInput = (index: number): void => {
+    if (!isIntegerScalar(input(index)))
+      fail(`instruction input ${index} must be an integer`, path, "invalid_operand");
+  };
+  const mapParts = (type: RuntimeType): [RuntimeType, RuntimeType] | undefined => {
+    const underlying = type.registry.underlying(type);
+    if (underlying.ref.kind !== Kind.Map) return undefined;
+    const node = underlying.registry.node(underlying);
+    const key =
+      underlying.dynamic?.key ?? (node?.key ? underlying.registry.runtime(node.key) : undefined);
+    const value =
+      underlying.dynamic?.elem ?? (node?.elem ? underlying.registry.runtime(node.elem) : undefined);
+    return key && value ? [key, value] : undefined;
+  };
+  const field = (type: RuntimeType, name: string): RuntimeType | undefined => {
+    let current = type.registry.underlying(type);
+    if (current.ref.kind === Kind.Pointer) {
+      const element = elementType(current);
+      if (!element) return undefined;
+      current = element.registry.underlying(element);
+    }
+    return fieldsOfType(current).find((candidate) => candidate.name === name)?.type;
+  };
+  const sequenceElement = (type: RuntimeType): RuntimeType | undefined => {
+    let current = type.registry.underlying(type);
+    if (current.ref.kind === Kind.Pointer) {
+      const pointee = elementType(current);
+      if (!pointee || underlyingKind(pointee) !== Kind.Array) return undefined;
+      current = pointee.registry.underlying(pointee);
+    }
+    return elementType(current);
+  };
+  const channelDirection = (type: RuntimeType): number => {
+    const underlying = type.registry.underlying(type);
+    return underlying.dynamic?.direction ?? underlying.registry.node(underlying)?.direction ?? 0;
+  };
+
+  switch (instruction.name) {
+    case "const":
+      expectOutputs([fn.module.constants[descriptor.$constant as number]!.type]);
+      return;
+    case "zero":
+      expectOutputs([declaredType!]);
+      return;
+    case "load_local":
+      expectOutputs([fn.localTypes[descriptor.$local as number]!]);
+      return;
+    case "store_local":
+      expectInputs([fn.localTypes[descriptor.$local as number]!]);
+      return;
+    case "load_upvalue":
+      expectOutputs([fn.upvalueTypes[descriptor.$upvalue as number]!]);
+      return;
+    case "store_upvalue":
+      expectInputs([fn.upvalueTypes[descriptor.$upvalue as number]!]);
+      return;
+    case "load_global":
+      expectOutputs([fn.module.globals[descriptor.$global as number]!.read().type]);
+      return;
+    case "store_global":
+      expectInputs([fn.module.globals[descriptor.$global as number]!.read().type]);
+      return;
+    case "jump_if":
+      expectInputs([boolType]);
+      return;
+    case "recover":
+      if (underlyingKind(output(0)) !== Kind.Any && underlyingKind(output(0)) !== Kind.Interface)
+        fail("recover result must be an interface", path, "invalid_operand");
+      return;
+    case "defer_push":
+      if (!functionTypeSignature(input(0)))
+        fail("deferred operand is not a function", path, "invalid_operand");
+      return;
+    case "return":
+      expectInputs(fn.signature.results.map((type) => fn.module.registry.runtime(type)));
+      return;
+    case "unary": {
+      const source = input(0);
+      const primitiveValue = primitiveKind(source);
+      const operator = descriptorString(descriptor, "operator", path);
+      let result = source;
+      const numeric =
+        primitiveValue !== undefined &&
+        primitiveValue >= PrimitiveKind.PrimitiveInt &&
+        primitiveValue <= PrimitiveKind.PrimitiveComplex128;
+      const integer =
+        primitiveValue !== undefined &&
+        primitiveValue >= PrimitiveKind.PrimitiveInt &&
+        primitiveValue <= PrimitiveKind.PrimitiveUintptr;
+      const valid =
+        ((operator === "+" || operator === "-") && numeric) ||
+        (operator === "^" && integer) ||
+        (operator === "!" && primitiveValue === PrimitiveKind.PrimitiveBool) ||
+        ((operator === "real" || operator === "imag") &&
+          (primitiveValue === PrimitiveKind.PrimitiveComplex64 ||
+            primitiveValue === PrimitiveKind.PrimitiveComplex128));
+      if (!valid) fail("operand type does not support operator", path, "invalid_operand");
+      if (operator === "!") result = boolType;
+      else if (operator === "real" || operator === "imag")
+        result = primitive(
+          fn.module.registry,
+          primitiveValue === PrimitiveKind.PrimitiveComplex64
+            ? PrimitiveKind.PrimitiveFloat32
+            : PrimitiveKind.PrimitiveFloat64,
+        );
+      expectOutputs([result]);
+      return;
+    }
+    case "update_compare_branch": {
+      if (instruction.operands.inputs[0]?.[0] !== 2)
+        fail("update comparison target must be a direct local", path, "invalid_operand");
+      const type = declaredType!;
+      if (!identical(input(0), type) || !identical(input(1), type) || !identical(input(2), type))
+        fail("update comparison operands differ from descriptor type", path, "invalid_operand");
+      const primitiveValue = primitiveKind(type);
+      if (
+        primitiveValue === undefined ||
+        primitiveValue < PrimitiveKind.PrimitiveInt ||
+        primitiveValue > PrimitiveKind.PrimitiveFloat64
+      )
+        fail("update comparison requires an ordered numeric scalar", path, "invalid_operand");
+      return;
+    }
+    case "binary":
+    case "compare_branch": {
+      const left = input(0);
+      const right = input(1);
+      const leftPrimitive = primitiveKind(left);
+      const rightPrimitive = primitiveKind(right);
+      const operator = descriptorString(descriptor, "operator", path);
+      const matching = identical(left, right);
+      const numeric =
+        leftPrimitive !== undefined &&
+        leftPrimitive >= PrimitiveKind.PrimitiveInt &&
+        leftPrimitive <= PrimitiveKind.PrimitiveComplex128;
+      const integer =
+        leftPrimitive !== undefined &&
+        leftPrimitive >= PrimitiveKind.PrimitiveInt &&
+        leftPrimitive <= PrimitiveKind.PrimitiveUintptr;
+      let result = left;
+      let valid = false;
+      if (operator === "==" || operator === "!=") {
+        valid =
+          matching ||
+          (underlyingKind(left) === Kind.Void && isNilAssignable(right)) ||
+          (underlyingKind(right) === Kind.Void && isNilAssignable(left));
+        result = boolType;
+      } else if (["<", "<=", ">", ">="].includes(operator)) {
+        valid =
+          matching &&
+          (leftPrimitive === PrimitiveKind.PrimitiveString ||
+            (leftPrimitive !== undefined &&
+              leftPrimitive >= PrimitiveKind.PrimitiveInt &&
+              leftPrimitive <= PrimitiveKind.PrimitiveFloat64));
+        result = boolType;
+      } else if (operator === "<<" || operator === ">>") {
+        valid = integer && isIntegerScalar(right);
+      } else if (operator === "&&" || operator === "||") {
+        valid = matching && leftPrimitive === PrimitiveKind.PrimitiveBool;
+      } else if (operator === "complex") {
+        valid =
+          matching &&
+          (leftPrimitive === PrimitiveKind.PrimitiveFloat32 ||
+            leftPrimitive === PrimitiveKind.PrimitiveFloat64);
+        result = primitive(
+          fn.module.registry,
+          leftPrimitive === PrimitiveKind.PrimitiveFloat32
+            ? PrimitiveKind.PrimitiveComplex64
+            : PrimitiveKind.PrimitiveComplex128,
+        );
+      } else if (operator === "+") {
+        valid = matching && (numeric || leftPrimitive === PrimitiveKind.PrimitiveString);
+      } else if (["-", "*", "/"].includes(operator)) valid = matching && numeric;
+      else if (["%", "&", "|", "^", "&^"].includes(operator)) valid = matching && integer;
+      if (
+        !valid ||
+        (operator !== "<<" && operator !== ">>" && matching && leftPrimitive !== rightPrimitive)
+      )
+        fail("operand types do not support operator", path, "invalid_operand");
+      if (instruction.name === "binary") expectOutputs([result]);
+      else if (declaredType && !identical(left, declaredType))
+        fail("comparison type differs from descriptor", path, "invalid_operand");
+      return;
+    }
+    case "call_direct":
+    case "tail_call_direct": {
+      const callee = instruction.callTarget!;
+      const params = callee.signature.params.map((item) =>
+        callee.module.registry.runtime(item.type),
+      );
+      expectInputs(params);
+      if (instruction.name === "call_direct")
+        expectOutputs(callee.signature.results.map((item) => callee.module.registry.runtime(item)));
+      return;
+    }
+    case "call_value":
+    case "spawn": {
+      if (instruction.name === "spawn" && instruction.callTarget) {
+        const params = instruction.callTarget.signature.params.map((item) =>
+          instruction.callTarget!.module.registry.runtime(item.type),
+        );
+        expectInputs(params);
+        return;
+      }
+      const signature = functionTypeSignature(input(0));
+      if (!signature) fail("callee is not a function", path, "invalid_call");
+      expectInputs([input(0), ...signature.params]);
+      expectOutputs(instruction.name === "spawn" ? [] : signature.results);
+      return;
+    }
+    case "call_interface": {
+      const interfaceType = declaredType!;
+      if (
+        underlyingKind(interfaceType) !== Kind.Interface &&
+        underlyingKind(interfaceType) !== Kind.Any
+      )
+        fail("interface call descriptor is not an interface", path, "invalid_call");
+      if (!assignable(input(0), interfaceType, 0))
+        fail("interface call receiver type mismatch", path, "invalid_call");
+      const interfaceMethods = methodsOf(interfaceType);
+      const method = interfaceMethods.find((candidate) => candidate.name === instruction.method);
+      // Compiler intrinsics may deliberately dispatch a method that is only
+      // present on the dynamic receiver.  Validate the complete signature
+      // whenever the declared interface owns the method; otherwise the
+      // runtime method table remains the authority.
+      if (!method) return;
+      const params = method.signature.params.map((item) =>
+        interfaceType.registry.runtime(item.type),
+      );
+      const results = method.signature.results.map((item) => interfaceType.registry.runtime(item));
+      expectInputs([input(0), ...params]);
+      expectOutputs(results);
+      return;
+    }
+    case "make_closure": {
+      const signature = functionTypeSignature(output(0));
+      const target = instruction.callTarget!;
+      if (
+        !signature ||
+        signature.params.length !== target.signature.params.length ||
+        signature.results.length !== target.signature.results.length ||
+        signature.variadic !== target.signature.variadic
+      )
+        fail("closure result type does not match target", path, "invalid_call");
+      return;
+    }
+    case "len":
+    case "cap": {
+      let measured = input(0).registry.underlying(input(0));
+      if (measured.ref.kind === Kind.Pointer)
+        measured = elementType(measured)!.registry.underlying(elementType(measured)!);
+      const lengthBearing =
+        measured.ref.kind === Kind.Slice ||
+        measured.ref.kind === Kind.Array ||
+        measured.ref.kind === Kind.Map ||
+        measured.ref.kind === Kind.Waitable ||
+        (instruction.name === "len" &&
+          measured.ref.kind === Kind.Primitive &&
+          measured.ref.primitive === PrimitiveKind.PrimitiveString);
+      if (!lengthBearing)
+        fail("length operation requires a supported value", path, "invalid_operand");
+      expectOutputs([intType]);
+      return;
+    }
+    case "load_indirect": {
+      const target = elementType(input(0));
+      if (underlyingKind(input(0)) !== Kind.Pointer || !target)
+        fail("indirect operand is not a pointer", path, "invalid_operand");
+      expectOutputs([target]);
+      return;
+    }
+    case "store_indirect": {
+      const target = elementType(input(0));
+      if (underlyingKind(input(0)) !== Kind.Pointer || !target)
+        fail("indirect operand is not a pointer", path, "invalid_operand");
+      expectInputs([input(0), target]);
+      return;
+    }
+    case "load_field": {
+      const target = field(input(0), descriptorString(descriptor, "field", path));
+      if (!target) fail("field is not declared by operand type", path, "invalid_operand");
+      expectOutputs([target]);
+      return;
+    }
+    case "store_field": {
+      const target = field(input(0), descriptorString(descriptor, "field", path));
+      if (!target) fail("field is not declared by operand type", path, "invalid_operand");
+      expectInputs([input(0), target]);
+      return;
+    }
+    case "load_index":
+    case "load_index_ok":
+    case "store_index": {
+      let collection = input(0).registry.underlying(input(0));
+      if (collection.ref.kind === Kind.Pointer) {
+        const pointee = elementType(collection);
+        if (!pointee) fail("index operand has no element", path, "invalid_operand");
+        collection = pointee.registry.underlying(pointee);
+      }
+      const map = mapParts(collection);
+      let element: RuntimeType | undefined;
+      let indexType = input(1);
+      if (map) [indexType, element] = map;
+      else if (
+        collection.ref.kind === Kind.Primitive &&
+        collection.ref.primitive === PrimitiveKind.PrimitiveString
+      )
+        element = primitive(fn.module.registry, PrimitiveKind.PrimitiveUint8);
+      else element = elementType(collection);
+      if (!element) fail("operand is not indexable", path, "invalid_operand");
+      if (!map) integerInput(1);
+      else if (!assignable(input(1), indexType, 1))
+        fail("map key type mismatch", path, "invalid_operand");
+      if (instruction.name === "store_index") {
+        if (collection.ref.kind === Kind.Primitive)
+          fail("string index is not writable", path, "invalid_operand");
+        expectInputs([input(0), indexType, element]);
+      } else {
+        expectOutputs(instruction.name === "load_index_ok" ? [element, boolType] : [element]);
+        if (instruction.name === "load_index_ok" && !map)
+          fail("comma-ok index requires a map", path, "invalid_operand");
+      }
+      return;
+    }
+    case "string_rune_at":
+    case "string_next_rune_index":
+      if (primitiveKind(input(0)) !== PrimitiveKind.PrimitiveString)
+        fail("rune operation requires a string", path, "invalid_operand");
+      integerInput(1);
+      expectOutputs([
+        primitive(
+          fn.module.registry,
+          instruction.name === "string_rune_at"
+            ? PrimitiveKind.PrimitiveInt32
+            : PrimitiveKind.PrimitiveInt,
+        ),
+      ]);
+      return;
+    case "type_assert":
+      expectOutputs([declaredType!]);
+      return;
+    case "type_assert_ok":
+      expectOutputs([declaredType!, boolType]);
+      return;
+    case "convert":
+      expectOutputs([declaredType!]);
+      return;
+    case "make_sequence": {
+      const count = descriptorInteger(descriptor, "element_count", path);
+      const element = elementType(declaredType!);
+      if (!element) fail("sequence type has no element", path, "invalid_operand");
+      expectInputs(Array.from({ length: count }, () => element));
+      expectOutputs([declaredType!]);
+      return;
+    }
+    case "make_struct": {
+      const names = descriptorList(descriptor, "fields", path).map(String);
+      const fields = fieldsOfType(declaredType!);
+      expectInputs(
+        names.map((name) => {
+          const candidate = fields.find((field) => field.name === name)?.type;
+          if (!candidate) fail("struct field does not exist", path, "invalid_operand");
+          return candidate;
+        }),
+      );
+      expectOutputs([declaredType!]);
+      return;
+    }
+    case "make_map": {
+      const parts = mapParts(declaredType!);
+      if (!parts) fail("map construction requires a map type", path, "invalid_operand");
+      const count = descriptorInteger(descriptor, "entry_count", path);
+      const expected: RuntimeType[] = [];
+      for (let index = 0; index < count; index++) expected.push(parts[0], parts[1]);
+      if (instruction.operands.inputs.length === expected.length + 1) {
+        integerInput(expected.length);
+        expected.push(input(expected.length));
+      }
+      expectInputs(expected);
+      expectOutputs([declaredType!]);
+      return;
+    }
+    case "make_slice":
+      instruction.operands.inputs.forEach((_, index) => integerInput(index));
+      expectOutputs([declaredType!]);
+      return;
+    case "make_waitable":
+      integerInput(0);
+      expectOutputs([declaredType!]);
+      return;
+    case "address_of": {
+      const target = descriptor.$targetType as RuntimeType;
+      const pointer = output(0);
+      const element = elementType(pointer);
+      if (
+        underlyingKind(pointer) !== Kind.Pointer ||
+        !element ||
+        !identical(resolveAlias(element), target)
+      )
+        fail("address output does not point to its target type", path, "invalid_operand");
+      return;
+    }
+    case "append": {
+      const slice = input(0);
+      const element = elementType(slice);
+      if (underlyingKind(slice) !== Kind.Slice || !element)
+        fail("append requires a slice", path, "invalid_operand");
+      if (!identical(output(0), slice))
+        fail("append output differs from source slice", path, "invalid_operand");
+      if (descriptorBoolean(descriptor, "expand", path)) {
+        const expanded = input(1);
+        const expandedElement = sequenceElement(expanded);
+        const byteString =
+          primitiveKind(expanded) === PrimitiveKind.PrimitiveString &&
+          primitiveKind(element) === PrimitiveKind.PrimitiveUint8;
+        if ((!expandedElement || !assignable(expandedElement, element, 1)) && !byteString)
+          fail("expanded append requires the same slice type", path, "invalid_operand");
+      } else {
+        for (let index = 1; index < instruction.operands.inputs.length; index++)
+          if (!assignable(input(index), element, index))
+            fail("append element type mismatch", path, "invalid_operand");
+      }
+      return;
+    }
+    case "delete": {
+      const parts = mapParts(input(0));
+      if (!parts) fail("delete requires a map", path, "invalid_operand");
+      expectInputs([input(0), parts[0]]);
+      return;
+    }
+    case "clear":
+      if (underlyingKind(input(0)) !== Kind.Map && underlyingKind(input(0)) !== Kind.Slice)
+        fail("clear requires a map or slice", path, "invalid_operand");
+      return;
+    case "copy": {
+      const destination = sequenceElement(input(0));
+      const source = sequenceElement(input(1));
+      const byteString =
+        destination &&
+        primitiveKind(destination) === PrimitiveKind.PrimitiveUint8 &&
+        primitiveKind(input(1)) === PrimitiveKind.PrimitiveString;
+      if (!destination || ((!source || !assignable(source, destination, 1)) && !byteString))
+        fail("copy requires sequences with the same element type", path, "invalid_operand");
+      expectOutputs([intType]);
+      return;
+    }
+    case "map_keys": {
+      const parts = mapParts(input(0));
+      const resultElement = elementType(output(0));
+      if (
+        !parts ||
+        underlyingKind(output(0)) !== Kind.Slice ||
+        !resultElement ||
+        !identical(parts[0], resultElement)
+      )
+        fail("map_keys result type does not match the map key", path, "invalid_operand");
+      return;
+    }
+    case "map_iter_init": {
+      if (!mapParts(input(0))) fail("map iterator requires a map", path, "invalid_operand");
+      return;
+    }
+    case "map_iter_next": {
+      const parts = mapParts(fn.localTypes[descriptor.$local as number]!);
+      if (!parts) fail("map iterator local must be a map", path, "invalid_operand");
+      expectOutputs([parts[0], parts[1], boolType]);
+      return;
+    }
+    case "map_iter_close":
+      if (!mapParts(fn.localTypes[descriptor.$local as number]!))
+        fail("map iterator local must be a map", path, "invalid_operand");
+      return;
+    case "slice": {
+      const source = input(0);
+      const target = output(0);
+      if (
+        primitiveKind(source) === PrimitiveKind.PrimitiveString &&
+        primitiveKind(target) === PrimitiveKind.PrimitiveString
+      ) {
+        for (let index = 1; index < instruction.operands.inputs.length; index++)
+          if (underlyingKind(input(index)) !== Kind.Void) integerInput(index);
+        return;
+      }
+      const sourceElement = sequenceElement(source);
+      const targetElement = elementType(target);
+      if (
+        !sourceElement ||
+        !targetElement ||
+        !identical(sourceElement, targetElement) ||
+        underlyingKind(target) !== Kind.Slice
+      )
+        fail("slice result has incompatible element type", path, "invalid_operand");
+      for (let index = 1; index < instruction.operands.inputs.length; index++)
+        if (underlyingKind(input(index)) !== Kind.Void) integerInput(index);
+      return;
+    }
+    case "waitable_send":
+    case "waitable_try_send": {
+      const element = elementType(input(0));
+      if (underlyingKind(input(0)) !== Kind.Waitable || !element)
+        fail("channel operation requires a channel", path, "invalid_operand");
+      if (channelDirection(input(0)) === 2)
+        fail("channel direction does not permit send", path, "invalid_operand");
+      expectInputs([input(0), element]);
+      if (instruction.name === "waitable_try_send") expectOutputs([boolType]);
+      return;
+    }
+    case "waitable_recv":
+    case "waitable_recv_ok":
+    case "waitable_try_recv": {
+      const element = elementType(input(0));
+      if (underlyingKind(input(0)) !== Kind.Waitable || !element)
+        fail("channel operation requires a channel", path, "invalid_operand");
+      if (channelDirection(input(0)) === 3)
+        fail("channel direction does not permit receive", path, "invalid_operand");
+      expectOutputs(instruction.name === "waitable_recv" ? [element] : [element, boolType]);
+      return;
+    }
+    case "waitable_can_recv":
+    case "waitable_can_send":
+      if (underlyingKind(input(0)) !== Kind.Waitable)
+        fail("channel operation requires a channel", path, "invalid_operand");
+      if (
+        (instruction.name === "waitable_can_recv" && channelDirection(input(0)) === 3) ||
+        (instruction.name === "waitable_can_send" && channelDirection(input(0)) === 2)
+      )
+        fail("channel direction does not permit operation", path, "invalid_operand");
+      expectOutputs([boolType]);
+      return;
+    case "waitable_close":
+      if (underlyingKind(input(0)) !== Kind.Waitable)
+        fail("channel operation requires a channel", path, "invalid_operand");
+      if (channelDirection(input(0)) === 2)
+        fail("channel direction does not permit close", path, "invalid_operand");
+      return;
+    case "get_path": {
+      let current = declaredType!;
+      if (!identical(input(0), current))
+        fail("field path input differs from descriptor", path, "invalid_operand");
+      for (const rawIndex of descriptorList(descriptor, "fields", path)) {
+        if (underlyingKind(current) === Kind.Pointer) current = elementType(current)!;
+        const next = fieldsOfType(current)[Number(rawIndex)];
+        if (!next || next.name === "_")
+          fail("field path index is invalid", path, "invalid_operand");
+        current = next.type;
+      }
+      expectOutputs([current]);
+      return;
+    }
+    case "index_convert":
+      expectOutputs([declaredType!]);
+      return;
+    case "len_compare_branch":
+      integerInput(1);
+      return;
+    case "min_max":
+      return;
+    default:
+      return;
+  }
+}
+
 function validateSlotInitialization(fn: PreparedFunction): void {
   const count = fn.instructions.length;
   if (!count) return;
@@ -1277,25 +2545,25 @@ function validateSlotInitialization(fn: PreparedFunction): void {
   const successors: number[][] = Array.from({ length: count }, () => []);
   for (let pc = 0; pc < count; pc++) {
     const instruction = fn.instructions[pc]!;
-    const descriptor = instruction.descriptor ?? {};
-    const addLabel = (value: unknown): void => {
-      const target = fn.labels.get(String(value));
-      if (target === undefined) fail("unknown jump label", fn.id, "invalid_jump");
+    const addTarget = (target: number): void => {
       // A label after the final executable instruction maps to the normal
       // fallthrough completion PC after labels are stripped.
       if (target < count) successors[pc]!.push(target);
       else if (target > count) fail("jump target is outside function", fn.id, "invalid_jump");
     };
     let fallthrough = true;
-    if (instruction.name === "compare_branch" || instruction.name === "len_compare_branch")
-      addLabel(descriptor.label);
+    if (
+      instruction.name === "compare_branch" ||
+      instruction.name === "len_compare_branch" ||
+      instruction.name === "update_compare_branch"
+    )
+      addTarget(instruction.target!);
     else if (instruction.name === "jump" || instruction.name === "jump_if") {
-      addLabel(descriptor.label);
+      addTarget(instruction.target!);
       fallthrough = instruction.name === "jump_if";
     } else if (instruction.name === "type_dispatch") {
-      addLabel(descriptor.default);
-      for (const value of descriptorList(descriptor, "cases", fn.id))
-        addLabel(descriptorRecord(value, fn.id).label);
+      addTarget(instruction.typeDispatch!.defaultTarget);
+      for (const candidate of instruction.typeDispatch!.cases) addTarget(candidate.target);
       fallthrough = false;
     } else if (["panic", "return", "tail_call_direct"].includes(instruction.name)) {
       fallthrough = false;
@@ -1373,7 +2641,7 @@ function validateTypeDescriptor(
 function localFrom(
   value: Record<string, unknown>,
   name: string,
-  indexes: Map<string, number>,
+  indexes: ReadonlyMap<string, number>,
   path: string,
   optional = false,
 ): number | undefined {
@@ -1465,7 +2733,7 @@ function nonNegativeCounts(descriptor: Record<string, unknown>, path: string): v
 }
 
 function prepareOperands(value: JsonValue, path: string): PreparedOperands {
-  const raw = schemaObject(value, path, WIRE_FIELDS.SlotOperands);
+  const raw = schemaObject(value, path, WIRE_FIELDS.RegisterFlow);
   return {
     inputs: array(raw.inputs, `${path}.inputs`).map((input, index) => {
       const inputPath = `${path}.inputs[${index}]`;

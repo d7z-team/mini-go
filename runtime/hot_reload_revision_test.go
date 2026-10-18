@@ -68,7 +68,7 @@ func TestRetainedRevisionsDuringPendingPatchClose(t *testing.T) {
 	}
 }
 
-func TestPatchKeepsActiveFrameAndDispatchesNamedCallsToCurrentRevision(t *testing.T) {
+func TestPatchKeepsActiveCallTreeOnItsRevision(t *testing.T) {
 	oldProgram := patchTestProgram(t, patchCallArtifact(10, 1), "revision-old")
 	newProgram := patchTestProgram(t, patchCallArtifact(100, 2), "revision-new")
 	instance, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
@@ -110,8 +110,8 @@ func TestPatchKeepsActiveFrameAndDispatchesNamedCallsToCurrentRevision(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value, ok := activeResult.Values[0].Int64(); !ok || value != 12 {
-		t.Fatalf("active result = %#v, want 12", activeResult.Values)
+	if value, ok := activeResult.Values[0].Int64(); !ok || value != 11 {
+		t.Fatalf("active result = %#v, want 11", activeResult.Values)
 	}
 	currentResult, err := instance.Call(context.Background(), "run")
 	if err != nil {
@@ -126,9 +126,9 @@ func TestPatchKeepsActiveFrameAndDispatchesNamedCallsToCurrentRevision(t *testin
 	closed = true
 }
 
-func TestRevisionLocalDirectCallUsesOldFrameRevision(t *testing.T) {
-	oldProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(10, 1, false), "revision-local-old")
-	newProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(100, 2, false), "revision-local-new")
+func TestRunningRevisionDirectCallUsesItsSnapshot(t *testing.T) {
+	oldProgram := patchTestProgram(t, patchSnapshotCallArtifact(10, 1, false), "snapshot-old")
+	newProgram := patchTestProgram(t, patchSnapshotCallArtifact(100, 2, false), "snapshot-new")
 	instance, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -170,9 +170,9 @@ func TestRevisionLocalDirectCallUsesOldFrameRevision(t *testing.T) {
 	}
 }
 
-func TestRevisionLocalDirectCallIgnoresPatchedFunctionOrder(t *testing.T) {
-	oldProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(10, 1, false), "revision-local-order-old")
-	newProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(100, 2, true), "revision-local-order-new")
+func TestRunningRevisionDirectCallIgnoresPatchedFunctionOrder(t *testing.T) {
+	oldProgram := patchTestProgram(t, patchSnapshotCallArtifact(10, 1, false), "snapshot-order-old")
+	newProgram := patchTestProgram(t, patchSnapshotCallArtifact(100, 2, true), "snapshot-order-new")
 	instance, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -208,9 +208,9 @@ func TestRevisionLocalDirectCallIgnoresPatchedFunctionOrder(t *testing.T) {
 	}
 }
 
-func TestRevisionLocalDirectCallIsolatedBetweenInstances(t *testing.T) {
-	oldProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(10, 1, false), "revision-local-isolated-old")
-	newProgram := patchTestProgram(t, patchRevisionLocalCallArtifact(100, 2, false), "revision-local-isolated-new")
+func TestProgramRevisionSnapshotsAreIsolatedBetweenInstances(t *testing.T) {
+	oldProgram := patchTestProgram(t, patchSnapshotCallArtifact(10, 1, false), "snapshot-isolated-old")
+	newProgram := patchTestProgram(t, patchSnapshotCallArtifact(100, 2, false), "snapshot-isolated-new")
 	first, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestRevisionLocalDirectCallIsolatedBetweenInstances(t *testing.T) {
 	}
 }
 
-func TestTailCallFromOldFrameUsesCurrentRevisionAndReleasesOldPin(t *testing.T) {
+func TestTailCallFromOldFrameUsesItsSnapshotAndReleasesOldPin(t *testing.T) {
 	oldProgram := patchTestProgram(t, patchTailCallArtifact(1), "tail-old")
 	newProgram := patchTestProgram(t, patchTailCallArtifact(2), "tail-new")
 	instance, err := oldProgram.Instantiate(context.Background(), InstanceOptions{})
@@ -270,8 +270,8 @@ func TestTailCallFromOldFrameUsesCurrentRevisionAndReleasesOldPin(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value, ok := result.Values[0].Int64(); !ok || value != 2 {
-		t.Fatalf("tail call result = %#v, want current revision value 2", result.Values)
+	if value, ok := result.Values[0].Int64(); !ok || value != 1 {
+		t.Fatalf("tail call result = %#v, want snapshot value 1", result.Values)
 	}
 	retained, err := instance.RetainedRevisions(context.Background())
 	if err != nil || len(retained) != 1 || retained[0].Generation != 2 {
@@ -315,8 +315,8 @@ func TestPatchAcrossThreeRevisionsRetainsOnlyActiveFrameCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value, ok := result.Values[0].Int64(); !ok || value != 13 {
-		t.Fatalf("active result = %#v, want 13", result.Values)
+	if value, ok := result.Values[0].Int64(); !ok || value != 11 {
+		t.Fatalf("active result = %#v, want 11", result.Values)
 	}
 	retained, err = instance.RetainedRevisions(context.Background())
 	if err != nil || len(retained) != 1 || retained[0].Generation != 3 {

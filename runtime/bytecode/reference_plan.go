@@ -249,6 +249,8 @@ func PrepareFrameReferences(fn *Function, localReferences, temporaryReferences, 
 			fallthroughEdge = operation.Op != OpJump
 		case OpCompareBranch, OpLenCompareBranch:
 			branch(operation.Payload.(CompareBranchPayload).Label, "")
+		case OpUpdateCompareBranch:
+			branch(operation.Payload.(UpdateCompareBranchPayload).Label, "")
 		case OpReturn, OpPanic, OpTailCallDirect:
 			fallthroughEdge = false
 		}

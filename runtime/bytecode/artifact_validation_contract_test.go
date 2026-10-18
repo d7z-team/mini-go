@@ -52,7 +52,7 @@ func TestValidationReadsPayloadEditsBetweenAnalyses(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code:      testSlotCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
+		Code:      testMicroCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	if err := testValidateArtifact(&artifact); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestValidateArtifactRejectsUnknownExportRequirement(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Any"}, []Instruction{{
+		Code: testMicroCode([]string{"Any"}, []Instruction{{
 			Op:      OpLoadExport,
 			Payload: ExportPayload{ModulePath: "example/lib", Export: "Missing"},
 		}, {
@@ -99,7 +99,7 @@ func TestValidateArtifactRejectsUnknownInitModuleRequirement(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []Instruction{{
+		Code: testMicroCode([]string{}, []Instruction{{
 			Op:      OpInitModule,
 			Payload: InitModulePayload{ModulePath: "example/lib"},
 		}}, [][2][]uint32{{nil, nil}}),
@@ -168,7 +168,7 @@ func TestValidateArtifactRejectsUnknownJumpLabel(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []Instruction{{
+		Code: testMicroCode([]string{}, []Instruction{{
 			Op:      OpJump,
 			Payload: JumpPayload{Label: "missing"},
 		}}, [][2][]uint32{{nil, nil}}),
@@ -185,7 +185,7 @@ func TestValidateArtifactRejectsUnknownOpcode(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []Instruction{{
+		Code: testMicroCode([]string{}, []Instruction{{
 			Op: Opcode(65535),
 		}}, [][2][]uint32{{nil, nil}}),
 	}}
@@ -210,7 +210,7 @@ func TestValidateArtifactWithLimitsRejectsInstructionLimit(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{Constant: "c.zero"},
 		}, {

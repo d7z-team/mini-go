@@ -4,32 +4,17 @@ import (
 	"context"
 	goruntime "runtime"
 	"testing"
-
-	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func TestPatchRejectsIncompatibleAndReusedPlansWithoutMutation(t *testing.T) {
+func TestPatchPlansCommitAtOwnerBoundaryAndCannotBeReused(t *testing.T) {
 	base := patchTestProgram(t, patchGlobalArtifact(1), "base")
 	compatible := patchTestProgram(t, patchGlobalArtifact(2), "compatible")
-	incompatibleArtifact := patchGlobalArtifact(2)
-	incompatibleArtifact.Globals[0].Type = testType("String")
-	incompatibleArtifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
-	incompatible := patchTestProgram(t, incompatibleArtifact, "incompatible")
 	instance, err := base.Instantiate(context.Background(), InstanceOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleanupTestInstance(t, instance)
 
-	if _, err := instance.PreparePatch(context.Background(), incompatible); patchErrorCode(err) != "global_shape_changed" {
-		t.Fatalf("incompatible error = %v", err)
-	}
-	exportChangedArtifact := patchGlobalArtifact(2)
-	exportChangedArtifact.Exports = nil
-	exportChanged := patchTestProgram(t, exportChangedArtifact, "export-changed")
-	if _, err := instance.PreparePatch(context.Background(), exportChanged); patchErrorCode(err) != "export_shape_changed" {
-		t.Fatalf("export error = %v", err)
-	}
 	plan, err := instance.PreparePatch(context.Background(), compatible)
 	if err != nil {
 		t.Fatal(err)

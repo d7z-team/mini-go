@@ -66,27 +66,32 @@
             [
               64,
               0,
-              0
+              0,
+              1
             ],
             [
               5,
               0,
+              1,
               1
             ],
             [
               52,
               0,
-              2
+              2,
+              1
             ],
             [
               53,
               0,
-              3
+              3,
+              1
             ],
             [
               17,
               0,
-              4
+              4,
+              1
             ]
           ],
           "operands": [
@@ -135,6 +140,38 @@
               "release": [
                 0
               ]
+            }
+          ],
+          "blocks": [
+            {
+              "first": 0,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 1,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 2,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 3,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 4,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
             }
           ]
         }
@@ -210,17 +247,20 @@
             [
               4,
               0,
-              0
+              0,
+              1
             ],
             [
               13,
               0,
+              1,
               1
             ],
             [
               17,
               0,
-              2
+              2,
+              1
             ]
           ],
           "operands": [
@@ -241,6 +281,26 @@
               ]
             },
             {}
+          ],
+          "blocks": [
+            {
+              "first": 0,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 1,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 2,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            }
           ]
         }
       }
@@ -313,17 +373,20 @@
             [
               3,
               0,
-              0
+              0,
+              1
             ],
             [
               13,
               0,
+              1,
               1
             ],
             [
               17,
               0,
-              2
+              2,
+              1
             ]
           ],
           "operands": [
@@ -344,6 +407,26 @@
               ]
             },
             {}
+          ],
+          "blocks": [
+            {
+              "first": 0,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 1,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            },
+            {
+              "first": 2,
+              "count": 1,
+              "fallthrough": 4294967295,
+              "cost": 1
+            }
           ]
         }
       }

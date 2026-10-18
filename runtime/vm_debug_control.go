@@ -26,6 +26,11 @@ func (vm *vm) resumePaused(stepMode debugStepMode) runOutcome {
 		return failedRun(errors.New("paused VM has no execution task"))
 	}
 	task := vm.machine.paused
+	// A debugger pause is a cooperative scheduling boundary. Reset the task's
+	// slice counter before installing the one-shot breakpoint skip; otherwise a
+	// task paused exactly at the quantum edge consumes the skip, yields without
+	// executing, and immediately pauses on the same instruction again.
+	task.quantumSteps = 0
 	state := vm.paused
 	vm.paused = nil
 	vm.debugger.clearPausedEvent()

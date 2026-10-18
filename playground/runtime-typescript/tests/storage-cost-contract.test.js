@@ -20,7 +20,7 @@ const vectors = JSON.parse(
 test.each(vectors)("managed allocation cost: $name", async (vector) => {
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
   try {
-    const registry = [...vm.revision.program.modules.values()][0].registry;
+    const registry = [...vm.revision.program.moduleValues()][0].registry;
     const integer = intValue(registry, 42n);
     const capture = vm.managedCell(integer);
     const arrayType = vm.dynamicType(registry, { kind: Kind.Array, elem: integer.type, length: 0 });

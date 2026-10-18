@@ -139,6 +139,7 @@ export interface Stats {
   ffiBytes: bigint;
   generation: bigint;
   profile?: {
+    dispatches: bigint;
     opcodes: Record<string, bigint>;
     functions: Record<string, { calls: bigint; steps: bigint; nanos: bigint }>;
   };

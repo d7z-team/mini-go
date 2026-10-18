@@ -442,7 +442,7 @@ fn main() {
             .position(|entry| entry["op"] == name)
             .unwrap()
             + 1;
-        json!([opcode, descriptor, operands])
+        json!([opcode, descriptor, operands, 1])
     };
     let integer = json!({"kind":3,"primitive":3});
     let mut instructions = Vec::new();

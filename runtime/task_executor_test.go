@@ -21,13 +21,13 @@ func TestTaskFragmentsShareFrameStorageAcrossExecutorWorkers(t *testing.T) {
 			// Alternate accumulator slots so every binary result has a distinct destination.
 			accumulator, next := uint32(0), uint32(2)
 			for range 128 {
-				appendTestSlotCode(entry.Code, []ir.Instruction{
+				appendTestMicroCode(entry.Code, []ir.Instruction{
 					{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.value", ResultCount: 1}},
 					{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "+"}},
 				}, [][2][]uint32{{nil, {1}}, {{accumulator, 1}, {next}}})
 				accumulator, next = next, accumulator
 			}
-			appendTestSlotCode(entry.Code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{{accumulator}, nil}})
+			appendTestMicroCode(entry.Code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{{accumulator}, nil}})
 			vm, err := loadTestEngine(artifact)
 			if err != nil {
 				t.Fatal(err)
@@ -112,19 +112,19 @@ func TestTaskFragmentsShareFrameStorageAcrossExecutorWorkers(t *testing.T) {
 
 func publicParallelArtifact() ir.Artifact {
 	artifact := ir.NewArtifact("scheduler/public-parallel", "main")
-	entry := testSlotCode([]string{"function() Void"}, nil, nil)
+	entry := testMicroCode([]string{"function() Void"}, nil, nil)
 	for range 4 {
-		appendTestSlotCode(entry, []ir.Instruction{
+		appendTestMicroCode(entry, []ir.Instruction{
 			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
 			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
 	}
-	appendTestSlotCode(entry, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
-	child := testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	appendTestMicroCode(entry, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	child := testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 	insertTestDelay(child, 0, taskInstructionQuantum*16)
 	artifact.Functions = []ir.Function{
 		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: entry},
-		{ID: "fn.child", RevisionLocal: true, Signature: testSignature("function() Void"), Code: child},
+		{ID: "fn.child", Signature: testSignature("function() Void"), Code: child},
 	}
 	return artifact
 }
@@ -148,7 +148,11 @@ func TestPublicInstanceDispatchesSameInstanceTasksInParallel(t *testing.T) {
 				}
 				if entering {
 					current := active.Add(1)
-					updateAtomicMaximum(&maximum, current)
+					for observed := maximum.Load(); current > observed; observed = maximum.Load() {
+						if maximum.CompareAndSwap(observed, current) {
+							break
+						}
+					}
 					allBackground := len(batch) >= parallelism
 					for _, peer := range batch {
 						allBackground = allBackground && peer != rootID.Load()

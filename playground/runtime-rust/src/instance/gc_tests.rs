@@ -40,7 +40,7 @@ fn panic_and_recovery_owners_keep_the_managed_payload_graph() {
     for recovered in [false, true] {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -131,7 +131,7 @@ fn collection_during_allocation_keeps_the_unpublished_payload_type() {
 fn nursery_pressure_prefers_minor_recovery_for_young_churn() {
     let program = test_helpers::program_with_artifact(|artifact| {
         artifact["functions"] = serde_json::json!([
-            {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+            {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
         ]);
     });
     let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -244,7 +244,7 @@ fn returning_frame_gc_reclaims_dead_local_and_keeps_named_result() {
                 {"id": "result", "type": string}
             ],
             "result_locals": ["result"],
-            "code": test_helpers::slot_code(
+            "code": test_helpers::micro_code(
                 serde_json::json!([string]),
                 &[
                     (

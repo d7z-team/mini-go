@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/d7z-team/mini-go/compiler/types"
 )
 
 func TestCanonicalTypeReferencesRetainIndependentTokens(t *testing.T) {
 	var writer canonicalBuffer
-	ref := types.TypeRef{Kind: types.Named, Named: types.TypeKey{ModulePath: "example/\xff<>&", DeclID: "T"}, Node: "node"}
+	ref := types.TypeRef{Kind: types.Named, Named: types.TypeKey{ModulePath: "example/\ufffd<>&", DeclID: "T"}, Node: "node"}
 	for i := 0; i < 3; i++ {
 		if i == 1 {
 			ref.Named.DeclID = "Changed"
@@ -39,7 +40,7 @@ func TestCanonicalTypeReferencesRetainIndependentTokens(t *testing.T) {
 func TestCanonicalStringsMatchJSONAcrossBufferReuse(t *testing.T) {
 	var writer canonicalBuffer
 	for round := 0; round < 3; round++ {
-		for _, value := range []string{"module/example.T", "quoted\"\\\x00\u2028\u2029\xff", "中文/long-name"} {
+		for _, value := range []string{"module/example.T", "quoted\"\\\x00\u2028\u2029\ufffd", "中文/long-name"} {
 			var expected bytes.Buffer
 			encoder := json.NewEncoder(&expected)
 			encoder.SetEscapeHTML(false)
@@ -57,7 +58,7 @@ func TestCanonicalStringsMatchJSONAcrossBufferReuse(t *testing.T) {
 }
 
 func TestFixedCanonicalEncodingMatchesJSON(t *testing.T) {
-	values := []any{Artifact{}, ExecutionImage{}, ProgramSymbols{}, ConstPayload{}, LocalPayload{}, UpvaluePayload{}, GlobalPayload{}, AddressPayload{}, TypePayload{}, OperatorPayload{}, MakeSequencePayload{}, MakeMapPayload{}, MakeStructPayload{}, MakeSlicePayload{}, MakeWaitablePayload{}, SelectPayload{}, CountPayload{}, FieldPayload{}, ExportPayload{}, InitModulePayload{}, LabelPayload{}, JumpPayload{}, CallPayload{}, CallInterfacePayload{}, ClosurePayload{}, ReturnPayload{}, DeferPayload{}, CallFFIPayload{}, CallIntrinsicPayload{}}
+	values := []any{Artifact{}, ExecutionImage{}, ProgramSymbols{}, ConstPayload{}, LocalPayload{}, UpvaluePayload{}, GlobalPayload{}, AddressPayload{}, TypePayload{}, OperatorPayload{}, MakeSequencePayload{}, MakeMapPayload{}, MakeStructPayload{}, MakeSlicePayload{}, MakeWaitablePayload{}, SelectPayload{}, CountPayload{}, FieldPayload{}, ExportPayload{}, InitModulePayload{}, LabelPayload{}, JumpPayload{}, CallPayload{}, CallInterfacePayload{}, ClosurePayload{}, ReturnPayload{}, DeferPayload{}, CallFFIPayload{}, CallIntrinsicPayload{}, UpdateCompareBranchPayload{}}
 	var populate func(reflect.Value, int)
 	populate = func(value reflect.Value, depth int) {
 		if depth > 12 {
@@ -90,7 +91,7 @@ func TestFixedCanonicalEncodingMatchesJSON(t *testing.T) {
 				value.SetMapIndex(reflect.ValueOf(key), element)
 			}
 		case reflect.String:
-			value.SetString("x\x00\t\n\r\b\f\"\\<>&\u2028\u2029中文\xff")
+			value.SetString("x\x00\t\n\r\b\f\"\\<>&\u2028\u2029中文\ufffd")
 		case reflect.Bool:
 			value.SetBool(true)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -171,9 +172,13 @@ func TestCanonicalStringHandlesAllBytePairs(t *testing.T) {
 			if err := encoder.Encode(value); err != nil {
 				t.Fatal(err)
 			}
+			expectedBytes := bytes.TrimSuffix(expected.Bytes(), []byte{'\n'})
+			if !utf8.ValidString(value) {
+				expectedBytes = bytes.ReplaceAll(expectedBytes, []byte(string(utf8.RuneError)), []byte(`\ufffd`))
+			}
 			var writer canonicalBuffer
 			writer.string(value)
-			if !bytes.Equal(writer.data, bytes.TrimSuffix(expected.Bytes(), []byte{'\n'})) {
+			if !bytes.Equal(writer.data, expectedBytes) {
 				t.Fatalf("%x: got %s want %s", value, writer.data, expected.Bytes())
 			}
 		}

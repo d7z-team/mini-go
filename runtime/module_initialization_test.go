@@ -15,14 +15,14 @@ func TestTasksShareOneModuleInitializationAcrossSchedulingQuanta(t *testing.T) {
 	read := root.Functions[0]
 	read.ID = "fn.read"
 	root.Functions = []ir.Function{
-		{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{
+		{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testMicroCode([]string{"function() Void", "Int64"}, []ir.Instruction{
 			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.worker"}},
 			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
 			{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.read", ResultCount: 1}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}})},
 		read,
-		{ID: "fn.worker", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+		{ID: "fn.worker", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"Int64"}, []ir.Instruction{
 			{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.read", ResultCount: 1}},
 			{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.child"}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},

@@ -103,18 +103,12 @@ func TestLowerFunctionLiteralCapturesLocal(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected function literal, got %#v", program.Functions)
 	}
-	if !literal.RevisionLocal {
-		t.Fatal("function literal must be revision-local")
-	}
 	if len(literal.Upvalues) != 1 || literal.Upvalues[0].ID != "up.x" || hirTypeString(&program.TypeTable, literal.Upvalues[0].Type) != "Int64" {
 		t.Fatalf("expected x upvalue, got %#v", literal.Upvalues)
 	}
 	mainFn, ok := findFunction(program.Functions, "fn.Main")
 	if !ok {
 		t.Fatalf("expected Main function, got %#v", program.Functions)
-	}
-	if mainFn.RevisionLocal {
-		t.Fatal("declared function must have logical revision identity")
 	}
 	call := mainFn.Body[1].Results[0]
 	if call.Kind != ir.ExprCallValue || call.Operand == nil || call.Operand.Kind != ir.ExprFunction {

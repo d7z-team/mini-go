@@ -17,11 +17,11 @@ fn operation(name: &str, descriptor: u32, operands: u32) -> Value {
         .iter()
         .position(|entry| entry["op"] == name)
         .unwrap();
-    json!([opcode + 1, descriptor, operands])
+    json!([opcode + 1, descriptor, operands, 1])
 }
 
 #[test]
-fn min_max_slot_instruction_reduces_typed_arguments() {
+fn min_max_micro_instruction_reduces_typed_arguments() {
     use mini_go::contract_generated as wire;
 
     let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
@@ -32,7 +32,7 @@ fn min_max_slot_instruction_reduces_typed_arguments() {
         } else {
             json!({"inputs":[[0,2]],"release":[2]})
         };
-        let code = support::slot_code(
+        let code = support::micro_code(
             json!([integer, integer, integer]),
             &[
                 ("const", json!({"constant":"low"}), json!({"outputs":[0]})),
@@ -84,12 +84,12 @@ fn direct_call_initializes_zero_sized_and_large_aggregate_locals() {
             "type_table":{"nodes":[node]},
             "functions":[
                 {"id":"fn.Main","signature":{"results":[typ]},"locals":[{"id":"result","type":typ}],
-                    "code":support::slot_code(json!([]), &[
+                    "code":support::micro_code(json!([]), &[
                         ("call_direct",json!({"function":"callee","result_count":1}),json!({"outputs":[1_u32<<31]})),
                         ("return",json!({"result_count":1}),json!({"inputs":[[2,0]]})),
                     ])},
                 {"id":"callee","signature":{"results":[typ]},"locals":[{"id":"zero","type":typ}],
-                    "code":support::slot_code(json!([]), &[
+                    "code":support::micro_code(json!([]), &[
                         ("return",json!({"result_count":1}),json!({"inputs":[[2,0]]})),
                     ])}
             ]
@@ -115,7 +115,7 @@ fn direct_call_initializes_zero_sized_and_large_aggregate_locals() {
 
 #[test]
 fn labels_resolve_to_executable_pcs_and_profile_names() {
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([]),
         &[
             ("jump", json!({"label":"second"}), json!({})),
@@ -169,7 +169,7 @@ fn invalid_labels_are_checked_in_unreachable_code() {
                 .map(|label| ("label", json!({"label":label}), json!({}))),
         );
         operations.push(("jump", json!({"label":target}), json!({})));
-        let code = support::slot_code(json!([]), &operations);
+        let code = support::micro_code(json!([]), &operations);
         let bytes =
             support::image(json!({"functions":[{"id":"fn.Main","signature":{},"code":code}]}));
         assert_eq!(
@@ -521,7 +521,7 @@ fn fused_index_and_length_operations_validate_and_execute() {
         assert!(Program::load(&bytes, LoadLimits::default()).is_err());
     }
 
-    let missing_label = support::slot_code(
+    let missing_label = support::micro_code(
         json!([]),
         &[(
             "len_compare_branch",
@@ -1180,7 +1180,7 @@ fn private_field_inputs_initialize_zero_and_reject_addressable_storage() {
 }
 
 #[test]
-fn slot_loop_preserves_exact_work_across_poll_and_instance_limits() {
+fn microcode_loop_preserves_exact_work_across_poll_and_instance_limits() {
     use mini_go::contract_generated as wire;
     let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
     let bytes = support::image(json!({
@@ -1233,4 +1233,66 @@ fn slot_loop_preserves_exact_work_across_poll_and_instance_limits() {
             vm.close().unwrap();
         }
     }
+}
+
+#[test]
+fn update_compare_branch_charges_before_committing_the_update() {
+    use mini_go::contract_generated as wire;
+    let integer = json!({"kind":wire::Primitive,"primitive":wire::PrimitiveInt});
+    let mut update = operation("update_compare_branch", 0, 1);
+    update[3] = json!(2);
+    let bytes = support::image(json!({
+        "constants":[
+            {"id":"one","type":integer,"value":1},
+            {"id":"end","type":integer,"value":3}
+        ],
+        "functions":[{"id":"fn.Main","signature":{"results":[integer]},
+            "locals":[{"id":"counter","type":integer}],"code":{
+                "types":[],
+                "descriptors":{
+                    "label":[{"label":"loop"}],
+                    "updatecomparebranch":[{
+                        "update":"+","comparison":"<","type":integer,
+                        "label":"loop","when":true
+                    }],
+                    "return":[{"result_count":1}]
+                },
+                "instructions":[
+                    operation("label",0,0),
+                    update,
+                    operation("return",0,2)
+                ],
+                "blocks":[
+                    {"first":0,"count":1,"fallthrough":1,"cost":2},
+                    {"first":1,"count":1,"fallthrough":u32::MAX,"cost":1}
+                ],
+                "operands":[
+                    {},
+                    {"inputs":[[2,0],[1,0],[1,1]]},
+                    {"inputs":[[2,0]]}
+                ]
+            }}]
+    }));
+    let program = Arc::new(Program::load(&bytes, LoadLimits::default()).unwrap());
+    let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
+    vm.start("default", &[]).unwrap();
+    for step in 1..=7 {
+        let status = vm.poll_steps(1).unwrap();
+        assert_eq!(vm.steps(), step);
+        assert_eq!(
+            status,
+            if step == 7 {
+                PollStatus::Ready
+            } else {
+                PollStatus::Running
+            }
+        );
+    }
+    assert_eq!(
+        vm.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        3
+    );
+    vm.close().unwrap();
 }

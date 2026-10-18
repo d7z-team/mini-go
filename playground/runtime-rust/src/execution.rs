@@ -1206,7 +1206,7 @@ impl Execution {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance::test_helpers::slot_code;
+    use crate::instance::test_helpers::{complete_blocks, micro_code};
     use serde_json::json;
     use std::{
         collections::HashSet,
@@ -1339,9 +1339,9 @@ mod tests {
                 {"id":"limit","type":integer,"value":limit}
             ],
             "functions":[
-                {"id":"fn.Main","signature":{"results":[integer]},"code":slot_code(json!([integer,channel,function]),&main)},
-                {"id":"fn.Background","code":slot_code(json!([integer,channel,function]),&background)},
-                {"id":"worker","locals":[{"id":"i","type":integer}],"code":slot_code(json!([channel,integer,integer,integer,{"kind":3,"primitive":1}]), &[
+                {"id":"fn.Main","signature":{"results":[integer]},"code":micro_code(json!([integer,channel,function]),&main)},
+                {"id":"fn.Background","code":micro_code(json!([integer,channel,function]),&background)},
+                {"id":"worker","locals":[{"id":"i","type":integer}],"code":micro_code(json!([channel,integer,integer,integer,{"kind":3,"primitive":1}]), &[
                     ("load_global",json!({"global":"start"}),json!({"outputs":[0]})),
                     ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
                     ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
@@ -1369,6 +1369,7 @@ mod tests {
         artifact["format"] = contract["spec"]["format"].clone();
         artifact["version"] = contract["spec"]["version"].clone();
         artifact["opcode_set"] = contract["spec"]["opcode_set"].clone();
+        complete_blocks(&mut artifact, &contract);
         let artifact: crate::contract_generated::Artifact =
             serde_json::from_value(artifact).unwrap();
         let mut image: crate::contract_generated::ExecutionImage = serde_json::from_value(json!({

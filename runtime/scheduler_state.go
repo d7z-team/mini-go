@@ -138,10 +138,14 @@ type executionTask struct {
 	completingFrame    *executionFrame
 	preparingSelection *channelSelection
 	retryInstruction   bool
-	allocationRetries  uint8
-	debugParents       []debugFrame
-	blocked            *blockedOperation
-	pendingErr         error
+	// chargedInstructionSteps holds logical fuel already consumed for the
+	// current fused micro-op. Exact PollSteps budgets may split this charge;
+	// the operation commits only after its complete source-level cost is paid.
+	chargedInstructionSteps uint32
+	allocationRetries       uint8
+	debugParents            []debugFrame
+	blocked                 *blockedOperation
+	pendingErr              error
 	// sliceValues roots a completed task's values between publication of the
 	// task continuation and owner-side result processing.
 	sliceValues []vmValue

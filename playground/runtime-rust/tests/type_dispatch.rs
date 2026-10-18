@@ -8,7 +8,7 @@ use mini_go::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use support::slot_code;
+use support::micro_code;
 
 #[test]
 fn type_dispatch_resumes_candidates_and_preserves_the_matching_binding() {
@@ -25,7 +25,7 @@ fn type_dispatch_resumes_candidates_and_preserves_the_matching_binding() {
             "constants":[{"id":"answer","type":integer,"value":42}],
             "functions":[{"id":"fn.Main","signature":{"results":[integer]},
                 "locals":[{"id":"subject","type":any},{"id":"result","type":integer}],
-                "code":slot_code(json!([integer]), &[
+                "code":micro_code(json!([integer]), &[
                     ("const",json!({"constant":"answer"}),json!({"outputs":[0]})),
                     ("store_local",json!({"local":"subject"}),json!({"inputs":[[0,0]],"release":[0]})),
                     ("type_dispatch",json!({"subject":"subject","default":"failure","cases":[

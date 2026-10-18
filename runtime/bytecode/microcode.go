@@ -45,28 +45,40 @@ type Operand struct {
 	Index uint32      `json:"index"`
 }
 
-// SlotInstruction has a fixed representation. Variable operands and operation
-// metadata belong to the function's immutable descriptor table.
-type SlotInstruction struct {
+// MicroInstruction is the fixed 16-byte micro-op carried by the execution
+// image. Mode contains the statically selected primitive lane. Descriptor and
+// Operands index immutable cold tables; Cost is the logical fuel charged by
+// this dispatch and may exceed one for a fused operation.
+type MicroInstruction struct {
 	Op         Opcode `json:"op"`
+	Mode       uint16 `json:"mode"`
 	Descriptor uint32 `json:"descriptor"`
 	Operands   uint32 `json:"operands"`
+	Cost       uint32 `json:"cost"`
 }
 
-func (instruction SlotInstruction) MarshalJSON() ([]byte, error) {
-	return json.Marshal([3]uint32{uint32(instruction.Op), instruction.Descriptor, instruction.Operands})
+func (instruction MicroInstruction) MarshalJSON() ([]byte, error) {
+	word := uint32(instruction.Op) | uint32(instruction.Mode)<<16
+	return json.Marshal([4]uint32{word, instruction.Descriptor, instruction.Operands, instruction.LogicalCost()})
 }
 
-func (instruction *SlotInstruction) UnmarshalJSON(data []byte) error {
+func (instruction *MicroInstruction) UnmarshalJSON(data []byte) error {
 	var fields []uint32
 	if err := strictUnmarshal(data, &fields); err != nil {
 		return err
 	}
-	if len(fields) != 3 || fields[0] > 65535 {
-		return errors.New("instruction requires [opcode:u16, descriptor:u32, operands:u32]")
+	if len(fields) != 4 || fields[3] == 0 {
+		return errors.New("instruction requires [opcode:u16|mode:u16, descriptor:u32, operands:u32, cost:u32]")
 	}
-	*instruction = SlotInstruction{Op: Opcode(fields[0]), Descriptor: fields[1], Operands: fields[2]}
+	*instruction = MicroInstruction{Op: Opcode(fields[0] & 0xffff), Mode: uint16(fields[0] >> 16), Descriptor: fields[1], Operands: fields[2], Cost: fields[3]}
 	return nil
+}
+
+func (instruction MicroInstruction) LogicalCost() uint32 {
+	if instruction.Cost == 0 {
+		return 1
+	}
+	return instruction.Cost
 }
 
 func (operand Operand) MarshalJSON() ([]byte, error) {
@@ -85,7 +97,7 @@ func (operand *Operand) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type SlotOperands struct {
+type RegisterFlow struct {
 	Inputs []Operand `json:"inputs,omitempty"`
 	// Outputs use bit 31 for a private local destination, otherwise a temporary.
 	// Direct local results are written into private local storage. Aggregate
@@ -118,18 +130,30 @@ func AllowsDirectLocalOutputs(op Opcode, count int) bool {
 	return count == 1 && HasDirectOutput(op)
 }
 
-type SlotCode struct {
-	Types        []types.TypeRef   `json:"types,omitempty"`
-	Instructions []SlotInstruction `json:"instructions,omitempty"`
-	Operands     []SlotOperands    `json:"operands,omitempty"`
-	Descriptors  DescriptorTables  `json:"descriptors"`
+type MicroCode struct {
+	Types        []types.TypeRef    `json:"types,omitempty"`
+	Instructions []MicroInstruction `json:"instructions,omitempty"`
+	Blocks       []BasicBlock       `json:"blocks,omitempty"`
+	Operands     []RegisterFlow     `json:"operands,omitempty"`
+	Descriptors  DescriptorTables   `json:"descriptors"`
+}
+
+const NoBlock uint32 = ^uint32(0)
+
+// BasicBlock describes a maximal straight-line executable range after labels
+// have been removed. First and Count use executable PCs rather than wire PCs.
+type BasicBlock struct {
+	First       uint32 `json:"first"`
+	Count       uint32 `json:"count"`
+	Fallthrough uint32 `json:"fallthrough"`
+	Cost        uint32 `json:"cost"`
 }
 
 // Operations expands descriptor references for linkage and preparation. It
 // does not infer operand flow; that is encoded in Code.Operands.
 func (fn *Function) Operations() ([]Instruction, error) {
 	if fn.Code == nil {
-		return nil, errors.New("missing slot code")
+		return nil, errors.New("missing microcode")
 	}
 	operations := make([]Instruction, len(fn.Code.Instructions))
 	for i, instruction := range fn.Code.Instructions {

@@ -3,6 +3,7 @@ package bytecode
 var payloadSpecs = []PayloadSpec{
 	{Name: "field_path", Fields: []FieldSpec{{Name: "type", Type: "TypeRef", Required: true}, {Name: "fields", Type: "[]uint32", Required: true}}},
 	{Name: "compare_branch", Fields: []FieldSpec{{Name: "operator", Type: "comparison", Required: true}, {Name: "type", Type: "TypeRef", Required: true}, {Name: "label", Type: "label", Required: true}, {Name: "when", Type: "bool", Required: true}}},
+	{Name: "update_compare_branch", Fields: []FieldSpec{{Name: "update", Type: "enum(+,-)", Required: true}, {Name: "comparison", Type: "comparison", Required: true}, {Name: "type", Type: "TypeRef", Required: true}, {Name: "label", Type: "label", Required: true}, {Name: "when", Type: "bool", Required: true}}},
 	{Name: "type_dispatch", Fields: []FieldSpec{{Name: "subject", Type: "local-id", Required: true}, {Name: "default", Type: "label", Required: true}, {Name: "default_local", Type: "local-id"}, {Name: "cases", Type: "[]type-case", Required: true}}},
 	{Name: "select", Fields: []FieldSpec{{Name: "index", Type: "local-id", Required: true}, {Name: "default", Type: "bool"}, {Name: "cases", Type: "[]select-case", Rule: "evaluated channel local and either send local or receive value/ok locals"}}},
 	{Name: "const", Fields: []FieldSpec{{Name: "constant", Type: "constant-id", Required: true}}},
@@ -106,6 +107,7 @@ var opcodeSpecs = []OpcodeSpec{
 	{Op: "index_convert", Arity: OperandArity{Kind: "fixed", Inputs: 2, Outputs: 1}, Category: "composite", Payload: "type", Operands: "read indexable object/index, write converted integer", Notes: "fused load_index followed by a scalar integer conversion"},
 	{Op: "len_compare_branch", Arity: OperandArity{Kind: "fixed", Inputs: 2, Outputs: 0}, Category: "control", Payload: "compare_branch", Operands: "read indexable object/integer, branch without materializing len", Notes: "length is the left comparison operand; compiler normalizes the operator when source length was on the right"},
 	{Op: "min_max", Arity: OperandArity{Kind: "payload"}, Category: "value", Payload: "minmax", Operands: "read ordered values, write selected value"},
+	{Op: "update_compare_branch", Arity: OperandArity{Kind: "fixed", Inputs: 3, Outputs: 0}, Category: "control", Payload: "update_compare_branch", Operands: "read private local/update/comparison operands, update the local and branch", Notes: "fused scalar local update followed by a typed comparison"},
 }
 
 var knownOpcodes = func() map[string]Opcode {

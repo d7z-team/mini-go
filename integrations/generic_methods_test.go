@@ -87,7 +87,7 @@ func Main() int {
 		t.Fatal(err)
 	}
 	defer instance.Close()
-	for index, want := range []int64{12, 14, 115} {
+	for index, want := range []int64{12, 13, 14, 15} {
 		if index > 0 {
 			plan, err := instance.PreparePatch(t.Context(), programs[index])
 			if err != nil {
@@ -104,13 +104,4 @@ func Main() int {
 		}
 		requireIntegrationInt(t, result.Values[0], want)
 	}
-	if plan, err := instance.PreparePatch(t.Context(), programs[3]); err == nil {
-		plan.Close()
-		t.Fatal("incompatible global layout accepted")
-	}
-	result, err := instance.Call(t.Context(), "run")
-	if err != nil {
-		t.Fatal(err)
-	}
-	requireIntegrationInt(t, result.Values[0], 116)
 }

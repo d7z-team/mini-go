@@ -126,7 +126,7 @@ func validateFunctionBody(path string, fn Function, refs artifactRefs, table *ty
 	for j := range instructions {
 		inst := &instructions[j]
 		switch inst.Op {
-		case OpCompareBranch, OpLenCompareBranch, OpTypeDispatch, OpJump, OpJumpIf:
+		case OpCompareBranch, OpLenCompareBranch, OpUpdateCompareBranch, OpTypeDispatch, OpJump, OpJumpIf:
 		default:
 			continue
 		}
@@ -134,6 +134,11 @@ func validateFunctionBody(path string, fn Function, refs artifactRefs, table *ty
 		switch inst.Op {
 		case OpCompareBranch, OpLenCompareBranch:
 			payload := inst.Payload.(CompareBranchPayload)
+			if _, ok := labels[payload.Label]; !ok {
+				return newCodedValidationError(ValidationLabelUnknown, instPath, fmt.Errorf("unknown label %q", payload.Label))
+			}
+		case OpUpdateCompareBranch:
+			payload := inst.Payload.(UpdateCompareBranchPayload)
 			if _, ok := labels[payload.Label]; !ok {
 				return newCodedValidationError(ValidationLabelUnknown, instPath, fmt.Errorf("unknown label %q", payload.Label))
 			}
@@ -169,7 +174,7 @@ func validateFunctionBody(path string, fn Function, refs artifactRefs, table *ty
 			return err
 		}
 	}
-	if err := validateSlotCode(fn.Code, refs.constantOrder, fn.Locals, operations); err != nil {
+	if err := validateMicroCode(fn.Code, refs.constantOrder, fn.Locals, operations); err != nil {
 		return newValidationError(path+".code", err)
 	}
 	if err := validateSlotTypes(fn, operations, refs, table); err != nil {
@@ -213,6 +218,8 @@ func validateInstructionRefs(path string, inst *Instruction, refs artifactRefs, 
 		return err
 	case OpCompareBranch, OpLenCompareBranch:
 		return validateTypeRef(path+".type", inst.Payload.(CompareBranchPayload).Type, table)
+	case OpUpdateCompareBranch:
+		return validateTypeRef(path+".type", inst.Payload.(UpdateCompareBranchPayload).Type, table)
 	case OpMinMax:
 		return validateTypeRef(path+".type", inst.Payload.(MinMaxPayload).Type, table)
 	case OpTypeDispatch:

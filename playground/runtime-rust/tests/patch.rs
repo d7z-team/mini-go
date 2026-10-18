@@ -70,8 +70,8 @@ fn stored_closure_keeps_its_revision_through_collection_and_repeated_patches() {
             "constants":[{"id":"answer","type":integer,"value":answer}],
             "globals":[{"id":"held","type":function}],
             "functions":[
-                {"id":"fn.Main","signature":{"results":[integer]},"code":support::slot_code(json!([function,integer]), &operations)},
-                {"id":"value","revision_local":true,"signature":{"results":[integer]},"code":support::slot_code(json!([integer]), &[
+                {"id":"fn.Main","signature":{"results":[integer]},"code":support::micro_code(json!([function,integer]), &operations)},
+                {"id":"value","signature":{"results":[integer]},"code":support::micro_code(json!([integer]), &[
                     ("const",json!({"constant":"answer"}),json!({"outputs":[0]})),
                     ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))
                 ])}
@@ -123,7 +123,7 @@ fn patch_static_types_and_dynamic_metadata_have_separate_budgets() {
             ]},
             "constants":[{"id":"answer","type":integer,"value":answer}],
             "functions":[{"id":"fn.Main","signature":{"results":[integer]},
-                "code":support::slot_code(json!([integer]), &[
+                "code":support::micro_code(json!([integer]), &[
                     ("const",json!({"constant":"answer"}),json!({"outputs":[0]})),
                     ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))
                 ])}]
@@ -154,7 +154,7 @@ fn patch_static_types_and_dynamic_metadata_have_separate_budgets() {
 
 #[test]
 fn method_rebinding_rejects_patch_and_preserves_existing_receiver_metadata() {
-    let body = support::slot_code(
+    let body = support::micro_code(
         json!([{"kind":3,"primitive":3}]),
         &[
             (
@@ -244,31 +244,7 @@ fn collection_reclaims_canceled_revision_without_changing_the_current_program() 
 #[test]
 fn patch_global_allocation_failure_preserves_heap_results_and_generation() {
     let original = program(20, false);
-    let mut target = program(42, false).image().clone();
-    let extra: wire::ExecutionImage = serde_json::from_slice(&support::image(json!({
-        "globals":(0..20).map(|index| json!({"id":format!("global{index}"),"type":{"kind":3,"primitive":3}})).collect::<Vec<_>>(),
-        "functions":[{"id":"fn.Main","code":support::slot_code(json!([]), &[("return", json!({}), json!({}))])}]
-    }))).unwrap();
-    let mut archive = extra.packages.unwrap().remove("test").unwrap();
-    let mut artifact: wire::Artifact =
-        serde_json::from_str(archive.artifact.as_ref().unwrap().get()).unwrap();
-    artifact.module.path = "extra".into();
-    archive.artifact_hash = canonical_hash(&artifact).unwrap();
-    archive.artifact = Some(
-        serde_json::value::RawValue::from_string(
-            String::from_utf8(canonical_json(&artifact).unwrap()).unwrap(),
-        )
-        .unwrap(),
-    );
-    target
-        .packages
-        .as_mut()
-        .unwrap()
-        .insert("extra".into(), archive);
-    target.hash.clear();
-    target.hash = canonical_hash(&target).unwrap();
-    let target =
-        Arc::new(Program::load(&canonical_json(&target).unwrap(), LoadLimits::default()).unwrap());
+    let target = program_with_extra_module(program(42, false), 20);
     let mut instance = Instance::new(
         original,
         ExecutionLimits {
@@ -312,14 +288,6 @@ fn patch_global_allocation_failure_preserves_heap_results_and_generation() {
 }
 
 fn program(number: i64, closure: bool) -> Arc<Program> {
-    program_with_options(number, closure, false)
-}
-
-fn program_with_revision_local(number: i64, revision_local: bool) -> Arc<Program> {
-    program_with_options(number, false, revision_local)
-}
-
-fn program_with_options(number: i64, closure: bool, revision_local: bool) -> Arc<Program> {
     let integer = json!({"kind":3,"primitive":3});
     let mut operations = vec![];
     if closure {
@@ -352,8 +320,8 @@ fn program_with_options(number: i64, closure: bool, revision_local: bool) -> Arc
     } else {
         integer.clone()
     };
-    let code = support::slot_code(json!([first_type, integer]), &operations);
-    let value = support::slot_code(
+    let code = support::micro_code(json!([first_type, integer]), &operations);
+    let value = support::micro_code(
         json!([integer]),
         &[
             ("const", json!({"constant":"n"}), json!({"outputs":[0]})),
@@ -369,16 +337,57 @@ fn program_with_options(number: i64, closure: bool, revision_local: bool) -> Arc
         "constants":[{"id":"n","type":{"kind":3,"primitive":3},"value":number}],
         "functions":[
             {"id":"fn.Main","signature":{"results":[integer]},"code":code},
-            {"id":"value","revision_local":revision_local,"signature":{"results":[integer]},"code":value}
+            {"id":"value","signature":{"results":[integer]},"code":value}
         ]
     }));
     Arc::new(Program::load(&image, LoadLimits::default()).unwrap())
 }
 
+fn program_with_extra_module(root: Arc<Program>, extra_globals: usize) -> Arc<Program> {
+    let mut image = root.image().clone();
+    let extra: wire::ExecutionImage = serde_json::from_slice(&support::image(json!({
+        "globals":(0..extra_globals).map(|index| json!({"id":format!("global{index}"),"type":{"kind":3,"primitive":3}})).collect::<Vec<_>>(),
+        "functions":[{"id":"fn.Main","code":support::micro_code(json!([]), &[("return", json!({}), json!({}))])}]
+    }))).unwrap();
+    let mut archive = extra.packages.unwrap().remove("test").unwrap();
+    let mut artifact: wire::Artifact =
+        serde_json::from_str(archive.artifact.as_ref().unwrap().get()).unwrap();
+    artifact.module.path = "extra".into();
+    archive.artifact_hash = canonical_hash(&artifact).unwrap();
+    archive.artifact = Some(
+        serde_json::value::RawValue::from_string(
+            String::from_utf8(canonical_json(&artifact).unwrap()).unwrap(),
+        )
+        .unwrap(),
+    );
+    image
+        .packages
+        .as_mut()
+        .unwrap()
+        .insert("extra".into(), archive);
+    image.hash.clear();
+    image.hash = canonical_hash(&image).unwrap();
+    Arc::new(Program::load(&canonical_json(&image).unwrap(), LoadLimits::default()).unwrap())
+}
+
+#[test]
+fn patch_reports_modified_and_removed_modules_in_stable_order() {
+    let mut instance = Instance::new(
+        program_with_extra_module(program(20, false), 0),
+        ExecutionLimits::default(),
+    )
+    .unwrap();
+    let plan = instance.prepare_patch(program(42, false)).unwrap();
+    assert_eq!(plan.changed_modules(), ["extra", "test"]);
+    let result = instance.apply_patch(plan).unwrap();
+    assert_eq!(result.changed_modules, ["extra", "test"]);
+    instance.close().unwrap();
+}
+
 #[test]
 fn anonymous_types_are_resolved_in_their_frame_revision() {
     let array = json!({"kind":6,"node":"source.array"});
-    let body = support::slot_code(
+    let body = support::micro_code(
         json!([array,{"kind":3,"primitive":3}]),
         &[
             ("zero", json!({"type":array}), json!({"outputs":[0]})),
@@ -429,7 +438,7 @@ fn anonymous_types_are_resolved_in_their_frame_revision() {
 }
 
 #[test]
-fn active_frames_keep_code_and_named_calls_use_the_published_revision() {
+fn active_call_trees_keep_their_program_revision() {
     for closure in [false, true] {
         let mut instance = Instance::new(program(20, closure), ExecutionLimits::default()).unwrap();
         instance.start_profile(1, 100).unwrap();
@@ -445,15 +454,12 @@ fn active_frames_keep_code_and_named_calls_use_the_published_revision() {
             instance.snapshot_results(Default::default()).unwrap().roots[0]
                 .integer()
                 .unwrap(),
-            if closure { 20 } else { 42 }
+            20
         );
         instance.collect_garbage().unwrap();
         assert_eq!(instance.retained_revisions(), [instance.revision()]);
         let profile = instance.profile();
         assert!(profile.samples.iter().any(|sample| sample.generation == 1));
-        if !closure {
-            assert!(profile.samples.iter().any(|sample| sample.generation == 2));
-        }
         instance.start("default", &[]).unwrap();
         assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
         assert_eq!(
@@ -468,38 +474,7 @@ fn active_frames_keep_code_and_named_calls_use_the_published_revision() {
 }
 
 #[test]
-fn revision_local_direct_calls_keep_the_callers_revision() {
-    let mut instance = Instance::new(
-        program_with_revision_local(20, true),
-        ExecutionLimits::default(),
-    )
-    .unwrap();
-    instance.start("default", &[]).unwrap();
-    assert_eq!(instance.poll_steps(1).unwrap(), PollStatus::Running);
-    let plan = instance
-        .prepare_patch(program_with_revision_local(42, true))
-        .unwrap();
-    instance.apply_patch(plan).unwrap();
-    assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(
-        instance.snapshot_results(Default::default()).unwrap().roots[0]
-            .integer()
-            .unwrap(),
-        20
-    );
-    instance.start("default", &[]).unwrap();
-    assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
-    assert_eq!(
-        instance.snapshot_results(Default::default()).unwrap().roots[0]
-            .integer()
-            .unwrap(),
-        42
-    );
-    instance.close().unwrap();
-}
-
-#[test]
-fn logical_calls_rebind_after_function_reordering_without_affecting_other_instances() {
+fn function_reordering_preserves_active_revisions_and_other_instances() {
     let old = program(20, false);
     let target = program(42, false);
     let package = target
@@ -523,22 +498,31 @@ fn logical_calls_rebind_after_function_reordering_without_affecting_other_instan
     }
     let plan = first.prepare_patch(reordered).unwrap();
     first.apply_patch(plan).unwrap();
-    for (vm, expected) in [(&mut first, 42), (&mut second, 20)] {
+    for vm in [&mut first, &mut second] {
         while vm.poll_steps(1).unwrap() != PollStatus::Ready {}
         assert_eq!(
             vm.snapshot_results(Default::default()).unwrap().roots[0]
                 .integer()
                 .unwrap(),
-            expected
+            20
         );
-        vm.close().unwrap();
     }
+    first.start("default", &[]).unwrap();
+    while first.poll_steps(1).unwrap() != PollStatus::Ready {}
+    assert_eq!(
+        first.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        42
+    );
+    first.close().unwrap();
+    second.close().unwrap();
 }
 
 #[test]
 fn deferred_closure_runs_old_code_then_releases_the_revision() {
     let integer = json!({"kind":3,"primitive":3});
-    let main = support::slot_code(
+    let main = support::micro_code(
         json!([{"kind":wire::Function,"node":"save.signature"},integer]),
         &[
             (
@@ -563,7 +547,7 @@ fn deferred_closure_runs_old_code_then_releases_the_revision() {
             ),
         ],
     );
-    let save = support::slot_code(
+    let save = support::micro_code(
         json!([integer]),
         &[
             ("const", json!({"constant":"n"}), json!({"outputs":[0]})),
@@ -639,10 +623,10 @@ fn plans_are_bound_to_owner_and_base_and_failure_preserves_execution() {
 }
 
 #[test]
-fn patch_preserves_globals_and_shape_failure_preserves_revision() {
+fn patch_reuses_identical_globals_and_replaces_changed_global_types() {
     let build = |delta: i64, primitive: u8| {
         let typ = json!({"kind":3,"primitive":primitive});
-        let body = support::slot_code(
+        let body = support::micro_code(
             json!([typ, typ, typ]),
             &[
                 (
@@ -689,14 +673,16 @@ fn patch_preserves_globals_and_shape_failure_preserves_revision() {
             .unwrap(),
         20
     );
-    let before = instance.heap_stats();
-    let revision = instance.revision();
+    let patch = instance.prepare_patch(build(2, 4)).unwrap();
+    instance.apply_patch(patch).unwrap();
+    instance.start("default", &[]).unwrap();
+    assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
     assert_eq!(
-        instance.prepare_patch(build(2, 4)).err().unwrap().code,
-        "global_shape_changed"
+        instance.snapshot_results(Default::default()).unwrap().roots[0]
+            .integer()
+            .unwrap(),
+        2
     );
-    assert_eq!(instance.revision(), revision);
-    assert_eq!(instance.heap_stats(), before);
     let patch = instance.prepare_patch(build(22, 3)).unwrap();
     instance.apply_patch(patch).unwrap();
     instance.start("default", &[]).unwrap();
@@ -705,7 +691,7 @@ fn patch_preserves_globals_and_shape_failure_preserves_revision() {
         instance.snapshot_results(Default::default()).unwrap().roots[0]
             .integer()
             .unwrap(),
-        42
+        22
     );
     instance.close().unwrap();
 }

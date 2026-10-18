@@ -1,5 +1,5 @@
 import { VMError } from "./json";
-import type { PreparedFunction } from "./program";
+import type { PreparedAddressPlan, PreparedFunction } from "./program";
 
 export interface FrameReferences {
   /** Locals, temporaries and upvalue cells, in that order. */
@@ -63,7 +63,6 @@ export function prepareFrameReferences(
 
   for (let pc = 0; pc < count; pc++) {
     const instruction = fn.instructions[pc]!;
-    const descriptor = instruction.descriptor ?? {};
     const offset = pc * words;
     // A runtime panic may unwind into a recovering defer at any instruction.
     uses.set(results, offset);
@@ -77,12 +76,12 @@ export function prepareFrameReferences(
       set(defs, offset, index);
       if (local && fn.cellLocals.has(index)) set(uses, offset, index);
     }
-    const readAddress = (address: Record<string, unknown>): void => {
-      const index = address.$index as number;
+    const readAddress = (address: PreparedAddressPlan): void => {
+      const index = address.index;
       if (address.kind === "local") set(uses, offset, index);
       else if (address.kind === "upvalue") set(uses, offset, locals + temporaries + index);
-      for (const segment of (address.path ?? []) as Record<string, unknown>[])
-        if (segment.kind === "index") set(uses, offset, segment.$index as number);
+      for (const segment of address.path)
+        if (segment.kind === "index") set(uses, offset, segment.local);
     };
     const branch = (target: number, binding?: number): void => {
       if (!Number.isInteger(target) || target < 0 || target > count)
@@ -105,7 +104,7 @@ export function prepareFrameReferences(
         // A rebind replaces the stable cell itself in VM.execute. Ordinary
         // stores retain that cell so its existing managed payload remains a
         // root through the post-store control flow.
-        if (fn.cellLocals.has(index) && descriptor.rebind !== true) set(uses, offset, index);
+        if (fn.cellLocals.has(index) && !instruction.rebind) set(uses, offset, index);
         break;
       }
       case "load_upvalue":
@@ -113,16 +112,15 @@ export function prepareFrameReferences(
         set(uses, offset, locals + temporaries + instruction.upvalue!);
         break;
       case "address_of":
-        readAddress(descriptor);
+        readAddress(instruction.address!);
         break;
       case "make_closure":
         for (const capture of instruction.captures ?? []) readAddress(capture);
         break;
       case "type_dispatch":
-        set(uses, offset, descriptor.$subject as number);
-        branch(descriptor.$target as number, descriptor.$default_local as number | undefined);
-        for (const match of (descriptor.cases ?? []) as Record<string, unknown>[])
-          branch(match.$target as number, match.$binding as number | undefined);
+        set(uses, offset, instruction.typeDispatch!.subject);
+        branch(instruction.typeDispatch!.defaultTarget, instruction.typeDispatch!.defaultBinding);
+        for (const match of instruction.typeDispatch!.cases) branch(match.target, match.binding);
         fallsThrough = false;
         break;
       case "select":
@@ -145,6 +143,7 @@ export function prepareFrameReferences(
         break;
       case "compare_branch":
       case "len_compare_branch":
+      case "update_compare_branch":
         branch(instruction.target!);
         break;
       case "return":

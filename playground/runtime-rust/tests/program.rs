@@ -2,7 +2,7 @@ mod support;
 
 use mini_go::{loader::LoadLimits, program::Program};
 use serde_json::json;
-use support::slot_code;
+use support::micro_code;
 
 #[test]
 fn missing_dependency_export_is_rejected_at_load() {
@@ -51,11 +51,11 @@ fn dependency_cycles_are_rejected_before_preparation() {
 fn rejects_invalid_control_flow_and_captures_before_instantiation() {
     let cases = [
         (
-            json!({"id": "fn.Main", "code":slot_code(json!([]), &[("pop",json!({}),json!({}))])}),
+            json!({"id": "fn.Main", "code":micro_code(json!([]), &[("pop",json!({}),json!({}))])}),
             "invalid_operand",
         ),
         (
-            json!({"id": "fn.Main", "code":slot_code(json!([]), &[("jump",json!({"label":"missing"}),json!({}))])}),
+            json!({"id": "fn.Main", "code":micro_code(json!([]), &[("jump",json!({"label":"missing"}),json!({}))])}),
             "invalid_jump",
         ),
         (
@@ -63,13 +63,13 @@ fn rejects_invalid_control_flow_and_captures_before_instantiation() {
             "invalid_result_local",
         ),
         (
-            json!({"id": "fn.Main", "code":slot_code(json!([{"kind":2}]), &[
+            json!({"id": "fn.Main", "code":micro_code(json!([{"kind":2}]), &[
                 ("make_closure",json!({"function":"fn.Main","captures":[{"kind":"local","local":"missing"}]}),json!({"outputs":[0]})),
                 ("pop",json!({}),json!({"inputs":[[0,0]],"release":[0]}))])}),
             "invalid_operand",
         ),
         (
-            json!({"id": "fn.Main", "code":slot_code(json!([]), &[("call_ffi",json!({"arg_count":1,"result_count":3}),json!({}))])}),
+            json!({"id": "fn.Main", "code":micro_code(json!([]), &[("call_ffi",json!({"arg_count":1,"result_count":3}),json!({}))])}),
             "invalid_operand",
         ),
     ];
@@ -125,7 +125,7 @@ fn rejects_invalid_min_max_operator_types_and_result_shapes() {
             "functions": [{
                 "id":"fn.Main",
                 "signature":{"results":[result_type]},
-                "code": slot_code(
+                "code": micro_code(
                     if name == "result_type" {
                         json!([typ, typ, result_type])
                     } else {
@@ -170,7 +170,7 @@ fn rejects_invalid_min_max_operator_types_and_result_shapes() {
 fn branch_join_requires_inputs_initialized_on_every_predecessor() {
     let image = support::image(json!({
         "constants": [{"id": "condition", "type": {"kind": 3, "primitive": 1}, "value": true}],
-        "functions": [{"id": "fn.Main", "code":slot_code(json!([{"kind":3,"primitive":1},{"kind":3,"primitive":3}]), &[
+        "functions": [{"id": "fn.Main", "code":micro_code(json!([{"kind":3,"primitive":1},{"kind":3,"primitive":3}]), &[
             ("const",json!({"constant":"condition"}),json!({"outputs":[0]})),
             ("jump_if",json!({"label":"join"}),json!({"inputs":[[0,0]],"release":[0]})),
             ("zero",json!({"type":{"kind":3,"primitive":3}}),json!({"outputs":[1]})),

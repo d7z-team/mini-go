@@ -9,7 +9,7 @@ import (
 func TestFrameReferencesFollowHiddenLocalsAndTemporaryLifetime(t *testing.T) {
 	fn := Function{
 		Locals: []Local{{ID: "source", Type: testType("String")}, {ID: "destination", Type: testType("String")}, {ID: "scalar", Type: testType("Int")}},
-		Code: testSlotCode([]string{"String", "String"}, []Instruction{
+		Code: testMicroCode([]string{"String", "String"}, []Instruction{
 			{Op: OpLoadLocal, Payload: LocalPayload{Local: "source"}},
 			{Op: OpStoreLocal, Payload: LocalPayload{Local: "destination"}},
 			{Op: OpLoadLocal, Payload: LocalPayload{Local: "destination"}},
@@ -30,7 +30,7 @@ func TestFrameReferencesFollowHiddenLocalsAndTemporaryLifetime(t *testing.T) {
 func TestFrameReferencesPreserveStorageIdentityBeforeAssignment(t *testing.T) {
 	fn := Function{
 		Locals: []Local{{ID: "destination", Type: testType("Array<32, Int>")}},
-		Code: testSlotCode([]string{"Array<32, Int>"}, []Instruction{
+		Code: testMicroCode([]string{"Array<32, Int>"}, []Instruction{
 			{Op: OpZero, Payload: TypePayload{Type: testType("Array<32, Int>")}},
 			{Op: OpStoreLocal, Payload: LocalPayload{Local: "destination"}},
 			{Op: OpReturn, Payload: ReturnPayload{}},
@@ -56,7 +56,7 @@ func TestFrameReferencesTypeDispatchKillsOnlySelectedBinding(t *testing.T) {
 		}
 		fn := Function{
 			Locals: []Local{{ID: "subject", Type: testType("Any")}, {ID: "binding", Type: testType("String")}, {ID: "fallback", Type: testType("String")}},
-			Code: testSlotCode([]string{"String"}, []Instruction{
+			Code: testMicroCode([]string{"String"}, []Instruction{
 				{Op: OpTypeDispatch, Payload: TypeDispatchPayload{Subject: "subject", Default: "default", Cases: []TypeCase{{Type: testType("String"), Label: "match", Binding: "binding"}}}},
 				{Op: OpLabel, Payload: LabelPayload{Label: "match"}},
 				{Op: OpLoadLocal, Payload: LocalPayload{Local: "binding"}},
@@ -91,7 +91,7 @@ func TestFrameReferencesSelectKeepsUnselectedReceiveValue(t *testing.T) {
 			{ID: "ok", Type: testType("Bool")},
 			{ID: "index", Type: testType("Int")},
 		},
-		Code: testSlotCode([]string{"String"}, []Instruction{
+		Code: testMicroCode([]string{"String"}, []Instruction{
 			{Op: OpSelect, Payload: SelectPayload{Index: "index", Default: true, Cases: []SelectCase{
 				{Channel: "receive", Value: "value", OK: "ok"}, {Channel: "send", Send: "message"},
 			}}},
@@ -111,7 +111,7 @@ func TestFrameReferencesSelectKeepsUnselectedReceiveValue(t *testing.T) {
 func TestFrameReferencesDistinguishRebindingAndWritingCapturedCell(t *testing.T) {
 	fn := Function{
 		Locals: []Local{{ID: "captured", Type: testType("Int")}},
-		Code: testSlotCode([]string{"Function"}, []Instruction{
+		Code: testMicroCode([]string{"Function"}, []Instruction{
 			{Op: OpStoreLocal, Payload: LocalPayload{Local: "captured", Rebind: true}},
 			{Op: OpMakeClosure, Payload: ClosurePayload{Function: "closure", Captures: []AddressPayload{{Kind: "local", Local: "captured"}}}},
 			{Op: OpStoreLocal, Payload: LocalPayload{Local: "captured"}},
@@ -139,7 +139,7 @@ func TestFrameReferencesLoopAndNamedResultUnwind(t *testing.T) {
 		Locals:       []Local{{ID: "result", Type: testType("String")}, {ID: "loop", Type: testType("String")}},
 		ResultLocals: []string{"result"},
 		Upvalues:     []Upvalue{{ID: "shared", Type: testType("Int")}},
-		Code: testSlotCode([]string{"Bool", "String"}, []Instruction{
+		Code: testMicroCode([]string{"Bool", "String"}, []Instruction{
 			{Op: OpLabel, Payload: LabelPayload{Label: "again"}},
 			{Op: OpLoadLocal, Payload: LocalPayload{Local: "loop"}},
 			{Op: OpStoreUpvalue, Payload: UpvaluePayload{Upvalue: "shared"}},
@@ -173,7 +173,7 @@ func TestFrameReferencesValidateReleaseAcrossInstructionBoundary(t *testing.T) {
 		{name: "after last use", pc: 1, valid: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fn := Function{Code: testSlotCode([]string{"String"}, []Instruction{
+			fn := Function{Code: testMicroCode([]string{"String"}, []Instruction{
 				{Op: OpZero, Payload: TypePayload{Type: testType("String")}},
 				{Op: OpReturn, Payload: ReturnPayload{ResultCount: 1}},
 			}, [][2][]uint32{{nil, {0}}, {{0}, nil}})}

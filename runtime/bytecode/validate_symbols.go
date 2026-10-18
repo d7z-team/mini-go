@@ -29,7 +29,7 @@ func packageSymbolLayoutFor(artifact *Artifact, validated bool) (packageSymbolLa
 	}
 	for _, function := range artifact.Functions {
 		if function.Code == nil {
-			return packageSymbolLayout{}, errors.New("missing slot code")
+			return packageSymbolLayout{}, errors.New("missing microcode")
 		}
 		shape := functionSymbolLayout{
 			locals:   make([]string, len(function.Locals)),

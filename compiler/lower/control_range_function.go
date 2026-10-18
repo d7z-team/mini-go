@@ -86,11 +86,10 @@ func (l *lowerer) buildRangeYieldFunction(
 	l.nextAnonFunc++
 	fnIndex := l.nextAnonFunc
 	fn := ir.Function{
-		ID:            fmt.Sprintf("fn.range.yield.%d", fnIndex),
-		Name:          fmt.Sprintf("range.yield.%d", fnIndex),
-		RevisionLocal: true,
-		Generated:     true,
-		Signature:     l.hirSignature(signatureFromTypes(info.ValueTypes, []string{"Bool"}), false),
+		ID:        fmt.Sprintf("fn.range.yield.%d", fnIndex),
+		Name:      fmt.Sprintf("range.yield.%d", fnIndex),
+		Generated: true,
+		Signature: l.hirSignature(signatureFromTypes(info.ValueTypes, []string{"Bool"}), false),
 	}
 	yieldScope := newFuncScope(&fn, rangeScope)
 	yieldScope.deferOwnerDepth = 2

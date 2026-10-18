@@ -16,7 +16,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use support::slot_code;
+use support::micro_code;
 
 #[derive(Default)]
 struct ManualClock(AtomicU64);
@@ -45,7 +45,7 @@ fn computing_with_a_timer_reads_time_at_bounded_owner_boundaries() {
         "type_table":{"nodes":[{"id":"channel","kind":9,"direction":1,"elem":{"kind":3,"primitive":1}}]},
         "constants":[{"id":"capacity","type":{"kind":3,"primitive":3},"value":1},
             {"id":"delay","type":{"kind":3,"primitive":7},"value":1000000}],
-        "functions":[{"id":"fn.Main","code":slot_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"channel"},{"kind":3,"primitive":7},{"kind":3,"primitive":7}]), &[
+        "functions":[{"id":"fn.Main","code":micro_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"channel"},{"kind":3,"primitive":7},{"kind":3,"primitive":7}]), &[
             ("const",json!({"constant":"capacity"}),json!({"outputs":[0]})),
             ("make_waitable",json!({"type":{"kind":9,"node":"channel"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
             ("const",json!({"constant":"delay"}),json!({"outputs":[2]})),
@@ -91,7 +91,7 @@ fn timer_event_resumes_a_blocked_task_only_after_deadline() {
             {"id": "result", "type": {"kind": 3, "primitive": 3}, "value": 42}
         ],
         "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}]}, "locals": [{"id": "channel", "type": {"kind": 9, "node": "channel"}}],
-        "code":slot_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"channel"},{"kind":3,"primitive":7},{"kind":3,"primitive":7},{"kind":3,"primitive":1}]), &[
+        "code":micro_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"channel"},{"kind":3,"primitive":7},{"kind":3,"primitive":7},{"kind":3,"primitive":1}]), &[
             ("const",json!({"constant":"capacity"}),json!({"outputs":[0]})),
             ("make_waitable",json!({"type":{"kind":9,"node":"channel"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
             ("store_local",json!({"local":"channel"}),json!({"inputs":[[0,1]],"release":[1]})),
@@ -168,7 +168,7 @@ fn partial_entropy_failure_preserves_written_bytes_and_count() {
         ],
         "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}, {"kind": 3, "primitive": 1}]},
         "locals": [{"id": "bytes", "type": {"kind": 5, "node": "bytes"}}, {"id": "ok", "type": {"kind": 3, "primitive": 1}}],
-        "code":slot_code(json!([{"kind":3,"primitive":3},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":1},{"kind":3,"primitive":3},{"kind":3,"primitive":9},{"kind":3,"primitive":3}]), &[
+        "code":micro_code(json!([{"kind":3,"primitive":3},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":1},{"kind":3,"primitive":3},{"kind":3,"primitive":9},{"kind":3,"primitive":3}]), &[
             ("const",json!({"constant":"length"}),json!({"outputs":[0]})),
             ("make_slice",json!({"type":{"kind":5,"node":"bytes"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
             ("store_local",json!({"local":"bytes"}),json!({"inputs":[[0,1]],"release":[1]})),
@@ -219,7 +219,7 @@ fn stopping_a_timer_closes_its_signal_and_releases_waiters() {
         "type_table":{"nodes":[{"id":"signal","kind":9,"direction":1,"elem":{"kind":3,"primitive":1}}]},
         "constants":[{"id":"capacity","type":{"kind":3,"primitive":3},"value":1},{"id":"delay","type":{"kind":3,"primitive":7},"value":30000000000_i64}],
         "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":1}]},"locals":[{"id":"signal","type":{"kind":9,"node":"signal"}}],
-        "code":slot_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"signal"},{"kind":3,"primitive":7},{"kind":3,"primitive":7},{"kind":3,"primitive":1}]), &[
+        "code":micro_code(json!([{"kind":3,"primitive":3},{"kind":9,"node":"signal"},{"kind":3,"primitive":7},{"kind":3,"primitive":7},{"kind":3,"primitive":1}]), &[
             ("const",json!({"constant":"capacity"}),json!({"outputs":[0]})),
             ("make_waitable",json!({"type":{"kind":9,"node":"signal"}}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
             ("store_local",json!({"local":"signal"}),json!({"inputs":[[0,1]],"release":[1]})),

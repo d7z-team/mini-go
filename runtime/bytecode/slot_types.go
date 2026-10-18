@@ -369,6 +369,26 @@ func validateSlotTypes(function Function, operations []Instruction, refs artifac
 				return fmt.Errorf("instruction %d: length comparison requires a length-bearing object", pc)
 			}
 			integerInputs = []int{1}
+		case OpUpdateCompareBranch:
+			payload := operation.Payload.(UpdateCompareBranchPayload)
+			if len(operands.Inputs) != 3 || len(operands.Outputs) != 0 {
+				return fmt.Errorf("instruction %d: update comparison requires three inputs and no outputs", pc)
+			}
+			if operands.Inputs[0].Kind != OperandLocal {
+				return fmt.Errorf("instruction %d: update comparison target must be a direct local", pc)
+			}
+			if !relations.Identical(input(0), payload.Type).OK || !relations.Identical(input(1), payload.Type).OK || !relations.Identical(input(2), payload.Type).OK {
+				return fmt.Errorf("instruction %d: update comparison operands differ from descriptor type", pc)
+			}
+			if !types.IsIntegerType(table, payload.Type) && !types.IsFloatType(table, payload.Type) {
+				return fmt.Errorf("instruction %d: update comparison requires a numeric scalar", pc)
+			}
+			if _, err := scalarResultType(relations, payload.Update, []types.TypeRef{input(0), input(1)}); err != nil {
+				return fmt.Errorf("instruction %d: %w", pc, err)
+			}
+			if _, err := scalarResultType(relations, payload.Comparison, []types.TypeRef{input(0), input(2)}); err != nil {
+				return fmt.Errorf("instruction %d: %w", pc, err)
+			}
 		}
 		for _, index := range integerInputs {
 			if !types.IsIntegerType(table, input(index)) {

@@ -4,36 +4,37 @@ package bytecode
 import "fmt"
 
 type DescriptorTables struct {
-	Const         []ConstPayload         `json:"const,omitempty"`
-	Local         []LocalPayload         `json:"local,omitempty"`
-	Upvalue       []UpvaluePayload       `json:"upvalue,omitempty"`
-	Global        []GlobalPayload        `json:"global,omitempty"`
-	Address       []AddressPayload       `json:"address,omitempty"`
-	Type          []TypePayload          `json:"type,omitempty"`
-	Operator      []OperatorPayload      `json:"operator,omitempty"`
-	MinMax        []MinMaxPayload        `json:"minmax,omitempty"`
-	MakeSequence  []MakeSequencePayload  `json:"makesequence,omitempty"`
-	MakeMap       []MakeMapPayload       `json:"makemap,omitempty"`
-	MakeStruct    []MakeStructPayload    `json:"makestruct,omitempty"`
-	MakeSlice     []MakeSlicePayload     `json:"makeslice,omitempty"`
-	MakeWaitable  []MakeWaitablePayload  `json:"makewaitable,omitempty"`
-	Select        []SelectPayload        `json:"select,omitempty"`
-	Count         []CountPayload         `json:"count,omitempty"`
-	Field         []FieldPayload         `json:"field,omitempty"`
-	Export        []ExportPayload        `json:"export,omitempty"`
-	InitModule    []InitModulePayload    `json:"initmodule,omitempty"`
-	Label         []LabelPayload         `json:"label,omitempty"`
-	Jump          []JumpPayload          `json:"jump,omitempty"`
-	Call          []CallPayload          `json:"call,omitempty"`
-	CallInterface []CallInterfacePayload `json:"callinterface,omitempty"`
-	Closure       []ClosurePayload       `json:"closure,omitempty"`
-	Return        []ReturnPayload        `json:"return,omitempty"`
-	Defer         []DeferPayload         `json:"defer,omitempty"`
-	CallFFI       []CallFFIPayload       `json:"callffi,omitempty"`
-	CallIntrinsic []CallIntrinsicPayload `json:"callintrinsic,omitempty"`
-	TypeDispatch  []TypeDispatchPayload  `json:"typedispatch,omitempty"`
-	CompareBranch []CompareBranchPayload `json:"comparebranch,omitempty"`
-	FieldPath     []FieldPathPayload     `json:"fieldpath,omitempty"`
+	Const               []ConstPayload               `json:"const,omitempty"`
+	Local               []LocalPayload               `json:"local,omitempty"`
+	Upvalue             []UpvaluePayload             `json:"upvalue,omitempty"`
+	Global              []GlobalPayload              `json:"global,omitempty"`
+	Address             []AddressPayload             `json:"address,omitempty"`
+	Type                []TypePayload                `json:"type,omitempty"`
+	Operator            []OperatorPayload            `json:"operator,omitempty"`
+	MinMax              []MinMaxPayload              `json:"minmax,omitempty"`
+	MakeSequence        []MakeSequencePayload        `json:"makesequence,omitempty"`
+	MakeMap             []MakeMapPayload             `json:"makemap,omitempty"`
+	MakeStruct          []MakeStructPayload          `json:"makestruct,omitempty"`
+	MakeSlice           []MakeSlicePayload           `json:"makeslice,omitempty"`
+	MakeWaitable        []MakeWaitablePayload        `json:"makewaitable,omitempty"`
+	Select              []SelectPayload              `json:"select,omitempty"`
+	Count               []CountPayload               `json:"count,omitempty"`
+	Field               []FieldPayload               `json:"field,omitempty"`
+	Export              []ExportPayload              `json:"export,omitempty"`
+	InitModule          []InitModulePayload          `json:"initmodule,omitempty"`
+	Label               []LabelPayload               `json:"label,omitempty"`
+	Jump                []JumpPayload                `json:"jump,omitempty"`
+	Call                []CallPayload                `json:"call,omitempty"`
+	CallInterface       []CallInterfacePayload       `json:"callinterface,omitempty"`
+	Closure             []ClosurePayload             `json:"closure,omitempty"`
+	Return              []ReturnPayload              `json:"return,omitempty"`
+	Defer               []DeferPayload               `json:"defer,omitempty"`
+	CallFFI             []CallFFIPayload             `json:"callffi,omitempty"`
+	CallIntrinsic       []CallIntrinsicPayload       `json:"callintrinsic,omitempty"`
+	TypeDispatch        []TypeDispatchPayload        `json:"typedispatch,omitempty"`
+	CompareBranch       []CompareBranchPayload       `json:"comparebranch,omitempty"`
+	UpdateCompareBranch []UpdateCompareBranchPayload `json:"updatecomparebranch,omitempty"`
+	FieldPath           []FieldPathPayload           `json:"fieldpath,omitempty"`
 }
 
 func (t *DescriptorTables) Append(value Payload) (uint32, error) {
@@ -242,6 +243,13 @@ func (t *DescriptorTables) Append(value Payload) (uint32, error) {
 		}
 		index := uint32(len(t.CompareBranch))
 		t.CompareBranch = append(t.CompareBranch, v)
+		return index, nil
+	case UpdateCompareBranchPayload:
+		if uint64(len(t.UpdateCompareBranch)) >= 1<<32 {
+			return 0, fmt.Errorf("descriptor table exceeds uint32")
+		}
+		index := uint32(len(t.UpdateCompareBranch))
+		t.UpdateCompareBranch = append(t.UpdateCompareBranch, v)
 		return index, nil
 	case FieldPathPayload:
 		if uint64(len(t.FieldPath)) >= 1<<32 {
@@ -543,6 +551,10 @@ func (t *DescriptorTables) Payload(op Opcode, index uint32) (Payload, error) {
 		if uint64(index) < uint64(len(t.MinMax)) {
 			return t.MinMax[index], nil
 		}
+	case Opcode(73):
+		if uint64(index) < uint64(len(t.UpdateCompareBranch)) {
+			return t.UpdateCompareBranch[index], nil
+		}
 	}
 	return nil, fmt.Errorf("invalid descriptor %d for opcode %s", index, op)
 }
@@ -722,6 +734,12 @@ func (t *DescriptorTables) Clone() DescriptorTables {
 			out.CompareBranch[i] = clonePayload(v).(CompareBranchPayload)
 		}
 	}
+	if t.UpdateCompareBranch != nil {
+		out.UpdateCompareBranch = make([]UpdateCompareBranchPayload, len(t.UpdateCompareBranch))
+		for i, v := range t.UpdateCompareBranch {
+			out.UpdateCompareBranch[i] = clonePayload(v).(UpdateCompareBranchPayload)
+		}
+	}
 	if t.FieldPath != nil {
 		out.FieldPath = make([]FieldPathPayload, len(t.FieldPath))
 		for i, v := range t.FieldPath {
@@ -817,6 +835,9 @@ func (t *DescriptorTables) Bytes() int {
 		total += v.descriptorBytes()
 	}
 	for _, v := range t.CompareBranch {
+		total += v.descriptorBytes()
+	}
+	for _, v := range t.UpdateCompareBranch {
 		total += v.descriptorBytes()
 	}
 	for _, v := range t.FieldPath {

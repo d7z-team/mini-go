@@ -14,7 +14,7 @@ import (
 
 func TestHashIsStableForSameArtifact(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	left, err := Hash(&artifact)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestHashIsStableForSameArtifact(t *testing.T) {
 
 func TestHashMatchesCanonicalJSONSHA256(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	payload, err := CanonicalJSON(&artifact)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestDecodeJSONRoundTrip(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{Constant: "c.answer"},
 		}, {
@@ -237,7 +237,7 @@ func TestValidationIssueCodesAreStable(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []Instruction{{
+		Code: testMicroCode([]string{}, []Instruction{{
 			Op: Opcode(65535),
 		}}, [][2][]uint32{{nil, nil}}),
 	}}
@@ -250,7 +250,7 @@ func TestValidationIssueCodesAreStable(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int"}, []Instruction{{
+		Code: testMicroCode([]string{"Int"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{Constant: "c.absent"},
 		}}, [][2][]uint32{{nil, {0}}}),
@@ -279,7 +279,7 @@ func TestValidationCodeDoesNotDependOnMessageText(t *testing.T) {
 
 func TestValidationLimitCode(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
-	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 	limits := DefaultValidationLimits()
 	limits.MaxFunctions = 0
 	if err := ValidateArtifactWithLimits(&artifact, limits); err != nil {
@@ -294,7 +294,7 @@ func TestValidationLimitCode(t *testing.T) {
 		t.Fatalf("single function should fit limit, got %v", err)
 	}
 	limits.MaxFunctions = 0
-	artifact.Functions = append(artifact.Functions, Function{Code: &SlotCode{}, ID: "fn.other", Signature: testSignature("function() Void")})
+	artifact.Functions = append(artifact.Functions, Function{Code: &MicroCode{}, ID: "fn.other", Signature: testSignature("function() Void")})
 	if err := ValidateArtifactWithLimits(&artifact, limits); err != nil {
 		t.Fatalf("zero max functions should still disable the limit, got %v", err)
 	}
@@ -335,7 +335,7 @@ func TestDecodeJSONRejectsUnknownPayloadField(t *testing.T) {
 			"signature":{"params":[],"results":[{"kind":3,"primitive":7}]},
 			"code":{
 				"types":[{"kind":3,"primitive":7}],
-				"instructions":[[%d,0,0],[%d,0,1]],
+				"instructions":[[%d,0,0,1],[%d,0,1,1]],
 				"descriptors":{"const":[{"constant":"c.answer","extra":true}],"return":[{"result_count":1}]},
 				"operands":[{"outputs":[0]},{"inputs":[[0,0]],"release":[0]}]
 			}

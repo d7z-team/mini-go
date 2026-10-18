@@ -9,13 +9,30 @@ import type {
 } from "./types";
 import { Kind, PrimitiveKind, STORAGE_COST } from "./contract.generated";
 import { VMError, fail } from "./json";
-import { binaryCode, compareCode, convert, unaryCode, OperatorCode } from "./operators";
+import {
+  binaryCode,
+  binaryIntegerBits,
+  binaryScalar,
+  compareCode,
+  compareIntegerBits,
+  compareScalar,
+  convert,
+  unaryCode,
+  unaryIntegerBits,
+  unaryScalar,
+  OperatorCode,
+  type ScalarValue,
+} from "./operators";
 import {
   Program,
   type LoadOptions,
+  type PreparedAddressPlan,
+  type PreparedExport,
   type PreparedFunction,
   type PreparedInstruction,
+  type PreparedModule,
   type PreparedSelectCase,
+  type PreparedTypeDispatch,
 } from "./program";
 import {
   advanceAddress,
@@ -42,7 +59,6 @@ import {
   zero,
   detachTypeClosure,
   type Address,
-  type AddressPath,
   type Cell,
   type Channel,
   type DynamicType,
@@ -61,8 +77,6 @@ import { TypedChannel } from "./typed-channel";
 import {
   decodeStorage,
   encodeStorage,
-  layoutAtStorageOffset,
-  pathForStorageOffset,
   aggregateKind,
   packedAggregate,
   packedFields,
@@ -84,6 +98,15 @@ const LOCAL_OUTPUT = 0x80000000;
 const DEFAULT_MAX_IMAGE_BYTES = 64 * 1024 * 1024;
 const FRAME_CACHE_ENTRY_BYTES = 64;
 const FRAME_CACHE_VALUE_BYTES = 16;
+const TASK_INSTRUCTION_QUANTUM = 512;
+
+function isIntegerPrimitive(kind: number | undefined): kind is number {
+  return (
+    kind !== undefined &&
+    kind >= PrimitiveKind.PrimitiveInt &&
+    kind <= PrimitiveKind.PrimitiveUintptr
+  );
+}
 const EMPTY_CAPTURES: Address[] = [];
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -193,6 +216,7 @@ interface Frame {
   readonly resultBank: FrameStorage;
   /** Reused only for the synchronous duration of one instruction. */
   readonly inputScratch: Value[];
+  readonly integerScratch: Uint32Array;
   mapIterators?: (MapIteratorState | undefined)[];
   readonly returnOutputs: readonly number[];
   pc: number;
@@ -223,10 +247,12 @@ interface Frame {
 interface ReusableFrameStorage {
   fn: PreparedFunction;
   locals: (Cell | undefined)[];
+  upvalues: Address[];
   localBank: FrameStorage;
   slotBank: FrameStorage;
   resultBank: FrameStorage;
   inputScratch: Value[];
+  integerScratch: Uint32Array;
   scratchCapacity: number;
   bytes: number;
   resident: { release(): void };
@@ -277,6 +303,8 @@ interface Task {
     | { kind: "ffi"; id: number };
   error?: VMError;
   memory?: GuestControlLease;
+  /** Logical fuel paid for the current fused micro-op before it commits. */
+  chargedInstructionSteps?: number;
 }
 
 interface ExecutionRecord {
@@ -322,6 +350,7 @@ interface TimerRecord {
 
 interface ReflectedView {
   current?: Value;
+  declaredType?: RuntimeType;
   target?: Address;
   refresh?: Cell;
   addressable: boolean;
@@ -425,6 +454,7 @@ export class VirtualMachine {
    */
   private readonly storageTypeIDs = new Map<string, number>();
   private readonly ownedTypes = new WeakMap<TypeRegistry, Map<string, RuntimeType>>();
+  private readonly ownedLayouts = new WeakMap<StorageLayout, StorageLayout>();
   /** Type descriptors held by an in-progress reserve/build/publish operation. */
   private readonly storageConstructionPins = new Map<number, number>();
   private readonly storageDataPins = new Map<number, number>();
@@ -494,6 +524,7 @@ export class VirtualMachine {
   private debugIgnoreBreakpoint = "";
   private debugStepTask: number | undefined;
   private readonly opcodeProfile = new Map<string, bigint>();
+  private profileDispatches = 0n;
   private readonly functionProfile = new Map<
     string,
     { calls: bigint; steps: bigint; nanos: bigint }
@@ -617,7 +648,7 @@ export class VirtualMachine {
 
   private initializeRoot(): void {
     const root = this.revision.program.root;
-    const module = this.revision.program.modules.get(root);
+    const module = this.revision.program.module(root);
     if (!module) fail("root module is unavailable", "image.root", "link_error");
     const initializer = module.functions.get("fn.init");
     if (!initializer) {
@@ -634,7 +665,7 @@ export class VirtualMachine {
 
   private attachManagedGlobals(revision = this.revision): void {
     let count = 0;
-    for (const module of revision.program.modules.values())
+    for (const module of revision.program.moduleValues())
       count +=
         module.globals.length + module.constants.filter((value) => value.kind === "slice").length;
     const heap = this.guestMemory.managedHeap;
@@ -645,7 +676,7 @@ export class VirtualMachine {
     );
     revision.constants = anchor;
     let offset = 0;
-    for (const module of revision.program.modules.values()) {
+    for (const module of revision.program.moduleValues()) {
       for (const constant of module.constants) {
         if (constant.kind !== "slice") continue;
         const slice = constant.value as SliceValue;
@@ -773,9 +804,7 @@ export class VirtualMachine {
                   column: point.column as number,
                 });
             }
-            const prepared = this.revision.program.modules
-              .get(modulePath)
-              ?.functions.get(fn.id ?? "");
+            const prepared = this.revision.program.module(modulePath)?.functions.get(fn.id ?? "");
             const pc = prepared?.wireToExecutablePC[location.pc as number];
             if (points.length && pc !== undefined)
               info.locations.set(pc, [...(info.locations.get(pc) ?? []), ...points]);
@@ -788,7 +817,7 @@ export class VirtualMachine {
   start(entryName: string, arguments_: HostValue[]): number {
     if (!this.ready || this.closing)
       throw new VMError("instance is unavailable", "closed", "instance");
-    const entry = this.revision.program.entries.get(entryName);
+    const entry = this.revision.program.entry(entryName);
     if (!entry) throw new VMError(`unknown entry ${entryName}`, "missing_entry", "entry");
     const fn = this.revision.program.function(entry.module, entry.function);
     if (arguments_.length !== fn.signature.params.length)
@@ -881,6 +910,63 @@ export class VirtualMachine {
     return value;
   }
 
+  private scalarOperand(frame: Frame, operand: readonly [number, number]): ScalarValue {
+    return this.scalarOperandAt(frame, operand[0], operand[1]);
+  }
+
+  private scalarOperandAt(frame: Frame, kind: number, index: number): ScalarValue {
+    const value =
+      kind === 0
+        ? frame.slotBank.readScalar(index)
+        : kind === 1
+          ? (frame.fn.module.constants[index]?.value as ScalarValue | undefined)
+          : kind === 2
+            ? frame.localBank.readScalar(index)
+            : undefined;
+    if (value === undefined) invalid("scalar operand is not initialized", "operand");
+    return value;
+  }
+
+  private integerOperandBits(
+    frame: Frame,
+    operand: readonly [number, number],
+    targetOffset: number,
+  ): void {
+    this.integerOperandBitsAt(frame, operand[0], operand[1], targetOffset);
+  }
+
+  private integerOperandBitsAt(
+    frame: Frame,
+    kind: number,
+    index: number,
+    targetOffset: number,
+  ): void {
+    let found = false;
+    if (kind === 0)
+      found = frame.slotBank.readIntegerBits(index, frame.integerScratch, targetOffset);
+    else if (kind === 1) {
+      const bits = frame.fn.module.constantIntegerBits;
+      frame.integerScratch[targetOffset] = bits[index * 2]!;
+      frame.integerScratch[targetOffset + 1] = bits[index * 2 + 1]!;
+      found = true;
+    } else if (kind === 2)
+      found = frame.localBank.readIntegerBits(index, frame.integerScratch, targetOffset);
+    if (!found) invalid("integer operand is not initialized", "operand");
+  }
+
+  private writeIntegerOutput(frame: Frame, target: number, low: number, high: number): void {
+    const bank = (target & LOCAL_OUTPUT) !== 0 ? frame.localBank : frame.slotBank;
+    const index = (target & LOCAL_OUTPUT) !== 0 ? target & ~LOCAL_OUTPUT : target;
+    if (!bank.writeIntegerBits(index, low, high))
+      invalid("integer output storage mismatch", frame.fn.id);
+  }
+
+  private writeScalarOutput(frame: Frame, target: number, value: ScalarValue): void {
+    const bank = (target & LOCAL_OUTPUT) !== 0 ? frame.localBank : frame.slotBank;
+    const index = (target & LOCAL_OUTPUT) !== 0 ? target & ~LOCAL_OUTPUT : target;
+    if (!bank.writeScalar(index, value)) invalid("scalar output storage mismatch", frame.fn.id);
+  }
+
   /** Create a stable cell and publish its backing payload in the managed
    * directory. Bytes/string data are read from the managed page. */
   private managedCell(
@@ -898,7 +984,11 @@ export class VirtualMachine {
 
   private createManagedCell(value: Value, storageLayout: StorageLayout): Cell {
     const storedType = this.ownedType(value.type);
-    storageLayout = remapStorageLayout(storageLayout, (type) => this.ownedType(type));
+    const sourceLayout = storageLayout;
+    storageLayout =
+      this.ownedLayouts.get(sourceLayout) ??
+      remapStorageLayout(sourceLayout, (type) => this.ownedType(type));
+    this.ownedLayouts.set(sourceLayout, storageLayout);
     const initial = value.kind === "bytes" ? (value.value as Uint8Array) : undefined;
     const codec = value.kind !== "bytes";
     const payload = codec ? this.encodePayload(value, storageLayout) : initial;
@@ -1002,60 +1092,9 @@ export class VirtualMachine {
         releaseConstruction();
       }
     };
-    const locatePath = (path: readonly AddressPath[]) => {
-      let layout = storageLayout;
-      for (const part of path) {
-        if (part.kind === "typeView") continue;
-        if (part.kind === "field") {
-          const field = layout.fields.find((field) => field.name === part.name);
-          if (!field) return undefined;
-          layout = field.layout;
-        } else if (part.kind === "index") {
-          if (!layout.element) return undefined;
-          layout = layout.element;
-        } else {
-          if (!layout.elementType) return undefined;
-          layout = prepareArrayStorageLayout(layout.elementType, part.length);
-        }
-      }
-      const location = resolveStorageLocation(
-        { handle, offset: 0, type: storedType },
-        storageLayout,
-        path,
-      );
-      return { location, layout };
-    };
-    {
-      root.readPath = (path) => {
-        if (path.length === 0) return root.read();
-        const target = locatePath(path);
-        if (!target) return undefined;
-        return this.decodePayload(
-          target.location.type,
-          target.layout,
-          this.guestMemory.managedHeap.read(handle, target.location.offset, target.layout.size),
-        );
-      };
-      root.writePath = (path, value) => {
-        if (path.length === 0) {
-          root.write(value);
-          return true;
-        }
-        const target = locatePath(path);
-        if (!target) return false;
-        const releaseConstruction = this.beginStorageConstruction();
-        try {
-          const encoded = this.encodePayload(value, target.layout, target.location.type);
-          this.guestMemory.managedHeap.write(handle, encoded, target.location.offset);
-          return true;
-        } finally {
-          releaseConstruction();
-        }
-      };
-    }
     this.managedStorageLayouts.set(`${handle.slot}:${handle.generation}`, {
-      layout: remapStorageLayout(storageLayout, (type) => this.ownedType(type)),
-      type: this.ownedType(value.type),
+      layout: storageLayout,
+      type: storedType,
     });
     (this.managedCellsByHandle ?? (this.managedCellsByHandle = new Map())).set(
       `${handle.slot}:${handle.generation}`,
@@ -1571,10 +1610,12 @@ export class VirtualMachine {
     const storage: ReusableFrameStorage = {
       fn: frame.fn,
       locals: frame.locals,
+      upvalues: frame.upvalues,
       localBank: frame.localBank,
       slotBank: frame.slotBank,
       resultBank: frame.resultBank,
       inputScratch: frame.inputScratch,
+      integerScratch: frame.integerScratch,
       scratchCapacity: frame.scratchCapacity,
       bytes,
       resident: frame.resident,
@@ -1627,7 +1668,8 @@ export class VirtualMachine {
         FrameStorage.byteLength(fn.slotTypes, prepared.slots) +
         FrameStorage.byteLength(prepared.resultTypes, prepared.results) +
         (fn.localTypes.length + fn.upvalueTypes.length + fn.maxInputArity) *
-          FRAME_CACHE_VALUE_BYTES;
+          FRAME_CACHE_VALUE_BYTES +
+        6 * Uint32Array.BYTES_PER_ELEMENT;
     let resident;
     try {
       resident = storage?.resident ?? this.reserveResident(BigInt(storageBytes));
@@ -1640,6 +1682,7 @@ export class VirtualMachine {
     let resultBank: FrameStorage | undefined;
     try {
       const locals: (Cell | undefined)[] = storage?.locals ?? new Array(fn.localTypes.length);
+      const upvalues = storage?.upvalues ?? new Array<Address>(captures.length);
       localBank =
         storage?.localBank ?? new FrameStorage(fn.localTypes, this.storageOwner, prepared.locals);
       slotBank =
@@ -1656,6 +1699,7 @@ export class VirtualMachine {
         if (fn.cellLocals.has(index)) locals[index] = this.managedCell(value);
         else if (!localBank.write(index, value)) invalid("frame argument storage mismatch", fn.id);
       }
+      for (let index = 0; index < captures.length; index++) upvalues[index] = captures[index]!;
       const memory = reservation.commit();
       const frame: Frame = {
         fn,
@@ -1663,10 +1707,11 @@ export class VirtualMachine {
         profileKey,
         locals,
         localBank,
-        upvalues: captures.slice(),
+        upvalues,
         slotBank,
         resultBank,
         inputScratch: storage?.inputScratch ?? [],
+        integerScratch: storage?.integerScratch ?? new Uint32Array(6),
         returnOutputs,
         pc: 0,
         recovered: false,
@@ -1715,45 +1760,100 @@ export class VirtualMachine {
       if (pending.reply) this.processHostReply(id, pending);
     this.fireTimers();
     if (this.paused) return this.pumpState(false);
-    for (let count = 0; count < budget && this.runnableHead < this.runnable.length; count++) {
+    let remaining = Math.max(0, Math.floor(budget));
+    while (remaining > 0 && this.runnableHead < this.runnable.length) {
       const id = this.runnable[this.runnableHead++]!;
       const task = this.tasks.get(id);
       if (!task || task.state !== "runnable") continue;
-      if (this.shouldStopBeforeInstruction(task)) {
-        this.runnableHead--;
-        break;
-      }
-      try {
-        const frame = task.frames[task.frames.length - 1];
-        const profileKey = frame?.profileKey ?? "";
-        const profileStarted = this.profileTiming && profileKey ? performance.now() : 0;
-        try {
-          this.step(task);
-        } finally {
-          if (this.profileTiming && profileKey) {
-            const profile = this.functionProfile.get(profileKey)!;
-            profile.nanos += BigInt(
-              Math.max(0, Math.floor((performance.now() - profileStarted) * 1_000_000)),
-            );
+      let executed = 0;
+      while (
+        remaining > 0 &&
+        executed < TASK_INSTRUCTION_QUANTUM &&
+        task.state === "runnable" &&
+        !this.paused
+      ) {
+        const fastFrame = task.frames[task.frames.length - 1];
+        const fastEnd = fastFrame?.fn.fastRunEnd[fastFrame.pc] ?? 0;
+        if (
+          fastFrame &&
+          fastEnd > fastFrame.pc &&
+          this.stepsOverflow === undefined &&
+          !this.options.profile &&
+          !this.profileTiming &&
+          !this.debugConfigured &&
+          this.debugStepTask === undefined &&
+          !task.chargedInstructionSteps
+        ) {
+          let fastSteps = 0;
+          while (fastFrame.pc < fastEnd && task.state === "runnable") {
+            const pc = fastFrame.pc;
+            const instruction = fastFrame.fn.instructions[pc]!;
+            const cost = instruction.logicalCost;
+            if (
+              !instruction.fastScalar ||
+              cost > remaining - fastSteps ||
+              cost > TASK_INSTRUCTION_QUANTUM - executed - fastSteps ||
+              (this.maxStepsNumber !== undefined && cost > this.maxStepsNumber - this.steps) ||
+              this.steps > Number.MAX_SAFE_INTEGER - cost
+            )
+              break;
+            this.steps += cost;
+            fastFrame.pc = pc + 1;
+            for (const slot of instruction.operands.releaseBefore)
+              this.clearFrameSlot(fastFrame, slot);
+            this.executeFastScalar(fastFrame, instruction);
+            for (const slot of instruction.operands.release) this.clearFrameSlot(fastFrame, slot);
+            fastSteps += cost;
+            if (task.frames[task.frames.length - 1] !== fastFrame || fastFrame.pc !== pc + 1) break;
+          }
+          if (fastSteps) {
+            remaining -= fastSteps;
+            executed += fastSteps;
+            this.allocationRoots.length = 0;
+            continue;
           }
         }
-      } catch (error) {
-        const runtimeError = toVMError(error);
-        if (runtimeError.code === "panic" && task.frames.length) {
-          const frame = task.frames[task.frames.length - 1]!;
-          frame.panic = this.managedCell(
-            stringValue(frame.fn.module.registry, textEncoder.encode(runtimeError.message)),
-          );
-          this.setReturning(frame, []);
-        } else {
-          this.failTask(task, runtimeError);
+        if (!task.chargedInstructionSteps && this.shouldStopBeforeInstruction(task)) break;
+        const beforeSteps = this.steps;
+        const beforeOverflow = this.stepsOverflow;
+        let counted = false;
+        try {
+          const frame = task.frames[task.frames.length - 1];
+          const profileKey = frame?.profileKey ?? "";
+          const profileStarted = this.profileTiming && profileKey ? performance.now() : 0;
+          try {
+            counted = this.step(task);
+          } finally {
+            if (this.profileTiming && profileKey) {
+              const profile = this.functionProfile.get(profileKey)!;
+              profile.nanos += BigInt(
+                Math.max(0, Math.floor((performance.now() - profileStarted) * 1_000_000)),
+              );
+            }
+          }
+        } catch (error) {
+          counted = this.steps !== beforeSteps || this.stepsOverflow !== beforeOverflow;
+          const runtimeError = toVMError(error);
+          if (runtimeError.code === "panic" && task.frames.length) {
+            const frame = task.frames[task.frames.length - 1]!;
+            frame.panic = this.managedCell(
+              stringValue(frame.fn.module.registry, textEncoder.encode(runtimeError.message)),
+            );
+            this.setReturning(frame, []);
+          } else {
+            this.failTask(task, runtimeError);
+          }
         }
+        if (counted) {
+          remaining--;
+          executed++;
+        }
+        if (this.debugStepTask === id && this.tasks.has(id) && counted) {
+          this.debugStepTask = undefined;
+          this.stopForDebugging("step", task);
+        }
+        this.allocationRoots.length = 0;
       }
-      if (this.debugStepTask === id && this.tasks.has(id)) {
-        this.debugStepTask = undefined;
-        this.stopForDebugging("step", task);
-      }
-      this.allocationRoots.length = 0;
       if (task.state === "runnable") this.runnable.push(id);
       if (this.paused) break;
     }
@@ -1826,10 +1926,10 @@ export class VirtualMachine {
     return state;
   }
 
-  private step(task: Task): void {
+  private step(task: Task): boolean {
     if (!task.frames.length) {
       this.completeTask(task, []);
-      return;
+      return false;
     }
     if (
       this.maxSteps !== undefined &&
@@ -1841,25 +1941,35 @@ export class VirtualMachine {
     const frame = task.frames[task.frames.length - 1]!;
     if (frame.returning) {
       this.finishFrame(task, frame);
-      return;
+      return false;
     }
     if (frame.pc >= frame.fn.instructions.length) {
       this.setReturning(frame, this.namedResults(frame));
       this.finishFrame(task, frame);
-      return;
+      return false;
     }
     frame.rootPC = frame.pc;
-    const instruction = frame.fn.instructions[frame.pc++]!;
+    const instruction = frame.fn.instructions[frame.pc]!;
     if (this.stepsOverflow !== undefined) this.stepsOverflow++;
     else if (this.steps === Number.MAX_SAFE_INTEGER) this.stepsOverflow = BigInt(this.steps) + 1n;
     else this.steps++;
+    if (frame.profileKey) {
+      const profile = this.functionProfile.get(frame.profileKey);
+      if (profile) profile.steps++;
+    }
+    const charged = (task.chargedInstructionSteps ?? 0) + 1;
+    if (charged < instruction.logicalCost) {
+      task.chargedInstructionSteps = charged;
+      return true;
+    }
+    delete task.chargedInstructionSteps;
+    frame.pc++;
     if (frame.profileKey) {
       this.opcodeProfile.set(
         instruction.name,
         (this.opcodeProfile.get(instruction.name) ?? 0n) + 1n,
       );
-      const profile = this.functionProfile.get(frame.profileKey);
-      if (profile) profile.steps++;
+      this.profileDispatches++;
     }
     for (const slot of instruction.operands.releaseBefore) this.clearFrameSlot(frame, slot);
     try {
@@ -1870,10 +1980,214 @@ export class VirtualMachine {
         delete frame.rootPC;
     }
     for (const slot of instruction.operands.release) this.clearFrameSlot(frame, slot);
+    return true;
   }
 
-  private stepCount(): bigint {
-    return this.stepsOverflow ?? BigInt(this.steps);
+  private executeFastScalar(frame: Frame, instruction: PreparedInstruction): void {
+    const primitive = instruction.scalarPrimitive;
+    const operator = instruction.operatorCode!;
+    const output = instruction.output0!;
+    const input0 = instruction.input0!;
+    const input1 = instruction.input1!;
+    const input2 = instruction.input2!;
+    switch (instruction.opcode) {
+      case 4:
+        if (isIntegerPrimitive(primitive)) this.writeIntegerOutput(frame, output, 0, 0);
+        else
+          this.writeScalarOutput(
+            frame,
+            output,
+            primitive === PrimitiveKind.PrimitiveBool ? false : 0,
+          );
+        return;
+      case 6:
+        if (isIntegerPrimitive(primitive)) {
+          this.integerOperandBitsAt(frame, input0[0], input0[1], 0);
+          unaryIntegerBits(
+            operator,
+            primitive,
+            frame.integerScratch[0]!,
+            frame.integerScratch[1]!,
+            frame.integerScratch,
+            4,
+          );
+          this.writeIntegerOutput(
+            frame,
+            output,
+            frame.integerScratch[4]!,
+            frame.integerScratch[5]!,
+          );
+        } else
+          this.writeScalarOutput(
+            frame,
+            output,
+            unaryScalar(operator, primitive!, this.scalarOperandAt(frame, input0[0], input0[1])),
+          );
+        return;
+      case 7:
+        if (isIntegerPrimitive(primitive)) {
+          this.integerOperandBitsAt(frame, input0[0], input0[1], 0);
+          this.integerOperandBitsAt(frame, input1[0], input1[1], 2);
+          if (operator >= OperatorCode.Equal && operator <= OperatorCode.GreaterEqual)
+            this.writeScalarOutput(
+              frame,
+              output,
+              compareIntegerBits(
+                operator,
+                primitive,
+                frame.integerScratch[0]!,
+                frame.integerScratch[1]!,
+                frame.integerScratch[2]!,
+                frame.integerScratch[3]!,
+              ),
+            );
+          else {
+            binaryIntegerBits(
+              operator,
+              primitive,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+              frame.integerScratch[2]!,
+              frame.integerScratch[3]!,
+              frame.integerScratch,
+              4,
+            );
+            this.writeIntegerOutput(
+              frame,
+              output,
+              frame.integerScratch[4]!,
+              frame.integerScratch[5]!,
+            );
+          }
+        } else
+          this.writeScalarOutput(
+            frame,
+            output,
+            binaryScalar(
+              operator,
+              primitive!,
+              this.scalarOperandAt(frame, input0[0], input0[1]),
+              this.scalarOperandAt(frame, input1[0], input1[1]),
+            ),
+          );
+        return;
+      case 8: {
+        const local = instruction.local ?? instruction.input0![1];
+        if (isIntegerPrimitive(primitive)) {
+          if (!frame.localBank.readIntegerBits(local, frame.integerScratch, 0))
+            invalid("local integer storage mismatch", frame.fn.id);
+          this.writeIntegerOutput(
+            frame,
+            output,
+            frame.integerScratch[0]!,
+            frame.integerScratch[1]!,
+          );
+        } else this.writeScalarOutput(frame, output, frame.localBank.readScalar(local)!);
+        return;
+      }
+      case 9: {
+        const local = instruction.local ?? instruction.input0![1];
+        if (isIntegerPrimitive(primitive)) {
+          this.integerOperandBitsAt(frame, input0[0], input0[1], 0);
+          if (
+            !frame.localBank.writeIntegerBits(
+              local,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+            )
+          )
+            invalid("local integer storage mismatch", frame.fn.id);
+        } else if (
+          !frame.localBank.writeScalar(local, this.scalarOperandAt(frame, input0[0], input0[1]))
+        )
+          invalid("local scalar storage mismatch", frame.fn.id);
+        return;
+      }
+      case 15:
+        frame.pc = instruction.target!;
+        return;
+      case 16: {
+        const condition = this.scalarOperandAt(frame, input0[0], input0[1]);
+        if (condition !== Boolean(instruction.negate)) frame.pc = instruction.target!;
+        return;
+      }
+      case 68: {
+        let compared: boolean;
+        if (isIntegerPrimitive(primitive)) {
+          this.integerOperandBitsAt(frame, input0[0], input0[1], 0);
+          this.integerOperandBitsAt(frame, input1[0], input1[1], 2);
+          compared = compareIntegerBits(
+            operator,
+            primitive,
+            frame.integerScratch[0]!,
+            frame.integerScratch[1]!,
+            frame.integerScratch[2]!,
+            frame.integerScratch[3]!,
+          );
+        } else
+          compared = compareScalar(
+            operator,
+            this.scalarOperandAt(frame, input0[0], input0[1]),
+            this.scalarOperandAt(frame, input1[0], input1[1]),
+          );
+        if (compared === Boolean(instruction.when)) frame.pc = instruction.target!;
+        return;
+      }
+      case 73: {
+        const local = instruction.local ?? instruction.input0![1];
+        if (isIntegerPrimitive(primitive)) {
+          this.integerOperandBitsAt(frame, input0[0], input0[1], 0);
+          this.integerOperandBitsAt(frame, input1[0], input1[1], 2);
+          this.integerOperandBitsAt(frame, input2[0], input2[1], 4);
+          binaryIntegerBits(
+            instruction.updateOperatorCode!,
+            primitive,
+            frame.integerScratch[0]!,
+            frame.integerScratch[1]!,
+            frame.integerScratch[2]!,
+            frame.integerScratch[3]!,
+            frame.integerScratch,
+            0,
+          );
+          if (
+            !frame.localBank.writeIntegerBits(
+              local,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+            )
+          )
+            invalid("update comparison local storage mismatch", frame.fn.id);
+          if (
+            compareIntegerBits(
+              operator,
+              primitive,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+              frame.integerScratch[4]!,
+              frame.integerScratch[5]!,
+            ) === Boolean(instruction.when)
+          )
+            frame.pc = instruction.target!;
+        } else {
+          const updated = binaryScalar(
+            instruction.updateOperatorCode!,
+            primitive!,
+            this.scalarOperandAt(frame, input0[0], input0[1]),
+            this.scalarOperandAt(frame, input1[0], input1[1]),
+          );
+          if (!frame.localBank.writeScalar(local, updated))
+            invalid("update comparison local storage mismatch", frame.fn.id);
+          if (
+            compareScalar(operator, updated, this.scalarOperandAt(frame, input2[0], input2[1])) ===
+            Boolean(instruction.when)
+          )
+            frame.pc = instruction.target!;
+        }
+        return;
+      }
+      default:
+        invalid("invalid fast scalar opcode", instruction.name);
+    }
   }
 
   private execute(task: Task, frame: Frame, instruction: PreparedInstruction): void {
@@ -1887,44 +2201,178 @@ export class VirtualMachine {
       inputs = this.inputs(frame, instruction);
       input0 = inputs[0];
       input1 = inputs[1];
-    } else {
+    } else if (instruction.scalarPrimitive === undefined) {
       input0 = instruction.input0 ? this.readOperand(frame, instruction.input0) : undefined;
       input1 = instruction.input1 ? this.readOperand(frame, instruction.input1) : undefined;
     }
-    const descriptor = instruction.descriptor ?? {};
     switch (instruction.opcode) {
       case 1:
-        this.typeDispatch(frame, descriptor);
+        this.typeDispatch(frame, instruction.typeDispatch!);
         return;
       case 2:
-        this.select(task, frame, instruction, descriptor);
+        this.select(task, frame, instruction);
         return;
       case 3: {
         const constant = instruction.constant!;
-        this.outputOne(frame, instruction, frame.fn.module.constants[constant]!);
+        if (isIntegerPrimitive(instruction.scalarPrimitive)) {
+          const bits = frame.fn.module.constantIntegerBits;
+          this.writeIntegerOutput(
+            frame,
+            instruction.output0!,
+            bits[constant * 2]!,
+            bits[constant * 2 + 1]!,
+          );
+        } else if (instruction.scalarPrimitive !== undefined)
+          this.writeScalarOutput(
+            frame,
+            instruction.output0!,
+            frame.fn.module.constants[constant]!.value as ScalarValue,
+          );
+        else this.outputOne(frame, instruction, frame.fn.module.constants[constant]!);
         return;
       }
       case 4:
-        this.outputOne(
-          frame,
-          instruction,
-          zero(this.outputType(frame, instruction.operands.outputs[0]!)),
-        );
+        if (isIntegerPrimitive(instruction.scalarPrimitive))
+          this.writeIntegerOutput(frame, instruction.output0!, 0, 0);
+        else if (instruction.scalarPrimitive !== undefined) {
+          const kind = instruction.scalarPrimitive;
+          this.writeScalarOutput(
+            frame,
+            instruction.output0!,
+            kind === PrimitiveKind.PrimitiveBool
+              ? false
+              : kind === PrimitiveKind.PrimitiveFloat32 || kind === PrimitiveKind.PrimitiveFloat64
+                ? 0
+                : 0n,
+          );
+        } else
+          this.outputOne(
+            frame,
+            instruction,
+            zero(this.outputType(frame, instruction.operands.outputs[0]!)),
+          );
         return;
       case 5:
         return;
       case 6:
-        this.outputOne(frame, instruction, unaryCode(instruction.operatorCode!, input0!));
+        if (isIntegerPrimitive(instruction.scalarPrimitive)) {
+          this.integerOperandBits(frame, instruction.input0!, 0);
+          unaryIntegerBits(
+            instruction.operatorCode!,
+            instruction.scalarPrimitive,
+            frame.integerScratch[0]!,
+            frame.integerScratch[1]!,
+            frame.integerScratch,
+            4,
+          );
+          this.writeIntegerOutput(
+            frame,
+            instruction.output0!,
+            frame.integerScratch[4]!,
+            frame.integerScratch[5]!,
+          );
+        } else if (instruction.scalarPrimitive !== undefined)
+          this.writeScalarOutput(
+            frame,
+            instruction.output0!,
+            unaryScalar(
+              instruction.operatorCode!,
+              instruction.scalarPrimitive,
+              this.scalarOperand(frame, instruction.input0!),
+            ),
+          );
+        else this.outputOne(frame, instruction, unaryCode(instruction.operatorCode!, input0!));
         return;
       case 7:
-        this.outputOne(frame, instruction, binaryCode(instruction.operatorCode!, input0!, input1!));
+        if (isIntegerPrimitive(instruction.scalarPrimitive)) {
+          this.integerOperandBits(frame, instruction.input0!, 0);
+          this.integerOperandBits(frame, instruction.input1!, 2);
+          if (
+            instruction.operatorCode! >= OperatorCode.Equal &&
+            instruction.operatorCode! <= OperatorCode.GreaterEqual
+          )
+            this.writeScalarOutput(
+              frame,
+              instruction.output0!,
+              compareIntegerBits(
+                instruction.operatorCode!,
+                instruction.scalarPrimitive,
+                frame.integerScratch[0]!,
+                frame.integerScratch[1]!,
+                frame.integerScratch[2]!,
+                frame.integerScratch[3]!,
+              ),
+            );
+          else {
+            binaryIntegerBits(
+              instruction.operatorCode!,
+              instruction.scalarPrimitive,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+              frame.integerScratch[2]!,
+              frame.integerScratch[3]!,
+              frame.integerScratch,
+              4,
+            );
+            this.writeIntegerOutput(
+              frame,
+              instruction.output0!,
+              frame.integerScratch[4]!,
+              frame.integerScratch[5]!,
+            );
+          }
+        } else if (instruction.scalarPrimitive !== undefined)
+          this.writeScalarOutput(
+            frame,
+            instruction.output0!,
+            binaryScalar(
+              instruction.operatorCode!,
+              instruction.scalarPrimitive,
+              this.scalarOperand(frame, instruction.input0!),
+              this.scalarOperand(frame, instruction.input1!),
+            ),
+          );
+        else
+          this.outputOne(
+            frame,
+            instruction,
+            binaryCode(instruction.operatorCode!, input0!, input1!),
+          );
         return;
       case 8:
       case 9: {
         const index = instruction.local!;
-        if (instruction.opcode === 8)
+        if (isIntegerPrimitive(instruction.scalarPrimitive)) {
+          if (instruction.opcode === 8) {
+            if (!frame.localBank.readIntegerBits(index, frame.integerScratch, 0))
+              invalid("local integer storage mismatch", frame.fn.id);
+            this.writeIntegerOutput(
+              frame,
+              instruction.output0!,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+            );
+          } else {
+            this.integerOperandBits(frame, instruction.input0!, 0);
+            if (
+              !frame.localBank.writeIntegerBits(
+                index,
+                frame.integerScratch[0]!,
+                frame.integerScratch[1]!,
+              )
+            )
+              invalid("local integer storage mismatch", frame.fn.id);
+          }
+        } else if (instruction.scalarPrimitive !== undefined) {
+          if (instruction.opcode === 8)
+            this.writeScalarOutput(frame, instruction.output0!, frame.localBank.readScalar(index)!);
+          else if (
+            !frame.localBank.writeScalar(index, this.scalarOperand(frame, instruction.input0!))
+          )
+            invalid("local scalar storage mismatch", frame.fn.id);
+        } else if (instruction.opcode === 8)
           this.outputOne(frame, instruction, localValue(this.frameLocal(frame, index)));
-        else if (descriptor.rebind === true && frame.fn.cellLocals.has(index)) {
+        else if (instruction.rebind && frame.fn.cellLocals.has(index)) {
           const value = this.coerceForStorage(input0!, frame.fn.localTypes[index]!);
 
           frame.locals[index] = this.managedCell(value);
@@ -1961,10 +2409,9 @@ export class VirtualMachine {
         frame.pc = instruction.target!;
         return;
       case 16: {
-        const condition = input0;
-        if (condition?.kind !== "bool") invalid("jump condition is not bool", "jump_if");
-        if ((condition.value as boolean) !== Boolean(descriptor.negate))
-          frame.pc = instruction.target!;
+        const condition = this.scalarOperand(frame, instruction.input0!);
+        if (typeof condition !== "boolean") invalid("jump condition is not bool", "jump_if");
+        if (condition !== Boolean(instruction.negate)) frame.pc = instruction.target!;
         return;
       }
       case 17:
@@ -1987,7 +2434,7 @@ export class VirtualMachine {
       case 20: {
         const value = input0;
         if (value?.kind !== "function") invalid("deferred value is not callable", "defer");
-        const ownerDepth = descriptorInteger(descriptor.owner_depth, 0);
+        const ownerDepth = instruction.ownerDepth ?? 0;
         const owner = task.frames[task.frames.length - ownerDepth - 1];
         if (!owner) invalid("defer owner depth exceeds stack", "defer");
         const memory = this.reserveControl(BigInt(STORAGE_COST.control_record)).commit();
@@ -2006,25 +2453,29 @@ export class VirtualMachine {
         this.call(task, frame, instruction, inputs!);
         return;
       case 24:
-        this.callInterface(task, frame, instruction, inputs!, descriptor);
+        this.callInterface(task, frame, instruction, inputs!);
         return;
       case 25:
-        this.outputOne(frame, instruction, this.makeClosure(frame, instruction, descriptor));
+        this.outputOne(frame, instruction, this.makeClosure(frame, instruction));
         return;
       case 26:
-        this.outputOne(frame, instruction, this.makeSequence(frame, descriptor, inputs!));
+        this.outputOne(frame, instruction, this.makeSequence(instruction, inputs!));
         return;
       case 27:
-        this.outputOne(frame, instruction, this.makeMap(frame, descriptor, inputs!));
+        this.outputOne(frame, instruction, this.makeMap(instruction, inputs!));
         return;
       case 28:
-        this.outputOne(frame, instruction, this.makeStruct(frame, descriptor, inputs!));
+        this.outputOne(frame, instruction, this.makeStruct(instruction, inputs!));
         return;
       case 29:
-        this.outputOne(frame, instruction, this.makeSlice(frame, descriptor, inputs!));
+        this.outputOne(
+          frame,
+          instruction,
+          this.makeSlice(instruction.type!, Boolean(instruction.hasCapacity), inputs!),
+        );
         return;
       case 30:
-        this.outputOne(frame, instruction, this.makeChannel(frame, descriptor, input0!));
+        this.outputOne(frame, instruction, this.makeChannel(instruction, input0!));
         return;
       case 31: {
         const [value] = this.loadIndex(input0!, input1!);
@@ -2081,7 +2532,7 @@ export class VirtualMachine {
           // the reserved root and the source throughout backing allocation.
           this.writeOutput(frame, target, values[0]!);
         }
-        this.outputOne(frame, instruction, this.append(descriptor, values));
+        this.outputOne(frame, instruction, this.append(Boolean(instruction.expand), values));
         return;
       }
       case 39:
@@ -2118,21 +2569,17 @@ export class VirtualMachine {
         }
         return;
       case 46:
-        this.outputOne(
-          frame,
-          instruction,
-          fieldValue(input0!, instruction.field ?? descriptorText(descriptor.field)),
-        );
+        this.outputOne(frame, instruction, fieldValue(input0!, instruction.field!));
         return;
       case 47:
         this.storeIndex(input0!, input1!, inputs![2]!);
         return;
       case 48:
-        this.storeField(input0!, instruction.field ?? descriptorText(descriptor.field), input1!);
+        this.storeField(input0!, instruction.field!, input1!);
         return;
       case 49:
       case 50: {
-        const type = this.descriptorType(frame, descriptor);
+        const type = instruction.type!;
         const asserted = this.assertType(input0!, type);
         if (instruction.opcode === 49) {
           if (!asserted) fail("interface conversion failed", "type_assert", "panic");
@@ -2147,14 +2594,10 @@ export class VirtualMachine {
         return;
       }
       case 51:
-        this.outputOne(
-          frame,
-          instruction,
-          this.convertValue(input0!, this.descriptorType(frame, descriptor)),
-        );
+        this.outputOne(frame, instruction, this.convertValue(input0!, instruction.type!));
         return;
       case 52:
-        this.outputOne(frame, instruction, this.addressOf(frame, descriptor));
+        this.outputOne(frame, instruction, this.addressOf(frame, instruction.address!));
         return;
       case 53: {
         if (input0!.kind !== "pointer") fail("nil pointer dereference", "load_indirect", "panic");
@@ -2211,53 +2654,126 @@ export class VirtualMachine {
         this.wakeSelects();
         return;
       case 63:
-        this.initializeModule(task, frame, descriptorText(descriptor.module_path));
+        this.initializeModule(task, frame, instruction.modulePath!);
         return;
       case 64:
-        this.outputOne(frame, instruction, this.loadExport(frame, descriptor));
+        this.outputOne(
+          frame,
+          instruction,
+          this.loadExport(frame, instruction.exportModule!, instruction.exported!),
+        );
         return;
       case 65:
-        this.spawn(task, frame, inputs!, descriptor);
+        this.spawn(task, frame, instruction, inputs!);
         return;
       case 66:
         this.callFFI(task, frame, instruction, inputs!);
         return;
       case 67:
-        this.intrinsic(
-          task,
-          frame,
-          instruction,
-          instruction.intrinsic ?? descriptorText(descriptor.id),
-          inputs!,
-        );
+        this.intrinsic(task, frame, instruction, instruction.intrinsic!, inputs!);
         return;
       case 68: {
-        if (compareCode(instruction.operatorCode!, input0!, input1!) === Boolean(descriptor.when))
-          frame.pc = instruction.target!;
+        let compared: boolean;
+        if (isIntegerPrimitive(instruction.scalarPrimitive)) {
+          this.integerOperandBits(frame, instruction.input0!, 0);
+          this.integerOperandBits(frame, instruction.input1!, 2);
+          compared = compareIntegerBits(
+            instruction.operatorCode!,
+            instruction.scalarPrimitive,
+            frame.integerScratch[0]!,
+            frame.integerScratch[1]!,
+            frame.integerScratch[2]!,
+            frame.integerScratch[3]!,
+          );
+        } else
+          compared =
+            instruction.scalarPrimitive === undefined
+              ? compareCode(instruction.operatorCode!, input0!, input1!)
+              : compareScalar(
+                  instruction.operatorCode!,
+                  this.scalarOperand(frame, instruction.input0!),
+                  this.scalarOperand(frame, instruction.input1!),
+                );
+        if (compared === Boolean(instruction.when)) frame.pc = instruction.target!;
         return;
       }
       case 69:
         this.outputOne(
           frame,
           instruction,
-          this.getPath(descriptor, input0!, instruction.fieldPath),
+          this.getPath(instruction.type!, input0!, instruction.fieldPath!),
         );
         return;
       case 70: {
-        const type = this.descriptorType(frame, descriptor);
+        const type = instruction.type!;
         const value = this.indexConvert(input0!, input1!, type);
         this.outputOne(frame, instruction, value);
         return;
       }
       case 71: {
         const length = this.measureLength(input0!, false);
-        if (compareLength(instruction.operatorCode!, length, input1!) === Boolean(descriptor.when))
+        if (compareLength(instruction.operatorCode!, length, input1!) === Boolean(instruction.when))
           frame.pc = instruction.target!;
         return;
       }
       case 72:
-        this.outputOne(frame, instruction, minMaxValues(inputs!, String(descriptor.operator)));
+        this.outputOne(frame, instruction, minMaxValues(inputs!, instruction.minMax!));
         return;
+      case 73: {
+        const local = instruction.input0![1];
+        if (isIntegerPrimitive(instruction.scalarPrimitive)) {
+          this.integerOperandBits(frame, instruction.input0!, 0);
+          this.integerOperandBits(frame, instruction.input1!, 2);
+          this.integerOperandBits(frame, instruction.input2!, 4);
+          binaryIntegerBits(
+            instruction.updateOperatorCode!,
+            instruction.scalarPrimitive,
+            frame.integerScratch[0]!,
+            frame.integerScratch[1]!,
+            frame.integerScratch[2]!,
+            frame.integerScratch[3]!,
+            frame.integerScratch,
+            0,
+          );
+          if (
+            !frame.localBank.writeIntegerBits(
+              local,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+            )
+          )
+            invalid("update comparison local storage mismatch", frame.fn.id);
+          if (
+            compareIntegerBits(
+              instruction.operatorCode!,
+              instruction.scalarPrimitive,
+              frame.integerScratch[0]!,
+              frame.integerScratch[1]!,
+              frame.integerScratch[4]!,
+              frame.integerScratch[5]!,
+            ) === Boolean(instruction.when)
+          )
+            frame.pc = instruction.target!;
+        } else {
+          const updated = binaryScalar(
+            instruction.updateOperatorCode!,
+            instruction.scalarPrimitive!,
+            this.scalarOperand(frame, instruction.input0!),
+            this.scalarOperand(frame, instruction.input1!),
+          );
+          if (!frame.localBank.writeScalar(local, updated))
+            invalid("update comparison local storage mismatch", frame.fn.id);
+          if (
+            compareScalar(
+              instruction.operatorCode!,
+              updated,
+              this.scalarOperand(frame, instruction.input2!),
+            ) === Boolean(instruction.when)
+          )
+            frame.pc = instruction.target!;
+        }
+        return;
+      }
       default:
         invalid("unknown opcode", String(instruction.opcode));
     }
@@ -2547,11 +3063,8 @@ export class VirtualMachine {
       captures = fnValue.captures;
     } else {
       const source = instruction.callTarget!;
-      revision = source.revisionLocal ? frame.revision : this.revision;
-      fn =
-        revision === frame.revision
-          ? source
-          : revision.program.function(source.module.path, source.id);
+      revision = frame.revision;
+      fn = source;
     }
     const child = this.createFrame(
       fn,
@@ -2582,8 +3095,7 @@ export class VirtualMachine {
     const revision = this.revisions.get(fn.revision);
     if (!revision)
       throw new VMError("function revision is no longer available", "stale_revision", "call");
-    const source = revision.program.function(fn.module, fn.function);
-    return source.revisionLocal ? revision : this.revision;
+    return revision;
   }
 
   private callDynamicFunction(
@@ -2624,14 +3136,9 @@ export class VirtualMachine {
     this.pushFrame(task, child);
   }
 
-  private makeClosure(
-    frame: Frame,
-    instruction: PreparedInstruction,
-    descriptor: Record<string, unknown>,
-  ): Value {
-    const captures = (instruction.captures ?? descriptorList(descriptor.captures)).map((capture) =>
-      this.resolveAddress(frame, descriptorRecord(capture)),
-    );
+  private makeClosure(frame: Frame, instruction: PreparedInstruction): Value {
+    const captures = instruction.captures!.map((capture) => this.resolveAddress(frame, capture));
+    const target = instruction.callTarget!;
     return {
       type: frame.fn.module.registry.runtime({
         kind: Kind.Function,
@@ -2641,18 +3148,17 @@ export class VirtualMachine {
       }),
       kind: "function",
       value: {
-        module:
-          descriptorText(descriptor.module_path, frame.fn.module.path) || frame.fn.module.path,
-        function: descriptorText(descriptor.function),
+        module: target.module.path,
+        function: target.id,
         captures,
         revision: frame.revision.generation,
       } satisfies FunctionValue,
     };
   }
 
-  private makeSequence(frame: Frame, descriptor: Record<string, unknown>, inputs: Value[]): Value {
+  private makeSequence(instruction: PreparedInstruction, inputs: Value[]): Value {
     this.checkSequence(inputs.length, "make_sequence");
-    const type = this.descriptorType(frame, descriptor);
+    const type = instruction.type!;
     const kind = type.registry.underlying(type).ref.kind;
     if (kind === Kind.Slice) {
       const storage = this.managedCell({ type, kind: "array", value: inputs.map(cloneValue) });
@@ -2670,13 +3176,13 @@ export class VirtualMachine {
     return { type, kind: "array", value: inputs.map(cloneValue) };
   }
 
-  private makeStruct(frame: Frame, descriptor: Record<string, unknown>, inputs: Value[]): Value {
-    const type = this.descriptorType(frame, descriptor);
+  private makeStruct(instruction: PreparedInstruction, inputs: Value[]): Value {
+    const type = instruction.type!;
     const node = type.registry.node(type.registry.underlying(type));
     const values = new Map<string, Value>();
     for (const field of node?.fields ?? [])
       values.set(field.name, zero(type.registry.runtime(field.type)));
-    const names = descriptorList(descriptor.fields).map((value) => descriptorText(value));
+    const names = instruction.structFields!;
     for (let index = 0; index < names.length; index++)
       values.set(names[index]!, cloneValue(inputs[index]!));
     return { type, kind: "struct", value: values };
@@ -2832,23 +3338,12 @@ export class VirtualMachine {
         const root = this.managedCellsByHandle.get(key);
         const storage = this.managedStorageLayouts.get(key);
         if (!root || !storage) invalid("address owner is unavailable", "memory.handle");
-        const layout = layoutAtStorageOffset(
-          storage.layout,
-          storage.type,
-          location.type,
-          location.offset,
-        );
-        const targetKind = location.type.registry.underlying(location.type).ref.kind;
-        if (targetKind === Kind.Slice || targetKind === Kind.Array) {
-          const path = pathForStorageOffset(
-            storage.layout,
-            storage.type,
-            location.type,
-            location.offset,
-          );
-          if (path) return { root, path };
-        }
-        if (!layout)
+        const targetLayout = location.layout ?? prepareStorageLayout(location.type);
+        if (
+          !Number.isSafeInteger(location.offset) ||
+          location.offset < 0 ||
+          location.offset + targetLayout.size > storage.layout.size
+        )
           invalid(
             `address offset ${location.offset} is invalid for ${storage.type.registry.key(storage.type)} (${storage.layout.size} bytes) targeting ${location.type.registry.key(location.type)}`,
             "memory.handle",
@@ -2860,7 +3355,7 @@ export class VirtualMachine {
             handle: location.handle,
             offset: location.offset,
             type: location.type,
-            layout,
+            layout: targetLayout,
           },
         };
       },
@@ -2898,10 +3393,10 @@ export class VirtualMachine {
     return map;
   }
 
-  private makeMap(frame: Frame, descriptor: Record<string, unknown>, inputs: Value[]): Value {
-    const type = this.descriptorType(frame, descriptor);
+  private makeMap(instruction: PreparedInstruction, inputs: Value[]): Value {
+    const type = instruction.type!;
     const map = this.createMap(type);
-    const count = descriptorInteger(descriptor.entry_count);
+    const count = instruction.entryCount!;
     this.checkSequence(count, "make_map");
     for (let index = 0; index < count; index++) {
       const key = inputs[index * 2]!;
@@ -2912,10 +3407,9 @@ export class VirtualMachine {
     return { type, kind: "map", value: map };
   }
 
-  private makeSlice(frame: Frame, descriptor: Record<string, unknown>, inputs: Value[]): Value {
-    const type = this.descriptorType(frame, descriptor);
+  private makeSlice(type: RuntimeType, hasCapacity: boolean, inputs: Value[]): Value {
     const length = asIndex(inputs[0]!);
-    const capacity = Boolean(descriptor.has_capacity) ? asIndex(inputs[1]!) : length;
+    const capacity = hasCapacity ? asIndex(inputs[1]!) : length;
     if (length > capacity) fail("slice length exceeds capacity", "make_slice", "panic");
     this.checkSequence(capacity, "make_slice");
     const element = this.elementType(type);
@@ -2949,8 +3443,8 @@ export class VirtualMachine {
     return channel;
   }
 
-  private makeChannel(frame: Frame, descriptor: Record<string, unknown>, capacity: Value): Value {
-    const type = this.descriptorType(frame, descriptor);
+  private makeChannel(instruction: PreparedInstruction, capacity: Value): Value {
+    const type = instruction.type!;
     const size = asIndex(capacity);
     this.checkSequence(size, "make_waitable");
     const channel = this.createChannel(type, size);
@@ -2959,11 +3453,6 @@ export class VirtualMachine {
       kind: "channel",
       value: channel,
     };
-  }
-
-  private descriptorType(frame: Frame, descriptor: Record<string, unknown>): RuntimeType {
-    void frame;
-    return descriptor.$type as RuntimeType;
   }
 
   private elementType(type: RuntimeType): RuntimeType {
@@ -3132,7 +3621,7 @@ export class VirtualMachine {
     invalid("value has no length", wantCapacity ? "cap" : "len");
   }
 
-  private append(descriptor: Record<string, unknown>, inputs: Value[]): Value {
+  private append(expand: boolean, inputs: Value[]): Value {
     const original = inputs[0]!;
     if (original.kind !== "slice" && original.kind !== "nil")
       invalid("append target is not slice", "append");
@@ -3146,7 +3635,7 @@ export class VirtualMachine {
     let values: Value[] = [];
     let appendedBytes: Uint8Array | undefined;
     let appendedByte: number | undefined;
-    if (Boolean(descriptor.expand)) {
+    if (expand) {
       const source = inputs[1]!;
       const sourceBytes = isByteSlice ? this.byteSliceView(source) : undefined;
       if (sourceBytes)
@@ -3182,7 +3671,7 @@ export class VirtualMachine {
       original.kind === "slice" &&
       !originalBytes
     ) {
-      if (Boolean(descriptor.expand) && values.length === 0) values = this.sliceValues(inputs[1]!);
+      if (expand && values.length === 0) values = this.sliceValues(inputs[1]!);
       appendedBytes = undefined;
       appendedByte = undefined;
     }
@@ -3284,14 +3773,9 @@ export class VirtualMachine {
     )
       return undefined;
     const slice = value.value as SliceValue;
-    const handle = slice.storage.root.managedHandle;
-    if (!handle) invalid("byte slice has no managed backing", "memory.handle");
-    const storage = this.managedStorageLayouts.get(`${handle.slot}:${handle.generation}`)!;
-    const location = resolveStorageLocation(
-      { handle, offset: 0, type: storage.type },
-      storage.layout,
-      slice.storage.path,
-    );
+    const location = storageAddress(slice.storage);
+    if (!location) invalid("byte slice has no managed backing", "memory.handle");
+    const handle = location.handle;
     const offset = location.offset + slice.start;
     const bytes = this.guestMemory.managedHeap.read(handle, offset, slice.capacity);
     return {
@@ -3401,37 +3885,24 @@ export class VirtualMachine {
     ];
   }
 
-  private addressOf(frame: Frame, descriptor: Record<string, unknown>): Value {
-    const address = this.resolveAddress(frame, descriptor);
-    const target = dereference(address).type;
-    const type = this.dynamicType(frame.fn.module.registry, { kind: Kind.Pointer, elem: target });
+  private addressOf(frame: Frame, plan: PreparedAddressPlan): Value {
+    const address = this.resolveAddress(frame, plan);
+    const type = this.dynamicType(frame.fn.module.registry, {
+      kind: Kind.Pointer,
+      elem: plan.targetType,
+    });
     return { type, kind: "pointer", value: address };
   }
 
-  private resolveAddress(frame: Frame, descriptor: Record<string, unknown>): Address {
-    const kind = descriptorText(descriptor.kind);
+  private resolveAddress(frame: Frame, plan: PreparedAddressPlan): Address {
     let address: Address;
-    if (kind === "local") {
-      const index = descriptorInteger(descriptor.$index);
-      address = { root: this.localCell(frame, index), path: [] };
-    } else if (kind === "upvalue") {
-      const index = descriptorInteger(descriptor.$index);
-      address = frame.upvalues[index]!;
-    } else if (kind === "global") {
-      const index = descriptorInteger(descriptor.$index);
-      address = { root: frame.fn.module.globals[index]!, path: [] };
-    } else if (kind === "export") {
-      const module = this.revision.program.modules.get(descriptorText(descriptor.module_path));
-      const exported = module?.exports.get(descriptorText(descriptor.export));
-      const index =
-        exported?.kind === "global" ? module!.globalIndexes.get(exported.id) : undefined;
-      if (index === undefined) invalid("export address is invalid", "address_of");
-      address = { root: module!.globals[index]!, path: [] };
-    } else invalid("unknown address kind", "address_of");
-    for (const segmentValue of descriptorList(descriptor.path)) {
-      const segment = descriptorRecord(segmentValue);
-      const segmentKind = descriptorText(segment.kind);
-      if (segmentKind === "field") {
+    if (plan.kind === "local") address = { root: this.localCell(frame, plan.index), path: [] };
+    else if (plan.kind === "upvalue") address = frame.upvalues[plan.index]!;
+    else if (plan.kind === "global")
+      address = { root: frame.fn.module.globals[plan.index]!, path: [] };
+    else address = { root: plan.module!.globals[plan.index]!, path: [] };
+    for (const segment of plan.path) {
+      if (segment.kind === "field") {
         let current = dereference(address!);
         if (current.kind === "interface") current = current.value as Value;
         if (
@@ -3442,10 +3913,9 @@ export class VirtualMachine {
         if (current.kind === "pointer") {
           address = current.value as Address;
         }
-        address = advanceAddress(address!, { kind: "field", name: descriptorText(segment.field) });
-      } else if (segmentKind === "index") {
-        const local = descriptorInteger(segment.$index);
-        let index = asIndex(localValue(this.frameLocal(frame, local)));
+        address = advanceAddress(address!, { kind: "field", name: segment.field });
+      } else if (segment.kind === "index") {
+        let index = asIndex(localValue(this.frameLocal(frame, segment.local)));
         let current = dereference(address!);
         if (current.kind === "pointer") {
           address = current.value as Address;
@@ -3458,11 +3928,11 @@ export class VirtualMachine {
           index += slice.start;
         }
         address = advanceAddress(address!, { kind: "index", index });
-      } else if (segmentKind === "indirect") {
+      } else {
         const current = dereference(address!);
         if (current.kind !== "pointer") fail("nil pointer dereference", "address", "panic");
         address = current.value as Address;
-      } else invalid("unknown address path", "address_of");
+      }
     }
     return address!;
   }
@@ -3580,45 +4050,33 @@ export class VirtualMachine {
     return type.registry.node(underlying);
   }
 
-  private typeDispatch(frame: Frame, descriptor: Record<string, unknown>): void {
-    const subject = descriptorInteger(descriptor.$subject);
-    const value = localValue(this.frameLocal(frame, subject));
+  private typeDispatch(frame: Frame, plan: PreparedTypeDispatch): void {
+    const value = localValue(this.frameLocal(frame, plan.subject));
     const dynamic = value.kind === "interface" ? (value.value as Value) : value;
-    for (const item of descriptorList(descriptor.cases)) {
-      const candidate = descriptorRecord(item);
-      const candidateType = candidate.$type as RuntimeType | undefined;
+    for (const candidate of plan.cases) {
       if (
-        (value.kind === "nil" && !candidateType) ||
-        (value.kind !== "nil" && candidateType && this.assertType(dynamic, candidateType))
+        (value.kind === "nil" && !candidate.type) ||
+        (value.kind !== "nil" && candidate.type && this.assertType(dynamic, candidate.type))
       ) {
-        if (candidate.$binding !== undefined) {
-          const binding = descriptorInteger(candidate.$binding);
+        if (candidate.binding !== undefined) {
           this.setLocal(
             frame,
-            binding,
-            Boolean(candidate.original) ? cloneValue(value) : cloneValue(dynamic),
+            candidate.binding,
+            candidate.original ? cloneValue(value) : cloneValue(dynamic),
           );
         }
-        frame.pc = descriptorInteger(candidate.$target);
+        frame.pc = candidate.target;
         return;
       }
     }
-    if (descriptor.$default_local !== undefined) {
-      const binding = descriptorInteger(descriptor.$default_local);
-      this.setLocal(frame, binding, cloneValue(value));
-    }
-    frame.pc = descriptorInteger(descriptor.$target);
+    if (plan.defaultBinding !== undefined)
+      this.setLocal(frame, plan.defaultBinding, cloneValue(value));
+    frame.pc = plan.defaultTarget;
   }
 
-  private getPath(
-    descriptor: Record<string, unknown>,
-    source: Value,
-    preparedPath?: readonly number[],
-  ): Value {
+  private getPath(declaredType: RuntimeType, source: Value, fields: readonly number[]): Value {
     let value = source;
-    let type = descriptor.$type as RuntimeType;
-    const fields =
-      preparedPath ?? descriptorList(descriptor.fields).map((raw) => descriptorInteger(raw));
+    let type = declaredType;
     for (const index of fields) {
       type = type.registry.underlying(type);
       while (type.ref.kind === Kind.Pointer) {
@@ -3636,10 +4094,7 @@ export class VirtualMachine {
     return cloneValue(value);
   }
 
-  private loadExport(frame: Frame, descriptor: Record<string, unknown>): Value {
-    const module = this.revision.program.modules.get(descriptorText(descriptor.module_path));
-    const exported = module?.exports.get(descriptorText(descriptor.export));
-    if (!module || !exported) invalid("unknown export", "load_export");
+  private loadExport(frame: Frame, module: PreparedModule, exported: PreparedExport): Value {
     if (exported.kind === "const")
       return cloneValue(
         module.constants[requiredIndex(module.constantIndexes, exported.id, "constant")]!,
@@ -3671,7 +4126,7 @@ export class VirtualMachine {
 
   private initializeModule(task: Task, caller: Frame, modulePath: string): void {
     if (this.initialized.has(modulePath) || this.initializing.has(modulePath)) return;
-    const module = this.revision.program.modules.get(modulePath);
+    const module = this.revision.program.module(modulePath);
     if (!module) invalid("unknown module", modulePath);
     const fn = module.functions.get("fn.init");
     if (!fn) {
@@ -3685,27 +4140,22 @@ export class VirtualMachine {
     void caller;
   }
 
-  private spawn(
-    task: Task,
-    frame: Frame,
-    inputs: Value[],
-    descriptor: Record<string, unknown>,
-  ): void {
+  private spawn(task: Task, frame: Frame, instruction: PreparedInstruction, inputs: Value[]): void {
     const maxTasks = this.options.limits?.maxTasks ?? 4096;
     if (this.tasks.size >= maxTasks)
       throw new VMError("task limit exceeded", "task_limit", "scheduler");
     let fnValue: FunctionValue;
     let args = inputs;
-    if (!descriptor.function) {
+    if (!instruction.callTarget) {
       const value = inputs[0];
       if (!value || value.kind !== "function") fail("spawn of nil function", "spawn", "panic");
       fnValue = value.value as FunctionValue;
       args = inputs.slice(1);
     } else {
+      const target = instruction.callTarget;
       fnValue = {
-        module:
-          descriptorText(descriptor.module_path, frame.fn.module.path) || frame.fn.module.path,
-        function: descriptorText(descriptor.function),
+        module: target.module.path,
+        function: target.id,
         captures: [],
         revision: frame.revision.generation,
       };
@@ -3759,6 +4209,7 @@ export class VirtualMachine {
     channel.senders.push({ task: task.id, value: queued });
 
     this.block(task, { kind: "send", channel, value: queued });
+    this.wakeSelects();
   }
 
   private receive(
@@ -3789,6 +4240,7 @@ export class VirtualMachine {
       outputs: instruction.operands.outputs,
       receiveOK,
     });
+    this.wakeSelects();
   }
 
   private tryReceive(channelValue: Value): [Value, boolean] | undefined {
@@ -3914,11 +4366,6 @@ export class VirtualMachine {
     delete task.blocked;
   }
 
-  private releaseTimers(): void {
-    for (const timer of this.timers.values()) timer.memory.release();
-    this.timers.clear();
-  }
-
   private unblock(task: Task): void {
     if (task.state !== "blocked") return;
     const frame = task.frames[task.frames.length - 1];
@@ -3928,22 +4375,8 @@ export class VirtualMachine {
     this.runnable.push(task.id);
   }
 
-  private select(
-    task: Task,
-    frame: Frame,
-    instruction: PreparedInstruction,
-    descriptor: Record<string, unknown>,
-  ): void {
-    const cases: readonly PreparedSelectCase[] =
-      instruction.selectCases ??
-      descriptorList(descriptor.cases).map((value) => {
-        const selected = descriptorRecord(value);
-        const result: PreparedSelectCase = { channel: descriptorInteger(selected.$channel) };
-        if (selected.$send !== undefined) result.send = descriptorInteger(selected.$send);
-        if (selected.$value !== undefined) result.value = descriptorInteger(selected.$value);
-        if (selected.$ok !== undefined) result.ok = descriptorInteger(selected.$ok);
-        return result;
-      });
+  private select(task: Task, frame: Frame, instruction: PreparedInstruction): void {
+    const cases = instruction.selectCases!;
     for (let index = 0; index < cases.length; index++) {
       const selected = cases[index]!;
       const channelIndex = selected.channel;
@@ -3966,18 +4399,14 @@ export class VirtualMachine {
       }
       this.setLocal(
         frame,
-        instruction.selectIndex ?? descriptorInteger(descriptor.$index),
+        instruction.selectIndex!,
         intValue(frame.fn.module.registry, BigInt(index)),
       );
       return;
     }
-    if (this.pairSelect(task, frame, instruction, descriptor, cases)) return;
-    if (Boolean(descriptor.default)) {
-      this.setLocal(
-        frame,
-        instruction.selectIndex ?? descriptorInteger(descriptor.$index),
-        intValue(frame.fn.module.registry, -1n),
-      );
+    if (this.pairSelect(task, frame, instruction, cases)) return;
+    if (instruction.selectDefault) {
+      this.setLocal(frame, instruction.selectIndex!, intValue(frame.fn.module.registry, -1n));
       return;
     }
     frame.pc--;
@@ -4042,7 +4471,6 @@ export class VirtualMachine {
     task: Task,
     frame: Frame,
     instruction: PreparedInstruction,
-    descriptor: Record<string, unknown>,
     cases: readonly PreparedSelectCase[],
   ): boolean {
     for (let index = 0; index < cases.length; index++) {
@@ -4054,19 +4482,8 @@ export class VirtualMachine {
         if (other.id === task.id || other.blocked?.kind !== "select") continue;
         const otherFrame = other.frames[other.frames.length - 1]!;
         const otherInstruction = otherFrame.fn.instructions[otherFrame.pc];
-        if (!otherInstruction || otherInstruction.opcode !== 2 || !otherInstruction.descriptor)
-          continue;
-        const otherDescriptor = otherInstruction.descriptor;
-        const otherCases: readonly PreparedSelectCase[] =
-          otherInstruction.selectCases ??
-          descriptorList(otherDescriptor.cases).map((value) => {
-            const candidate = descriptorRecord(value);
-            const result: PreparedSelectCase = { channel: descriptorInteger(candidate.$channel) };
-            if (candidate.$send !== undefined) result.send = descriptorInteger(candidate.$send);
-            if (candidate.$value !== undefined) result.value = descriptorInteger(candidate.$value);
-            if (candidate.$ok !== undefined) result.ok = descriptorInteger(candidate.$ok);
-            return result;
-          });
+        if (!otherInstruction || otherInstruction.opcode !== 2) continue;
+        const otherCases = otherInstruction.selectCases!;
         for (let otherIndex = 0; otherIndex < otherCases.length; otherIndex++) {
           const candidate = otherCases[otherIndex]!;
           if ((selected.send !== undefined) === (candidate.send !== undefined)) continue;
@@ -4088,12 +4505,12 @@ export class VirtualMachine {
             );
           this.setLocal(
             frame,
-            instruction.selectIndex ?? descriptorInteger(descriptor.$index),
+            instruction.selectIndex!,
             intValue(frame.fn.module.registry, BigInt(index)),
           );
           this.setLocal(
             otherFrame,
-            otherInstruction.selectIndex ?? descriptorInteger(otherDescriptor.$index),
+            otherInstruction.selectIndex!,
             intValue(otherFrame.fn.module.registry, BigInt(otherIndex)),
           );
           otherFrame.pc++;
@@ -4523,7 +4940,7 @@ export class VirtualMachine {
         } else if (id === "reflect.make_slice") {
           if (asIndex(inputs[1]!) > asIndex(inputs[2]!))
             fail("reflect.MakeSlice: length exceeds capacity", id, "reflect");
-          value = this.makeSlice(frame, { $type: type, has_capacity: true }, inputs.slice(1));
+          value = this.makeSlice(type, true, inputs.slice(1));
         } else if (id === "reflect.make_map") {
           const map = this.createMap(type);
           value = { type, kind: "map", value: map };
@@ -4634,8 +5051,7 @@ export class VirtualMachine {
             fail("reflect: append value is not assignable", id, "reflect");
           values[index] = this.coerce(value, element);
         }
-        const descriptor = { expand: false };
-        const appended = this.append(descriptor, [target, ...values]);
+        const appended = this.append(false, [target, ...values]);
         success(
           this.reflectValue(
             frame,
@@ -4889,6 +5305,8 @@ export class VirtualMachine {
       interfaceable: Boolean(fieldValue(value, "interfaceable").value),
       embeddedReadOnly: Boolean(fieldValue(value, "embeddedReadOnly").value),
     };
+    const reflectedType = fieldValue(value, "valueType");
+    if (reflectedType) result.declaredType = this.reflectedType(reflectedType);
     const target = fieldValue(value, "target");
     const pointer = target ? valueFromInterface(target) : undefined;
     if (pointer?.kind === "pointer") {
@@ -4899,6 +5317,19 @@ export class VirtualMachine {
     } else {
       const data = fieldValue(value, "data");
       if (data) result.current = cloneValue(valueFromInterface(data));
+    }
+    if (
+      result.current &&
+      result.declaredType &&
+      !result.declaredType.registry.identical(result.declaredType, result.current.type)
+    ) {
+      const declared = result.declaredType.registry.underlying(result.declaredType).ref.kind;
+      if (declared === Kind.Any || declared === Kind.Interface)
+        result.current = {
+          type: result.declaredType,
+          kind: "interface",
+          value: result.current,
+        };
     }
     return result;
   }
@@ -4931,8 +5362,7 @@ export class VirtualMachine {
   }
 
   private namedReflectType(frame: Frame, name: string): RuntimeType {
-    const registry =
-      this.revision.program.modules.get("reflect")?.registry ?? frame.fn.module.registry;
+    const registry = this.revision.program.module("reflect")?.registry ?? frame.fn.module.registry;
     return registry.runtime({
       kind: Kind.Named,
       primitive: 0,
@@ -5020,7 +5450,11 @@ export class VirtualMachine {
     };
     put("valid", boolValue(frame.fn.module.registry, true));
     const valueType = fields.get("valueType");
-    if (valueType) fields.set("valueType", this.reflectType(frame, valueType.type, current.type));
+    if (valueType)
+      fields.set(
+        "valueType",
+        this.reflectType(frame, valueType.type, view.declaredType ?? current.type),
+      );
     put("data", current);
     if (view.target || view.refresh) {
       const address = view.target ?? { root: view.refresh!, path: [] };
@@ -5580,6 +6014,7 @@ export class VirtualMachine {
         if (!field || view.current.kind !== "struct")
           fail("reflect: Field index out of range", id, "reflect");
         view.current = fieldValue(view.current, field.name);
+        view.declaredType = field.type;
         if (view.target)
           view.target = advanceAddress(view.target, { kind: "field", name: field.name });
         const exported = /^[A-Z]/.test(field.name);
@@ -5973,7 +6408,7 @@ export class VirtualMachine {
 
     const liveRegistries = new Set<TypeRegistry>();
     for (const revision of this.revisions.values())
-      for (const module of revision.program.modules.values()) liveRegistries.add(module.registry);
+      for (const module of revision.program.moduleValues()) liveRegistries.add(module.registry);
     for (const type of liveTypes) liveRegistries.add(type.registry);
     for (const [key, type] of this.reflectedTypes) {
       if (this.pendingReflectedTypes.has(key)) continue;
@@ -6007,14 +6442,11 @@ export class VirtualMachine {
     frame: Frame,
     instruction: PreparedInstruction,
     inputs: Value[],
-    descriptor: Record<string, unknown>,
   ): void {
     const wrapped = inputs[0]!;
     const receiver = wrapped.kind === "interface" ? (wrapped.value as Value) : wrapped;
     const node = this.methodNode(receiver.type);
-    const method = node?.methods.find(
-      (item) => item.name === (instruction.method ?? descriptorText(descriptor.method)),
-    );
+    const method = node?.methods.find((item) => item.name === instruction.method);
     if (!method?.function_id)
       fail("dynamic type has no matching method", "call_interface", "panic");
     const module = method.module_path || receiver.type.module;
@@ -6047,7 +6479,7 @@ export class VirtualMachine {
       timer.memory.release();
       if (!timer.channel.closed && timer.channel.queue.length < Math.max(1, timer.channel.capacity))
         timer.channel.queue.push(
-          boolValue(this.revision.program.modules.values().next().value!.registry, true),
+          boolValue(this.revision.program.moduleValues().next().value!.registry, true),
         );
       this.wakeSelects();
     }
@@ -6084,7 +6516,7 @@ export class VirtualMachine {
     const initialization = task.frames.find((frame) => frame.initializing)?.initializing;
     if (initialization || task.scope === 0) {
       if (initialization) this.initializing.delete(initialization);
-      this.initializationError = error;
+      if (!(this.closing && error.code === "canceled")) this.initializationError = error;
       this.closing = true;
     }
     const scope = this.scopes.get(task.scope);
@@ -6167,91 +6599,24 @@ export class VirtualMachine {
     if (program.capabilities.some((capability) => !capabilities.has(capability)))
       throw new VMError("host capability is unavailable", "capability_unavailable", "patch");
 
-    for (const [modulePath, oldModule] of current.modules) {
-      const module = program.modules.get(modulePath);
-      if (!module) throw new VMError("module was removed", "module_removed", modulePath);
-      if (module.packageName !== oldModule.packageName)
-        throw new VMError("package name changed", "package_changed", modulePath);
-      if (module.globals.length !== oldModule.globals.length)
-        throw new VMError("global declarations changed", "global_shape_changed", modulePath);
-      for (const [id, oldIndex] of oldModule.globalIndexes) {
-        const index = module.globalIndexes.get(id);
-        if (
-          index === undefined ||
-          !oldModule.globals[oldIndex]!.read().type.registry.identical(
-            oldModule.globals[oldIndex]!.read().type,
-            module.globals[index]!.read().type,
-          )
-        )
-          throw new VMError("global declaration changed", "global_shape_changed", modulePath);
-      }
-      for (const [name, oldExport] of oldModule.exports) {
-        const exported = module.exports.get(name);
-        if (
-          !exported ||
-          oldExport.kind !== exported.kind ||
-          oldExport.id !== exported.id ||
-          oldExport.untyped !== exported.untyped ||
-          Boolean(oldExport.type) !== Boolean(exported.type) ||
-          (oldExport.type &&
-            exported.type &&
-            !oldExport.type.registry.identical(oldExport.type, exported.type))
-        )
-          throw new VMError("export changed shape", "export_shape_changed", modulePath);
-      }
-      for (const [id, oldFunction] of oldModule.functions) {
-        if (oldFunction.revisionLocal) continue;
-        const fn = module.functions.get(id);
-        if (!fn || fn.revisionLocal)
-          throw new VMError("logical function was removed", "call_shape_changed", modulePath);
-        const oldParameters = oldFunction.signature.params;
-        const parameters = fn.signature.params;
-        const oldResults = oldFunction.signature.results;
-        const results = fn.signature.results;
-        const oldUpvalues = [...oldFunction.upvalueIndexes.keys()];
-        const upvalues = [...fn.upvalueIndexes.keys()];
-        if (
-          oldFunction.signature.variadic !== fn.signature.variadic ||
-          oldParameters.length !== parameters.length ||
-          oldResults.length !== results.length ||
-          oldUpvalues.length !== upvalues.length ||
-          oldParameters.some(
-            (parameter, index) =>
-              !oldModule.registry.identical(
-                oldModule.registry.runtime(parameter.type),
-                module.registry.runtime(parameters[index]!.type),
-              ),
-          ) ||
-          oldResults.some(
-            (result, index) =>
-              !oldModule.registry.identical(
-                oldModule.registry.runtime(result),
-                module.registry.runtime(results[index]!),
-              ),
-          ) ||
-          oldUpvalues.some(
-            (upvalue, index) =>
-              upvalue !== upvalues[index] ||
-              !oldFunction.upvalueTypes[index]!.registry.identical(
-                oldFunction.upvalueTypes[index]!,
-                fn.upvalueTypes[index]!,
-              ),
-          )
-        )
-          throw new VMError("function signature changed", "call_shape_changed", modulePath);
-      }
-    }
     if (this.generation >= Number.MAX_SAFE_INTEGER)
       throw new VMError("revision generation exhausted", "revision_limit", "patch");
     const revision: Revision = { generation: this.generation + 1, program };
     // Preserve global cells whose identity and layout match. New code binds to
     // these cells while active frames keep their old revision.
-    for (const [modulePath, module] of program.modules) {
-      const old = this.revision.program.modules.get(modulePath);
+    for (const module of program.moduleValues()) {
+      const old = this.revision.program.module(module.path);
       if (!old) continue;
       for (const [id, index] of module.globalIndexes) {
         const prior = old.globalIndexes.get(id);
-        if (prior !== undefined) module.globals[index] = old.globals[prior]!;
+        if (
+          prior !== undefined &&
+          old.globals[prior]!.read().type.registry.identical(
+            old.globals[prior]!.read().type,
+            module.globals[index]!.read().type,
+          )
+        )
+          module.globals[index] = old.globals[prior]!;
       }
     }
     this.attachManagedGlobals(revision);
@@ -6497,7 +6862,7 @@ export class VirtualMachine {
     const memory = this.guestMemory.stats();
     const stats: Stats = {
       state: this.closed ? "Closed" : this.closing ? "Closing" : this.paused ? "Paused" : "Running",
-      steps: this.stepCount(),
+      steps: this.stepsOverflow ?? BigInt(this.steps),
       ...memory,
       gcNanos: this.gcNanos,
       activeScopes: BigInt(this.scopes.size),
@@ -6509,6 +6874,7 @@ export class VirtualMachine {
     };
     if (this.options.profile)
       stats.profile = {
+        dispatches: this.profileDispatches,
         opcodes: Object.fromEntries(this.opcodeProfile),
         functions: Object.fromEntries(
           Array.from(this.functionProfile, ([key, value]) => [key, { ...value }]),
@@ -6519,7 +6885,8 @@ export class VirtualMachine {
 
   private finishClose(): void {
     if (this.closed) return;
-    this.releaseTimers();
+    for (const timer of this.timers.values()) timer.memory.release();
+    this.timers.clear();
     for (const lease of this.dynamicTypeLeases.values()) {
       lease.memory.release();
       lease.resident.release();
@@ -6561,6 +6928,10 @@ export class VirtualMachine {
     // close through a PreparedFunction key held by the caller.
     this.frameCacheByFunction = new WeakMap();
     for (const execution of this.executions.values()) this.cancel(execution.id);
+    for (const taskID of [...(this.scopes.get(0)?.tasks ?? [])]) {
+      const task = this.tasks.get(taskID);
+      if (task) this.failTask(task, new VMError("VM closed", "canceled", "vm"));
+    }
     for (const [id, pending] of this.pendingHost) {
       if (pending.cancelSent) continue;
       pending.cancelSent = true;
@@ -6579,9 +6950,9 @@ function loadOptions(options: VMOptions): LoadOptions {
   };
 }
 
-function requiredIndex(indexes: Map<string, number>, value: unknown, kind: string): number {
-  const index = indexes.get(descriptorText(value));
-  if (index === undefined) invalid(`unknown ${kind}`, descriptorText(value));
+function requiredIndex(indexes: ReadonlyMap<string, number>, value: string, kind: string): number {
+  const index = indexes.get(value);
+  if (index === undefined) invalid(`unknown ${kind}`, value);
   return index;
 }
 
@@ -6607,31 +6978,6 @@ function debugValueSummary(value: HostValue): string {
 
 function invalid(message: string, path: string): never {
   throw new VMError(message, "invalid_operation", path);
-}
-
-function descriptorText(value: unknown, fallback = ""): string {
-  if (value === undefined && fallback !== undefined) return fallback;
-  if (typeof value !== "string") invalid("expected string descriptor", "descriptor");
-  return value;
-}
-
-function descriptorInteger(value: unknown, fallback?: number): number {
-  if (value === undefined && fallback !== undefined) return fallback;
-  if (typeof value !== "number" || !Number.isSafeInteger(value))
-    invalid("expected integer descriptor", "descriptor");
-  return value;
-}
-
-function descriptorList(value: unknown): unknown[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) invalid("expected descriptor array", "descriptor");
-  return value;
-}
-
-function descriptorRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    invalid("expected descriptor object", "descriptor");
-  return value as Record<string, unknown>;
 }
 
 function emptyKey(): { module_path: string; decl_id: string } {

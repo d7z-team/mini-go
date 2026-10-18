@@ -45,11 +45,10 @@ func LowerUnvalidatedWithSymbols(program hir.Program) (ir.Artifact, ir.PackageSy
 	emitter := newPackageEmitter(&artifact, program.Functions)
 	for _, fn := range program.Functions {
 		out := ir.Function{
-			ID:            fn.ID,
-			RevisionLocal: fn.RevisionLocal,
-			Signature:     fn.Signature,
-			ResultLocals:  append([]string(nil), fn.ResultLocals...),
-			Upvalues:      lowerUpvalues(fn.Upvalues),
+			ID:           fn.ID,
+			Signature:    fn.Signature,
+			ResultLocals: append([]string(nil), fn.ResultLocals...),
+			Upvalues:     lowerUpvalues(fn.Upvalues),
 		}
 		functionSymbols := ir.FunctionSymbols{
 			ID: fn.ID, Name: fn.Name, Generated: fn.Generated, Declaration: lowerLocationPtr(fn.Declaration),
@@ -72,6 +71,9 @@ func LowerUnvalidatedWithSymbols(program hir.Program) (ir.Artifact, ir.PackageSy
 			return ir.Artifact{}, ir.PackageSymbols{}, err
 		}
 		if err := allocateSlots(&code); err != nil {
+			return ir.Artifact{}, ir.PackageSymbols{}, err
+		}
+		if err := finalizeMicrocode(&code, &fn, artifact.Constants, &artifact.TypeTable); err != nil {
 			return ir.Artifact{}, ir.PackageSymbols{}, err
 		}
 		out.Code = &code

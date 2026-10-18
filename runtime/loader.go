@@ -50,8 +50,14 @@ type loader struct {
 }
 
 type loadedFunction struct {
-	Decl             ir.Function
-	Instructions     []preparedInstruction
+	Decl         ir.Function
+	Instructions []preparedInstruction
+	Blocks       []ir.BasicBlock
+	BlockAtPC    []uint32
+	// FastRunEnd maps an executable PC to the exclusive end of its contiguous
+	// loader-proven scalar run inside the same basic block. Zero means that the
+	// ordinary owner-aware path must execute the instruction.
+	FastRunEnd       []uint32
 	LocalIndexes     map[string]int
 	UpvalueIndexes   map[string]int
 	ResultTypes      []vmType
@@ -170,8 +176,10 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 				return nil, fmt.Errorf("function %s instruction %d: %w", fn.ID, i, err)
 			}
 			prepared.bindTypes(&artifact.TypeTable, artifact.Module.Path)
+			prepared.mode = fn.Code.Instructions[i].Mode
+			prepared.logicalCost = fn.Code.Instructions[i].LogicalCost()
 			prepared.operands = &fn.Code.Operands[fn.Code.Instructions[i].Operands]
-			if prepared.op == preparedUnary || prepared.op == preparedBinary || prepared.op == preparedCompareBranch {
+			if prepared.op == preparedUnary || prepared.op == preparedBinary || prepared.op == preparedCompareBranch || prepared.op == preparedUpdateCompareBranch {
 				for index, input := range prepared.operands.Inputs {
 					var typ types.TypeRef
 					switch input.Kind {
@@ -185,7 +193,7 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 					if primitive, ok := types.View(&artifact.TypeTable, typ).Primitive(); ok && primitive >= types.PrimitiveInt && primitive <= types.PrimitiveComplex128 {
 						prepared.numericInputs[index] = primitive
 					}
-					if index == 0 && (prepared.op == preparedBinary || prepared.op == preparedCompareBranch) {
+					if index == 0 && (prepared.op == preparedBinary || prepared.op == preparedCompareBranch || prepared.op == preparedUpdateCompareBranch) {
 						prepared.runtimeType = runtimeTypeWithTable(typ, &artifact.TypeTable)
 					}
 				}
@@ -207,6 +215,9 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 			}
 			if prepared.comparison != nil {
 				prepared.jumpPC = labels[prepared.comparison.Label]
+			}
+			if prepared.updateComparison != nil {
+				prepared.jumpPC = labels[prepared.updateComparison.Label]
 			}
 			if payload := prepared.typeDispatch; payload != nil {
 				dispatch := &preparedTypeSwitch{subject: localIndexes[payload.Subject], fallback: labels[payload.Default], fallbackLocal: -1}
@@ -253,6 +264,7 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 		loaded := loadedFunction{
 			Decl:             fn,
 			Instructions:     instructions,
+			Blocks:           append([]ir.BasicBlock(nil), fn.Code.Blocks...),
 			LocalIndexes:     localIndexes,
 			UpvalueIndexes:   upvalueIndexes,
 			ResultTypes:      resultTypes,
@@ -265,6 +277,31 @@ func (l *loader) loadValidated(artifact ir.Artifact) (*executable, error) {
 			TemporaryLayouts: temporaryLayouts,
 			LocalReferences:  localReferences,
 			SlotReferences:   runtimeTypeReferenceMask(fn.Code.Types, &artifact.TypeTable),
+		}
+		loaded.BlockAtPC = make([]uint32, len(instructions))
+		loaded.FastRunEnd = make([]uint32, len(instructions))
+		for index := range loaded.Instructions {
+			loaded.Instructions[index].fastScalar = loaded.Instructions[index].classifyFastScalar(localTypes, localEscapes)
+		}
+		for blockIndex, block := range loaded.Blocks {
+			for pc := block.First; pc < block.First+block.Count; pc++ {
+				loaded.BlockAtPC[pc] = uint32(blockIndex)
+			}
+			end := block.First + block.Count
+			for start := block.First; start < end; {
+				if !loaded.Instructions[start].fastScalar {
+					start++
+					continue
+				}
+				runEnd := start + 1
+				for runEnd < end && loaded.Instructions[runEnd].fastScalar {
+					runEnd++
+				}
+				for pc := start; pc < runEnd; pc++ {
+					loaded.FastRunEnd[pc] = runEnd
+				}
+				start = runEnd
+			}
 		}
 		loaded.FrameValueBytes = preparedFrameLogicalBytes(nil, loaded, 0)
 		storageCells := make([]bool, len(localTypes))

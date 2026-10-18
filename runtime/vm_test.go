@@ -14,7 +14,7 @@ func TestVMRunsExportedConstantFunction(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
@@ -41,7 +41,7 @@ func TestExecutionStartsAndCompletesExport(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
@@ -78,7 +78,7 @@ func TestExecutionCapturesFailure(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.message"},
 		}, {
@@ -115,7 +115,7 @@ func TestVMRunsJSONArtifact(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {

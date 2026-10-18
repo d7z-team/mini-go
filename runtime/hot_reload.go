@@ -214,7 +214,6 @@ func (i *Instance) ApplyPatch(plan *PatchPlan) (PatchResult, error) {
 
 	previousInfo := RevisionInfo{Generation: current.generation, Hash: current.code.image.Hash, SymbolsHash: current.symbolsHash()}
 	currentInfo := RevisionInfo{Generation: next.generation, Hash: next.code.image.Hash, SymbolsHash: next.symbolsHash()}
-	next.rebindGlobalSlots()
 	plan.mu.Lock()
 	plan.state = patchPlanCommitted
 	plan.owner = nil

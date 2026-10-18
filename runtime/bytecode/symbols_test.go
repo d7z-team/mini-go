@@ -215,7 +215,7 @@ func testProgramSymbols(t testing.TB) (ExecutionImage, ProgramSymbols) {
 		ID: "fn.main", Signature: testSignature("function() Void"),
 		Locals:   []Local{{ID: "local.value", Type: testType("Int64")}},
 		Upvalues: []Upvalue{{ID: "upvalue.name", Type: testType("String")}},
-		Code:     testSlotCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
+		Code:     testMicroCode([]string{}, []Instruction{{Op: OpReturn, Payload: ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	attachTestTypeNodes(&artifact)
 	archive, err := NewPackageArchive(&artifact)

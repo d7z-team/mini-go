@@ -26,7 +26,7 @@ func TestValidateMinMaxOperandContract(t *testing.T) {
 			artifact := NewArtifact("minmax/contract", "main")
 			artifact.Functions = []Function{{
 				ID: "fn.main", Signature: testSignature("function() " + test.output),
-				Code: testSlotCode([]string{test.left, test.right, test.output}, []Instruction{
+				Code: testMicroCode([]string{test.left, test.right, test.output}, []Instruction{
 					{Op: OpZero, Payload: TypePayload{Type: testType(test.left)}},
 					{Op: OpZero, Payload: TypePayload{Type: testType(test.right)}},
 					{Op: OpMinMax, Payload: MinMaxPayload{Type: testType(test.left), Operator: test.operator, ArgCount: test.count}},
@@ -49,7 +49,7 @@ func TestValidateArtifactAcceptsTypedInterfaceCallOperands(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []Local{{ID: "local.a", Type: testType("Adder")}},
-		Code: testSlotCode([]string{"Adder", "Int64", "Int64"}, []Instruction{{
+		Code: testMicroCode([]string{"Adder", "Int64", "Int64"}, []Instruction{{
 			Op:      OpLoadLocal,
 			Payload: LocalPayload{Local: "local.a"},
 		}, {
@@ -81,7 +81,7 @@ func TestValidateArtifactRejectsInvalidCallInterfacePayload(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Any"}, []Instruction{{
+		Code: testMicroCode([]string{"Any"}, []Instruction{{
 			Op:      OpCallInterface,
 			Payload: CallInterfacePayload{InterfaceType: testType("Adder"), ArgCount: 0},
 		}}, [][2][]uint32{{{0}, nil}}),
@@ -102,7 +102,7 @@ func TestValidateArtifactAcceptsValueAndPresenceDestinations(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"String", "Int64", "Map<String, Int64>", "Bool"}, []Instruction{{
+		Code: testMicroCode([]string{"String", "Int64", "Map<String, Int64>", "Bool"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{Constant: "c.key"},
 		}, {

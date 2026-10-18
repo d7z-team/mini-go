@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[test]
 fn any_constants_follow_go_scalar_decoding_and_host_boundary_failures() {
     use mini_go::{SnapshotLimits, snapshot::HostData};
-    let returning = support::slot_code(
+    let returning = support::micro_code(
         json!([{"kind":2}]),
         &[
             ("const", json!({"constant":"raw"}), json!({"outputs":[0]})),
@@ -22,7 +22,7 @@ fn any_constants_follow_go_scalar_decoding_and_host_boundary_failures() {
             ),
         ],
     );
-    let discarded = support::slot_code(
+    let discarded = support::micro_code(
         json!([{"kind":2}]),
         &[
             ("const", json!({"constant":"raw"}), json!({"outputs":[0]})),
@@ -113,7 +113,7 @@ fn preparation_validates_constant_ranges_and_exact_metadata() {
         json!({"constants":[metadata], "functions":[{"id":"fn.Main","code":{"descriptors":{}}}]}),
     );
     Program::load(&image, LoadLimits::default()).unwrap();
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([{"kind":3,"primitive":15}]),
         &[
             ("const", json!({"constant":"third"}), json!({"outputs":[0]})),
@@ -136,7 +136,7 @@ fn byte_constant_backing_is_shared_within_an_instance_and_isolated_between_insta
     let integer = json!({"kind":3,"primitive":3});
     let byte = json!({"kind":3,"primitive":9});
     let slice = json!({"kind":5,"node":"bytes"});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([slice, integer, byte, integer]),
         &[
             ("const", json!({"constant":"data"}), json!({"outputs":[0]})),

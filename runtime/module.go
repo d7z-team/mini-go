@@ -273,18 +273,24 @@ func newModuleInstance(executable *executable) *moduleInstance {
 	return instance
 }
 
-func bindModuleState(executable *executable, state *moduleState) (*moduleInstance, error) {
-	if executable == nil || state == nil {
+func bindModuleState(executable *executable, previous *moduleInstance) (*moduleInstance, error) {
+	if executable == nil || previous == nil || previous.state == nil {
 		return nil, errors.New("nil module code or state")
 	}
 	bound := newModuleInstance(executable)
-	bound.state = state
-	bound.globalCells = make([]*slot, len(executable.Artifact.Globals))
+	bound.state = &moduleState{
+		globals:   make(map[string]*slot, len(executable.Artifact.Globals)),
+		initState: previous.state.initState,
+		initErr:   previous.state.initErr,
+	}
 	for index, global := range executable.Artifact.Globals {
-		cell, ok := state.globals[global.ID]
-		if !ok || cell == nil {
-			return nil, fmt.Errorf("module state missing global %q", global.ID)
+		newType := bound.runtimeType(global.Type)
+		cell := previous.state.globals[global.ID]
+		if cell == nil || cell.typ.String() != newType.String() {
+			_, variadic, _ := bound.functionTypeInfo(global.Type)
+			cell = newSlot(newType, bound, variadic)
 		}
+		bound.state.globals[global.ID] = cell
 		bound.globalCells[index] = cell
 	}
 	return bound, nil

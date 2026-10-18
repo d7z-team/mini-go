@@ -14,14 +14,14 @@ fn direct_calls_obey_frame_limits_and_tail_calls_reuse_frames() {
         ("call_direct", 2, true),
         ("tail_call_direct", 1, true),
     ] {
-        let caller = support::slot_code(
+        let caller = support::micro_code(
             json!([]),
             &[
                 (operation, json!({"function":"callee"}), json!({})),
                 ("return", json!({}), json!({})),
             ],
         );
-        let callee = support::slot_code(json!([]), &[("return", json!({}), json!({}))]);
+        let callee = support::micro_code(json!([]), &[("return", json!({}), json!({}))]);
         let image = support::image(json!({"functions":[
             {"id":"fn.Main","code":caller},
             {"id":"callee","code":callee}
@@ -49,7 +49,7 @@ fn direct_calls_obey_frame_limits_and_tail_calls_reuse_frames() {
 #[test]
 fn tail_call_keeps_pending_defers_and_counts_only_bytecode_steps() {
     let integer = json!({"kind":3,"primitive":3});
-    let main = support::slot_code(
+    let main = support::micro_code(
         json!([integer, integer, integer]),
         &[
             (
@@ -74,7 +74,7 @@ fn tail_call_keeps_pending_defers_and_counts_only_bytecode_steps() {
             ),
         ],
     );
-    let wrapper = support::slot_code(
+    let wrapper = support::micro_code(
         json!([{"kind":mini_go::contract_generated::Function,"node":"cleanup.signature"}]),
         &[
             (
@@ -94,7 +94,7 @@ fn tail_call_keeps_pending_defers_and_counts_only_bytecode_steps() {
             ),
         ],
     );
-    let answer = support::slot_code(
+    let answer = support::micro_code(
         json!([integer]),
         &[
             (
@@ -109,7 +109,7 @@ fn tail_call_keeps_pending_defers_and_counts_only_bytecode_steps() {
             ),
         ],
     );
-    let cleanup = support::slot_code(
+    let cleanup = support::micro_code(
         json!([integer]),
         &[
             ("const", json!({"constant":"delta"}), json!({"outputs":[0]})),

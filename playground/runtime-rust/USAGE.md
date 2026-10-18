@@ -4,10 +4,9 @@
 [README](README.md)；通用维护流程见根[开发指南](../../DEVELOPMENT.md#rust-验证)。浏览器与 Node.js 使用
 [TypeScript runtime](../runtime-typescript/README.md)。
 
-根路径的 `mini_go::Instance` 是线程安全的共享执行句柄（底层类型为
-`execution::SharedInstance`），适合异步宿主和多个调用方共享。`mini_go::instance::Instance` 是单一执行
-owner 使用的同步 VM；需要手动推进、精确控制 `poll_steps` 或自行管理宿主循环时使用它。两者共享同一套
-`Program`、FFI 和资源语义，但生命周期由各自的 owner 管理。
+根路径的 `mini_go::Instance` 是线程安全的共享执行句柄，适合异步宿主和多个调用方共享。
+`mini_go::instance::Instance` 是由单一 owner 推进的同步 VM，适合手动控制 `poll_steps` 或宿主循环。
+两者共享同一套 `Program`、FFI 和资源语义。
 
 ## 加载镜像并执行
 
@@ -16,12 +15,15 @@ owner 使用的同步 VM；需要手动推进、精确控制 `poll_steps` 或自
 拥有独立的 heap、FFI session 和 revision。
 
 ```rust
-use mini_go::{ffi::Cancellation, HostValue, InstanceOptions, Limits, LoadOptions, Program};
+use mini_go::{HostValue, InstanceOptions, Limits, LoadOptions, Program, ffi::Cancellation};
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("expected image path")?;
-    let program = Arc::new(Program::load(&std::fs::read(path)?, LoadOptions::default())?);
+    let program = Arc::new(Program::load(
+        &std::fs::read(path)?,
+        LoadOptions::default(),
+    )?);
     let instance = program.instantiate(InstanceOptions {
         limits: Limits {
             max_steps: 1_000_000,
@@ -62,15 +64,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 手动推进与并行执行
 
-同步 owner 可以使用 `mini_go::instance::Instance::poll_steps` 精确推进指定数量的 guest 指令，并通过
-`Instance::wake` 等待异步事件。读取 wake epoch 应先于推进，避免遗漏唤醒。长期运行示例见
-[long_running.rs](examples/long_running.rs)。
+同步 owner 可以使用 `mini_go::instance::Instance::poll_steps` 推进指定数量的 guest 指令，并通过
+`Instance::wake` 等待异步事件。长期运行示例见 [long_running.rs](examples/long_running.rs)。
 
 共享句柄通过 `InstanceOptions::parallelism` 设置实例内同时推进的 task；多个实例可以共享由宿主创建的
 `Executor`，并在所有实例关闭后关闭 executor：
 
 ```rust
-use mini_go::{ffi::Cancellation, Executor, InstanceOptions};
+use mini_go::{Executor, InstanceOptions, ffi::Cancellation};
 
 let executor = Executor::new(4)?;
 let instance = program.instantiate(InstanceOptions {
@@ -109,10 +110,10 @@ fn replace_program(instance: &Instance, image: &[u8]) -> Result<PatchResult, Run
 }
 ```
 
-准备失败时原程序继续运行。提交遇到 `busy` 或 stale plan 时重新准备。已有 frame、defer 和 closure 继续
-引用旧 revision；新的命名调用进入新 revision。identity 和 layout 匹配的 globals 保持状态。
-`retained_revisions` 查看仍保留的版本，`collect_garbage` 回收无引用版本。状态结构变化时创建新实例，
-由应用转移数据。
+准备失败时原程序继续运行。提交遇到 `busy` 或 stale plan 时重新准备。每个 execution 在开始时固定其
+revision；它的 frame、后续命名调用、defer 和 closure 都使用该 revision，补丁提交后新 execution 使用
+新 revision。相同 ID 且类型相同的 global 保持状态，新增或类型变化的 global 使用新存储。
+`retained_revisions` 查看仍保留的版本，`collect_garbage` 回收无引用版本。
 
 ## 调试与 compiler session
 

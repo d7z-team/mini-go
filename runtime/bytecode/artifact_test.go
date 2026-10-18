@@ -14,7 +14,7 @@ func TestValidateArtifactAcceptsMinimalArtifact(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{Constant: "c.zero"},
 		}, {
@@ -46,8 +46,8 @@ func TestValidateArtifactAppliesTypeLimitBeforeGraphValidation(t *testing.T) {
 func TestValidateArtifactRejectsDuplicateFunctionID(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{
-		{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")},
-		{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")},
+		{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")},
+		{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")},
 	}
 
 	err := testValidateArtifact(&artifact)
@@ -63,7 +63,7 @@ func TestValidateArtifactChecksFunctionResultLocals(t *testing.T) {
 		Signature:    testSignature("function() Int64"),
 		Locals:       []Local{{ID: "local.out", Type: testType("Int64")}},
 		ResultLocals: []string{"local.out"},
-		Code: testSlotCode([]string{"Int64"}, []Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []Instruction{{
 			Op:      OpLoadLocal,
 			Payload: LocalPayload{Local: "local.out"},
 		}, {
@@ -93,7 +93,7 @@ func TestValidateArtifactRejectsMissingPayloadField(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int"}, []Instruction{{
+		Code: testMicroCode([]string{"Int"}, []Instruction{{
 			Op:      OpConst,
 			Payload: ConstPayload{},
 		}}, [][2][]uint32{{nil, {0}}}),
@@ -113,7 +113,7 @@ func TestValidateArtifactRejectsMissingTypePayload(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int", "Int"}, []Instruction{{
+		Code: testMicroCode([]string{"Int", "Int"}, []Instruction{{
 			Op:      OpConvert,
 			Payload: TypePayload{},
 		}}, [][2][]uint32{{{0}, {1}}}),
@@ -138,13 +138,13 @@ func TestValidateArtifactRejectsPayloadForNoPayloadOpcode(t *testing.T) {
 func TestValidateArtifactAcceptsDeferOwnerDepthPayload(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
-		Code:      &SlotCode{},
+		Code:      &MicroCode{},
 		ID:        "fn.cleanup",
 		Signature: testSignature("function() Void"),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+		Code: testMicroCode([]string{"function() Void"}, []Instruction{{
 			Op:      OpMakeClosure,
 			Payload: ClosurePayload{Function: "fn.cleanup"},
 		}, {
@@ -164,13 +164,13 @@ func TestValidateArtifactAcceptsDeferOwnerDepthPayload(t *testing.T) {
 func TestValidateArtifactRejectsNegativeDeferOwnerDepth(t *testing.T) {
 	artifact := NewArtifact("example/module", "main")
 	artifact.Functions = []Function{{
-		Code:      &SlotCode{},
+		Code:      &MicroCode{},
 		ID:        "fn.cleanup",
 		Signature: testSignature("function() Void"),
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void"}, []Instruction{{
+		Code: testMicroCode([]string{"function() Void"}, []Instruction{{
 			Op:      OpMakeClosure,
 			Payload: ClosurePayload{Function: "fn.cleanup"},
 		}, {
@@ -190,7 +190,7 @@ func TestValidateArtifactRejectsMissingWaitableTypePayload(t *testing.T) {
 	artifact.Functions = []Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int", "Any"}, []Instruction{{
+		Code: testMicroCode([]string{"Int", "Any"}, []Instruction{{
 			Op:      OpMakeWaitable,
 			Payload: MakeWaitablePayload{},
 		}}, [][2][]uint32{{{0}, {1}}}),
@@ -219,7 +219,7 @@ func TestValidateArtifactPreservesNestedVariadicFunctionTypes(t *testing.T) {
 		ID:   "global.handlers",
 		Type: testType("Map<String, function(variadic Slice<Int64>) Int64>"),
 	}}
-	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	if err := testValidateArtifact(&artifact); err != nil {
 		t.Fatalf("ValidateArtifact rejected nested variadic function type: %v", err)
@@ -232,7 +232,7 @@ func TestValidateArtifactRejectsNonFinalNestedVariadicFunctionType(t *testing.T)
 		Name: "Bad",
 		Type: testInvalidNestedVariadicType(),
 	}})
-	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 
 	if err := testValidateArtifact(&artifact); err == nil || !strings.Contains(err.Error(), "invalid function type") {
 		t.Fatalf("expected invalid nested variadic function type error, got %v", err)
@@ -253,7 +253,7 @@ func TestValidateArtifactAcceptsLocalModuleMethodMetadata(t *testing.T) {
 		}},
 	}})
 	artifact.Functions = []Function{{
-		Code:      &SlotCode{},
+		Code:      &MicroCode{},
 		ID:        "method.Token.hidden",
 		Signature: testSignature("function() Int"),
 	}}

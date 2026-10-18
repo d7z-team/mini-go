@@ -30,14 +30,8 @@ RPC 目录中的 `schema/`、`source/`、`wire/` 和 `scenarios/` 是协议事�
 schema、源码和场景生成或编译的消费数据。`tls/` 仅提供本地测试凭据。各领域的 `manifest.json` 记录版本、
 输入、owner 和派生文件身份。
 
-## 更新与验证
+## 更新
 
-修改手写源码、schema、场景或预期后，从仓库根运行：
-
-```bash
-make generate
-```
-
-该入口通过根 [generate.go](../generate.go) 更新绑定、契约、镜像和 manifest。只需补齐缺失镜像时使用
-`make artifacts` 或对应的 runtime image target；然后运行受影响的 Go、Rust、TypeScript 和集成测试。
-完整验证矩阵见[开发指南](../DEVELOPMENT.md#生成与派生物)。
+修改手写源码、schema、场景或预期后，通过根 [generate.go](../generate.go) 重新生成对应的 binding、契约、
+镜像和 manifest。生成顺序、补齐镜像的入口和跨语言验证矩阵统一见
+[开发指南](../DEVELOPMENT.md#生成与派生物)。

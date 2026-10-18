@@ -12,7 +12,7 @@ func TestControlRequestReturnsTaskAtInstructionBoundaryWithoutConsumingBudget(t 
 	artifact := ir.NewArtifact("scheduler/control-handoff", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function()"),
-		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Bool"}, []ir.Instruction{
 			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
 			{Op: ir.OpPop},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},

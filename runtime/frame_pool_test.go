@@ -13,7 +13,7 @@ import (
 )
 
 func TestFrameResidentAdmissionCacheAndRevisionRelease(t *testing.T) {
-	function := loadedFunction{Decl: ir.Function{ID: "fn.resident", Code: &ir.SlotCode{}}}
+	function := loadedFunction{Decl: ir.Function{ID: "fn.resident", Code: &ir.MicroCode{}}}
 	heap := newManagedHeap()
 	heap.maxResidentBytes = uint64(unsafe.Sizeof(frame{})) - 1
 	machine := &vm{heap: heap}
@@ -50,7 +50,7 @@ func TestFrameResidentAdmissionCacheAndRevisionRelease(t *testing.T) {
 
 func TestConcurrentFramePoolKeepsPrivateInvocationState(t *testing.T) {
 	function := loadedFunction{
-		Decl:       ir.Function{ID: "fn.concurrent", Locals: []ir.Local{{ID: "value", Type: types.Builtin(types.PrimitiveInt)}}, Code: &ir.SlotCode{Types: []types.TypeRef{types.Builtin(types.PrimitiveInt)}}},
+		Decl:       ir.Function{ID: "fn.concurrent", Locals: []ir.Local{{ID: "value", Type: types.Builtin(types.PrimitiveInt)}}, Code: &ir.MicroCode{Types: []types.TypeRef{types.Builtin(types.PrimitiveInt)}}},
 		LocalTypes: []vmType{predeclaredRuntimeTypes["Int"]}, LocalVariadic: []bool{false},
 	}
 	module := &moduleInstance{vm: &vm{}}
@@ -72,9 +72,9 @@ func TestConcurrentFramePoolKeepsPrivateInvocationState(t *testing.T) {
 				}
 				active[invocation] = true
 				mu.Unlock()
-				invocation.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+				invocation.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 				invocation.push(invocation.localCells[0].load())
-				invocation.beginSlotInstruction(1, &preparedInstruction{operands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}})
+				invocation.beginMicroInstruction(1, &preparedInstruction{operands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}})
 				result, err := invocation.pop()
 				if err != nil || result.materializedData() != id {
 					t.Errorf("invocation %d: result=%v err=%v", id, result, err)
@@ -96,7 +96,7 @@ func TestReboundFrameLocalSurvivesTemporaryReuse(t *testing.T) {
 	module := newManagedValueTestModule()
 	typ := predeclaredRuntimeTypes["String"]
 	function := loadedFunction{
-		Decl:       ir.Function{ID: "fn.rebind", Locals: []ir.Local{{ID: "value", Type: typ.Ref}}, Code: &ir.SlotCode{Types: []types.TypeRef{typ.Ref}}},
+		Decl:       ir.Function{ID: "fn.rebind", Locals: []ir.Local{{ID: "value", Type: typ.Ref}}, Code: &ir.MicroCode{Types: []types.TypeRef{typ.Ref}}},
 		LocalTypes: []vmType{typ}, LocalVariadic: []bool{false}, LocalEscapes: []bool{false},
 	}
 	module.executable = &executable{Artifact: ir.NewArtifact("example/module", "main")}
@@ -106,8 +106,8 @@ func TestReboundFrameLocalSurvivesTemporaryReuse(t *testing.T) {
 	}
 	defer callFrame.recycle()
 	callFrame.storeSlotValue(0, newVMValue(typ, "before call"))
-	inst := &preparedInstruction{op: preparedStoreLocal, localIndex: 0, local: &ir.LocalPayload{Local: "value", Rebind: true}, operands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}}
-	callFrame.beginSlotInstruction(0, inst)
+	inst := &preparedInstruction{op: preparedStoreLocal, localIndex: 0, local: &ir.LocalPayload{Local: "value", Rebind: true}, operands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}}
+	callFrame.beginMicroInstruction(0, inst)
 	if err := module.vm.executeInstruction(nil, callFrame, inst); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestScalarLocalUsesFrameBankWhileEscapingLocalKeepsCellStorage(t *testing.T
 		Decl: ir.Function{ID: "fn.frame-bank", Locals: []ir.Local{
 			{ID: "scalar", Type: types.Builtin(types.PrimitiveInt)},
 			{ID: "escaped", Type: types.Builtin(types.PrimitiveInt)},
-		}, Code: &ir.SlotCode{}},
+		}, Code: &ir.MicroCode{}},
 		LocalTypes: []vmType{intType, intType}, LocalVariadic: []bool{false, false},
 		LocalEscapes: []bool{false, true},
 	}
@@ -160,7 +160,7 @@ func TestSmallScalarAggregateLocalUsesInlineFrameBank(t *testing.T) {
 	arrayType := runtimeTypeFromText("Array<2, Int>")
 	intType := predeclaredRuntimeTypes["Int"]
 	function := loadedFunction{
-		Decl:       ir.Function{ID: "fn.inline-array", Locals: []ir.Local{{ID: "array", Type: arrayType.Ref}}, Code: &ir.SlotCode{}},
+		Decl:       ir.Function{ID: "fn.inline-array", Locals: []ir.Local{{ID: "array", Type: arrayType.Ref}}, Code: &ir.MicroCode{}},
 		LocalTypes: []vmType{arrayType}, LocalVariadic: []bool{false}, LocalEscapes: []bool{false},
 	}
 	module := &moduleInstance{
@@ -217,7 +217,7 @@ func TestLogicalInlineFrameRetainsPaddedPhysicalAndManagedLanes(t *testing.T) {
 		Decl: ir.Function{
 			ID:     "fn.padded-inline",
 			Locals: []ir.Local{{ID: "value", Type: typ.Ref}},
-			Code:   &ir.SlotCode{},
+			Code:   &ir.MicroCode{},
 		},
 		LocalTypes: []vmType{typ}, LocalVariadic: []bool{false}, LocalEscapes: []bool{false},
 	}
@@ -285,14 +285,14 @@ func TestLogicalInlineFrameRetainsPaddedPhysicalAndManagedLanes(t *testing.T) {
 		t.Fatalf("typed frame copy aliases source dynamic lane: %d, err=%v", got, err)
 	}
 	tempFunction := loadedFunction{
-		Decl:           ir.Function{ID: "fn.padded-temp", Code: &ir.SlotCode{Types: []types.TypeRef{typ.Ref}}},
+		Decl:           ir.Function{ID: "fn.padded-temp", Code: &ir.MicroCode{Types: []types.TypeRef{typ.Ref}}},
 		TemporaryTypes: []vmType{typ}, TemporaryLayouts: []preparedValueLayout{layout},
 	}
 	tempFrame, _, err := newFrame(module, tempFunction, nil, nil, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tempFrame.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	tempFrame.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	tempFrame.push(input)
 	if tempFrame.slotValues[0].Data != nil {
 		t.Fatalf("padded temporary retained detached aggregate: %#v", tempFrame.slotValues[0])
@@ -342,7 +342,7 @@ func TestAggregateTemporaryUsesTypedFrameStorage(t *testing.T) {
 	arrayType := runtimeTypeFromText("Array<2, Int>")
 	function := loadedFunction{Decl: ir.Function{
 		ID:   "fn.temp-array",
-		Code: &ir.SlotCode{Types: []types.TypeRef{arrayType.Ref}},
+		Code: &ir.MicroCode{Types: []types.TypeRef{arrayType.Ref}},
 	}}
 	module := &moduleInstance{
 		vm:         &vm{valueLayouts: newPreparedLayoutRegistry()},
@@ -359,7 +359,7 @@ func TestAggregateTemporaryUsesTypedFrameStorage(t *testing.T) {
 	if callFrame.tempLayouts[0].Stride == 0 {
 		t.Fatal("aggregate temporary did not receive a typed layout")
 	}
-	callFrame.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	callFrame.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	callFrame.push(newVMValue(arrayType, []vmValue{
 		newVMValue("Int", int64(4)), newVMValue("Int", int64(9)),
 	}))
@@ -375,7 +375,7 @@ func TestAggregateTemporaryUsesTypedFrameStorage(t *testing.T) {
 
 func TestAggregateFrameBankCopyDoesNotAliasSource(t *testing.T) {
 	arrayType := runtimeTypeFromText("Array<2, Int>")
-	function := loadedFunction{Decl: ir.Function{ID: "fn.bank-copy", Code: &ir.SlotCode{Types: []types.TypeRef{arrayType.Ref, arrayType.Ref}}}}
+	function := loadedFunction{Decl: ir.Function{ID: "fn.bank-copy", Code: &ir.MicroCode{Types: []types.TypeRef{arrayType.Ref, arrayType.Ref}}}}
 	module := &moduleInstance{
 		vm:         &vm{valueLayouts: newPreparedLayoutRegistry()},
 		framePools: make(map[string][]*frame),
@@ -388,9 +388,9 @@ func TestAggregateFrameBankCopyDoesNotAliasSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer frame.recycle()
-	frame.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	frame.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	frame.push(newVMValue(arrayType, []vmValue{newVMValue("Int", int64(1)), newVMValue("Int", int64(2))}))
-	frame.beginSlotInstruction(1, &preparedInstruction{operands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}, Outputs: []uint32{1}}})
+	frame.beginMicroInstruction(1, &preparedInstruction{operands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}, Outputs: []uint32{1}}})
 	frame.push(frame.slotValue(0))
 	copied := frame.slotValue(1)
 	array, ok := copied.Data.(*vmArray)
@@ -409,7 +409,7 @@ func TestLargeAggregateTemporaryUsesManagedReference(t *testing.T) {
 	arrayType := runtimeTypeFromText("Array<32, Int>")
 	function := loadedFunction{Decl: ir.Function{
 		ID:   "fn.large-temp-array",
-		Code: &ir.SlotCode{Types: []types.TypeRef{arrayType.Ref}},
+		Code: &ir.MicroCode{Types: []types.TypeRef{arrayType.Ref}},
 	}}
 	module := newManagedValueTestModule()
 	module.executable = &executable{Artifact: ir.Artifact{TypeTable: *arrayType.Table}}
@@ -425,7 +425,7 @@ func TestLargeAggregateTemporaryUsesManagedReference(t *testing.T) {
 	for index := range items {
 		items[index] = newVMValue("Int", int64(index+1))
 	}
-	frame.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	frame.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	frame.push(newVMValue(arrayType, items))
 	if !frame.slotValues[0].ref.valid() || frame.slotValues[0].Data != nil {
 		t.Fatalf("large temporary retained host payload: %#v", frame.slotValues[0])
@@ -444,7 +444,7 @@ func TestLargeAggregateTemporaryUsesManagedReference(t *testing.T) {
 func TestDynamicLocalUsesPreparedDescriptorStorage(t *testing.T) {
 	typ := predeclaredRuntimeTypes["Any"]
 	function := loadedFunction{
-		Decl:       ir.Function{ID: "fn.dynamic-local", Locals: []ir.Local{{ID: "value", Type: typ.Ref}}, Code: &ir.SlotCode{}},
+		Decl:       ir.Function{ID: "fn.dynamic-local", Locals: []ir.Local{{ID: "value", Type: typ.Ref}}, Code: &ir.MicroCode{}},
 		LocalTypes: []vmType{typ}, LocalVariadic: []bool{false}, LocalEscapes: []bool{false},
 	}
 	module := newManagedValueTestModule()
@@ -470,7 +470,7 @@ func TestDynamicLocalUsesPreparedDescriptorStorage(t *testing.T) {
 func TestScalarTemporaryUsesPreparedLane(t *testing.T) {
 	function := loadedFunction{Decl: ir.Function{
 		ID:   "fn.temp-int",
-		Code: &ir.SlotCode{Types: []types.TypeRef{types.Builtin(types.PrimitiveInt)}},
+		Code: &ir.MicroCode{Types: []types.TypeRef{types.Builtin(types.PrimitiveInt)}},
 	}}
 	module := &moduleInstance{vm: &vm{valueLayouts: newPreparedLayoutRegistry()}, framePools: make(map[string][]*frame)}
 	frame, _, err := newFrame(module, function, nil, nil, 1)
@@ -481,7 +481,7 @@ func TestScalarTemporaryUsesPreparedLane(t *testing.T) {
 	if frame.tempLayouts[0].Stride == 0 {
 		t.Fatal("scalar temporary did not use a prepared lane")
 	}
-	frame.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	frame.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	frame.push(newVMValue("Int", int64(41)))
 	if frame.slotValues[0].Data != nil {
 		t.Fatalf("scalar temporary retained host payload: %#v", frame.slotValues[0])
@@ -496,7 +496,7 @@ func TestComplexFrameLocalPreservesBothComponents(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			typ := runtimeTypeFromText(name)
 			function := loadedFunction{
-				Decl:       ir.Function{ID: "fn.complex", Locals: []ir.Local{{ID: "value", Type: typ.Ref}}, Code: &ir.SlotCode{}},
+				Decl:       ir.Function{ID: "fn.complex", Locals: []ir.Local{{ID: "value", Type: typ.Ref}}, Code: &ir.MicroCode{}},
 				LocalTypes: []vmType{typ}, LocalVariadic: []bool{false}, LocalEscapes: []bool{false},
 			}
 			module := newManagedValueTestModule()
@@ -522,7 +522,7 @@ func TestComplexFrameLocalPreservesBothComponents(t *testing.T) {
 func TestInlineAggregateReferenceLanesUseManagedHandles(t *testing.T) {
 	arrayType := runtimeTypeFromText("Array<2, String>")
 	function := loadedFunction{
-		Decl:       ir.Function{ID: "fn.inline-string-array", Locals: []ir.Local{{ID: "array", Type: arrayType.Ref}}, Code: &ir.SlotCode{}},
+		Decl:       ir.Function{ID: "fn.inline-string-array", Locals: []ir.Local{{ID: "array", Type: arrayType.Ref}}, Code: &ir.MicroCode{}},
 		LocalTypes: []vmType{arrayType}, LocalVariadic: []bool{false}, LocalEscapes: []bool{false},
 	}
 	module := &moduleInstance{
@@ -573,7 +573,7 @@ func TestInlineAggregateReferenceLanesUseManagedHandles(t *testing.T) {
 
 func TestOversizedFrameReleasesStorageAndRebuildsInvocation(t *testing.T) {
 	function := loadedFunction{
-		Decl:          ir.Function{ID: "fn.physical", Locals: []ir.Local{{ID: "value", Type: types.Builtin(types.PrimitiveInt)}}, Code: &ir.SlotCode{Types: make([]types.TypeRef, maxPhysicalFrameCacheBytes/int(unsafe.Sizeof(vmValue{}))+1)}},
+		Decl:          ir.Function{ID: "fn.physical", Locals: []ir.Local{{ID: "value", Type: types.Builtin(types.PrimitiveInt)}}, Code: &ir.MicroCode{Types: make([]types.TypeRef, maxPhysicalFrameCacheBytes/int(unsafe.Sizeof(vmValue{}))+1)}},
 		LocalTypes:    []vmType{predeclaredRuntimeTypes["Int"]},
 		LocalVariadic: []bool{false},
 	}
@@ -601,9 +601,9 @@ func TestOversizedFrameReleasesStorageAndRebuildsInvocation(t *testing.T) {
 	if value := second.localCells[0].load(); value.materializedData() != int64(42) || !value.Type.Equal(predeclaredRuntimeTypes["Int"]) {
 		t.Fatalf("restored local lost its type or new argument: %#v", value)
 	}
-	second.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	second.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	second.push(newVMValue("String", "live"))
-	second.beginSlotInstruction(1, &preparedInstruction{operands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}})
+	second.beginMicroInstruction(1, &preparedInstruction{operands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}})
 	value, err := second.pop()
 	if err != nil || value.Data != "live" {
 		t.Fatalf("restored frame result: %#v, %v", value, err)
@@ -616,7 +616,7 @@ func TestReusableFrameClearsInvocationState(t *testing.T) {
 	function := loadedFunction{
 		Decl: ir.Function{
 			ID:     "fn.reusable",
-			Code:   &ir.SlotCode{Types: []types.TypeRef{types.Builtin(types.PrimitiveString)}},
+			Code:   &ir.MicroCode{Types: []types.TypeRef{types.Builtin(types.PrimitiveString)}},
 			Locals: []ir.Local{{ID: "local.value", Type: types.Builtin(types.PrimitiveInt)}},
 		},
 		LocalTypes:    []vmType{intType},
@@ -627,7 +627,7 @@ func TestReusableFrameClearsInvocationState(t *testing.T) {
 	if err != nil || !allocated {
 		t.Fatalf("first frame = (%v, %v), want a new frame", allocated, err)
 	}
-	first.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	first.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	first.push(newVMValue("String", "stale"))
 	first.recycle()
 
@@ -657,7 +657,7 @@ func TestFramePoolDropsIdleFrameAcrossRevisionPatch(t *testing.T) {
 	machine.revision.Store(oldRevision)
 	module := &moduleInstance{vm: machine, revision: oldRevision, framePools: make(map[string][]*frame)}
 	function := loadedFunction{
-		Decl:       ir.Function{ID: "fn.patch-shape", Code: &ir.SlotCode{}},
+		Decl:       ir.Function{ID: "fn.patch-shape", Code: &ir.MicroCode{}},
 		LocalTypes: []vmType{predeclaredRuntimeTypes["Int"]}, LocalVariadic: []bool{false},
 	}
 	first, allocated, err := newFrame(module, function, []vmValue{newVMValue("Int", int64(1))}, nil, 1)
@@ -691,7 +691,7 @@ func TestPreparedLocalForwardCopiesInlineAggregateBytes(t *testing.T) {
 	function := loadedFunction{
 		Decl: ir.Function{
 			ID:   "fn.forward",
-			Code: &ir.SlotCode{},
+			Code: &ir.MicroCode{},
 			Locals: []ir.Local{
 				{ID: "source", Type: arrayType.Ref},
 				{ID: "destination", Type: arrayType.Ref},
@@ -706,7 +706,7 @@ func TestPreparedLocalForwardCopiesInlineAggregateBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer frame.recycle()
-	frame.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{ir.LocalOutput | 1}}})
+	frame.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{ir.LocalOutput | 1}}})
 	copied, err := frame.copyLocalToOutput(0)
 	if err != nil || !copied {
 		t.Fatalf("prepared local forwarding: copied=%v err=%v", copied, err)
@@ -735,7 +735,7 @@ func TestInlineCopyRejectsAggregateSubview(t *testing.T) {
 }
 
 func TestFramePoolRejectsFrameAboveModuleBudget(t *testing.T) {
-	function := loadedFunction{Decl: ir.Function{ID: "fn.large", Code: &ir.SlotCode{Types: make([]types.TypeRef, maxIdleFrameBytesPerModule/int(ir.StorageReferenceBytes)+1)}}}
+	function := loadedFunction{Decl: ir.Function{ID: "fn.large", Code: &ir.MicroCode{Types: make([]types.TypeRef, maxIdleFrameBytesPerModule/int(ir.StorageReferenceBytes)+1)}}}
 	module := &moduleInstance{framePools: make(map[string][]*frame)}
 	callFrame, _, err := newFrame(module, function, nil, nil, 1)
 	if err != nil {
@@ -749,10 +749,10 @@ func TestFramePoolRejectsFrameAboveModuleBudget(t *testing.T) {
 
 func TestFrameOperandsRemainRootedUntilReleaseAndReuseResultStorage(t *testing.T) {
 	callFrame := &frame{slotValues: make([]vmValue, 2), slotPC: -1}
-	callFrame.beginSlotInstruction(0, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0, 1}}})
+	callFrame.beginMicroInstruction(0, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0, 1}}})
 	callFrame.push(newVMValue("String", "first"))
 	callFrame.push(newVMValue("String", "second"))
-	callFrame.beginSlotInstruction(1, &preparedInstruction{operands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}, {Kind: ir.OperandSlot, Index: 1}}, Release: []uint32{0, 1}}})
+	callFrame.beginMicroInstruction(1, &preparedInstruction{operands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}, {Kind: ir.OperandSlot, Index: 1}}, Release: []uint32{0, 1}}})
 	values, err := callFrame.popN(2)
 	if err != nil {
 		t.Fatal(err)
@@ -764,12 +764,12 @@ func TestFrameOperandsRemainRootedUntilReleaseAndReuseResultStorage(t *testing.T
 		t.Fatal("inputs were consumed before instruction commit")
 	}
 	storage := &values[0]
-	callFrame.beginSlotInstruction(2, &preparedInstruction{operands: &ir.SlotOperands{Outputs: []uint32{0}}})
+	callFrame.beginMicroInstruction(2, &preparedInstruction{operands: &ir.RegisterFlow{Outputs: []uint32{0}}})
 	if callFrame.slotValues[0].Data != nil || callFrame.slotValues[1].Data != nil {
 		t.Fatal("released inputs retained values")
 	}
 	callFrame.push(newVMValue("String", "third"))
-	callFrame.beginSlotInstruction(3, &preparedInstruction{operands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}})
+	callFrame.beginMicroInstruction(3, &preparedInstruction{operands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}})
 	values, err = callFrame.popN(1)
 	if err != nil {
 		t.Fatal(err)
@@ -782,7 +782,7 @@ func TestFrameOperandsRemainRootedUntilReleaseAndReuseResultStorage(t *testing.T
 func TestEscapingLocalSurvivesFrameReuse(t *testing.T) {
 	intType := predeclaredRuntimeTypes["Int"]
 	function := loadedFunction{
-		Decl:          ir.Function{ID: "fn.escaping", Locals: []ir.Local{{ID: "local.value", Type: types.Builtin(types.PrimitiveInt)}}, Code: &ir.SlotCode{}},
+		Decl:          ir.Function{ID: "fn.escaping", Locals: []ir.Local{{ID: "local.value", Type: types.Builtin(types.PrimitiveInt)}}, Code: &ir.MicroCode{}},
 		LocalIndexes:  map[string]int{"local.value": 0},
 		LocalTypes:    []vmType{intType},
 		LocalVariadic: []bool{false},
@@ -819,7 +819,7 @@ func TestAddressPathKeepsEvaluatedIndexAfterFrameReuse(t *testing.T) {
 	function := loadedFunction{
 		Decl: ir.Function{
 			ID:   "fn.indexed",
-			Code: &ir.SlotCode{},
+			Code: &ir.MicroCode{},
 			Locals: []ir.Local{
 				{ID: "local.array", Type: arrayType.Ref},
 				{ID: "local.index", Type: types.Builtin(types.PrimitiveInt)},
@@ -862,7 +862,7 @@ func TestAddressPathKeepsEvaluatedIndexAfterFrameReuse(t *testing.T) {
 }
 
 func TestFramePoolBoundsIdleFrames(t *testing.T) {
-	function := loadedFunction{Decl: ir.Function{ID: "fn.bounded", Code: &ir.SlotCode{}}}
+	function := loadedFunction{Decl: ir.Function{ID: "fn.bounded", Code: &ir.MicroCode{}}}
 	module := &moduleInstance{framePools: make(map[string][]*frame)}
 	frames := make([]*frame, maxIdleFramesPerFunction+4)
 	for i := range frames {

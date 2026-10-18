@@ -12,7 +12,7 @@ func TestProgramWithSymbolsValidatesAndOwnsSidecar(t *testing.T) {
 	artifact := ir.NewArtifact("test/symbols", "symbols")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+		Code: testMicroCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	attachRuntimeTestTypeNodes(&artifact)
 	artifactJSON, artifactHash, err := ir.EncodeJSONAndHash(&artifact)

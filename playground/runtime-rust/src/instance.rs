@@ -57,7 +57,7 @@ mod waiters;
 pub const UNLIMITED_STEPS: i64 = -1;
 
 // Cooperative owner checks share one cadence, independent of native batch size.
-const TASK_POLL_INTERVAL: u8 = 64;
+const TASK_POLL_INTERVAL: u32 = 512;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ExecutionLimits {
@@ -131,11 +131,6 @@ pub enum PollStatus {
     Paused,
 }
 
-// Stable logical identities are instance-owned; shared Programs never bind to
-// one instance's current revision. IDs are never reused while old code can live.
-type LogicalFunctions = HashMap<(Arc<str>, Arc<str>), usize>;
-const MAX_LOGICAL_FUNCTIONS: usize = 1 << 20;
-
 pub struct Instance {
     revision: Arc<crate::program::Revision>,
     types: crate::types::TypeRegistry,
@@ -154,8 +149,6 @@ pub struct Instance {
     revision_anchors: BTreeMap<u64, Handle>,
     globals: BTreeMap<(String, String), Handle>,
     constant_values: BTreeMap<(u64, usize), Value>,
-    logical_functions: LogicalFunctions,
-    call_targets: Vec<Option<usize>>,
     running: scheduler::Task,
     frame_pool: Arc<frame::FramePool>,
     preparing_task: Option<scheduler::Task>,
@@ -278,13 +271,11 @@ impl Instance {
         heap.set_type_registry(types.clone());
         let type_registry_revision = heap.type_registry_revision();
         let wake = Arc::new(Wake::default());
-        let bindings = patch::FunctionBindings::prepare(&program, &LogicalFunctions::new())?;
         let mut instance = Self {
             types,
             type_registry_revision,
             revision: Arc::new(crate::program::Revision {
                 generation: 1,
-                logical_functions: bindings.ids,
                 program,
             }),
             heap,
@@ -293,8 +284,6 @@ impl Instance {
             revision_anchors: BTreeMap::new(),
             globals: BTreeMap::new(),
             constant_values: BTreeMap::new(),
-            logical_functions: bindings.symbols,
-            call_targets: bindings.targets,
             running: scheduler::Task::default(),
             frame_pool: Arc::default(),
             preparing_task: None,
@@ -1042,7 +1031,7 @@ impl Instance {
 
     fn poll_loop(&mut self, count: usize, background: bool) -> Result<PollStatus, RuntimeError> {
         self.last_poll_steps = 0;
-        self.timer_check_steps = usize::from(TASK_POLL_INTERVAL);
+        self.timer_check_steps = TASK_POLL_INTERVAL as usize;
         if self.closed {
             return Err(RuntimeError::new(
                 "closed",
@@ -1075,7 +1064,7 @@ impl Instance {
                 return Ok(PollStatus::Ready);
             }
             self.poll_ready_events(
-                self.timer_check_steps >= usize::from(TASK_POLL_INTERVAL)
+                self.timer_check_steps >= TASK_POLL_INTERVAL as usize
                     || self.running.frames.is_empty(),
             )?;
             if self.running.frames.is_empty() && !self.schedule_next() {
@@ -1094,7 +1083,10 @@ impl Instance {
                 && frame.after_init.is_none()
                 && frame.pc < frame.prepared.code.len();
             let counted_instruction = instruction_step;
-            if counted_instruction && self.debug_before_instruction() {
+            if counted_instruction
+                && self.running.charged_instruction_steps == 0
+                && self.debug_before_instruction()
+            {
                 return Ok(PollStatus::Paused);
             }
             if counted_instruction {
@@ -1125,7 +1117,8 @@ impl Instance {
                         }
                     }
                 }
-                if self.debug.profile_every == 0
+                if self.running.charged_instruction_steps == 0
+                    && self.debug.profile_every == 0
                     && self.debug.resume.is_none()
                     && self.debug.breakpoints.is_empty()
                     && !self.debug.pause.load(std::sync::atomic::Ordering::Acquire)
@@ -1140,9 +1133,8 @@ impl Instance {
                             .decoded
                             .types(),
                     );
-                    let quantum = (count - self.last_poll_steps).min(usize::from(
-                        TASK_POLL_INTERVAL - self.running.scheduling_phase,
-                    ));
+                    let quantum = (count - self.last_poll_steps)
+                        .min((TASK_POLL_INTERVAL - self.running.scheduling_phase) as usize);
                     let executed =
                         task_runner::execute_private_slice(&mut self.running, quantum, &self.types);
                     if executed != 0 {
@@ -1157,7 +1149,20 @@ impl Instance {
                         continue;
                     }
                 }
+                let pc = self.running.frames.last().unwrap().pc;
+                let logical_cost = self.running.frames.last().unwrap().prepared.costs[pc].max(1);
                 self.running.step_grant.as_mut().unwrap().consume();
+                if self.running.charged_instruction_steps + 1 < logical_cost {
+                    self.running.charged_instruction_steps += 1;
+                    self.steps = self.steps.saturating_add(1);
+                    self.last_poll_steps += 1;
+                    self.timer_check_steps += 1;
+                    self.running.scheduling_phase =
+                        (self.running.scheduling_phase + 1) % TASK_POLL_INTERVAL;
+                    self.changed_scopes.insert(self.running.scope);
+                    continue;
+                }
+                self.running.charged_instruction_steps = 0;
             }
             let scope = self.running.scope;
             let task_id = self.running.id;
@@ -1444,8 +1449,6 @@ impl Instance {
         self.ffi_calls.close();
         self.globals.clear();
         self.constant_values.clear();
-        self.logical_functions.clear();
-        self.call_targets.clear();
         self.frame_pool.clear();
         self.retired_revisions.clear();
         self.reflected_types.clear();
@@ -1695,7 +1698,7 @@ impl Instance {
             pc
         };
         let instruction = function.code.descriptor(pc);
-        if let Err(error) = self.begin_slot_instruction(pc) {
+        if let Err(error) = self.begin_micro_instruction(pc) {
             if error.code != "collection_required" {
                 return Err(error);
             }
@@ -1704,7 +1707,7 @@ impl Instance {
             // retry that preparation after the owner collection; unlike a
             // pending address write there is no guest-visible mutation yet.
             self.collect_rooted()?;
-            self.begin_slot_instruction(pc)?;
+            self.begin_micro_instruction(pc)?;
         }
         use Instruction::*;
         let initialization_target = match instruction {
@@ -1927,6 +1930,28 @@ impl Instance {
                     frame.pc = target;
                 }
             }
+            Prepared::UpdateCompareBranch {
+                update,
+                comparison,
+                target,
+                when,
+            } => {
+                let comparison_value = self.running.pop()?;
+                let update_value = self.running.pop()?;
+                let current_value = self.running.pop()?;
+                let updated =
+                    crate::operators::binary(update, &current_value, &update_value, &self.types)?;
+                let local = function.operands.inputs_at(pc)[0].index as usize;
+                self.store_local_retry_after_collection(local, updated.clone(), false)?;
+                let matched =
+                    crate::operators::binary(comparison, &updated, &comparison_value, &self.types)?;
+                let Data::Bool(matched) = matched.data else {
+                    unreachable!("comparison returns bool")
+                };
+                if matched == when {
+                    self.running.frames.last_mut().unwrap().pc = target;
+                }
+            }
             Prepared::Binary(operator) | Prepared::CompareBranch { operator, .. } => {
                 // Inputs stay rooted in their slots until commit, including
                 // while string allocation requests collection.
@@ -1984,7 +2009,11 @@ impl Instance {
             Prepared::Operand | Prepared::Construct(_) => match instruction
                 .expect("unprepared operation descriptor")
             {
-                TypeDispatch(_) | CompareBranch(_) | LenCompareBranch(_) | GetPath(_)
+                TypeDispatch(_)
+                | CompareBranch(_)
+                | LenCompareBranch(_)
+                | UpdateCompareBranch(_)
+                | GetPath(_)
                 | MinMax(_) => {
                     unreachable!("dispatch is prepared")
                 }
@@ -2126,13 +2155,13 @@ impl Instance {
                     let values = self
                         .running
                         .pop_values(&self.frame_pool, if payload.has_capacity { 2 } else { 1 })?;
-                    let length = values[0].integer()?;
+                    let length = values[0].index()?;
                     let capacity = if payload.has_capacity {
-                        values[1].integer()?
+                        values[1].index()?
                     } else {
                         length
                     };
-                    if length < 0 || capacity < length {
+                    if capacity < length {
                         return Err(RuntimeError::new(
                             "panic",
                             "make_slice",
@@ -2140,16 +2169,9 @@ impl Instance {
                         ));
                     }
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
-                    let capacity = usize::try_from(capacity).map_err(|_| {
-                        RuntimeError::new(
-                            "allocation_limit",
-                            "make_slice",
-                            "capacity overflows host size",
-                        )
-                    })?;
                     self.running.pending_write = Some(mutation::PendingWrite::Slice {
                         typ,
-                        length: length as usize,
+                        length,
                         capacity,
                     });
                     self.resume_write()?;
@@ -2161,14 +2183,7 @@ impl Instance {
                         entry_values + usize::from(payload.has_capacity),
                     )?;
                     if payload.has_capacity {
-                        let capacity = values.pop().unwrap().integer()?;
-                        if usize::try_from(capacity).is_err() {
-                            return Err(RuntimeError::new(
-                                "panic",
-                                "make_map",
-                                "invalid map capacity",
-                            ));
-                        }
+                        values.pop().unwrap().index()?;
                     }
                     let typ = function.operand_types[pc].as_ref().unwrap().clone();
                     let mut entries = VecDeque::with_capacity(payload.entry_count as usize);
@@ -2345,22 +2360,8 @@ impl Instance {
                     } else {
                         let source =
                             &revision.program.function_table[function.targets[pc].unwrap()];
-                        let bound_revision;
-                        let target_index;
-                        if source.declaration.revision_local {
-                            bound_revision = revision.clone();
-                            target_index = source.index;
-                        } else {
-                            bound_revision = self.revision.clone();
-                            let logical = revision.logical_functions[source.index];
-                            target_index = self.call_targets[logical].ok_or_else(|| {
-                                RuntimeError::new(
-                                    "missing_function",
-                                    source.module.as_ref(),
-                                    source.name.as_ref(),
-                                )
-                            })?;
-                        }
+                        let bound_revision = revision.clone();
+                        let target_index = source.index;
                         let target = &bound_revision.program.function_table[target_index];
                         let revision_generation = bound_revision.generation;
                         FunctionValue {
@@ -2595,10 +2596,13 @@ impl Instance {
                 Slice => {
                     let mut values = self.running.pop_values(&self.frame_pool, 4)?;
                     let max = values.pop().unwrap();
-                    let high = values.pop().unwrap().integer()?;
-                    let low = values.pop().unwrap().integer()?;
+                    let high = values.pop().unwrap().index()?;
+                    let low = values.pop().unwrap().index()?;
                     let object = values.pop().unwrap();
-                    result = Some(self.slice_value(object, low, high, max)?);
+                    let maximum = (max.typ != TypeIdentity::Void)
+                        .then(|| max.index())
+                        .transpose()?;
+                    result = Some(self.slice_value(object, low, high, maximum)?);
                 }
                 Append(payload) => {
                     let mut values = self
@@ -2776,8 +2780,7 @@ impl Instance {
                         function.code[self.running.frames.last().unwrap().pc - 1],
                         StringNextRuneIndex
                     );
-                    let index = usize::try_from(self.running.pop()?.integer()?)
-                        .map_err(|_| RuntimeError::new("panic", "string", "negative rune index"))?;
+                    let index = self.running.pop()?.index()?;
                     let object = self.running.pop()?;
                     let Data::String(bytes) = object.data else {
                         return Err(RuntimeError::new("type_error", "string", "expected string"));

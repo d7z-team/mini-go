@@ -1,7 +1,7 @@
 {
   "format": "mini-go-ir",
-  "version": 33,
-  "opcode_set": "minigo.ir.v18",
+  "version": 34,
+  "opcode_set": "minigo.ir.v19",
   "symbols_format": "mini-go-program-symbols",
   "symbols_version": 1,
   "symbols_contract": "minigo.symbols.v1",
@@ -22,7 +22,7 @@
       "name": "opcode_set",
       "type": "string",
       "required": true,
-      "rule": "must be \"minigo.ir.v18\""
+      "rule": "must be \"minigo.ir.v19\""
     },
     {
       "name": "module",
@@ -237,10 +237,6 @@
       "required": true
     },
     {
-      "name": "revision_local",
-      "type": "bool"
-    },
-    {
       "name": "signature",
       "type": "FunctionSignature",
       "required": true
@@ -260,7 +256,7 @@
     },
     {
       "name": "code",
-      "type": "SlotCode",
+      "type": "MicroCode",
       "required": true
     }
   ],
@@ -299,7 +295,7 @@
       "type": "opcode-payload"
     }
   ],
-  "slot_code_fields": [
+  "micro_code_fields": [
     {
       "name": "types",
       "type": "[]TypeRef",
@@ -307,11 +303,16 @@
     },
     {
       "name": "instructions",
-      "type": "[]SlotInstruction"
+      "type": "[]MicroInstruction"
+    },
+    {
+      "name": "blocks",
+      "type": "[]BasicBlock",
+      "rule": "maximal executable ranges with logical fuel"
     },
     {
       "name": "operands",
-      "type": "[]SlotOperands"
+      "type": "[]RegisterFlow"
     },
     {
       "name": "descriptors",
@@ -320,12 +321,12 @@
       "rule": "typed payload tables indexed by instruction descriptor"
     }
   ],
-  "slot_instruction_fields": [
+  "micro_instruction_fields": [
     {
       "name": "0",
-      "type": "uint16",
+      "type": "uint32",
       "required": true,
-      "rule": "numeric opcode; tuple has exactly three elements"
+      "rule": "low uint16 opcode and high uint16 typed mode; tuple has exactly four elements"
     },
     {
       "name": "1",
@@ -338,9 +339,15 @@
       "type": "uint32",
       "required": true,
       "rule": "operand record index"
+    },
+    {
+      "name": "3",
+      "type": "uint32",
+      "required": true,
+      "rule": "non-zero logical fuel cost"
     }
   ],
-  "slot_operand_fields": [
+  "operand_fields": [
     {
       "name": "0",
       "type": "uint8",
@@ -354,7 +361,7 @@
       "rule": "index in the selected storage domain"
     }
   ],
-  "slot_operands_fields": [
+  "register_flow_fields": [
     {
       "name": "inputs",
       "type": "[]Operand",
@@ -728,6 +735,36 @@
       "fields": [
         {
           "name": "operator",
+          "type": "comparison",
+          "required": true
+        },
+        {
+          "name": "type",
+          "type": "TypeRef",
+          "required": true
+        },
+        {
+          "name": "label",
+          "type": "label",
+          "required": true
+        },
+        {
+          "name": "when",
+          "type": "bool",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "update_compare_branch",
+      "fields": [
+        {
+          "name": "update",
+          "type": "enum(+,-)",
+          "required": true
+        },
+        {
+          "name": "comparison",
           "type": "comparison",
           "required": true
         },
@@ -1990,6 +2027,18 @@
         "inputs": 0,
         "outputs": 0
       }
+    },
+    {
+      "op": "update_compare_branch",
+      "category": "control",
+      "payload": "update_compare_branch",
+      "operands": "read private local/update/comparison operands, update the local and branch",
+      "arity": {
+        "kind": "fixed",
+        "inputs": 3,
+        "outputs": 0
+      },
+      "notes": "fused scalar local update followed by a typed comparison"
     }
   ],
   "type_rules": [

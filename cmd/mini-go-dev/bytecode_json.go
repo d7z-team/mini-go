@@ -19,8 +19,9 @@ func generateBytecodeJSON() error {
 	roots = append(roots, bytecode.Instruction{})
 	roots = append(roots, bytecode.TypeDispatchPayload{})
 	roots = append(roots, bytecode.CompareBranchPayload{})
+	roots = append(roots, bytecode.UpdateCompareBranchPayload{})
 	roots = append(roots, bytecode.FieldPathPayload{})
-	roots = append(roots, bytecode.SlotCode{})
+	roots = append(roots, bytecode.MicroCode{})
 	roots = append(roots, bytecode.ExecutionImage{}, bytecode.ProgramSymbols{})
 	// Payload roots define the instruction descriptor union. Its codec belongs
 	// to the image boundary; compiler and runtime stages keep the typed values.
@@ -103,7 +104,20 @@ func generateBytecodeJSON() error {
 		return nil
 	}
 	for _, t := range structures {
-		if t == reflect.TypeFor[bytecode.SlotInstruction]() || t == reflect.TypeFor[bytecode.Operand]() {
+		if t == reflect.TypeFor[bytecode.MicroInstruction]() {
+			fmt.Fprintf(&out, "func(w *canonicalBuffer) encode%s(v *%s) {w.data=append(w.data,'[')\n", t.Name(), name(t))
+			out.WriteString("word:=uint32(v.Op)|uint32(v.Mode)<<16\n")
+			out.WriteString("w.data=strconv.AppendUint(w.data,uint64(word),10)\n")
+			out.WriteString("w.data=append(w.data,',')\n")
+			out.WriteString("w.data=strconv.AppendUint(w.data,uint64(v.Descriptor),10)\n")
+			out.WriteString("w.data=append(w.data,',')\n")
+			out.WriteString("w.data=strconv.AppendUint(w.data,uint64(v.Operands),10)\n")
+			out.WriteString("w.data=append(w.data,',')\n")
+			out.WriteString("w.data=strconv.AppendUint(w.data,uint64(v.LogicalCost()),10)\n")
+			out.WriteString("w.data=append(w.data,']')}\n")
+			continue
+		}
+		if t == reflect.TypeFor[bytecode.Operand]() {
 			fmt.Fprintf(&out, "func(w *canonicalBuffer) encode%s(v *%s) {w.data=append(w.data,'[')\n", t.Name(), name(t))
 			for index := range t.NumField() {
 				if index != 0 {
@@ -170,7 +184,7 @@ func generateBytecodeJSON() error {
 			fmt.Fprintf(&out, "if comma {w.data=append(w.data,',')}\ncomma=true\nw.data=append(w.data,%q...)\n", string(encoded)+":")
 			if t == reflect.TypeFor[bytecode.PackageArchive]() && f.Name == "Artifact" {
 				out.WriteString("if v.hasCanonicalProof() {w.data=append(w.data,v.Artifact...)} else {w.raw(v.Artifact)}\n")
-			} else if t.Name() == "SlotInstruction" && f.Name == "Op" {
+			} else if t.Name() == "MicroInstruction" && f.Name == "Op" {
 				fmt.Fprintf(&out, "w.data=strconv.AppendUint(w.data,uint64(%s),10)\n", value)
 			} else if err := emit(f.Type, value, 0); err != nil {
 				return err

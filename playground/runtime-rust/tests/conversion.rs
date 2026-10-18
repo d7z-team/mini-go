@@ -13,7 +13,7 @@ fn byte_append_growth_keeps_the_old_backing_and_copies_only_visible_bytes() {
     let slice = json!({"kind":wire::Slice,"node":"bytes"});
     let integer = json!({"kind":3,"primitive":3});
     let byte = json!({"kind":3,"primitive":9});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([slice, byte, slice, integer]),
         &[
             (
@@ -97,7 +97,7 @@ fn byte_backing_mutation_preserves_pointer_aliases_with_a_byte_sized_budget() {
     let slice = json!({"kind":wire::Slice,"node":"bytes"});
     let array = json!({"kind":wire::Array,"node":"pair"});
     let pointer = json!({"kind":wire::Pointer,"node":"pointer"});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([slice,pointer,array,{"kind":3,"primitive":3},{"kind":3,"primitive":9}]),
         &[
             (
@@ -255,7 +255,7 @@ fn repeated_pointer_type_views_write_original_storage_and_survive_in_snapshots()
             json!({"inputs":[[0,1],[0,3]],"release":[1,3]}),
         ),
     ]);
-    let code = support::slot_code(json!([pa, pb, b, a]), &operations);
+    let code = support::micro_code(json!([pa, pb, b, a]), &operations);
     let image = support::image(json!({
         "type_table":{"nodes":[
             {"id":"A","kind":4,"identity":{"module_path":"test","decl_id":"A"},"underlying":{"kind":3,"primitive":3}},
@@ -304,7 +304,7 @@ fn array_pointer_conversion_preserves_snapshot_view_and_faults_on_short_input() 
         } else {
             &pointer
         };
-        let code = support::slot_code(
+        let code = support::micro_code(
             json!([slice, target]),
             &[
                 (

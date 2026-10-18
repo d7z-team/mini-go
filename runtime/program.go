@@ -276,12 +276,8 @@ func prepareModuleReferences(modules map[string]*executable) ([]string, error) {
 						modulePath, functionID, pc, call.ArgCount, call.ResultCount, targetPath, call.Function,
 						len(target.Decl.Signature.Params), len(target.Decl.Signature.Results))
 				}
-				if instruction.op == preparedTailCallDirect && target.Decl.RevisionLocal {
-					return nil, fmt.Errorf("link %s.%s instruction %d: tail call target %s.%s is revision-local", modulePath, functionID, pc, targetPath, call.Function)
-				}
 				instruction.callModuleIndex = moduleIndexes[targetPath]
 				instruction.callFunctionIndex = targetModule.FunctionIndexes[call.Function]
-				instruction.callRevisionLocal = target.Decl.RevisionLocal
 			}
 			executable.Functions[functionID] = function
 		}

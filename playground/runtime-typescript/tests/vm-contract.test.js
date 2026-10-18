@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "vitest";
 import { VirtualMachine } from "../src/vm/vm";
 import { allRuntimeVectors, runtimeVector, sealImage } from "./support/runtime-vectors.js";
 import { executeVM, initializeVM } from "./support/vm.js";
+
+const opcodeOf = (instruction) => instruction[0] & 0xffff;
 
 test.each(allRuntimeVectors)("direct VM executes $name O$optimization", async (vector) => {
   const vm = await VirtualMachine.create(vector.bytes, {});
@@ -13,6 +16,8 @@ test.each(allRuntimeVectors)("direct VM executes $name O$optimization", async (v
     state = vm.pump(4096);
     if (state.executions.find((item) => item.id === execution)?.settled) break;
     assert.equal(vm.actions().length, 0, `${vector.name} O${vector.optimization}: host action`);
+    if (!state.running && state.delay !== undefined && state.delay > 0)
+      await new Promise((resolve) => setTimeout(resolve, Math.min(state.delay, 10)));
   }
   let result;
   try {
@@ -29,6 +34,98 @@ test.each(allRuntimeVectors)("direct VM executes $name O$optimization", async (v
   vm.close();
   vm.pump(1);
   assert.equal(vm.stats().occupiedBytes, 0n, `${vector.name} O${vector.optimization}: release`);
+});
+
+test("current guest compiler image passes verification and can close during initialization", async () => {
+  const image = await readFile(
+    new URL("../../runtime-rust/assets/compiler.json.gz", import.meta.url),
+  );
+  const vm = await VirtualMachine.create(image, {});
+  vm.close();
+  for (let count = 0; count < 100 && vm.stats().state !== "Closed"; count++) vm.pump(4096);
+  assert.equal(vm.stats().state, "Closed");
+  assert.equal(vm.stats().occupiedBytes, 0n);
+});
+
+test.each([1, 511, 512, 513])("pump(%i) preserves the exact bytecode budget", async (budget) => {
+  const vm = await VirtualMachine.create(runtimeVector("parallel_cpu", 2).bytes, {});
+  initializeVM(vm, `budget ${budget}`);
+  const execution = vm.start("default", []);
+  const before = vm.stats().steps;
+  const state = vm.pump(budget);
+  assert.equal(vm.stats().steps - before, BigInt(budget));
+  assert.equal(state.executions.find((item) => item.id === execution)?.settled, false);
+  vm.cancel(execution);
+  vm.release(execution);
+  vm.close();
+  vm.pump(1);
+  assert.equal(vm.stats().occupiedBytes, 0n);
+});
+
+test("fused updates charge every logical step before committing", async () => {
+  const image = JSON.parse(new TextDecoder().decode(runtimeVector("arithmetic").bytes));
+  const artifact = Object.values(image.packages)[0].artifact;
+  const integer = { kind: 3, primitive: 3, named: { module_path: "", decl_id: "" } };
+  artifact.constants = [
+    { id: "one", type: integer, value: 1 },
+    { id: "end", type: integer, value: 3 },
+  ];
+  const fn = artifact.functions.find((candidate) => candidate.id === "fn.Main");
+  fn.locals = [{ id: "counter", type: integer }];
+  fn.code = {
+    instructions: [
+      [14, 0, 0, 1],
+      [73 | (3 << 16), 0, 1, 2],
+      [17 | (3 << 16), 0, 2, 1],
+    ],
+    blocks: [
+      { first: 0, count: 1, fallthrough: 1, cost: 2 },
+      { first: 1, count: 1, fallthrough: 0xffff_ffff, cost: 1 },
+    ],
+    descriptors: {
+      label: [{ label: "loop" }],
+      updatecomparebranch: [
+        { update: "+", comparison: "<", type: integer, label: "loop", when: true },
+      ],
+      return: [{ result_count: 1 }],
+    },
+    operands: [
+      {},
+      {
+        inputs: [
+          [2, 0],
+          [1, 0],
+          [1, 1],
+        ],
+      },
+      { inputs: [[2, 0]] },
+    ],
+  };
+
+  const vm = await VirtualMachine.create(sealImage(image), {});
+  initializeVM(vm, "fused update accounting");
+  const execution = vm.start("default", []);
+  const before = vm.stats().steps;
+  for (let step = 1; step <= 7; step++) {
+    const state = vm.pump(1);
+    assert.equal(vm.stats().steps - before, BigInt(step));
+    assert.equal(state.executions.find((candidate) => candidate.id === execution)?.settled, false);
+  }
+  const settled = vm.pump(1);
+  assert.equal(vm.stats().steps - before, 7n);
+  assert.equal(settled.executions.find((candidate) => candidate.id === execution)?.settled, true);
+  assert.equal(vm.result(execution).roots[0].data.Integer, 3n);
+  vm.release(execution);
+  vm.close();
+  vm.pump(1);
+  assert.equal(vm.stats().occupiedBytes, 0n);
+
+  const limited = await VirtualMachine.create(sealImage(image), { limits: { maxSteps: 1 } });
+  initializeVM(limited, "fused update limit");
+  assert.throws(() => executeVM(limited, limited.start("default", [])), { code: "step_limit" });
+  assert.equal(limited.stats().steps, 1n);
+  limited.close();
+  limited.pump(1);
 });
 
 test("execution image decoder enforces the current object schema", async () => {
@@ -101,14 +198,57 @@ test("typed min/max validates direction, arity and homogeneous ordered operands"
   }
 });
 
+test("program loading rejects statically invalid scalar operators", async () => {
+  const image = JSON.parse(new TextDecoder().decode(runtimeVector("arithmetic").bytes));
+  const artifact = Object.values(image.packages)[0].artifact;
+  const fn = artifact.functions.find((item) => item.id === "fn.Main");
+  const bool = { kind: 3, primitive: 1, named: { module_path: "", decl_id: "" } };
+  fn.signature = { results: [bool] };
+  fn.locals = [
+    { id: "local.left", type: bool },
+    { id: "local.right", type: bool },
+  ];
+  fn.code = {
+    instructions: [
+      [4, 0, 0],
+      [4, 0, 1],
+      [7, 0, 2],
+      [17, 0, 3],
+    ],
+    descriptors: {
+      type: [{ type: bool }],
+      operator: [{ operator: "+" }],
+      return: [{ result_count: 1 }],
+    },
+    operands: [
+      { outputs: [0x80000000] },
+      { outputs: [0x80000001] },
+      {
+        inputs: [
+          [2, 0],
+          [2, 1],
+        ],
+        outputs: [0x80000000],
+      },
+      { inputs: [[2, 0]] },
+    ],
+  };
+  await assert.rejects(
+    VirtualMachine.create(sealImage(image), {}),
+    /operand types do not support operator/,
+  );
+});
+
 test("label instructions retain their zero-operand contract after preparation", async () => {
   const image = JSON.parse(new TextDecoder().decode(runtimeVector("arithmetic").bytes));
   const artifact = Object.values(image.packages)[0].artifact;
   const functionWithLabel = artifact.functions.find((fn) =>
-    fn.code?.instructions?.some(([opcode]) => opcode === 14),
+    fn.code?.instructions?.some((instruction) => opcodeOf(instruction) === 14),
   );
   assert.ok(functionWithLabel);
-  const instruction = functionWithLabel.code.instructions.find(([opcode]) => opcode === 14);
+  const instruction = functionWithLabel.code.instructions.find(
+    (candidate) => opcodeOf(candidate) === 14,
+  );
   assert.ok(instruction);
   instruction[2] = functionWithLabel.code.operands.length;
   functionWithLabel.code.operands.push({ inputs: [[0, 0]] });
@@ -137,7 +277,9 @@ test("fused index and length opcodes keep their operand contracts", async () => 
   const indexImage = JSON.parse(new TextDecoder().decode(runtimeVector("index_convert").bytes));
   const indexArtifact = Object.values(indexImage.packages)[0].artifact;
   const indexFunction = indexArtifact.functions.find((fn) => fn.id === "fn.Main");
-  const indexInstruction = indexFunction.code.instructions.find(([opcode]) => opcode === 70);
+  const indexInstruction = indexFunction.code.instructions.find(
+    (instruction) => opcodeOf(instruction) === 70,
+  );
   assert.ok(indexInstruction);
   const indexType = indexFunction.code.descriptors.type[indexInstruction[1]];
   indexType.type = {
@@ -155,7 +297,9 @@ test("fused index and length opcodes keep their operand contracts", async () => 
   );
   const lengthArtifact = Object.values(lengthImage.packages)[0].artifact;
   const lengthFunction = lengthArtifact.functions.find((fn) => fn.id === "fn.Main");
-  const lengthInstruction = lengthFunction.code.instructions.find(([opcode]) => opcode === 71);
+  const lengthInstruction = lengthFunction.code.instructions.find(
+    (instruction) => opcodeOf(instruction) === 71,
+  );
   assert.ok(lengthInstruction);
   const lengthOperands = lengthFunction.code.operands[lengthInstruction[2]];
   lengthOperands.inputs[0] = [1, 4];
@@ -223,7 +367,7 @@ test("map iteration publishes direct key/value locals with an ordinary ok slot",
   const image = JSON.parse(new TextDecoder().decode(vector.bytes));
   const artifact = Object.values(image.packages)[0].artifact;
   const main = artifact.functions.find((candidate) => candidate.id === "fn.Main");
-  const next = main.code.instructions.find(([opcode]) => opcode === 44);
+  const next = main.code.instructions.find((instruction) => opcodeOf(instruction) === 44);
   assert.ok(next, "map_iter_next instruction");
   const operands = main.code.operands[next[2]];
   assert.equal(operands.outputs.length, 3);
@@ -289,17 +433,17 @@ test("reused local storage clears a slice before len observes it", async () => {
 });
 
 test("direct outputs require private locals while ordinary declarations can be rebound", async () => {
-  for (const [name, functionID, localID, opcode] of [
-    ["direct_call_results", "fn.deferred", "local.value", 22],
-    ["direct_call_results", "fn.deferred", "local.result", 22],
-    ["slot_locals", "fn.pointers", "local.x", 7],
+  for (const [name, optimization, functionID, localID, opcode] of [
+    ["direct_call_results", 0, "fn.deferred", "local.value", 22],
+    ["direct_call_results", 0, "fn.deferred", "local.result", 22],
+    ["slot_locals", 2, "fn.pointers", "local.x", 7],
   ]) {
-    const image = JSON.parse(new TextDecoder().decode(runtimeVector(name).bytes));
+    const image = JSON.parse(new TextDecoder().decode(runtimeVector(name, optimization).bytes));
     const artifact = Object.values(image.packages)[0].artifact;
     const fn = artifact.functions.find((candidate) => candidate.id === functionID);
     const local = fn.locals.findIndex((candidate) => candidate.id === localID);
     assert.ok(local >= 0);
-    const producer = fn.code.instructions.find(([candidate]) => candidate === opcode);
+    const producer = fn.code.instructions.find((instruction) => opcodeOf(instruction) === opcode);
     assert.ok(producer, `${name}: scalar producer`);
     fn.code.operands[producer[2]].outputs = [0x80000000 + local];
     await assert.rejects(
@@ -310,7 +454,7 @@ test("direct outputs require private locals while ordinary declarations can be r
   }
 
   const inputImage = JSON.parse(
-    new TextDecoder().decode(runtimeVector("direct_call_results").bytes),
+    new TextDecoder().decode(runtimeVector("direct_call_results", 0).bytes),
   );
   const inputArtifact = Object.values(inputImage.packages)[0].artifact;
   const inputFunction = inputArtifact.functions.find((candidate) => candidate.id === "fn.deferred");
@@ -334,46 +478,43 @@ test("direct outputs require private locals while ordinary declarations can be r
   vm.close();
 });
 
-test("direct call results preserve ordinary and revision-local dispatch across a patch", async () => {
-  for (const revisionLocal of [false, true]) {
-    const image = JSON.parse(new TextDecoder().decode(runtimeVector("direct_call_results").bytes));
-    const artifact = Object.values(image.packages)[0].artifact;
-    const add = artifact.functions.find((fn) => fn.id === "fn.add");
-    add.revision_local = revisionLocal;
-    const original = sealImage(image);
-    const binary = add.code.instructions.find(([opcode]) => opcode === 7);
-    const constant = add.code.operands[binary[2]].inputs.find(([kind]) => kind === 1)[1];
-    artifact.constants[constant].value += 10;
-    const replacement = sealImage(image);
+test("direct calls in a running call tree use its captured revision", async () => {
+  const vector = runtimeVector("direct_call_results", 0);
+  const image = JSON.parse(new TextDecoder().decode(vector.bytes));
+  const artifact = Object.values(image.packages)[0].artifact;
+  const add = artifact.functions.find((fn) => fn.id === "fn.add");
+  const original = sealImage(image);
+  const binary = add.code.instructions.find((instruction) => opcodeOf(instruction) === 7);
+  const constant = add.code.operands[binary[2]].inputs.find(([kind]) => kind === 1)[1];
+  artifact.constants[constant].value += 10;
+  const replacement = sealImage(image);
 
-    const probe = await VirtualMachine.create(replacement, {});
-    initializeVM(probe, "direct call replacement");
-    const expected = executeVM(probe, probe.start("default", [])).roots[0].data.Integer;
-    probe.close();
+  const probe = await VirtualMachine.create(replacement, {});
+  initializeVM(probe, "direct call replacement");
+  const expected = executeVM(probe, probe.start("default", [])).roots[0].data.Integer;
+  probe.close();
 
-    const vm = await VirtualMachine.create(original, {});
-    initializeVM(vm, "direct call original");
-    const execution = vm.start("default", []);
-    let waiting;
-    for (let count = 0; count < 100 && !waiting; count++) {
-      vm.pump(1);
-      waiting = [...vm.tasks.values()].some((task) => {
-        const frame = task.frames.at(-1);
-        return (
-          frame?.fn.id === "fn.normal" && frame.fn.instructions[frame.pc]?.name === "call_direct"
-        );
-      });
-    }
-    assert.ok(waiting, "pause the old caller before its direct local result call");
-    await vm.patch(replacement);
-    assert.equal(
-      executeVM(vm, execution).roots[0].data.Integer,
-      expected - (revisionLocal ? 10n : 0n),
-      `revision_local=${revisionLocal}`,
-    );
-    vm.release(execution);
-    vm.close();
+  const vm = await VirtualMachine.create(original, {});
+  initializeVM(vm, "direct call original");
+  const execution = vm.start("default", []);
+  let waiting;
+  for (let count = 0; count < 100 && !waiting; count++) {
+    vm.pump(1);
+    waiting = [...vm.tasks.values()].some((task) => {
+      const frame = task.frames.at(-1);
+      return (
+        frame?.fn.id === "fn.normal" && frame.fn.instructions[frame.pc]?.name === "call_direct"
+      );
+    });
   }
+  assert.ok(waiting, "pause the old caller before its direct local result call");
+  await vm.patch(replacement);
+  assert.equal(executeVM(vm, execution).roots[0].data.Integer, BigInt(vector.result_integer));
+  const next = vm.start("default", []);
+  assert.equal(executeVM(vm, next).roots[0].data.Integer, expected);
+  vm.release(execution);
+  vm.release(next);
+  vm.close();
 });
 
 test("hot patch keeps active frames on their revision and routes new calls to the new revision", async () => {
@@ -406,15 +547,15 @@ test("hot patch keeps active frames on their revision and routes new calls to th
   vm.release(oldExecution);
   vm.release(newExecution);
 
-  const rejected = JSON.parse(new TextDecoder().decode(replacementBytes));
-  const rejectedArtifact = Object.values(rejected.packages)[0].artifact;
-  rejectedArtifact.globals ??= [];
-  rejectedArtifact.globals.push({
+  const extended = JSON.parse(new TextDecoder().decode(replacementBytes));
+  const extendedArtifact = Object.values(extended.packages)[0].artifact;
+  extendedArtifact.globals ??= [];
+  extendedArtifact.globals.push({
     id: "global.breaking",
     type: { kind: 3, primitive: 3 },
   });
-  await assert.rejects(vm.patch(sealImage(rejected)), { code: "global_shape_changed" });
-  assert.equal(vm.stats().generation, 2n);
+  await vm.patch(sealImage(extended));
+  assert.equal(vm.stats().generation, 3n);
   vm.close();
 });
 
@@ -432,7 +573,7 @@ test("profile counts avoid clock reads unless timing is explicitly enabled", asy
     const countedStats = counted.stats();
     assert.equal(
       Object.values(countedStats.profile?.opcodes ?? {}).reduce((sum, count) => sum + count, 0n),
-      countedStats.steps,
+      countedStats.profile?.dispatches,
       "opcode profiling must count every dispatched instruction exactly once",
     );
     assert.equal(
@@ -441,7 +582,7 @@ test("profile counts avoid clock reads unless timing is explicitly enabled", asy
         0n,
       ),
       countedStats.steps,
-      "function profiling must count every dispatched instruction exactly once",
+      "function profiling must preserve total logical fuel",
     );
     assert.ok(
       Object.values(countedStats.profile?.functions ?? {}).every(({ nanos }) => nanos === 0n),
@@ -557,10 +698,10 @@ test("debugger maps stripped label locations back to wire PCs", async () => {
   const modulePath = Object.keys(image.packages)[0];
   const artifact = image.packages[modulePath].artifact;
   const fn = artifact.functions.find((candidate) =>
-    candidate.code?.instructions?.some(([opcode]) => opcode === 14),
+    candidate.code?.instructions?.some((instruction) => opcodeOf(instruction) === 14),
   );
   assert.ok(fn);
-  const labelPC = fn.code.instructions.findIndex(([opcode]) => opcode === 14);
+  const labelPC = fn.code.instructions.findIndex((instruction) => opcodeOf(instruction) === 14);
   assert.ok(labelPC >= 0);
   const line = 73;
   const symbols = {

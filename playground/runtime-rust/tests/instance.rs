@@ -15,7 +15,9 @@ fn entry_admission_counts_background_tasks_after_root_completion() {
     let callable = json!({"kind":10,"node":"action"});
     let channel = json!({"kind":9,"node":"channel"});
     let mut worker = Vec::new();
-    for _ in 0..64 {
+    // Keep the worker private for one complete scheduling quantum. The parent
+    // then completes before the worker reaches its second spawn.
+    for _ in 0..256 {
         worker.push(("zero", json!({"type":boolean}), json!({"outputs":[0]})));
         worker.push(("pop", json!({}), json!({"inputs":[[0,0]],"release":[0]})));
     }
@@ -38,8 +40,8 @@ fn entry_admission_counts_background_tasks_after_root_completion() {
         ),
         ("pop", json!({}), json!({"inputs":[[0,3]],"release":[3]})),
     ]);
-    let worker = support::slot_code(json!([boolean, callable, channel, integer]), &worker);
-    let main = support::slot_code(
+    let worker = support::micro_code(json!([boolean, callable, channel, integer]), &worker);
+    let main = support::micro_code(
         json!([callable]),
         &[
             (
@@ -55,7 +57,7 @@ fn entry_admission_counts_background_tasks_after_root_completion() {
             ("return", json!({"result_count":0}), json!({})),
         ],
     );
-    let child = support::slot_code(
+    let child = support::micro_code(
         json!([channel, integer]),
         &[
             ("zero", json!({"type":channel}), json!({"outputs":[0]})),
@@ -105,7 +107,7 @@ fn entry_admission_counts_background_tasks_after_root_completion() {
 #[test]
 fn backing_capacity_overflow_returns_a_resource_error() {
     for primitive in [3, 9] {
-        let code = support::slot_code(
+        let code = support::micro_code(
             json!([{"kind":3,"primitive":3},{"kind":5,"node":"slice"}]),
             &[
                 (
@@ -147,7 +149,7 @@ fn backing_capacity_overflow_returns_a_resource_error() {
 #[test]
 fn concatenation_and_snapshot_use_their_own_storage_budgets() {
     let string = json!({"kind":3,"primitive":2});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([string, string, string]),
         &[
             ("const", json!({"constant":"left"}), json!({"outputs":[0]})),
@@ -196,7 +198,7 @@ fn concatenation_and_snapshot_use_their_own_storage_budgets() {
 #[test]
 fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
     let integer = json!({"kind":3,"primitive":3});
-    let main = support::slot_code(
+    let main = support::micro_code(
         json!([{"kind":10,"node":"action"},integer]),
         &[
             (
@@ -221,14 +223,14 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
             ),
         ],
     );
-    let worker = support::slot_code(
+    let worker = support::micro_code(
         json!([]),
         &[
             ("label", json!({"label":"loop"}), json!({})),
             ("jump", json!({"label":"loop"}), json!({})),
         ],
     );
-    let quick = support::slot_code(
+    let quick = support::micro_code(
         json!([integer]),
         &[
             (
@@ -279,7 +281,7 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
     let mut instance = Instance::new(
         program,
         ExecutionLimits {
-            max_steps: 100,
+            max_steps: 548,
             max_guest_bytes: 1024,
             ..ExecutionLimits::default()
         },
@@ -287,7 +289,7 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
     .unwrap();
     for entry in ["default", "quick"] {
         instance.start(entry, &[]).unwrap();
-        assert_eq!(instance.poll_steps(100).unwrap(), PollStatus::Ready);
+        assert_eq!(instance.poll_steps(548).unwrap(), PollStatus::Ready);
         assert_eq!(
             instance.snapshot_results(Default::default()).unwrap().roots[0]
                 .integer()
@@ -320,11 +322,11 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
         assert!(after.total_allocated_bytes >= before.total_allocated_bytes);
         assert!(after.peak_bytes <= 1024);
     }
-    // The child owns a full quantum, independent of the parent's two spawn
-    // instructions. Main executes four instructions and quick executes two.
-    assert_eq!(instance.steps(), 64 + 4 + 2);
+    // The child owns a full 512-step quantum, independent of the parent's two
+    // spawn instructions. Main executes four instructions and quick two.
+    assert_eq!(instance.steps(), 512 + 4 + 2);
     assert_eq!(instance.poll_background(100).unwrap(), PollStatus::Ready);
-    assert_eq!(instance.steps(), 102);
+    assert_eq!(instance.steps(), 550);
     assert_eq!(
         instance.heap_stats().live_bytes,
         mini_go::contract_generated::STORAGE_RECORD_HEADER
@@ -344,7 +346,7 @@ fn surviving_tasks_keep_their_scope_budget_across_new_invocations() {
 fn named_string_conversion_preserves_binary_bytes_and_detached_results() {
     let named = json!({"kind":4,"named":{"module_path":"test","decl_id":"Tag"}});
     let string = json!({"kind":3,"primitive":2});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([named, string, string, string]),
         &[
             ("load_local", json!({"local":"tag"}), json!({"outputs":[0]})),
@@ -417,7 +419,7 @@ fn invalid_binary_entry_reclaims_its_argument_and_closed_start_allocates_nothing
 
 #[test]
 fn root_task_and_frame_admission_is_atomic() {
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([]),
         &[("return", json!({"result_count": 0}), json!({}))],
     );
@@ -451,7 +453,7 @@ fn root_task_and_frame_admission_is_atomic() {
 
 #[test]
 fn nested_array_layout_fails_within_budget_before_materialization() {
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([{"kind":6,"node":"outer"}]),
         &[
             (
@@ -489,7 +491,7 @@ fn nested_array_layout_fails_within_budget_before_materialization() {
 
 #[test]
 fn unused_array_slots_do_not_materialize_their_layout() {
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([{"kind":3,"primitive":3}]),
         &[
             (
@@ -533,7 +535,7 @@ fn unused_array_slots_do_not_materialize_their_layout() {
 
 #[test]
 fn unrecovered_guest_panic_faults_the_instance_and_releases_frames() {
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([{"kind":3,"primitive":2}]),
         &[
             (

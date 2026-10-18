@@ -14,7 +14,7 @@ func TestConcurrentConstantLoadsSharePublishedBacking(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID: "fn.metadata", Signature: testSignature("function()"),
 		Locals: []ir.Local{{ID: "value", Type: testType("struct{Items:Slice<Uint8>}")}},
-		Code:   testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
+		Code:   testMicroCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	machine, err := loadTestEngine(artifact)
 	if err != nil {

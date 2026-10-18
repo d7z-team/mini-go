@@ -249,58 +249,7 @@ export interface StorageLocation {
   readonly handle: GuestHandle;
   readonly offset: number;
   readonly type: RuntimeType;
-}
-
-/** Locate a prepared child layout by its numeric payload offset.  This keeps
- * pointer descriptors numeric; decoding an address never has to reconstruct a
- * language-level field/index path first. */
-export function layoutAtStorageOffset(
-  layout: StorageLayout,
-  rootType: RuntimeType,
-  targetType: RuntimeType,
-  offset: number,
-): StorageLayout | undefined {
-  if (offset < 0 || offset > layout.size) return undefined;
-  const targetLayout = prepareStorageLayout(targetType);
-  if (
-    offset === 0 &&
-    (rootType.registry.identical(rootType, targetType) || sameStorageShape(layout, targetLayout))
-  )
-    return layout;
-  for (const field of layout.fields) {
-    if (
-      offset < field.offset ||
-      offset > field.offset + field.layout.size ||
-      (offset === field.offset + field.layout.size && field.layout.size !== 0)
-    )
-      continue;
-    if (
-      offset === field.offset &&
-      (field.type.registry.identical(field.type, targetType) ||
-        sameStorageShape(field.layout, targetLayout))
-    )
-      return field.layout;
-    const nested = layoutAtStorageOffset(
-      field.layout,
-      field.type,
-      targetType,
-      offset - field.offset,
-    );
-    if (nested) return nested;
-  }
-  if (layout.element && layout.elementType && layout.length !== undefined) {
-    const index = layout.element.size === 0 ? 0 : Math.floor(offset / layout.element.size);
-    if (index >= 0 && index < layout.length) {
-      const nested = layoutAtStorageOffset(
-        layout.element,
-        layout.elementType,
-        targetType,
-        offset - index * layout.element.size,
-      );
-      if (nested) return nested;
-    }
-  }
-  return undefined;
+  readonly layout?: StorageLayout;
 }
 
 export function remapStorageLayout(
@@ -419,7 +368,7 @@ export function resolveStorageLocation(
       continue;
     }
   }
-  return current;
+  return { ...current, layout: currentLayout };
 }
 
 /** Reconstruct a language address path for a decoded physical location. */
@@ -591,7 +540,19 @@ function fieldsOf(type: RuntimeType, node: TypeNode | undefined): readonly Runti
 }
 
 /** Build one stable physical layout. Recursive reference types stop at a descriptor. */
+const preparedStorageLayouts = new WeakMap<RuntimeType, StorageLayout>();
+
 export function prepareStorageLayout(type: RuntimeType, active = new Set<string>()): StorageLayout {
+  if (active.size === 0) {
+    const cached = preparedStorageLayouts.get(type);
+    if (cached) return cached;
+  }
+  const layout = buildStorageLayout(type, active);
+  if (active.size === 0) preparedStorageLayouts.set(type, layout);
+  return layout;
+}
+
+function buildStorageLayout(type: RuntimeType, active: Set<string>): StorageLayout {
   const underlying = type.registry.underlying(type);
   const node = underlying.registry.node(underlying);
   const kind = underlying.dynamic?.kind ?? node?.kind ?? underlying.ref.kind;
@@ -713,10 +674,11 @@ function aggregateLayout(
     throw new Error("storage array size overflow");
   const references: number[] = [];
   const dynamics: number[] = [];
-  for (let index = 0; index < length; index++) {
-    for (const offset of element.references) references.push(index * element.size + offset);
-    for (const offset of element.dynamics) dynamics.push(index * element.size + offset);
-  }
+  if (element.references.length || element.dynamics.length)
+    for (let index = 0; index < length; index++) {
+      for (const offset of element.references) references.push(index * element.size + offset);
+      for (const offset of element.dynamics) dynamics.push(index * element.size + offset);
+    }
   return {
     kind,
     size,
@@ -1100,12 +1062,18 @@ export function decodeStorage(
           true,
         ),
         type: targetType,
+        layout: prepareStorageLayout(targetType),
       }),
     };
   }
   if (kind === Kind.Slice) {
     const view = new DataView(source.buffer, source.byteOffset, source.byteLength);
     if (!liveReference || !context.decodeAddress) return nilValue(type);
+    const start = view.getUint32(offset + 12, true);
+    const length = view.getUint32(offset + 16, true);
+    const capacity = view.getUint32(offset + 20, true);
+    const element = type.registry.element(type);
+    if (!element) throw new Error("slice storage has no element type");
     return {
       type,
       kind: "slice",
@@ -1117,10 +1085,11 @@ export function decodeStorage(
           // index is carried by start/length below and must not be encoded as
           // an address path, or every access would apply the index twice.
           type,
+          layout: prepareArrayStorageLayout(element, start + capacity),
         }),
-        start: view.getUint32(offset + 12, true),
-        length: view.getUint32(offset + 16, true),
-        capacity: view.getUint32(offset + 20, true),
+        start,
+        length,
+        capacity,
       },
     };
   }

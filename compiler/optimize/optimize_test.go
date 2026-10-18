@@ -80,12 +80,12 @@ func TestConstantBranchRespectsNegatedPolarity(t *testing.T) {
 	}
 }
 
-func TestApplyMarksOnlyLogicalDirectTailCalls(t *testing.T) {
+func TestApplyMarksDirectTailCalls(t *testing.T) {
 	signature := types.FunctionSignature{Results: []types.TypeRef{types.Builtin(types.PrimitiveInt)}}
 	program := hir.Program{Functions: []hir.Function{
 		{ID: "fn.target", Signature: signature, Body: []hir.Statement{{Kind: hir.StmtReturn}}},
 		{ID: "fn.wrapper", Signature: signature, Body: []hir.Statement{{Kind: hir.StmtReturn, Results: []hir.Expression{{Kind: hir.ExprCallDirect, Function: "fn.target", ResultCount: 1}}}}},
-		{ID: "fn.literal", RevisionLocal: true, Signature: signature, Body: []hir.Statement{{Kind: hir.StmtReturn}}},
+		{ID: "fn.literal", Signature: signature, Body: []hir.Statement{{Kind: hir.StmtReturn}}},
 		{ID: "fn.closure_wrapper", Signature: signature, Body: []hir.Statement{{Kind: hir.StmtReturn, Results: []hir.Expression{{Kind: hir.ExprCallDirect, Function: "fn.literal", ResultCount: 1}}}}},
 	}}
 	optimized, err := Apply(program, LevelDefault)
@@ -95,8 +95,8 @@ func TestApplyMarksOnlyLogicalDirectTailCalls(t *testing.T) {
 	if got := optimized.Functions[1].Body[0].Kind; got != hir.StmtTailCallDirect {
 		t.Fatalf("logical wrapper statement = %s", got)
 	}
-	if got := optimized.Functions[3].Body[0].Kind; got != hir.StmtReturn {
-		t.Fatalf("revision-local wrapper statement = %s", got)
+	if got := optimized.Functions[3].Body[0].Kind; got != hir.StmtTailCallDirect {
+		t.Fatalf("closure wrapper statement = %s", got)
 	}
 }
 

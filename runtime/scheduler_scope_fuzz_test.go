@@ -71,7 +71,7 @@ func FuzzExecutionPollStepsAndPatch(f *testing.F) {
 			operations = operations[:64]
 		}
 		artifact := ir.NewArtifact("scheduler/fuzz-poll", "main")
-		code := testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+		code := testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 		insertTestDelay(code, 0, 16)
 		artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Code: code}}
 		programs := []*Program{patchTestProgram(t, artifact, "fuzz-a"), patchTestProgram(t, artifact, "fuzz-b")}

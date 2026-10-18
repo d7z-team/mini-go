@@ -3947,7 +3947,7 @@ mod pool_tests {
                 .position(|entry| entry["op"] == name)
                 .unwrap()
                 + 1;
-            json!([opcode, descriptor, operands])
+            json!([opcode, descriptor, operands, 1])
         };
         for (count, suspended) in [(1, false), (2, false), (16, false), (1, true), (2, true)] {
             let program = test_helpers::program_with_artifact(|artifact| {
@@ -4046,14 +4046,14 @@ mod pool_tests {
             artifact["functions"] = json!([
                 {"id":"fn.Main", "signature":{"params":[{"type":string.clone()}],"results":[string.clone()]},
                  "locals":[{"id":"argument","type":string.clone()}],
-                 "code":test_helpers::slot_code(json!([string.clone(),string.clone()]), &[
+                 "code":test_helpers::micro_code(json!([string.clone(),string.clone()]), &[
                     ("zero",json!({"type":string.clone()}),json!({"outputs":[0]})),
                     ("call_direct",json!({"function":"callee","arg_count":1,"result_count":1}),json!({"inputs":[[2,0]],"outputs":[1]})),
                     ("return",json!({"result_count":1}),json!({"inputs":[[0,1]]}))
                  ])},
                 {"id":"callee", "signature":{"params":[{"type":string.clone()}],"results":[string.clone()]},
                  "locals":[{"id":"argument","type":string.clone()}],
-                 "code":test_helpers::slot_code(json!([string.clone()]), &[
+                 "code":test_helpers::micro_code(json!([string.clone()]), &[
                     ("zero",json!({"type":string.clone()}),json!({"outputs":[0]})),
                     ("return",json!({"result_count":1}),json!({"inputs":[[2,0]]}))
                  ])}
@@ -4092,7 +4092,7 @@ mod pool_tests {
                         {"id":"first","type":string.clone()},
                         {"id":"second","type":string.clone()}
                     ],
-                    "code":test_helpers::slot_code(
+                    "code":test_helpers::micro_code(
                         json!([
                             string.clone(), string.clone(), string.clone(), string.clone()
                         ]),
@@ -4120,7 +4120,7 @@ mod pool_tests {
                         {"id":"first","type":string.clone()},
                         {"id":"second","type":string.clone()}
                     ],
-                    "code":test_helpers::slot_code(
+                    "code":test_helpers::micro_code(
                         json!([string.clone(), string.clone()]),
                         &[
                             (
@@ -4177,7 +4177,7 @@ mod pool_tests {
                     {
                         "id":"fn.Main",
                         "signature":{"results":[string.clone(),wide.clone()]},
-                        "code":test_helpers::slot_code(
+                        "code":test_helpers::micro_code(
                             json!([string.clone(),wide.clone(),integer.clone()]),
                             &[
                                 (
@@ -4201,7 +4201,7 @@ mod pool_tests {
                     {
                         "id":"callee",
                         "signature":{"results":[string.clone(),wide.clone()]},
-                        "code":test_helpers::slot_code(
+                        "code":test_helpers::micro_code(
                             json!([string.clone(),wide.clone()]),
                             &[
                                 ("const",json!({"constant":"child"}),json!({"outputs":[0]})),
@@ -4296,7 +4296,7 @@ mod pool_tests {
         let string = json!({"kind": wire::Primitive, "primitive": wire::PrimitiveString});
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = json!([
-                {"id":"fn.Main","code": test_helpers::slot_code(
+                {"id":"fn.Main","code": test_helpers::micro_code(
                     json!([string.clone()]),
                     &[
                         ("zero", json!({"type": string.clone()}), json!({"outputs":[0]})),
@@ -4445,7 +4445,7 @@ mod pool_tests {
                     "id": "fn.Main",
                     "signature": {"results": if escaped { vec![pointer.clone()] } else { vec![] }},
                     "locals": [{"id": "text", "type": string}],
-                    "code": test_helpers::slot_code(json!([pointer]), &[
+                    "code": test_helpers::micro_code(json!([pointer]), &[
                         ("address_of", json!({"kind": "local", "local": "text"}), json!({"outputs": [0]})),
                         ("return", json!({"result_count": usize::from(escaped)}), if escaped { json!({"inputs": [[0, 0]], "release": [0]}) } else { json!({"release": [0]}) }),
                     ])

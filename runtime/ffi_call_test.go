@@ -365,7 +365,7 @@ func TestStartFFICallRejectsOversizedRequest(t *testing.T) {
 }
 
 func TestBackgroundFFICallOutlivesInvocationAndReleasesWithScope(t *testing.T) {
-	artifact := lifecycleArtifact(testSlotCode([]string{"String", "Slice<Uint8>", "Slice<Uint8>", "String", "Int", "Int", "Bool"}, []ir.Instruction{
+	artifact := lifecycleArtifact(testMicroCode([]string{"String", "Slice<Uint8>", "Slice<Uint8>", "String", "Int", "Int", "Bool"}, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.route"}},
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.payload"}},
 		{Op: ir.OpCallFFI, Payload: ir.CallFFIPayload{ArgCount: 2, ResultCount: 3}},

@@ -8,7 +8,7 @@ use mini_go::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use support::slot_code;
+use support::micro_code;
 
 #[test]
 fn mutex_zero_state_try_lock_and_reuse() {
@@ -22,7 +22,7 @@ fn mutex_zero_state_try_lock_and_reuse() {
             {"id":"pointer","kind":8,"elem":{"kind":9,"node":"state"}}]},
         "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":1},{"kind":3,"primitive":1}]},
             "locals":[{"id":"state","type":{"kind":9,"node":"state"}}],
-            "code":slot_code(json!([{"kind":8,"node":"pointer"},{"kind":3,"primitive":1},{"kind":3,"primitive":1}]), &[
+            "code":micro_code(json!([{"kind":8,"node":"pointer"},{"kind":3,"primitive":1},{"kind":3,"primitive":1}]), &[
                 address.clone(),("call_intrinsic",json!({"id":"sync.mutex_try_lock","arg_count":1,"result_count":1}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
                 address.clone(),("call_intrinsic",json!({"id":"sync.mutex_try_lock","arg_count":1,"result_count":1}),json!({"inputs":[[0,0]],"outputs":[2],"release":[0]})),
                 address.clone(),("call_intrinsic",json!({"id":"sync.mutex_unlock","arg_count":1}),json!({"inputs":[[0,0]],"release":[0]})),

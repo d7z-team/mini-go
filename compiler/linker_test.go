@@ -15,13 +15,13 @@ func TestPrepareRetainsEntryInitAndCallClosure(t *testing.T) {
 	artifact := ir.NewArtifact("example/main", "main")
 	artifact.TypeTable = *types.NewTable()
 	artifact.Functions = []ir.Function{
-		{ID: "fn.init", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
+		{ID: "fn.init", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
 		{ID: "fn.main", Code: linkerTestCode(nil, []ir.Instruction{
 			{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.used"}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
-		}, []ir.SlotOperands{{}, {}})},
-		{ID: "fn.used", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
-		{ID: "fn.unused", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
+		}, []ir.RegisterFlow{{}, {}})},
+		{ID: "fn.used", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
+		{ID: "fn.unused", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
 	}
 	unreachable := ir.NewArtifact("example/unreachable", "unreachable")
 	unreachable.TypeTable = *types.NewTable()
@@ -57,8 +57,8 @@ func TestReachabilityRejectsMissingInstructionDescriptor(t *testing.T) {
 	artifact := ir.NewArtifact("example/main", "main")
 	artifact.TypeTable = *types.NewTable()
 	artifact.Functions = []ir.Function{
-		{ID: "fn.main", Code: &ir.SlotCode{Instructions: []ir.SlotInstruction{{Op: ir.OpCallDirect}}, Descriptors: ir.DescriptorTables{Local: []ir.LocalPayload{{Local: "fn.used"}}}, Operands: []ir.SlotOperands{{}}}},
-		{Code: &ir.SlotCode{}, ID: "fn.used"},
+		{ID: "fn.main", Code: &ir.MicroCode{Instructions: []ir.MicroInstruction{{Op: ir.OpCallDirect}}, Descriptors: ir.DescriptorTables{Local: []ir.LocalPayload{{Local: "fn.used"}}}, Operands: []ir.RegisterFlow{{}}}},
+		{Code: &ir.MicroCode{}, ID: "fn.used"},
 	}
 	_, err := retainReachableCode(context.Background(),
 		map[string]ir.Artifact{"example/main": artifact},
@@ -76,13 +76,13 @@ func TestLinkRejectsMissingDependencyMembersBeforePruning(t *testing.T) {
 			root := ir.NewArtifact("example/main", "main")
 			root.Requirements = []ir.Requirement{{Kind: ir.RequirementSource, ModulePath: "example/lib"}}
 			instructions := []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}
-			operands := []ir.SlotOperands{{}}
+			operands := []ir.RegisterFlow{{}}
 			var slotTypes []types.TypeRef
 			switch kind {
 			case "requirement":
 				root.Requirements[0].Exports = []string{"Missing"}
 			case "call":
-				operands = append(operands, ir.SlotOperands{})
+				operands = append(operands, ir.RegisterFlow{})
 				instructions = append([]ir.Instruction{{Op: ir.OpCallDirect, Payload: ir.CallPayload{ModulePath: "example/lib", Function: "fn.Missing"}}}, instructions...)
 			case "closure":
 				ref := types.TypeRef{Kind: types.Function, Node: "fixture.function"}
@@ -91,7 +91,7 @@ func TestLinkRejectsMissingDependencyMembersBeforePruning(t *testing.T) {
 					t.Fatal(err)
 				}
 				slotTypes = []types.TypeRef{ref}
-				operands = []ir.SlotOperands{{Outputs: []uint32{0}}, {Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}, {}}
+				operands = []ir.RegisterFlow{{Outputs: []uint32{0}}, {Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}, {}}
 				instructions = append([]ir.Instruction{{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{ModulePath: "example/lib", Function: "fn.Missing"}}, {Op: ir.OpPop}}, instructions...)
 			case "global":
 				ref := types.TypeRef{Kind: types.Pointer, Node: "fixture.pointer"}
@@ -100,12 +100,12 @@ func TestLinkRejectsMissingDependencyMembersBeforePruning(t *testing.T) {
 					t.Fatal(err)
 				}
 				slotTypes = []types.TypeRef{ref}
-				operands = []ir.SlotOperands{{Outputs: []uint32{0}}, {Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}, {}}
+				operands = []ir.RegisterFlow{{Outputs: []uint32{0}}, {Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}}, {}}
 				root.Requirements[0].Exports = []string{"Missing"}
 				instructions = append([]ir.Instruction{{Op: ir.OpAddressOf, Payload: ir.AddressPayload{Kind: "export", ModulePath: "example/lib", Export: "Missing"}}, {Op: ir.OpPop}}, instructions...)
 			}
 			root.Functions = []ir.Function{
-				{ID: "fn.main", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
+				{ID: "fn.main", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
 				{ID: "fn.unused", Code: linkerTestCode(slotTypes, instructions, operands)},
 			}
 			artifacts := map[string]ir.Artifact{"example/main": root, "example/lib": dependency}
@@ -135,8 +135,8 @@ func TestPrepareDoesNotMutateInputArtifacts(t *testing.T) {
 		},
 	})
 	artifact.Functions = []ir.Function{
-		{ID: "fn.first", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
-		{ID: "fn.second", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
+		{ID: "fn.first", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
+		{ID: "fn.second", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
 	}
 	artifact.Exports = []ir.Export{{Name: "First", Kind: "function", ID: "fn.first"}, {Name: "Second", Kind: "function", ID: "fn.second"}}
 	artifacts := map[string]ir.Artifact{"example/main": artifact}
@@ -164,13 +164,13 @@ func TestPreparePrunesUnreachableDependencyFunctions(t *testing.T) {
 	main.Functions = []ir.Function{{ID: "fn.main", Code: linkerTestCode(nil, []ir.Instruction{
 		{Op: ir.OpCallDirect, Payload: ir.CallPayload{ModulePath: "example/lib", Function: "fn.used"}},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
-	}, []ir.SlotOperands{{}, {}})}}
+	}, []ir.RegisterFlow{{}, {}})}}
 	main.Requirements = []ir.Requirement{{Kind: "source", ModulePath: "example/lib", Exports: []string{"Unused", "Used"}}}
 	lib := ir.NewArtifact("example/lib", "lib")
 	lib.TypeTable = *types.NewTable()
 	lib.Functions = []ir.Function{
-		{ID: "fn.used", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
-		{ID: "fn.unused", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.SlotOperands{{}})},
+		{ID: "fn.used", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
+		{ID: "fn.unused", Code: linkerTestCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, []ir.RegisterFlow{{}})},
 	}
 	lib.Exports = []ir.Export{
 		{Name: "Unused", Kind: "function", ID: "fn.unused"},
@@ -245,9 +245,9 @@ func TestPrepareRetainsInterfaceMethodsForReachableImplementations(t *testing.T)
 			Payload: ir.CallInterfacePayload{
 				InterfaceType: interfaceRef, Method: "Name", ResultCount: 1,
 			},
-		}}, []ir.SlotOperands{{Inputs: []ir.Operand{{Kind: ir.OperandLocal}}, Outputs: []uint32{0}}})},
-		{Code: &ir.SlotCode{}, ID: "method.value.Name", Signature: methodSignature},
-		{Code: &ir.SlotCode{}, ID: "method.value.Unused", Signature: methodSignature},
+		}}, []ir.RegisterFlow{{Inputs: []ir.Operand{{Kind: ir.OperandLocal}}, Outputs: []uint32{0}}})},
+		{Code: &ir.MicroCode{}, ID: "method.value.Name", Signature: methodSignature},
+		{Code: &ir.MicroCode{}, ID: "method.value.Unused", Signature: methodSignature},
 	}
 	linked, err := retainReachableCode(context.Background(), map[string]ir.Artifact{"example/main": artifact}, []ir.Entry{{Name: "default", ModulePath: "example/main", FunctionID: "fn.main"}})
 	if err != nil {
@@ -272,7 +272,7 @@ func TestReachableTypeTraversalKeepsModuleOwnershipAndLateRequirements(t *testin
 	value := types.TypeRef{Kind: types.Named, Named: valueKey, Node: "named.value"}
 	a := ir.NewArtifact("example/a", "a")
 	a.TypeTable = *types.NewTable(types.TypeNode{ID: payload.Node, Kind: types.Struct})
-	a.Functions = []ir.Function{{ID: "fn.main", Locals: []ir.Local{{ID: "payload", Type: payload}}, Code: &ir.SlotCode{}}}
+	a.Functions = []ir.Function{{ID: "fn.main", Locals: []ir.Local{{ID: "payload", Type: payload}}, Code: &ir.MicroCode{}}}
 	b := ir.NewArtifact("example/b", "b")
 	b.TypeTable = *types.NewTable(
 		types.TypeNode{ID: payload.Node, Kind: types.Struct, Fields: []types.Field{{Name: "value", Type: value}}},
@@ -281,11 +281,11 @@ func TestReachableTypeTraversalKeepsModuleOwnershipAndLateRequirements(t *testin
 	)
 	b.Functions = []ir.Function{
 		{ID: "fn.main", Locals: []ir.Local{{ID: "payload", Type: payload}}, Code: linkerTestCode(nil,
-			[]ir.Instruction{{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.late"}}}, []ir.SlotOperands{{}})},
+			[]ir.Instruction{{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.late"}}}, []ir.RegisterFlow{{}})},
 		{ID: "fn.late", Locals: []ir.Local{{ID: "reader", Type: reader}}, Code: linkerTestCode([]types.TypeRef{types.Builtin(types.PrimitiveString)},
 			[]ir.Instruction{{Op: ir.OpCallInterface, Payload: ir.CallInterfacePayload{InterfaceType: reader, Method: "Name", ResultCount: 1}}},
-			[]ir.SlotOperands{{Inputs: []ir.Operand{{Kind: ir.OperandLocal}}, Outputs: []uint32{0}}})},
-		{ID: "method.value.Name", Signature: methodSignature, Code: &ir.SlotCode{}},
+			[]ir.RegisterFlow{{Inputs: []ir.Operand{{Kind: ir.OperandLocal}}, Outputs: []uint32{0}}})},
+		{ID: "method.value.Name", Signature: methodSignature, Code: &ir.MicroCode{}},
 	}
 	linked, err := retainReachableCode(context.Background(), map[string]ir.Artifact{"example/a": a, "example/b": b}, []ir.Entry{
 		{Name: "a", ModulePath: "example/a", FunctionID: "fn.main"},
@@ -310,11 +310,11 @@ func TestPrepareKeepsInterfaceDispatchWithinReachableTypes(t *testing.T) {
 	artifact := ir.NewArtifact("example/main", "main")
 	artifact.TypeTable = *table
 	artifact.Functions = []ir.Function{
-		{Code: &ir.SlotCode{}, ID: "fn.main", Locals: []ir.Local{
+		{Code: &ir.MicroCode{}, ID: "fn.main", Locals: []ir.Local{
 			{ID: "local.reader", Type: types.TypeRef{Kind: types.Named, Named: interfaceKey, Node: "named.reader"}},
 			{ID: "local.value", Type: types.TypeRef{Kind: types.Named, Named: types.TypeKey{ModulePath: "example/main", DeclID: "value"}, Node: "named.value"}},
 		}},
-		{Code: &ir.SlotCode{}, ID: "method.value.Name", Signature: methodSignature},
+		{Code: &ir.MicroCode{}, ID: "method.value.Name", Signature: methodSignature},
 	}
 	linked, err := retainReachableCode(context.Background(), map[string]ir.Artifact{"example/main": artifact}, []ir.Entry{{Name: "default", ModulePath: "example/main", FunctionID: "fn.main"}})
 	if err != nil {
@@ -349,12 +349,12 @@ func TestPrepareRetainsIntrinsicDynamicResultMethods(t *testing.T) {
 					Code: linkerTestCode([]types.TypeRef{interfaceRef, types.Builtin(types.PrimitiveString)}, []ir.Instruction{
 						{Op: ir.OpCallIntrinsic, Payload: ir.CallIntrinsicPayload{ID: intrinsic, ArgCount: 1, ResultCount: 1}},
 						{Op: ir.OpCallInterface, Payload: ir.CallInterfacePayload{InterfaceType: interfaceRef, Method: "Name", ResultCount: 1}},
-					}, []ir.SlotOperands{
+					}, []ir.RegisterFlow{
 						{Inputs: []ir.Operand{{Kind: ir.OperandLocal}}, Outputs: []uint32{0}},
 						{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Outputs: []uint32{1}, Release: []uint32{0}},
 					}),
 				},
-				{Code: &ir.SlotCode{}, ID: "method.runtimeType.Name", Signature: methodSignature},
+				{Code: &ir.MicroCode{}, ID: "method.runtimeType.Name", Signature: methodSignature},
 			}
 			linked, err := retainReachableCode(context.Background(), map[string]ir.Artifact{"reflect": artifact}, []ir.Entry{{Name: "default", ModulePath: "reflect", FunctionID: "fn.main"}})
 			if err != nil {
@@ -383,11 +383,11 @@ func TestPrepareRetainsBuiltinErrorMethodForReachableType(t *testing.T) {
 	artifact := ir.NewArtifact("example/main", "main")
 	artifact.TypeTable = *table
 	artifact.Functions = []ir.Function{
-		{Code: &ir.SlotCode{}, ID: "fn.main", Locals: []ir.Local{
+		{Code: &ir.MicroCode{}, ID: "fn.main", Locals: []ir.Local{
 			{ID: "local.error", Type: builtinError},
 			{ID: "local.failure", Type: errorRef},
 		}},
-		{Code: &ir.SlotCode{}, ID: "method.failure.Error", Signature: methodSignature},
+		{Code: &ir.MicroCode{}, ID: "method.failure.Error", Signature: methodSignature},
 	}
 	linked, err := retainReachableCode(context.Background(), map[string]ir.Artifact{"example/main": artifact}, []ir.Entry{{Name: "default", ModulePath: "example/main", FunctionID: "fn.main"}})
 	if err != nil {
@@ -405,13 +405,13 @@ func BenchmarkRetainReachableConstants(b *testing.B) {
 	artifact.TypeTable = *types.NewTable()
 	artifact.Constants = make([]ir.Constant, count)
 	instructions := make([]ir.Instruction, 0, count*2)
-	operands := make([]ir.SlotOperands, 0, count*2)
+	operands := make([]ir.RegisterFlow, 0, count*2)
 	for index := range count {
 		id := "const." + strconv.Itoa(index)
 		artifact.Constants[index] = ir.Constant{
 			ID: id, Type: types.Builtin(types.PrimitiveInt), Value: json.RawMessage(strconv.Itoa(index)),
 		}
-		operands = append(operands, ir.SlotOperands{Outputs: []uint32{0}}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}})
+		operands = append(operands, ir.RegisterFlow{Outputs: []uint32{0}}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}, Release: []uint32{0}})
 		instructions = append(instructions,
 			ir.Instruction{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: id}},
 			ir.Instruction{Op: ir.OpPop},

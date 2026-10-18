@@ -18,7 +18,7 @@ func TestVMRunsCompositeAccess(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64", "Int64", "Slice<Int64>"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Int64", "Slice<Int64>"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
@@ -61,7 +61,7 @@ func TestVMRunsCompositeMutation(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []ir.Local{{ID: "local.arr", Type: testType("Slice<Int64>")}},
-		Code: testSlotCode([]string{"Int64", "Int64", "Slice<Int64>"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Int64", "Slice<Int64>"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.zero"},
 		}, {
@@ -124,7 +124,7 @@ func TestVMRunsStructMember(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64", "Point"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Point"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
@@ -169,7 +169,7 @@ func TestVMZeroNamedStructUsesTypeFieldMetadata(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Code: testSlotCode([]string{"User", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"User", "String"}, []ir.Instruction{{
 			Op:      ir.OpZero,
 			Payload: testTypePayload("User"),
 		}, {
@@ -243,7 +243,7 @@ func TestVMNamedStructMemberReadUsesTypeFieldMetadata(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Code: testSlotCode([]string{"Int64", "User", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "User", "String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.id"},
 		}, {
@@ -284,7 +284,7 @@ func TestLoaderNamedStructMakeStructRejectsUnknownField(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int64", "User"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "User"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.age"},
 		}, {
@@ -316,7 +316,7 @@ func TestLoaderNamedStructMakeStructRejectsWrongFieldType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int64", "User"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "User"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
@@ -352,7 +352,7 @@ func TestVMNamedStructStoreFieldUsesTypeFieldMetadata(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
 		Locals:    []ir.Local{{ID: "local.user", Type: testType("User")}},
-		Code: testSlotCode([]string{"User", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"User", "String"}, []ir.Instruction{{
 			Op:      ir.OpZero,
 			Payload: testTypePayload("User"),
 		}, {
@@ -405,7 +405,7 @@ func TestLoaderNamedStructStoreFieldRejectsWrongType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"User", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"User", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpZero,
 			Payload: testTypePayload("User"),
 		}, {

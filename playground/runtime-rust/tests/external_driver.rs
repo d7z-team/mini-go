@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, Mutex},
     task::{Poll, Waker},
 };
-use support::slot_code;
+use support::micro_code;
 
 #[derive(Clone, Default)]
 struct Host {
@@ -62,11 +62,11 @@ fn initialization_fixture() -> Vec<u8> {
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"external.test"},{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[integer]},"code":slot_code(json!([integer]),&[
+            {"id":"fn.Main","signature":{"results":[integer]},"code":micro_code(json!([integer]),&[
                 ("const",json!({"constant":"answer"}),json!({"outputs":[0]})),
                 ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]})),
             ])},
-            {"id":"fn.init","code":slot_code(json!([string,bytes,bytes,string,integer]),&[
+            {"id":"fn.init","code":micro_code(json!([string,bytes,bytes,string,integer]),&[
                 ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
                 ("zero",json!({"type":bytes}),json!({"outputs":[1]})),
                 ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
@@ -135,7 +135,7 @@ fn external_driver_initializes_asynchronously_and_retains_cleanup_until_complete
 #[test]
 fn external_driver_cancels_running_work() {
     let bytes = support::image(json!({
-        "functions":[{"id":"fn.Main","code":slot_code(json!([]), &[
+        "functions":[{"id":"fn.Main","code":micro_code(json!([]), &[
             ("label",json!({"label":"loop"}),json!({})),
             ("jump",json!({"label":"loop"}),json!({})),
         ])}]

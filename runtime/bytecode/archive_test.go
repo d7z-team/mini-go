@@ -10,7 +10,7 @@ import (
 
 func TestPackageArchiveValidationTracksContent(t *testing.T) {
 	artifact := NewArtifact("example/main", "main")
-	artifact.Functions = []Function{{Code: &SlotCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
+	artifact.Functions = []Function{{Code: &MicroCode{}, ID: "fn.main", Signature: testSignature("function() Void")}}
 	archive, err := NewPackageArchive(&artifact)
 	if err != nil {
 		t.Fatal(err)

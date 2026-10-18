@@ -13,7 +13,7 @@ func TestExecutionPollStepsUsesExactSliceBudget(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/poll-steps", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Bool"}, []ir.Instruction{
 			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
 			{Op: ir.OpPop},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
@@ -62,7 +62,7 @@ func TestExecutionPollStepsPreservesCumulativeScopeLimit(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/poll-limit", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Bool"}, []ir.Instruction{
 			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
 			{Op: ir.OpPop},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},

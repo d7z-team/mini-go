@@ -90,11 +90,10 @@ func Lower(checked check.CheckedProgram, options Options) (ir.Program, []source.
 	out.Exports = append(out.Exports, l.lowerDefinedTypeExports(program)...)
 	out.Exports = append(out.Exports, l.lowerTypeAliasExports(program)...)
 	initFn := ir.Function{
-		ID:            moduleInitFunctionID,
-		Name:          "init",
-		RevisionLocal: true,
-		Generated:     true,
-		Signature:     l.hirSignature("function() Void", false),
+		ID:        moduleInitFunctionID,
+		Name:      "init",
+		Generated: true,
+		Signature: l.hirSignature("function() Void", false),
 	}
 	initScope := newFuncScope(&initFn, nil)
 	initStmts, ok := l.lowerTopLevelValues(program, &out, &initScope)

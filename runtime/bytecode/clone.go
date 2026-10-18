@@ -27,11 +27,12 @@ func CloneArtifact(artifact Artifact) Artifact {
 		if function.Code != nil {
 			code := *function.Code
 			code.Types = append([]types.TypeRef(nil), code.Types...)
-			code.Instructions = append([]SlotInstruction(nil), code.Instructions...)
+			code.Instructions = append([]MicroInstruction(nil), code.Instructions...)
+			code.Blocks = append([]BasicBlock(nil), code.Blocks...)
 			code.Descriptors = code.Descriptors.Clone()
-			code.Operands = make([]SlotOperands, len(function.Code.Operands))
+			code.Operands = make([]RegisterFlow, len(function.Code.Operands))
 			for i, operands := range function.Code.Operands {
-				code.Operands[i] = SlotOperands{Inputs: append([]Operand(nil), operands.Inputs...), Outputs: append([]uint32(nil), operands.Outputs...), Release: append([]uint32(nil), operands.Release...), ReleaseBefore: append([]uint32(nil), operands.ReleaseBefore...)}
+				code.Operands[i] = RegisterFlow{Inputs: append([]Operand(nil), operands.Inputs...), Outputs: append([]uint32(nil), operands.Outputs...), Release: append([]uint32(nil), operands.Release...), ReleaseBefore: append([]uint32(nil), operands.ReleaseBefore...)}
 			}
 			out.Functions[index].Code = &code
 		}

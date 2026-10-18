@@ -472,7 +472,7 @@ mod tests {
     fn pending_selection_cannot_match_itself_and_cancellation_releases_payload() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -532,7 +532,7 @@ mod tests {
     fn crossing_selections_commit_both_winners_and_withdraw_every_other_case() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -617,7 +617,7 @@ mod tests {
     fn typed_channel_send_receive_uses_managed_ring() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -654,7 +654,7 @@ mod tests {
     fn channel_uses_logical_element_costs_instead_of_physical_stride() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -680,7 +680,7 @@ mod tests {
     fn dynamic_string_channel_uses_managed_descriptor_ring() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -712,7 +712,7 @@ mod tests {
     fn any_channel_preserves_runtime_type_in_descriptor_slot() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();

@@ -16,7 +16,7 @@ type slotLowerer struct {
 	*packageEmitter
 	locals   map[string]types.TypeRef
 	upvalues map[string]types.TypeRef
-	code     ir.SlotCode
+	code     ir.MicroCode
 	labels   int
 	err      error
 }
@@ -67,7 +67,7 @@ func newPackageEmitter(artifact *ir.Artifact, functions []hir.Function) *package
 }
 
 func (l *slotLowerer) emit(op ir.Opcode, payload ir.Payload, inputs []ir.Operand, results ...types.TypeRef) []ir.Operand {
-	operands := ir.SlotOperands{Inputs: inputs}
+	operands := ir.RegisterFlow{Inputs: inputs}
 	outputs := make([]ir.Operand, len(results))
 	for i, typ := range results {
 		index := uint32(len(l.code.Types))
@@ -79,7 +79,7 @@ func (l *slotLowerer) emit(op ir.Opcode, payload ir.Payload, inputs []ir.Operand
 	return outputs
 }
 
-func (l *slotLowerer) operation(op ir.Opcode, payload ir.Payload, operands ir.SlotOperands) {
+func (l *slotLowerer) operation(op ir.Opcode, payload ir.Payload, operands ir.RegisterFlow) {
 	if l.err != nil {
 		return
 	}
@@ -88,7 +88,7 @@ func (l *slotLowerer) operation(op ir.Opcode, payload ir.Payload, operands ir.Sl
 		l.err = err
 		return
 	}
-	l.code.Instructions = append(l.code.Instructions, ir.SlotInstruction{Op: op, Descriptor: index, Operands: uint32(len(l.code.Operands))})
+	l.code.Instructions = append(l.code.Instructions, ir.MicroInstruction{Op: op, Descriptor: index, Operands: uint32(len(l.code.Operands))})
 	l.code.Operands = append(l.code.Operands, operands)
 }
 
@@ -583,7 +583,7 @@ func (l *slotLowerer) logical(expr hir.Expression) ([]ir.Operand, error) {
 	}
 	l.emit(ir.OpJumpIf, ir.JumpPayload{Label: rightLabel}, condition)
 	copyInto := func(value ir.Operand) {
-		l.operation(ir.OpConvert, ir.TypePayload{Type: types.Builtin(types.PrimitiveBool)}, ir.SlotOperands{Inputs: []ir.Operand{value}, Outputs: []uint32{output[0].Index}})
+		l.operation(ir.OpConvert, ir.TypePayload{Type: types.Builtin(types.PrimitiveBool)}, ir.RegisterFlow{Inputs: []ir.Operand{value}, Outputs: []uint32{output[0].Index}})
 	}
 	copyInto(left[0])
 	l.emit(ir.OpJump, ir.JumpPayload{Label: endLabel}, nil)

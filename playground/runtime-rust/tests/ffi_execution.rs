@@ -13,7 +13,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
-use support::slot_code;
+use support::micro_code;
 
 #[derive(Clone, Default)]
 struct Host {
@@ -75,7 +75,7 @@ fn program() -> Arc<Program> {
         "type_table": {"nodes": [{"id": "bytes", "kind": 5, "elem": {"kind": 3, "primitive": 9}}]},
         "constants": [{"id": "route", "type": {"kind": 3, "primitive": 2}, "value": "echo"}],
         "functions": [{"id": "fn.Main", "signature": {"results": [{"kind": 3, "primitive": 3}]},
-        "code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+        "code":micro_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
             ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
             ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
             ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
@@ -135,7 +135,7 @@ fn pending_host_call_keeps_its_revision_until_delivery_or_cancellation() {
     let target = Arc::new(Program::load(&support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
-        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+        "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":micro_code(json!([{"kind":3,"primitive":3}]), &[
             ("const",json!({"constant":"answer"}),json!({"outputs":[0]})),
             ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}]
     })), LoadLimits::default()).unwrap());
@@ -258,7 +258,7 @@ fn result_admission_transfers_or_discards_reply_exactly_once() {
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"echo"}],
         "functions":[{"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"locals":[{"id":"status","type":{"kind":3,"primitive":3}}],
-        "code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+        "code":micro_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
             ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
             ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
             ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
@@ -327,7 +327,7 @@ fn construction_waits_for_initialization_and_cancellation_closes_its_session() {
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"echo"}],
         "globals":[{"id":"size","type":{"kind":3,"primitive":3}}],
         "functions":[
-            {"id":"fn.init","code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+            {"id":"fn.init","code":micro_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
                 ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
                 ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
                 ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
@@ -336,7 +336,7 @@ fn construction_waits_for_initialization_and_cancellation_closes_its_session() {
                 ("len",json!({}),json!({"inputs":[[0,2]],"outputs":[4],"release":[2]})),
                 ("store_global",json!({"global":"size"}),json!({"inputs":[[0,4]],"release":[4]})),
                 ("return",json!({}),json!({}))])},
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":micro_code(json!([{"kind":3,"primitive":3}]), &[
                 ("load_global",json!({"global":"size"}),json!({"outputs":[0]})),
                 ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}
         ]

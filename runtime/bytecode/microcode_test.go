@@ -13,16 +13,16 @@ func BenchmarkSlotInitializationLinear(b *testing.B) {
 	for _, size := range []int{128, 4096} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			integer := types.Builtin(types.PrimitiveInt)
-			code := SlotCode{Types: []types.TypeRef{integer}, Operands: []SlotOperands{{Outputs: []uint32{0}}, {Inputs: []Operand{{Kind: OperandSlot}}, Release: []uint32{0}}}}
+			code := MicroCode{Types: []types.TypeRef{integer}, Operands: []RegisterFlow{{Outputs: []uint32{0}}, {Inputs: []Operand{{Kind: OperandSlot}}, Release: []uint32{0}}}}
 			zero, _ := code.Descriptors.Append(TypePayload{Type: integer})
 			stored, _ := code.Descriptors.Append(LocalPayload{Local: "value"})
 			for range size {
-				code.Instructions = append(code.Instructions, SlotInstruction{Op: OpZero, Descriptor: zero}, SlotInstruction{Op: OpStoreLocal, Descriptor: stored, Operands: 1})
+				code.Instructions = append(code.Instructions, MicroInstruction{Op: OpZero, Descriptor: zero}, MicroInstruction{Op: OpStoreLocal, Descriptor: stored, Operands: 1})
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for b.Loop() {
-				if err := ValidateSlotCode(&code, nil); err != nil {
+				if err := ValidateMicroCode(&code, nil); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -30,9 +30,9 @@ func BenchmarkSlotInitializationLinear(b *testing.B) {
 	}
 }
 
-func TestSlotCodeRoundTripPreservesNumericOperationsAndConcreteDescriptors(t *testing.T) {
+func TestMicroCodeRoundTripPreservesNumericOperationsAndConcreteDescriptors(t *testing.T) {
 	integer := types.Builtin(types.PrimitiveInt)
-	code := SlotCode{Types: []types.TypeRef{integer}, Operands: []SlotOperands{
+	code := MicroCode{Types: []types.TypeRef{integer}, Operands: []RegisterFlow{
 		{Outputs: []uint32{0}}, {Inputs: []Operand{{Kind: OperandSlot, Index: 0}}, Release: []uint32{0}},
 	}}
 	zero, err := code.Descriptors.Append(TypePayload{Type: integer})
@@ -43,19 +43,19 @@ func TestSlotCodeRoundTripPreservesNumericOperationsAndConcreteDescriptors(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	code.Instructions = []SlotInstruction{{Op: OpZero, Descriptor: zero, Operands: 0}, {Op: OpReturn, Descriptor: returned, Operands: 1}}
-	if err := ValidateSlotCode(&code, nil); err != nil {
+	code.Instructions = []MicroInstruction{{Op: OpZero, Descriptor: zero, Operands: 0}, {Op: OpReturn, Descriptor: returned, Operands: 1}}
+	if err := ValidateMicroCode(&code, nil); err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := encodeCanonicalValue(code)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded SlotCode
+	var decoded MicroCode
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateSlotCode(&decoded, nil); err != nil {
+	if err := ValidateMicroCode(&decoded, nil); err != nil {
 		t.Fatal(err)
 	}
 	reencoded, err := encodeCanonicalValue(decoded)
@@ -77,26 +77,26 @@ func TestSlotInitializationRejectsMissingBranchDefinitionAndUseAfterRelease(t *t
 	integer := types.Builtin(types.PrimitiveInt)
 	boolean := types.Builtin(types.PrimitiveBool)
 	for _, release := range []bool{false, true} {
-		code := SlotCode{Types: []types.TypeRef{integer}}
-		appendInstruction := func(op Opcode, payload Payload, operands SlotOperands) {
+		code := MicroCode{Types: []types.TypeRef{integer}}
+		appendInstruction := func(op Opcode, payload Payload, operands RegisterFlow) {
 			index, err := code.Descriptors.Append(payload)
 			if err != nil {
 				t.Fatal(err)
 			}
-			code.Instructions = append(code.Instructions, SlotInstruction{Op: op, Descriptor: index, Operands: uint32(len(code.Operands))})
+			code.Instructions = append(code.Instructions, MicroInstruction{Op: op, Descriptor: index, Operands: uint32(len(code.Operands))})
 			code.Operands = append(code.Operands, operands)
 		}
 		if !release {
-			appendInstruction(OpJumpIf, JumpPayload{Label: "join"}, SlotOperands{Inputs: []Operand{{Kind: OperandConstant, Index: 0}}})
+			appendInstruction(OpJumpIf, JumpPayload{Label: "join"}, RegisterFlow{Inputs: []Operand{{Kind: OperandConstant, Index: 0}}})
 		}
-		initialization := SlotOperands{Outputs: []uint32{0}}
+		initialization := RegisterFlow{Outputs: []uint32{0}}
 		if release {
 			initialization.Release = []uint32{0}
 		}
 		appendInstruction(OpZero, TypePayload{Type: integer}, initialization)
-		appendInstruction(OpLabel, LabelPayload{Label: "join"}, SlotOperands{})
-		appendInstruction(OpReturn, ReturnPayload{ResultCount: 1}, SlotOperands{Inputs: []Operand{{Kind: OperandSlot, Index: 0}}})
-		err := ValidateSlotCode(&code, []Constant{{ID: "branch", Type: boolean, Value: json.RawMessage("true")}})
+		appendInstruction(OpLabel, LabelPayload{Label: "join"}, RegisterFlow{})
+		appendInstruction(OpReturn, ReturnPayload{ResultCount: 1}, RegisterFlow{Inputs: []Operand{{Kind: OperandSlot, Index: 0}}})
+		err := ValidateMicroCode(&code, []Constant{{ID: "branch", Type: boolean, Value: json.RawMessage("true")}})
 		if err == nil || !strings.Contains(err.Error(), "uninitialized") {
 			t.Fatalf("release=%v: expected uninitialized operand, got %v", release, err)
 		}
@@ -116,21 +116,21 @@ func TestSlotInitializationRechecksBackedgesAndEntryReleases(t *testing.T) {
 		{name: "entry_releases_input", onEntry: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			code := SlotCode{Types: []types.TypeRef{integer}}
-			appendInstruction := func(op Opcode, payload Payload, operands SlotOperands) {
+			code := MicroCode{Types: []types.TypeRef{integer}}
+			appendInstruction := func(op Opcode, payload Payload, operands RegisterFlow) {
 				descriptor, err := code.Descriptors.Append(payload)
 				if err != nil {
 					t.Fatal(err)
 				}
-				code.Instructions = append(code.Instructions, SlotInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
+				code.Instructions = append(code.Instructions, MicroInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
 				code.Operands = append(code.Operands, operands)
 			}
-			appendInstruction(OpZero, TypePayload{Type: integer}, SlotOperands{Outputs: []uint32{0}})
-			appendInstruction(OpLabel, LabelPayload{Label: "again"}, SlotOperands{})
+			appendInstruction(OpZero, TypePayload{Type: integer}, RegisterFlow{Outputs: []uint32{0}})
+			appendInstruction(OpLabel, LabelPayload{Label: "again"}, RegisterFlow{})
 			if test.redefine {
-				appendInstruction(OpZero, TypePayload{Type: integer}, SlotOperands{Outputs: []uint32{0}})
+				appendInstruction(OpZero, TypePayload{Type: integer}, RegisterFlow{Outputs: []uint32{0}})
 			}
-			read := SlotOperands{Inputs: []Operand{{Kind: OperandSlot}}}
+			read := RegisterFlow{Inputs: []Operand{{Kind: OperandSlot}}}
 			if test.release {
 				read.Release = []uint32{0}
 			}
@@ -138,12 +138,12 @@ func TestSlotInitializationRechecksBackedgesAndEntryReleases(t *testing.T) {
 				read.ReleaseBefore = []uint32{0}
 			}
 			appendInstruction(OpStoreLocal, LocalPayload{Local: "value"}, read)
-			appendInstruction(OpJumpIf, JumpPayload{Label: "again"}, SlotOperands{Inputs: []Operand{{Kind: OperandConstant}}})
-			appendInstruction(OpZero, TypePayload{Type: integer}, SlotOperands{Outputs: []uint32{0}})
-			appendInstruction(OpReturn, ReturnPayload{ResultCount: 1}, SlotOperands{Inputs: []Operand{{Kind: OperandSlot}}, Release: []uint32{0}})
+			appendInstruction(OpJumpIf, JumpPayload{Label: "again"}, RegisterFlow{Inputs: []Operand{{Kind: OperandConstant}}})
+			appendInstruction(OpZero, TypePayload{Type: integer}, RegisterFlow{Outputs: []uint32{0}})
+			appendInstruction(OpReturn, ReturnPayload{ResultCount: 1}, RegisterFlow{Inputs: []Operand{{Kind: OperandSlot}}, Release: []uint32{0}})
 			// This read is unreachable, but still has a valid operand shape.
-			appendInstruction(OpReturn, ReturnPayload{ResultCount: 1}, SlotOperands{Inputs: []Operand{{Kind: OperandSlot}}})
-			err := ValidateSlotCode(&code, []Constant{{ID: "branch", Type: boolean, Value: json.RawMessage("true")}})
+			appendInstruction(OpReturn, ReturnPayload{ResultCount: 1}, RegisterFlow{Inputs: []Operand{{Kind: OperandSlot}}})
+			err := ValidateMicroCode(&code, []Constant{{ID: "branch", Type: boolean, Value: json.RawMessage("true")}})
 			if test.valid && err != nil || !test.valid && (err == nil || !strings.Contains(err.Error(), "uninitialized")) {
 				t.Fatalf("valid=%v: %v", test.valid, err)
 			}
@@ -152,18 +152,18 @@ func TestSlotInitializationRechecksBackedgesAndEntryReleases(t *testing.T) {
 }
 
 func TestSlotComparisonDescriptorSurvivesCanonicalEncoding(t *testing.T) {
-	code := SlotCode{}
+	code := MicroCode{}
 	expected := CompareBranchPayload{Operator: "<=", Type: types.Builtin(types.PrimitiveInt), Label: "next", When: false}
 	index, err := code.Descriptors.Append(expected)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code.Instructions = []SlotInstruction{{Op: OpCompareBranch, Descriptor: index}}
+	code.Instructions = []MicroInstruction{{Op: OpCompareBranch, Descriptor: index}}
 	encoded, err := encodeCanonicalValue(code)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var decoded SlotCode
+	var decoded MicroCode
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)
 	}
@@ -177,14 +177,14 @@ func TestSlotTypesRejectMismatchedStorageAndReturn(t *testing.T) {
 	integer, boolean := types.Builtin(types.PrimitiveInt), types.Builtin(types.PrimitiveBool)
 	for _, wrongReturn := range []bool{false, true} {
 		artifact := NewArtifact("test", "test")
-		code := SlotCode{Types: []types.TypeRef{boolean}, Operands: []SlotOperands{{Outputs: []uint32{0}}, {Inputs: []Operand{{Kind: OperandSlot, Index: 0}}}}}
+		code := MicroCode{Types: []types.TypeRef{boolean}, Operands: []RegisterFlow{{Outputs: []uint32{0}}, {Inputs: []Operand{{Kind: OperandSlot, Index: 0}}}}}
 		zeroType, returnType := integer, boolean
 		if wrongReturn {
 			zeroType, returnType = boolean, integer
 		}
 		zero, _ := code.Descriptors.Append(TypePayload{Type: zeroType})
 		returned, _ := code.Descriptors.Append(ReturnPayload{ResultCount: 1})
-		code.Instructions = []SlotInstruction{{Op: OpZero, Descriptor: zero, Operands: 0}, {Op: OpReturn, Descriptor: returned, Operands: 1}}
+		code.Instructions = []MicroInstruction{{Op: OpZero, Descriptor: zero, Operands: 0}, {Op: OpReturn, Descriptor: returned, Operands: 1}}
 		artifact.Functions = []Function{{ID: "main", Signature: types.FunctionSignature{Results: []types.TypeRef{returnType}}, Code: &code}}
 		if err := ValidateArtifact(&artifact); err == nil {
 			t.Fatalf("wrongReturn=%v: accepted mismatched slot type", wrongReturn)
@@ -201,9 +201,9 @@ func TestSlotTypesRejectsIndexConvertWrongOutputType(t *testing.T) {
 		{ID: "text", Type: text, Value: json.RawMessage(`"abc"`)},
 		{ID: "index", Type: integer, Value: json.RawMessage(`1`)},
 	}
-	code := SlotCode{
+	code := MicroCode{
 		Types: []types.TypeRef{boolean},
-		Operands: []SlotOperands{
+		Operands: []RegisterFlow{
 			{Inputs: []Operand{{Kind: OperandConstant, Index: 0}, {Kind: OperandConstant, Index: 1}}, Outputs: []uint32{0}},
 			{Inputs: []Operand{{Kind: OperandSlot, Index: 0}}},
 		},
@@ -216,7 +216,7 @@ func TestSlotTypesRejectsIndexConvertWrongOutputType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code.Instructions = []SlotInstruction{
+	code.Instructions = []MicroInstruction{
 		{Op: OpIndexConvert, Descriptor: indexConvert, Operands: 0},
 		{Op: OpReturn, Descriptor: returned, Operands: 1},
 	}
@@ -244,7 +244,7 @@ func TestSlotTypesLengthBranchAcceptsIntegerThresholds(t *testing.T) {
 			{ID: "text", Type: text, Value: json.RawMessage(`"abc"`)},
 			{ID: "limit", Type: threshold, Value: json.RawMessage(`4`)},
 		}
-		code := SlotCode{Operands: []SlotOperands{
+		code := MicroCode{Operands: []RegisterFlow{
 			{Inputs: []Operand{{Kind: OperandConstant, Index: 0}, {Kind: OperandConstant, Index: 1}}}, {}, {},
 		}}
 		comparison, err := code.Descriptors.Append(CompareBranchPayload{Type: integer, Operator: "<", Label: "done", When: true})
@@ -259,7 +259,7 @@ func TestSlotTypesLengthBranchAcceptsIntegerThresholds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		code.Instructions = []SlotInstruction{
+		code.Instructions = []MicroInstruction{
 			{Op: OpLenCompareBranch, Descriptor: comparison, Operands: 0},
 			{Op: OpLabel, Descriptor: label, Operands: 1},
 			{Op: OpReturn, Descriptor: returned, Operands: 2},
@@ -289,12 +289,12 @@ func TestDirectLocalOperandsRequirePrivateValueStorage(t *testing.T) {
 					pointer = types.TypeRef{Kind: types.Pointer, Node: "pointerPointer"}
 					artifact.TypeTable.Nodes = append(artifact.TypeTable.Nodes, types.TypeNode{ID: "pointerPointer", Kind: types.Pointer, Elem: valueType})
 				}
-				code := SlotCode{Types: []types.TypeRef{pointer}, Operands: []SlotOperands{{Inputs: []Operand{{Kind: OperandLocal}}}}}
+				code := MicroCode{Types: []types.TypeRef{pointer}, Operands: []RegisterFlow{{Inputs: []Operand{{Kind: OperandLocal}}}}}
 				returned, err := code.Descriptors.Append(ReturnPayload{ResultCount: 1})
 				if err != nil {
 					t.Fatal(err)
 				}
-				code.Instructions = []SlotInstruction{{Op: OpReturn, Descriptor: returned}}
+				code.Instructions = []MicroInstruction{{Op: OpReturn, Descriptor: returned}}
 				artifact.Functions = []Function{{ID: "main", Signature: types.FunctionSignature{Results: []types.TypeRef{valueType}}, Locals: []Local{{ID: "value", Type: valueType}}, Code: &code}}
 				// Even an unreachable address/capture invalidates the private-storage
 				// proof; it must not depend on the caller choosing a particular path.
@@ -304,14 +304,14 @@ func TestDirectLocalOperandsRequirePrivateValueStorage(t *testing.T) {
 					if access == "capture" {
 						op = OpMakeClosure
 						payload = ClosurePayload{Function: "child", Captures: []AddressPayload{{Kind: "local", Local: "value"}}}
-						artifact.Functions = append(artifact.Functions, Function{ID: "child", Upvalues: []Upvalue{{ID: "value", Type: valueType}}, Code: &SlotCode{}})
+						artifact.Functions = append(artifact.Functions, Function{ID: "child", Upvalues: []Upvalue{{ID: "value", Type: valueType}}, Code: &MicroCode{}})
 					}
 					index, err := code.Descriptors.Append(payload)
 					if err != nil {
 						t.Fatal(err)
 					}
-					code.Instructions = append(code.Instructions, SlotInstruction{Op: op, Descriptor: index, Operands: 1})
-					code.Operands = append(code.Operands, SlotOperands{Outputs: []uint32{0}})
+					code.Instructions = append(code.Instructions, MicroInstruction{Op: op, Descriptor: index, Operands: 1})
+					code.Operands = append(code.Operands, RegisterFlow{Outputs: []uint32{0}})
 				}
 				err = ValidateArtifact(&artifact)
 				if access == "private" {
@@ -330,22 +330,22 @@ func TestDirectAggregateLocalInputsAndCallResults(t *testing.T) {
 	array := testType("Array<2, Int>")
 	targetSignature := testSignature("function() tuple(Array<2, Int>, Array<2, Int>)")
 	artifact := NewArtifact("example/module", "main")
-	returnCode := &SlotCode{Operands: []SlotOperands{{Inputs: []Operand{{Kind: OperandLocal, Index: 0}, {Kind: OperandLocal, Index: 1}}}}}
+	returnCode := &MicroCode{Operands: []RegisterFlow{{Inputs: []Operand{{Kind: OperandLocal, Index: 0}, {Kind: OperandLocal, Index: 1}}}}}
 	returnDescriptor, err := returnCode.Descriptors.Append(ReturnPayload{ResultCount: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	returnCode.Instructions = []SlotInstruction{{Op: OpReturn, Descriptor: returnDescriptor, Operands: 0}}
+	returnCode.Instructions = []MicroInstruction{{Op: OpReturn, Descriptor: returnDescriptor, Operands: 0}}
 	artifact.Functions = []Function{{
 		ID: "fn.target", Signature: targetSignature,
 		Locals: []Local{{ID: "first", Type: array}, {ID: "second", Type: array}}, Code: returnCode,
 	}}
-	callCode := &SlotCode{Operands: []SlotOperands{{Outputs: []uint32{LocalOutput, LocalOutput | 1}}}}
+	callCode := &MicroCode{Operands: []RegisterFlow{{Outputs: []uint32{LocalOutput, LocalOutput | 1}}}}
 	callDescriptor, err := callCode.Descriptors.Append(CallPayload{Function: "fn.target", ResultCount: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	callCode.Instructions = []SlotInstruction{{Op: OpCallDirect, Descriptor: callDescriptor, Operands: 0}}
+	callCode.Instructions = []MicroInstruction{{Op: OpCallDirect, Descriptor: callDescriptor, Operands: 0}}
 	artifact.Functions = append(artifact.Functions, Function{
 		ID: "fn.main", Signature: types.FunctionSignature{},
 		Locals: []Local{{ID: "first", Type: array}, {ID: "second", Type: array}}, Code: callCode,
@@ -360,7 +360,7 @@ func TestDirectLocalAccessRejectsNamedResultCells(t *testing.T) {
 	for _, directOutput := range []bool{true, false} {
 		t.Run(map[bool]string{true: "output", false: "input"}[directOutput], func(t *testing.T) {
 			artifact := NewArtifact("example/module", "main")
-			code := &SlotCode{Types: []types.TypeRef{integer}, Operands: []SlotOperands{
+			code := &MicroCode{Types: []types.TypeRef{integer}, Operands: []RegisterFlow{
 				{Outputs: []uint32{0}},
 				{Inputs: []Operand{{Kind: OperandLocal, Index: 0}}},
 			}}
@@ -372,7 +372,7 @@ func TestDirectLocalAccessRejectsNamedResultCells(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			code.Instructions = []SlotInstruction{
+			code.Instructions = []MicroInstruction{
 				{Op: OpZero, Descriptor: zeroDescriptor, Operands: 0},
 				{Op: OpReturn, Descriptor: returnDescriptor, Operands: 1},
 			}
@@ -409,13 +409,13 @@ func TestSlotScalarTypesMatchOperatorResults(t *testing.T) {
 			artifact := NewArtifact("operators", "operators")
 			artifact.Constants = []Constant{{ID: "left", Type: types.Builtin(test.left), Value: json.RawMessage(`1`)}, {ID: "right", Type: types.Builtin(test.right), Value: json.RawMessage(`2`)}}
 			result := types.Builtin(test.result)
-			code := SlotCode{Types: []types.TypeRef{result}, Operands: []SlotOperands{
+			code := MicroCode{Types: []types.TypeRef{result}, Operands: []RegisterFlow{
 				{Inputs: []Operand{{Kind: OperandConstant}, {Kind: OperandConstant, Index: 1}}, Outputs: []uint32{0}},
 				{Inputs: []Operand{{Kind: OperandSlot}}, Release: []uint32{0}},
 			}}
 			operation, _ := code.Descriptors.Append(OperatorPayload{Operator: test.operator})
 			returned, _ := code.Descriptors.Append(ReturnPayload{ResultCount: 1})
-			code.Instructions = []SlotInstruction{{Op: OpBinary, Descriptor: operation}, {Op: OpReturn, Descriptor: returned, Operands: 1}}
+			code.Instructions = []MicroInstruction{{Op: OpBinary, Descriptor: operation}, {Op: OpReturn, Descriptor: returned, Operands: 1}}
 			artifact.Functions = []Function{{ID: "main", Signature: types.FunctionSignature{Results: []types.TypeRef{result}}, Code: &code}}
 			if err := ValidateArtifact(&artifact); (err != nil) != test.invalid {
 				t.Fatalf("invalid=%v: %v", test.invalid, err)
@@ -424,30 +424,30 @@ func TestSlotScalarTypesMatchOperatorResults(t *testing.T) {
 	}
 }
 
-func TestSlotOperandsRejectDuplicateDestinationsAndLabelEffects(t *testing.T) {
+func TestRegisterFlowRejectDuplicateDestinationsAndLabelEffects(t *testing.T) {
 	integer := types.Builtin(types.PrimitiveInt)
 	for _, label := range []bool{false, true} {
-		code := SlotCode{Types: []types.TypeRef{integer, types.Builtin(types.PrimitiveBool)}}
+		code := MicroCode{Types: []types.TypeRef{integer, types.Builtin(types.PrimitiveBool)}}
 		var op Opcode
 		var payload Payload
-		var operands SlotOperands
+		var operands RegisterFlow
 		if label {
-			op, payload, operands = OpLabel, LabelPayload{Label: "entry"}, SlotOperands{Release: []uint32{0}}
+			op, payload, operands = OpLabel, LabelPayload{Label: "entry"}, RegisterFlow{Release: []uint32{0}}
 		} else {
 			op, payload = OpTypeAssertOK, TypePayload{Type: integer}
-			operands = SlotOperands{Inputs: []Operand{{Kind: OperandConstant}}, Outputs: []uint32{0, 0}}
+			operands = RegisterFlow{Inputs: []Operand{{Kind: OperandConstant}}, Outputs: []uint32{0, 0}}
 		}
 		index, _ := code.Descriptors.Append(payload)
-		code.Instructions, code.Operands = []SlotInstruction{{Op: op, Descriptor: index}}, []SlotOperands{operands}
-		if err := ValidateSlotCode(&code, []Constant{{Type: integer}}); err == nil {
+		code.Instructions, code.Operands = []MicroInstruction{{Op: op, Descriptor: index}}, []RegisterFlow{operands}
+		if err := ValidateMicroCode(&code, []Constant{{Type: integer}}); err == nil {
 			t.Fatalf("label=%v: accepted ambiguous operands", label)
 		}
 	}
 }
 
 func TestSlotTupleDecodingRejectsTruncationOverflowAndExtraValuesAtomically(t *testing.T) {
-	for _, raw := range []string{`[]`, `[1,2]`, `[1,2,3,4]`, `[65536,0,0]`, `[1,-1,0]`, `[1,0,4294967296]`, `[1,0,0] true`} {
-		instruction := SlotInstruction{Op: OpReturn, Descriptor: 7, Operands: 8}
+	for _, raw := range []string{`[]`, `[1,2]`, `[1,2,3]`, `[1,2,3,0]`, `[4294967296,0,0,1]`, `[1,-1,0,1]`, `[1,0,4294967296,1]`, `[1,0,0,1] true`} {
+		instruction := MicroInstruction{Op: OpReturn, Descriptor: 7, Operands: 8}
 		before := instruction
 		if err := json.Unmarshal([]byte(raw), &instruction); err == nil || instruction != before {
 			t.Fatalf("instruction %s changed on failure: %+v / %v", raw, instruction, err)
@@ -507,21 +507,21 @@ func TestSlotCollectionAccessChecksKeysValuesAndSizes(t *testing.T) {
 					{ID: "record", Kind: types.Struct, Fields: []types.Field{{Name: "value", Type: integer}}},
 					{ID: "channel", Kind: types.Waitable, Direction: types.ChannelBoth, Elem: integer},
 				}
-				code := SlotCode{Types: append([]types.TypeRef(nil), test.inputs...)}
+				code := MicroCode{Types: append([]types.TypeRef(nil), test.inputs...)}
 				if !valid {
 					code.Types[test.invalidInput] = boolean
 				}
-				appendOperation := func(op Opcode, payload Payload, operands SlotOperands) {
+				appendOperation := func(op Opcode, payload Payload, operands RegisterFlow) {
 					descriptor, err := code.Descriptors.Append(payload)
 					if err != nil {
 						t.Fatal(err)
 					}
-					code.Instructions = append(code.Instructions, SlotInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
+					code.Instructions = append(code.Instructions, MicroInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
 					code.Operands = append(code.Operands, operands)
 				}
-				var operands SlotOperands
+				var operands RegisterFlow
 				for i, typ := range code.Types {
-					appendOperation(OpZero, TypePayload{Type: typ}, SlotOperands{Outputs: []uint32{uint32(i)}})
+					appendOperation(OpZero, TypePayload{Type: typ}, RegisterFlow{Outputs: []uint32{uint32(i)}})
 					operands.Inputs = append(operands.Inputs, Operand{Kind: OperandSlot, Index: uint32(i)})
 				}
 				for _, typ := range test.outputs {
@@ -529,7 +529,7 @@ func TestSlotCollectionAccessChecksKeysValuesAndSizes(t *testing.T) {
 					code.Types = append(code.Types, typ)
 				}
 				appendOperation(test.op, test.payload, operands)
-				appendOperation(OpReturn, ReturnPayload{}, SlotOperands{})
+				appendOperation(OpReturn, ReturnPayload{}, RegisterFlow{})
 				artifact.Functions = []Function{{ID: "main", Code: &code}}
 				if err := ValidateArtifact(&artifact); (err == nil) != valid {
 					t.Fatalf("valid=%v: %v", valid, err)
@@ -547,12 +547,12 @@ func TestSlotChannelAccessHonorsDirectionAndResultTypes(t *testing.T) {
 			for _, forgedResult := range []bool{false, true} {
 				artifact := NewArtifact("channels", "channels")
 				artifact.TypeTable.Nodes = []types.TypeNode{{ID: "channel", Kind: types.Waitable, Direction: direction, Elem: integer}}
-				code := SlotCode{Types: []types.TypeRef{channel, integer}}
+				code := MicroCode{Types: []types.TypeRef{channel, integer}}
 				channelZero, _ := code.Descriptors.Append(TypePayload{Type: channel})
 				valueZero, _ := code.Descriptors.Append(TypePayload{Type: integer})
 				returned, _ := code.Descriptors.Append(ReturnPayload{})
-				code.Instructions = []SlotInstruction{{Op: OpZero, Descriptor: channelZero}, {Op: OpZero, Descriptor: valueZero, Operands: 1}, {Op: operation, Operands: 2}, {Op: OpReturn, Descriptor: returned, Operands: 3}}
-				operands := SlotOperands{Inputs: []Operand{{Kind: OperandSlot, Index: 0}}}
+				code.Instructions = []MicroInstruction{{Op: OpZero, Descriptor: channelZero}, {Op: OpZero, Descriptor: valueZero, Operands: 1}, {Op: operation, Operands: 2}, {Op: OpReturn, Descriptor: returned, Operands: 3}}
+				operands := RegisterFlow{Inputs: []Operand{{Kind: OperandSlot, Index: 0}}}
 				sending := operation == OpWaitableSend || operation == OpWaitableTrySend || operation == OpWaitableCanSend || operation == OpWaitableClose
 				if operation == OpWaitableSend || operation == OpWaitableTrySend {
 					operands.Inputs = append(operands.Inputs, Operand{Kind: OperandSlot, Index: 1})
@@ -571,7 +571,7 @@ func TestSlotChannelAccessHonorsDirectionAndResultTypes(t *testing.T) {
 					}
 					code.Types[operands.Outputs[0]] = types.Builtin(types.PrimitiveString)
 				}
-				code.Operands = []SlotOperands{{Outputs: []uint32{0}}, {Outputs: []uint32{1}}, operands, {}}
+				code.Operands = []RegisterFlow{{Outputs: []uint32{0}}, {Outputs: []uint32{1}}, operands, {}}
 				artifact.Functions = []Function{{ID: "main", Code: &code}}
 				valid := !forgedResult && (direction == types.ChannelBoth || sending == (direction == types.ChannelSend))
 				if err := ValidateArtifact(&artifact); (err == nil) != valid {

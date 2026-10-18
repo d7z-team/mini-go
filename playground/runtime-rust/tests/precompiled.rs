@@ -6,7 +6,7 @@ use mini_go::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use support::slot_code;
+use support::micro_code;
 mod support;
 
 #[test]
@@ -60,7 +60,7 @@ fn repeated_scalar_calls_release_activation_capacity_and_keep_code_ready() {
                     "id": "fn.Main",
                     "signature": {"params": [{"type": {"kind": 3, "primitive": 3}}], "results": [{"kind": 3, "primitive": 3}]},
                     "locals": [{"id": "n", "type": {"kind": 3, "primitive": 3}}],
-                    "code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+                    "code":micro_code(json!([{"kind":3,"primitive":3}]), &[
                         ("load_local",json!({"local":"n"}),json!({"outputs":[0]})),
                         ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])
                 }]

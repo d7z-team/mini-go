@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[test]
 fn detached_snapshot_preserves_cycles_and_survives_instance_close() {
     let map = json!({"kind":7,"node":"map"});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([map,{"kind":3,"primitive":2},map]),
         &[
             ("make_map", json!({"type":map}), json!({"outputs":[0]})),
@@ -78,7 +78,7 @@ fn detached_snapshot_preserves_cycles_and_survives_instance_close() {
 #[test]
 fn byte_snapshot_owns_binary_data_after_guest_storage_is_released() {
     let bytes = json!({"kind":5,"node":"bytes"});
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([bytes]),
         &[
             ("const", json!({"constant":"data"}), json!({"outputs":[0]})),

@@ -48,7 +48,7 @@ type frame struct {
 	directInitialized []bool
 	upvalueCells      []*slot
 	slotValues        []vmValue
-	slotOperands      *ir.SlotOperands
+	slotOperands      *ir.RegisterFlow
 	slotPC            int
 	slotInput         int
 	slotOutput        int
@@ -71,7 +71,7 @@ type frame struct {
 // backing pointers distinguish revisions and synthetic loaded functions while
 // keeping the idle-pool compatibility check constant time.
 type frameShapeIdentity struct {
-	code             *ir.SlotCode
+	code             *ir.MicroCode
 	localTypes       *vmType
 	localLayouts     *preparedValueLayout
 	localVariadic    *bool

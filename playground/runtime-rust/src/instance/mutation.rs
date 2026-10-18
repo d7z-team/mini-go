@@ -145,8 +145,7 @@ impl Instance {
                 "assignment to nil container",
             ));
         }
-        let index = usize::try_from(key.integer()?)
-            .map_err(|_| RuntimeError::new("panic", "store_index", "negative index"))?;
+        let index = key.index()?;
         let address = match object.data {
             Data::Pointer(address) => {
                 let mut address = Arc::unwrap_or_clone(address);
@@ -416,7 +415,7 @@ impl Instance {
 mod tests {
     use super::*;
     use serde_json::json;
-    use test_helpers::slot_code;
+    use test_helpers::micro_code;
 
     #[test]
     fn map_literal_keeps_pending_entries_across_collection() {
@@ -440,7 +439,7 @@ mod tests {
             artifact["constants"] = json!(constants);
             artifact["functions"] = json!([{
                 "id":"fn.Main", "signature":{"results":[map]},
-                "code":slot_code(json!([map]), &[
+                "code":micro_code(json!([map]), &[
                     ("make_map",json!({"type":map,"entry_count":count}),json!({"inputs":inputs,"outputs":[0]})),
                     ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))
                 ])
@@ -491,7 +490,7 @@ mod tests {
             artifact["functions"] = serde_json::json!([{
                 "id":"fn.Main", "signature":{"results":[{"kind":3,"primitive":3}]},
                 "locals":[{"id":"map","type":{"kind":7,"node":"map"}}],
-                "code":slot_code(json!([{"kind":7,"node":"map"},{"kind":3,"primitive":3},{"kind":3,"primitive":3}]), &[
+                "code":micro_code(json!([{"kind":7,"node":"map"},{"kind":3,"primitive":3},{"kind":3,"primitive":3}]), &[
                     ("make_map",json!({"type":{"kind":7,"node":"map"}}),json!({"outputs":[0]})),
                     ("store_local",json!({"local":"map"}),json!({"inputs":[[0,0]],"release":[0]})),
                     ("load_local",json!({"local":"map"}),json!({"outputs":[0]})),
@@ -555,7 +554,7 @@ mod tests {
     fn map_writes_preserve_existing_entries_and_pointer_values() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -620,7 +619,7 @@ mod tests {
     fn managed_map_round_trips_dynamic_string_lanes() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -660,7 +659,7 @@ mod tests {
     fn managed_map_growth_failure_rolls_back_encoded_string_backing() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let limits = ExecutionLimits {
@@ -724,7 +723,7 @@ mod tests {
     fn managed_map_round_trips_any_lane_without_host_map_storage() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -763,7 +762,7 @@ mod tests {
     fn managed_map_keeps_dynamic_slice_lane_reachable() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -811,7 +810,7 @@ mod tests {
 
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -904,7 +903,7 @@ mod tests {
     fn managed_map_round_trips_nested_map_lane() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -975,7 +974,7 @@ mod tests {
     fn pending_address_write_keeps_its_value_and_resumes_without_a_bytecode_step() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -1023,7 +1022,7 @@ mod tests {
     fn pending_delete_keeps_its_map_alive_and_preserves_other_entries() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -1081,7 +1080,7 @@ mod tests {
     fn managed_map_owner_is_pruned_when_guest_anchor_is_unreachable() {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":test_helpers::slot_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
+                {"id":"fn.Main", "code":test_helpers::micro_code(serde_json::json!([]), &[("return",serde_json::json!({}),serde_json::json!({}))])}
             ]);
         });
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();

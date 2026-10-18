@@ -137,7 +137,7 @@ func TestOwnerCollectionPreservesStorageUsedByNextAssignment(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Int"),
 		Locals: []ir.Local{{ID: "value", Type: testType("Array<32, Int>")}},
-		Code: testSlotCode([]string{"Array<32, Int>", "Array<32, Int>", "Int"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Array<32, Int>", "Array<32, Int>", "Int"}, []ir.Instruction{
 			{Op: ir.OpZero, Payload: testTypePayload("Array<32, Int>")},
 			{Op: ir.OpStoreLocal, Payload: ir.LocalPayload{Local: "value", Rebind: true}},
 			{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "value"}},
@@ -175,7 +175,7 @@ func TestOwnerCollectsLargeGarbageWithoutMemoryLimit(t *testing.T) {
 	artifact := ir.NewArtifact("memory/large-churn", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Int"),
-		Code: testSlotCode([]string{"Array<65536, Int>", "Int"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Array<65536, Int>", "Int"}, []ir.Instruction{
 			{Op: ir.OpZero, Payload: testTypePayload("Array<65536, Int>")},
 			{Op: ir.OpLen},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
@@ -301,7 +301,7 @@ func TestFailedFrameChargeCannotBeReusedWithoutAccounting(t *testing.T) {
 	artifact := ir.NewArtifact("memory/frame-charge", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+		Code: testMicroCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	instance, err := patchTestProgram(t, artifact, "frame-charge").Instantiate(t.Context(), InstanceOptions{
 		Limits: Limits{MaxGuestBytes: ir.StorageControlRecordBytes + ir.StorageFrameHeaderBytes - 1},
@@ -332,7 +332,7 @@ func TestTaskAndFrameAdmissionIsAtomic(t *testing.T) {
 	artifact := ir.NewArtifact("memory/task-frame-charge", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Code: testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+		Code: testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	instance, err := patchTestProgram(t, artifact, "task-frame-charge").Instantiate(t.Context(), InstanceOptions{
 		Limits: Limits{MaxGuestBytes: ir.StorageControlRecordBytes + ir.StorageFrameHeaderBytes - 1},
@@ -369,14 +369,14 @@ func TestDeferAdmissionFailureLeavesNoPublishedControlRecord(t *testing.T) {
 	artifact := ir.NewArtifact("memory/defer-admission", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void"}, []ir.Instruction{
+		Code: testMicroCode([]string{"function() Void"}, []ir.Instruction{
 			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.cleanup"}},
 			{Op: ir.OpDeferPush, Payload: ir.DeferPayload{}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}}),
 	}, {
 		ID: "fn.cleanup", Signature: testSignature("function() Void"),
-		Code: testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+		Code: testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	program := patchTestProgram(t, artifact, "defer-admission")
 	for _, budget := range []string{"guest", "resident"} {

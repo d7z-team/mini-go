@@ -169,7 +169,7 @@ func newInstanceRevision(program *Program, previous *instanceRevision, generatio
 		var module *moduleInstance
 		if oldModule, ok := previous.modules.module(path); ok {
 			var err error
-			module, err = bindModuleState(executable, oldModule.state)
+			module, err = bindModuleState(executable, oldModule)
 			if err != nil {
 				return nil, err
 			}
@@ -190,17 +190,6 @@ func newInstanceRevision(program *Program, previous *instanceRevision, generatio
 		return nil, errors.New("target revision has no root module")
 	}
 	return revision, nil
-}
-
-func (revision *instanceRevision) rebindGlobalSlots() {
-	for _, module := range revision.modules.modules {
-		for _, global := range module.executable.Artifact.Globals {
-			cell := module.state.globals[global.ID]
-			cell.module = module
-			cell.typ = module.runtimeType(global.Type)
-			_, cell.variadic, _ = module.functionTypeInfo(global.Type)
-		}
-	}
 }
 
 func cloneEntries(entries map[string]string) map[string]string {

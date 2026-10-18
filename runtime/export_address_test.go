@@ -29,12 +29,6 @@ func TestExportAddressPreservesInitializedSlotAcrossPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	badRoot, badDependency := exportAddressArtifacts()
-	badDependency.Globals = append(badDependency.Globals, ir.Global{ID: "global.extra", Type: testType("Int64")})
-	bad := patchMultiModuleProgram(t, badRoot, badDependency, "address-incompatible")
-	if _, err := instance.PreparePatch(context.Background(), bad); patchErrorCode(err) != "global_shape_changed" {
-		t.Fatalf("incompatible patch: %v", err)
-	}
 	root, dependency = exportAddressArtifacts()
 	dependency.Constants[0].Value = []byte("2")
 	next := patchMultiModuleProgram(t, root, dependency, "address-new")
@@ -79,12 +73,12 @@ func TestExportAddressInitializationFailure(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root, dependency := exportAddressArtifacts()
 			if cancel {
-				dependency.Functions[0].Code = testSlotCode(nil, []ir.Instruction{
+				dependency.Functions[0].Code = testMicroCode(nil, []ir.Instruction{
 					{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "loop"}},
 					{Op: ir.OpJump, Payload: ir.JumpPayload{Label: "loop"}},
 				}, [][2][]uint32{{nil, nil}, {nil, nil}})
 			} else {
-				dependency.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{
+				dependency.Functions[0].Code = testMicroCode([]string{"Int64"}, []ir.Instruction{
 					{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.initial"}},
 					{Op: ir.OpPanic},
 				}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
@@ -146,7 +140,7 @@ func TestModuleExportsObserveInitializationState(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root, dependency := exportAddressArtifacts()
 			if !test.address {
-				root.Functions[0].Code = testSlotCode([]string{"struct{N:Int64}", "Int64"}, []ir.Instruction{
+				root.Functions[0].Code = testMicroCode([]string{"struct{N:Int64}", "Int64"}, []ir.Instruction{
 					{Op: ir.OpLoadExport, Payload: ir.ExportPayload{ModulePath: dependency.Module.Path, Export: "Item"}},
 					{Op: ir.OpLoadField, Payload: ir.FieldPayload{Field: "N"}},
 					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},

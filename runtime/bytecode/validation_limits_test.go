@@ -4,9 +4,9 @@ import "testing"
 
 func TestArtifactLimitsIdentifyIndividualAndAggregateExcess(t *testing.T) {
 	artifact := Artifact{
-		Functions: []Function{{Code: &SlotCode{}}, {
+		Functions: []Function{{Code: &MicroCode{}}, {
 			Locals: make([]Local, 2), Upvalues: make([]Upvalue, 2),
-			Code: &SlotCode{Instructions: []SlotInstruction{{Op: OpReturn}, {Op: OpCallDirect}}, Descriptors: DescriptorTables{Return: []ReturnPayload{{}}, Call: []CallPayload{{}}}},
+			Code: &MicroCode{Instructions: []MicroInstruction{{Op: OpReturn}, {Op: OpCallDirect}}, Descriptors: DescriptorTables{Return: []ReturnPayload{{}}, Call: []CallPayload{{}}}},
 		}},
 		Constants: []Constant{{Value: []byte(`0`)}, {Value: []byte(`123`)}},
 	}

@@ -57,7 +57,7 @@ func (l *lowerer) lowerMethodExpression(expr ast.Expression) (ir.Expression, boo
 	l.nextAnonFunc++
 	fn := ir.Function{
 		ID: fmt.Sprintf("fn.method.expr.%d", l.nextAnonFunc), Name: fmt.Sprintf("method.expr.%d", l.nextAnonFunc),
-		RevisionLocal: true, Generated: true, Signature: selection.Signature, Locals: locals, Body: body,
+		Generated: true, Signature: selection.Signature, Locals: locals, Body: body,
 		Declaration: hirLocationPtr(expr.Span),
 	}
 	l.extraFunctions = append(l.extraFunctions, fn)
@@ -106,10 +106,9 @@ func (l *lowerer) lowerInterfaceMethodExpression(expr ast.Expression) (ir.Expres
 	}
 	l.nextAnonFunc++
 	fn := ir.Function{
-		ID:            fmt.Sprintf("fn.interface.method.expr.%d", l.nextAnonFunc),
-		Name:          fmt.Sprintf("interface.method.expr.%d", l.nextAnonFunc),
-		RevisionLocal: true,
-		Generated:     true,
+		ID:        fmt.Sprintf("fn.interface.method.expr.%d", l.nextAnonFunc),
+		Name:      fmt.Sprintf("interface.method.expr.%d", l.nextAnonFunc),
+		Generated: true,
 		Signature: types.FunctionSignature{
 			Params:   append([]types.TypeParam{{Type: method.InterfaceType}}, method.Signature.Params...),
 			Results:  append([]types.TypeRef(nil), method.Signature.Results...),
@@ -243,9 +242,9 @@ func (l *lowerer) lowerMethodValue(expr ast.Expression, scope *funcScope) (ir.Ex
 	}
 	l.nextAnonFunc++
 	fn := ir.Function{
-		ID:            fmt.Sprintf("fn.%s.value.%d", prefix, l.nextAnonFunc),
-		Name:          fmt.Sprintf("%s.value.%d", prefix, l.nextAnonFunc),
-		RevisionLocal: true, Generated: true, Signature: signature, Locals: locals,
+		ID:        fmt.Sprintf("fn.%s.value.%d", prefix, l.nextAnonFunc),
+		Name:      fmt.Sprintf("%s.value.%d", prefix, l.nextAnonFunc),
+		Generated: true, Signature: signature, Locals: locals,
 		Upvalues: []ir.Upvalue{{ID: receiverRef.Upvalue, Name: prefix + ".recv", Type: receiverType}},
 		Body:     body,
 	}

@@ -10,7 +10,7 @@ import (
 // until every use in the same control-flow region. Captured/addressed cells
 // always retain their explicit reads, including across calls that can mutate
 // them. The backward write index preserves parallel assignment snapshots.
-func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *types.TypeTable, symbols *ir.FunctionSymbols) error {
+func forwardLocalOperands(code *ir.MicroCode, function *hir.Function, table *types.TypeTable, symbols *ir.FunctionSymbols) error {
 	locals := make(map[string]int, len(function.Locals))
 	private := make([]bool, len(function.Locals))
 	nextWrite := make([]int, len(function.Locals))
@@ -71,7 +71,7 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 			if private[local] && lastUse[output] <= boundary && lastUse[output] <= nextWrite[local] && lastUse[output] < observationBoundary {
 				forwarded[output], removed[pc] = ir.Operand{Kind: ir.OperandLocal, Index: uint32(local)}, true
 			}
-		case ir.OpLabel, ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpReturn, ir.OpPanic,
+		case ir.OpLabel, ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpUpdateCompareBranch, ir.OpReturn, ir.OpPanic,
 			ir.OpTypeDispatch, ir.OpSelect, ir.OpMapIterInit, ir.OpMapIterNext, ir.OpMapIterClose,
 			ir.OpCallDirect, ir.OpCallValue, ir.OpCallInterface, ir.OpTailCallDirect, ir.OpCallFFI,
 			ir.OpDeferPush, ir.OpSpawn, ir.OpInitModule:
@@ -96,7 +96,7 @@ func forwardLocalOperands(code *ir.SlotCode, function *hir.Function, table *type
 // Implicit operands keep cells alive just like ordinary loads and stores.
 // Compact declarations only after rewriting operands, and retain source locals
 // for inspection even when their current value is not used by guest code.
-func pruneUnusedTemporaryLocals(code *ir.SlotCode, function *hir.Function, symbols *ir.FunctionSymbols) {
+func pruneUnusedTemporaryLocals(code *ir.MicroCode, function *hir.Function, symbols *ir.FunctionSymbols) {
 	used := make(map[string]bool, len(function.Locals))
 	for index, local := range function.Locals {
 		if index < len(function.Signature.Params) || !local.Generated {
@@ -187,7 +187,7 @@ func pruneUnusedTemporaryLocals(code *ir.SlotCode, function *hir.Function, symbo
 // Scalar/pointer temporaries and uniquely consumed fresh aggregates can retain their
 // producer slot instead of allocating a local cell. Source locals, parameters,
 // return cells and implicit operands retain their storage and debugger identity.
-func promoteTemporaries(code *ir.SlotCode, function *hir.Function, table *types.TypeTable, locals map[string]int, private []bool, symbols *ir.FunctionSymbols) error {
+func promoteTemporaries(code *ir.MicroCode, function *hir.Function, table *types.TypeTable, locals map[string]int, private []bool, symbols *ir.FunctionSymbols) error {
 	candidates := make([]bool, len(function.Locals))
 	writes := make([]int, len(candidates))
 	reads := make([][]int, len(candidates))
@@ -272,7 +272,7 @@ func promoteTemporaries(code *ir.SlotCode, function *hir.Function, table *types.
 		case ir.OpLoadLocal:
 			local := locals[code.Descriptors.Local[instruction.Descriptor].Local]
 			reads[local] = append(reads[local], pc)
-		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpReturn, ir.OpPanic, ir.OpTypeDispatch:
+		case ir.OpJump, ir.OpJumpIf, ir.OpCompareBranch, ir.OpLenCompareBranch, ir.OpUpdateCompareBranch, ir.OpReturn, ir.OpPanic, ir.OpTypeDispatch:
 			block++
 		}
 	}
@@ -321,7 +321,7 @@ func promoteTemporaries(code *ir.SlotCode, function *hir.Function, table *types.
 // branch or another operation instead of a store; those outputs stay slots.
 // Matching by output identity lets MapIterNext fuse key/value even after an
 // earlier pass has removed the bool store used by its continuation branch.
-func directLocalResults(code *ir.SlotCode, function *hir.Function, table *types.TypeTable, symbols *ir.FunctionSymbols) error {
+func directLocalResults(code *ir.MicroCode, function *hir.Function, table *types.TypeTable, symbols *ir.FunctionSymbols) error {
 	locals := make(map[string]int, len(function.Locals))
 	private := make([]bool, len(function.Locals))
 	for index, local := range function.Locals {
@@ -443,17 +443,31 @@ func directLocalResults(code *ir.SlotCode, function *hir.Function, table *types.
 	return nil
 }
 
-func rewriteSlotLocals(code *ir.SlotCode, removed []bool, replacements map[uint32]ir.Operand, symbols *ir.FunctionSymbols) error {
-	return rewriteSlotCode(code, removed, replacements, nil, symbols)
+func rewriteSlotLocals(code *ir.MicroCode, removed []bool, replacements map[uint32]ir.Operand, symbols *ir.FunctionSymbols) error {
+	return rewriteMicroCode(code, removed, replacements, nil, symbols)
 }
 
-func rewriteSlotCode(code *ir.SlotCode, removed []bool, replacements map[uint32]ir.Operand, overrides map[int]ir.Instruction, symbols *ir.FunctionSymbols) error {
+func rewriteMicroCode(code *ir.MicroCode, removed []bool, replacements map[uint32]ir.Operand, overrides map[int]ir.Instruction, symbols *ir.FunctionSymbols) error {
+	return rewriteMicroCodeWithInsertions(code, removed, replacements, overrides, nil, symbols)
+}
+
+func rewriteMicroCodeWithInsertions(code *ir.MicroCode, removed []bool, replacements map[uint32]ir.Operand, overrides map[int]ir.Instruction, insertions map[int][]ir.Instruction, symbols *ir.FunctionSymbols) error {
 	pcs := make([]int, len(code.Instructions)+1)
-	instructions := code.Instructions[:0]
-	operands := make([]ir.SlotOperands, 0, len(code.Instructions))
+	instructions := make([]ir.MicroInstruction, 0, len(code.Instructions)+len(insertions))
+	operands := make([]ir.RegisterFlow, 0, len(code.Instructions)+len(insertions))
 	var descriptors ir.DescriptorTables
 	for pc, instruction := range code.Instructions {
 		pcs[pc] = len(instructions)
+		for _, insertion := range insertions[pc] {
+			descriptor, err := descriptors.Append(insertion.Payload)
+			if err != nil {
+				return err
+			}
+			instructions = append(instructions, ir.MicroInstruction{
+				Op: insertion.Op, Descriptor: descriptor, Operands: uint32(len(operands)), Cost: 1,
+			})
+			operands = append(operands, ir.RegisterFlow{})
+		}
 		if removed[pc] {
 			continue
 		}

@@ -14,7 +14,7 @@ func TestVMRunsDirectCallWithLocals(t *testing.T) {
 		ID:        "fn.echo",
 		Signature: testSignature("function(String) String"),
 		Locals:    []ir.Local{{ID: "local.value", Type: testType("String")}},
-		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String"}, []ir.Instruction{{
 			Op:      ir.OpLoadLocal,
 			Payload: ir.LocalPayload{Local: "local.value"},
 		}, {
@@ -24,7 +24,7 @@ func TestVMRunsDirectCallWithLocals(t *testing.T) {
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Code: testSlotCode([]string{"String", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String", "String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.input"},
 		}, {
@@ -59,7 +59,7 @@ func TestVMTailCallDoesNotConsumeCallDepth(t *testing.T) {
 		{
 			ID: "fn.count", Signature: testSignature("function(Int64) Int64"),
 			Locals: []ir.Local{{ID: "local.n", Type: testType("Int64")}},
-			Code: testSlotCode([]string{"Int64", "Int64", "Bool", "Int64"}, []ir.Instruction{
+			Code: testMicroCode([]string{"Int64", "Int64", "Bool", "Int64"}, []ir.Instruction{
 				{Op: ir.OpLoadLocal, Payload: ir.LocalPayload{Local: "local.n"}},
 				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.zero"}},
 				{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "=="}},
@@ -75,7 +75,7 @@ func TestVMTailCallDoesNotConsumeCallDepth(t *testing.T) {
 		},
 		{
 			ID: "fn.main", Signature: testSignature("function() Int64"),
-			Code: testSlotCode([]string{"Int64", "Int64"}, []ir.Instruction{
+			Code: testMicroCode([]string{"Int64", "Int64"}, []ir.Instruction{
 				{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.depth"}},
 				{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.count", ArgCount: 1, ResultCount: 1}},
 				{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
@@ -104,7 +104,7 @@ func TestVMRunsConditionalJump(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Bool", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Bool", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.true"},
 		}, {
@@ -149,7 +149,7 @@ func TestVMRunsBinaryAndUnaryOperators(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Bool"),
-		Code: testSlotCode([]string{"Int64", "Int64", "Int64", "Bool", "Bool"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Int64", "Int64", "Bool", "Bool"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.two"},
 		}, {
@@ -195,7 +195,7 @@ func TestVMStoresAndLoadsGlobal(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.value"},
 		}, {
@@ -232,7 +232,7 @@ func TestVMRunModuleExportRunsRootInitOnce(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.init",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int64", "Int64", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Int64", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpLoadGlobal,
 			Payload: ir.GlobalPayload{Global: "global.count"},
 		}, {
@@ -248,7 +248,7 @@ func TestVMRunModuleExportRunsRootInitOnce(t *testing.T) {
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpLoadGlobal,
 			Payload: ir.GlobalPayload{Global: "global.count"},
 		}, {

@@ -26,7 +26,7 @@ func TestVMSetIndexMapUsesKeyValueTypes(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
 		Locals:    []ir.Local{{ID: "local.users", Type: testType("Map<String, User>")}},
-		Code: testSlotCode([]string{"Map<String, User>", "String", "String", "User"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Map<String, User>", "String", "String", "User"}, []ir.Instruction{{
 			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, User>", 0),
 		}, {
@@ -92,7 +92,7 @@ func TestLoaderSetIndexMapRejectsWrongValueType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Map<String, User>", "String", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Map<String, User>", "String", "String"}, []ir.Instruction{{
 			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, User>", 0),
 		}, {
@@ -127,7 +127,7 @@ func TestLoaderMapIndexRejectsWrongKeyType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Map<String, User>", "Int64", "User"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Map<String, User>", "Int64", "User"}, []ir.Instruction{{
 			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, User>", 0),
 		}, {
@@ -161,7 +161,7 @@ func TestLoaderDeleteMapRejectsWrongKeyType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Map<String, User>", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Map<String, User>", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, User>", 0),
 		}, {
@@ -198,7 +198,7 @@ func TestVMMapKeysUsesMapKeyType(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
 		Locals:    []ir.Local{{ID: "local.keys", Type: testType("Slice<String>")}},
-		Code: testSlotCode([]string{"String", "String", "User", "Map<String, User>", "Slice<String>", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String", "String", "User", "Map<String, User>", "Slice<String>", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.key"},
 		}, {
@@ -255,7 +255,7 @@ func TestVMMapIndexMissingNamedStructReturnsZeroValue(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Code: testSlotCode([]string{"Map<String, User>", "String", "User"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Map<String, User>", "String", "User"}, []ir.Instruction{{
 			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, User>", 0),
 		}, {
@@ -290,7 +290,7 @@ func TestVMMapIndexMissingPrimitiveReturnsZeroValue(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Map<String, Int64>", "String", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Map<String, Int64>", "String", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, Int64>", 0),
 		}, {
@@ -325,7 +325,7 @@ func TestVMLoadIndexOKReturnsValueAndPresence(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() tuple(Int64, Bool)"),
-		Code: testSlotCode([]string{"String", "Int64", "Map<String, Int64>", "Bool"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String", "Int64", "Map<String, Int64>", "Bool"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.key"},
 		}, {
@@ -363,7 +363,7 @@ func TestVMLoadIndexOKMissingReturnsZeroValueAndFalse(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() tuple(Int64, Bool)"),
-		Code: testSlotCode([]string{"Map<String, Int64>", "String", "Int64", "Bool"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Map<String, Int64>", "String", "Int64", "Bool"}, []ir.Instruction{{
 			Op:      ir.OpMakeMap,
 			Payload: testMapPayload("Map<String, Int64>", 0),
 		}, {

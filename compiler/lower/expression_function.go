@@ -89,11 +89,10 @@ func (l *lowerer) assignmentTargetType(target ast.Expression, scope *funcScope) 
 func (l *lowerer) lowerFuncLiteral(expr ast.Expression, outer *funcScope) (ir.Expression, bool) {
 	l.nextAnonFunc++
 	fn := ir.Function{
-		ID:            fmt.Sprintf("fn.literal.%d", l.nextAnonFunc),
-		Name:          fmt.Sprintf("literal.%d", l.nextAnonFunc),
-		RevisionLocal: true,
-		Declaration:   hirLocationPtr(expr.Span),
-		Signature:     l.hirSignature(l.signatureOf(*expr.Func), funcDeclVariadic(*expr.Func)),
+		ID:          fmt.Sprintf("fn.literal.%d", l.nextAnonFunc),
+		Name:        fmt.Sprintf("literal.%d", l.nextAnonFunc),
+		Declaration: hirLocationPtr(expr.Span),
+		Signature:   l.hirSignature(l.signatureOf(*expr.Func), funcDeclVariadic(*expr.Func)),
 	}
 	scope := newFuncScope(&fn, outer)
 	scope.resultTypes = fn.Signature.Results

@@ -17,7 +17,7 @@ func TestSchedulerRotatesRunnableTasks(t *testing.T) {
 
 func TestTaskSliceReturnsAtQuantumWithoutReadyPeers(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/bounded-slice", "main")
-	code := testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	code := testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 	insertTestDelay(code, 0, taskInstructionQuantum*2)
 	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function()"), Code: code}}
 	instance, err := patchTestProgram(t, artifact, "bounded-slice").Instantiate(t.Context(), InstanceOptions{})
@@ -51,7 +51,7 @@ func testSchedulerRotation(t *testing.T, budgets []int) {
 		{ID: "global.ready", Type: testType("Bool")},
 		{ID: "global.observed", Type: testType("Bool")},
 	}
-	child := testSlotCode([]string{"Bool"}, []ir.Instruction{
+	child := testMicroCode([]string{"Bool"}, []ir.Instruction{
 		{Op: ir.OpLoadGlobal, Payload: ir.GlobalPayload{Global: "global.ready"}},
 		{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.observed"}},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
@@ -59,18 +59,17 @@ func testSchedulerRotation(t *testing.T, budgets []int) {
 	insertTestDelay(child, 0, taskInstructionQuantum*2)
 	artifact.Functions = []ir.Function{{
 		ID: "fn.main", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void", "Bool"}, []ir.Instruction{
+		Code: testMicroCode([]string{"function() Void", "Bool"}, []ir.Instruction{
 			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
 			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.true"}},
 			{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.ready"}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}}),
 	}, {
-		ID: "fn.child", RevisionLocal: true,
-		Signature: testSignature("function() Void"), Code: child,
+		ID: "fn.child", Signature: testSignature("function() Void"), Code: child,
 	}}
 	insertTestDelay(artifact.Functions[0].Code, 4, taskInstructionQuantum*2)
-	appendTestSlotCode(artifact.Functions[0].Code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	appendTestMicroCode(artifact.Functions[0].Code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 	artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 	vm := pollSchedulerArtifact(t, artifact, budgets)
 	observed := vm.rootModule().state.globals["global.observed"].load()

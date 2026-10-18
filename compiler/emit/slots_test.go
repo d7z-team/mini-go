@@ -18,13 +18,13 @@ func TestDirectLocalResultsPreserveAddressableStorageAndBoundaries(t *testing.T)
 	for _, protected := range []string{"", "address", "capture", "rebind", "source boundary", "second use"} {
 		t.Run(protected, func(t *testing.T) {
 			function := hir.Function{Locals: []hir.Local{{ID: "sum", Type: integer}}}
-			code := ir.SlotCode{Types: []types.TypeRef{integer}, Operands: []ir.SlotOperands{
+			code := ir.MicroCode{Types: []types.TypeRef{integer}, Operands: []ir.RegisterFlow{
 				{Inputs: []ir.Operand{{Kind: ir.OperandLocal}, {Kind: ir.OperandLocal}}, Outputs: []uint32{0}},
 				{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}},
 			}}
 			code.Descriptors.Operator = []ir.OperatorPayload{{Operator: "+"}}
 			code.Descriptors.Local = []ir.LocalPayload{{Local: "sum"}}
-			code.Instructions = []ir.SlotInstruction{{Op: ir.OpBinary}, {Op: ir.OpStoreLocal, Operands: 1}}
+			code.Instructions = []ir.MicroInstruction{{Op: ir.OpBinary}, {Op: ir.OpStoreLocal, Operands: 1}}
 			symbols := ir.FunctionSymbols{}
 			switch protected {
 			case "address":
@@ -36,7 +36,7 @@ func TestDirectLocalResultsPreserveAddressableStorageAndBoundaries(t *testing.T)
 			case "source boundary":
 				symbols.Locations = []ir.InstructionSymbol{{PC: 1, Points: []ir.Location{{File: "main.mgo", Line: 2}}}}
 			case "second use":
-				code.Instructions = append(code.Instructions, ir.SlotInstruction{Op: ir.OpStoreLocal, Operands: 1})
+				code.Instructions = append(code.Instructions, ir.MicroInstruction{Op: ir.OpStoreLocal, Operands: 1})
 			}
 			if err := directLocalResults(&code, &function, &types.TypeTable{}, &symbols); err != nil {
 				t.Fatal(err)
@@ -50,7 +50,7 @@ func TestDirectLocalResultsPreserveAddressableStorageAndBoundaries(t *testing.T)
 			if err := allocateSlots(&code); err != nil {
 				t.Fatal(err)
 			}
-			if err := ir.ValidateSlotCode(&code, nil, ir.Local{ID: "sum", Type: integer}); err != nil {
+			if err := ir.ValidateMicroCode(&code, nil, ir.Local{ID: "sum", Type: integer}); err != nil {
 				t.Fatal(err)
 			}
 			if len(code.Types) != 0 || code.Operands[0].Outputs[0] != ir.LocalOutput {
@@ -65,9 +65,9 @@ func TestDirectLocalResultsForwardsSingleDirectCall(t *testing.T) {
 	function := hir.Function{
 		Locals: []hir.Local{{ID: "sum", Type: integer}},
 	}
-	code := ir.SlotCode{
+	code := ir.MicroCode{
 		Types: []types.TypeRef{integer},
-		Operands: []ir.SlotOperands{
+		Operands: []ir.RegisterFlow{
 			{Outputs: []uint32{0}},
 			{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}},
 		},
@@ -80,7 +80,7 @@ func TestDirectLocalResultsForwardsSingleDirectCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code.Instructions = []ir.SlotInstruction{
+	code.Instructions = []ir.MicroInstruction{
 		{Op: ir.OpCallDirect, Descriptor: callDescriptor},
 		{Op: ir.OpStoreLocal, Descriptor: localDescriptor, Operands: 1},
 	}
@@ -93,7 +93,7 @@ func TestDirectLocalResultsForwardsSingleDirectCall(t *testing.T) {
 	if len(code.Instructions) != 1 || code.Instructions[0].Op != ir.OpCallDirect {
 		t.Fatalf("store_local was not removed: %#v", code.Instructions)
 	}
-	if err := ir.ValidateSlotCode(&code, nil, ir.Local{ID: "sum", Type: integer}); err != nil {
+	if err := ir.ValidateMicroCode(&code, nil, ir.Local{ID: "sum", Type: integer}); err != nil {
 		t.Fatalf("forwarded call failed slot validation: %v", err)
 	}
 }
@@ -101,18 +101,18 @@ func TestDirectLocalResultsForwardsSingleDirectCall(t *testing.T) {
 func TestDirectLocalResultsPreservesInterveningLocalRead(t *testing.T) {
 	integer := types.Builtin(types.PrimitiveInt)
 	function := hir.Function{Locals: []hir.Local{{ID: "a", Type: integer}, {ID: "b", Type: integer}}}
-	code := ir.SlotCode{
+	code := ir.MicroCode{
 		Types: []types.TypeRef{integer},
 		Descriptors: ir.DescriptorTables{
 			Operator: []ir.OperatorPayload{{Operator: "%"}},
 			Local:    []ir.LocalPayload{{Local: "a"}, {Local: "b"}},
 		},
-		Instructions: []ir.SlotInstruction{
+		Instructions: []ir.MicroInstruction{
 			{Op: ir.OpBinary},
 			{Op: ir.OpStoreLocal, Operands: 1},
 			{Op: ir.OpStoreLocal, Descriptor: 1, Operands: 2},
 		},
-		Operands: []ir.SlotOperands{
+		Operands: []ir.RegisterFlow{
 			{Inputs: []ir.Operand{{Kind: ir.OperandLocal}, {Kind: ir.OperandLocal, Index: 1}}, Outputs: []uint32{0}},
 			{Inputs: []ir.Operand{{Kind: ir.OperandLocal, Index: 1}}},
 			{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}},
@@ -132,9 +132,9 @@ func TestDirectLocalResultsKeepsNamedResultCell(t *testing.T) {
 		Locals:       []hir.Local{{ID: "result", Type: integer}},
 		ResultLocals: []string{"result"},
 	}
-	code := ir.SlotCode{
+	code := ir.MicroCode{
 		Types: []types.TypeRef{integer},
-		Operands: []ir.SlotOperands{
+		Operands: []ir.RegisterFlow{
 			{Outputs: []uint32{0}},
 			{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}},
 		},
@@ -147,7 +147,7 @@ func TestDirectLocalResultsKeepsNamedResultCell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code.Instructions = []ir.SlotInstruction{
+	code.Instructions = []ir.MicroInstruction{
 		{Op: ir.OpCallDirect, Descriptor: callDescriptor},
 		{Op: ir.OpStoreLocal, Descriptor: localDescriptor, Operands: 1},
 	}
@@ -187,7 +187,7 @@ func Render(items []Item) map[String]Int {
 
 func TestSlotLivenessClearsReferencesWhenBranchSkipsLastUse(t *testing.T) {
 	text := types.Builtin(types.PrimitiveString)
-	code := ir.SlotCode{Types: []types.TypeRef{text}, Operands: []ir.SlotOperands{
+	code := ir.MicroCode{Types: []types.TypeRef{text}, Operands: []ir.RegisterFlow{
 		{Outputs: []uint32{0}},
 		{Inputs: []ir.Operand{{Kind: ir.OperandConstant, Index: 0}}},
 		{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}},
@@ -205,7 +205,7 @@ func TestSlotLivenessClearsReferencesWhenBranchSkipsLastUse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		code.Instructions = append(code.Instructions, ir.SlotInstruction{Op: instruction.Op, Descriptor: index, Operands: uint32(pc)})
+		code.Instructions = append(code.Instructions, ir.MicroInstruction{Op: instruction.Op, Descriptor: index, Operands: uint32(pc)})
 	}
 	if err := allocateSlots(&code); err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestSlotLivenessClearsReferencesWhenBranchSkipsLastUse(t *testing.T) {
 		{ID: "branch", Type: types.Builtin(types.PrimitiveBool), Value: json.RawMessage(`true`)},
 		{ID: "result", Type: text, Value: json.RawMessage(`"done"`)},
 	}
-	if err := ir.ValidateSlotCode(&code, constants); err != nil {
+	if err := ir.ValidateMicroCode(&code, constants); err != nil {
 		t.Fatal(err)
 	}
 	if released := code.Operands[4].ReleaseBefore; len(released) != 1 || released[0] != 0 {
@@ -227,7 +227,7 @@ func TestSlotLivenessClearsReferencesWhenBranchSkipsLastUse(t *testing.T) {
 
 func TestSlotEntryReleaseTracksReferencesAcrossPredecessors(t *testing.T) {
 	text := types.Builtin(types.PrimitiveString)
-	code := ir.SlotCode{Types: []types.TypeRef{text, text}, Operands: []ir.SlotOperands{
+	code := ir.MicroCode{Types: []types.TypeRef{text, text}, Operands: []ir.RegisterFlow{
 		{Outputs: []uint32{0}},
 		{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}},
 		{},
@@ -259,12 +259,12 @@ func TestSlotEntryReleaseTracksReferencesAcrossPredecessors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		code.Instructions = append(code.Instructions, ir.SlotInstruction{Op: instruction.Op, Descriptor: descriptor, Operands: uint32(pc)})
+		code.Instructions = append(code.Instructions, ir.MicroInstruction{Op: instruction.Op, Descriptor: descriptor, Operands: uint32(pc)})
 	}
 	if err := allocateSlots(&code); err != nil {
 		t.Fatal(err)
 	}
-	if err := ir.ValidateSlotCode(&code, []ir.Constant{{ID: "branch", Type: types.Builtin(types.PrimitiveBool), Value: json.RawMessage(`true`)}}); err != nil {
+	if err := ir.ValidateMicroCode(&code, []ir.Constant{{ID: "branch", Type: types.Builtin(types.PrimitiveBool), Value: json.RawMessage(`true`)}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(code.Operands[4].ReleaseBefore) != 0 {
@@ -329,7 +329,7 @@ func Main() int { return Order() }
 			if err := allocateSlots(&code); err != nil {
 				t.Fatal(err)
 			}
-			if err := ir.ValidateSlotCode(&code, artifact.Constants); err != nil {
+			if err := ir.ValidateMicroCode(&code, artifact.Constants); err != nil {
 				t.Fatal(err)
 			}
 			for pc, instruction := range code.Instructions {
@@ -375,32 +375,32 @@ func TestTemporaryPromotionPreservesStorageBoundaries(t *testing.T) {
 			if test.returned {
 				function.ResultLocals = []string{"value"}
 			}
-			code := ir.SlotCode{Types: []types.TypeRef{valueType, valueType}}
-			appendOperation := func(op ir.Opcode, payload ir.Payload, operands ir.SlotOperands) {
+			code := ir.MicroCode{Types: []types.TypeRef{valueType, valueType}}
+			appendOperation := func(op ir.Opcode, payload ir.Payload, operands ir.RegisterFlow) {
 				descriptor, err := code.Descriptors.Append(payload)
 				if err != nil {
 					t.Fatal(err)
 				}
-				code.Instructions = append(code.Instructions, ir.SlotInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
+				code.Instructions = append(code.Instructions, ir.MicroInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
 				code.Operands = append(code.Operands, operands)
 			}
-			appendOperation(ir.OpZero, ir.TypePayload{Type: valueType}, ir.SlotOperands{Outputs: []uint32{0}})
-			appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value", Rebind: test.rebind}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
+			appendOperation(ir.OpZero, ir.TypePayload{Type: valueType}, ir.RegisterFlow{Outputs: []uint32{0}})
+			appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value", Rebind: test.rebind}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
 			if test.multipleWrites {
-				appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value"}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
+				appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value"}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
 			}
 			if test.branch {
-				appendOperation(ir.OpLabel, ir.LabelPayload{Label: "join"}, ir.SlotOperands{})
+				appendOperation(ir.OpLabel, ir.LabelPayload{Label: "join"}, ir.RegisterFlow{})
 			}
-			appendOperation(ir.OpLoadLocal, ir.LocalPayload{Local: "value"}, ir.SlotOperands{Outputs: []uint32{1}})
-			appendOperation(ir.OpReturn, ir.ReturnPayload{ResultCount: 1}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 1}}})
+			appendOperation(ir.OpLoadLocal, ir.LocalPayload{Local: "value"}, ir.RegisterFlow{Outputs: []uint32{1}})
+			appendOperation(ir.OpReturn, ir.ReturnPayload{ResultCount: 1}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 1}}})
 			if err := forwardLocalOperands(&code, &function, &table, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := allocateSlots(&code); err != nil {
 				t.Fatal(err)
 			}
-			if err := ir.ValidateSlotCode(&code, nil, lowerLocals(function.Locals)...); err != nil {
+			if err := ir.ValidateMicroCode(&code, nil, lowerLocals(function.Locals)...); err != nil {
 				t.Fatal(err)
 			}
 			last := code.Operands[code.Instructions[len(code.Instructions)-1].Operands]
@@ -451,33 +451,33 @@ func TestPrivateAggregateLocalForwardingPreservesEscapeBoundaries(t *testing.T) 
 			if boundary == "return cell" {
 				function.ResultLocals = []string{"value"}
 			}
-			code := ir.SlotCode{Types: []types.TypeRef{array, array, integer, pointer}}
-			appendOperation := func(op ir.Opcode, payload ir.Payload, operands ir.SlotOperands) {
+			code := ir.MicroCode{Types: []types.TypeRef{array, array, integer, pointer}}
+			appendOperation := func(op ir.Opcode, payload ir.Payload, operands ir.RegisterFlow) {
 				descriptor, err := code.Descriptors.Append(payload)
 				if err != nil {
 					t.Fatal(err)
 				}
-				code.Instructions = append(code.Instructions, ir.SlotInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
+				code.Instructions = append(code.Instructions, ir.MicroInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
 				code.Operands = append(code.Operands, operands)
 			}
-			appendOperation(ir.OpZero, ir.TypePayload{Type: integer}, ir.SlotOperands{Outputs: []uint32{2}})
+			appendOperation(ir.OpZero, ir.TypePayload{Type: integer}, ir.RegisterFlow{Outputs: []uint32{2}})
 			if boundary == "other producer" {
-				appendOperation(ir.OpZero, ir.TypePayload{Type: array}, ir.SlotOperands{Outputs: []uint32{0}})
+				appendOperation(ir.OpZero, ir.TypePayload{Type: array}, ir.RegisterFlow{Outputs: []uint32{0}})
 			} else {
-				appendOperation(ir.OpMakeSequence, ir.MakeSequencePayload{Type: array, ElementCount: 1}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 2}}, Outputs: []uint32{0}})
+				appendOperation(ir.OpMakeSequence, ir.MakeSequencePayload{Type: array, ElementCount: 1}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 2}}, Outputs: []uint32{0}})
 			}
-			appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value"}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
+			appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value"}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
 			if boundary == "other consumer" {
-				appendOperation(ir.OpPop, nil, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
+				appendOperation(ir.OpPop, nil, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot}}})
 			}
 			if boundary == "addressed" {
-				appendOperation(ir.OpAddressOf, ir.AddressPayload{Kind: "local", Local: "value"}, ir.SlotOperands{Outputs: []uint32{3}})
+				appendOperation(ir.OpAddressOf, ir.AddressPayload{Kind: "local", Local: "value"}, ir.RegisterFlow{Outputs: []uint32{3}})
 			}
 			if boundary == "branch" {
-				appendOperation(ir.OpLabel, ir.LabelPayload{Label: "join"}, ir.SlotOperands{})
+				appendOperation(ir.OpLabel, ir.LabelPayload{Label: "join"}, ir.RegisterFlow{})
 			}
-			appendOperation(ir.OpLoadLocal, ir.LocalPayload{Local: "value"}, ir.SlotOperands{Outputs: []uint32{1}})
-			appendOperation(ir.OpReturn, ir.ReturnPayload{ResultCount: 1}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 1}}})
+			appendOperation(ir.OpLoadLocal, ir.LocalPayload{Local: "value"}, ir.RegisterFlow{Outputs: []uint32{1}})
+			appendOperation(ir.OpReturn, ir.ReturnPayload{ResultCount: 1}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 1}}})
 			if err := forwardLocalOperands(&code, &function, &table, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -501,7 +501,7 @@ func TestPrivateAggregateLocalForwardingPreservesEscapeBoundaries(t *testing.T) 
 			if err := allocateSlots(&code); err != nil {
 				t.Fatal(err)
 			}
-			if err := ir.ValidateSlotCode(&code, nil, lowerLocals(function.Locals)...); err != nil {
+			if err := ir.ValidateMicroCode(&code, nil, lowerLocals(function.Locals)...); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -511,19 +511,19 @@ func TestPrivateAggregateLocalForwardingPreservesEscapeBoundaries(t *testing.T) 
 func TestForwardLocalRetargetsLoadSourcePoint(t *testing.T) {
 	integer := types.Builtin(types.PrimitiveInt)
 	function := hir.Function{Locals: []hir.Local{{ID: "value", Type: integer}}}
-	code := ir.SlotCode{Types: []types.TypeRef{integer, integer}}
-	appendOperation := func(op ir.Opcode, payload ir.Payload, operands ir.SlotOperands) {
+	code := ir.MicroCode{Types: []types.TypeRef{integer, integer}}
+	appendOperation := func(op ir.Opcode, payload ir.Payload, operands ir.RegisterFlow) {
 		descriptor, err := code.Descriptors.Append(payload)
 		if err != nil {
 			t.Fatal(err)
 		}
-		code.Instructions = append(code.Instructions, ir.SlotInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
+		code.Instructions = append(code.Instructions, ir.MicroInstruction{Op: op, Descriptor: descriptor, Operands: uint32(len(code.Operands))})
 		code.Operands = append(code.Operands, operands)
 	}
-	appendOperation(ir.OpZero, ir.TypePayload{Type: integer}, ir.SlotOperands{Outputs: []uint32{0}})
-	appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value"}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}})
-	appendOperation(ir.OpLoadLocal, ir.LocalPayload{Local: "value"}, ir.SlotOperands{Outputs: []uint32{1}})
-	appendOperation(ir.OpReturn, ir.ReturnPayload{ResultCount: 1}, ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 1}}})
+	appendOperation(ir.OpZero, ir.TypePayload{Type: integer}, ir.RegisterFlow{Outputs: []uint32{0}})
+	appendOperation(ir.OpStoreLocal, ir.LocalPayload{Local: "value"}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}})
+	appendOperation(ir.OpLoadLocal, ir.LocalPayload{Local: "value"}, ir.RegisterFlow{Outputs: []uint32{1}})
+	appendOperation(ir.OpReturn, ir.ReturnPayload{ResultCount: 1}, ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 1}}})
 	symbols := &ir.FunctionSymbols{Locations: []ir.InstructionSymbol{{PC: 2, Points: []ir.Location{{File: "main.mgo", Line: 3}}}}}
 	if err := forwardLocalOperands(&code, &function, &types.TypeTable{}, symbols); err != nil {
 		t.Fatal(err)
@@ -543,14 +543,14 @@ func TestForwardLocalRetargetsLoadSourcePoint(t *testing.T) {
 func TestForwardLocalPreservesSnapshotAtLaterSourcePoint(t *testing.T) {
 	integer := types.Builtin(types.PrimitiveInt)
 	function := hir.Function{Locals: []hir.Local{{ID: "value", Type: integer}}}
-	code := ir.SlotCode{
+	code := ir.MicroCode{
 		Types: []types.TypeRef{integer},
 		Descriptors: ir.DescriptorTables{
 			Local:  []ir.LocalPayload{{Local: "value"}},
 			Return: []ir.ReturnPayload{{ResultCount: 1}},
 		},
-		Instructions: []ir.SlotInstruction{{Op: ir.OpLoadLocal}, {Op: ir.OpReturn, Operands: 1}},
-		Operands: []ir.SlotOperands{
+		Instructions: []ir.MicroInstruction{{Op: ir.OpLoadLocal}, {Op: ir.OpReturn, Operands: 1}},
+		Operands: []ir.RegisterFlow{
 			{Outputs: []uint32{0}},
 			{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}},
 		},
@@ -573,8 +573,8 @@ func TestTemporaryLocalCompactionRetainsImplicitStorageAndRemapsDirectOperands(t
 	}
 	original := function.Locals
 	symbols := ir.FunctionSymbols{Locals: lowerLocalSymbols(function.Locals)}
-	code := ir.SlotCode{
-		Operands: []ir.SlotOperands{{Inputs: []ir.Operand{{Kind: ir.OperandLocal, Index: 2}}}},
+	code := ir.MicroCode{
+		Operands: []ir.RegisterFlow{{Inputs: []ir.Operand{{Kind: ir.OperandLocal, Index: 2}}}},
 		Descriptors: ir.DescriptorTables{
 			Address:      []ir.AddressPayload{{Kind: "local", Local: "address", Path: []ir.AddressPathSegment{{Local: "index"}}}},
 			Closure:      []ir.ClosurePayload{{Captures: []ir.AddressPayload{{Kind: "local", Local: "capture"}}}},

@@ -60,7 +60,7 @@ func TestPreparedConversionBindsScalarMetadata(t *testing.T) {
 	frame := &frame{
 		module:       &moduleInstance{},
 		slotValues:   []vmValue{newVMValue("Int64", int64(257))},
-		slotOperands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}, Outputs: []uint32{0}},
+		slotOperands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}, Outputs: []uint32{0}},
 		slotInput:    1,
 	}
 	if err := (&vm{}).executeInstruction(nil, frame, &instruction); err != nil {
@@ -125,7 +125,7 @@ func TestPreparedConversionPreservesNamedScalarAndAggregateSemantics(t *testing.
 		frame := &frame{
 			module:       &moduleInstance{},
 			slotValues:   []vmValue{input},
-			slotOperands: &ir.SlotOperands{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}, Outputs: []uint32{0}},
+			slotOperands: &ir.RegisterFlow{Inputs: []ir.Operand{{Kind: ir.OperandSlot, Index: 0}}, Outputs: []uint32{0}},
 			slotInput:    1,
 		}
 		if err := (&vm{}).executeInstruction(nil, frame, &instruction); err != nil {

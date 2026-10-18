@@ -10,7 +10,7 @@ use mini_go::{
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
-use support::slot_code;
+use support::micro_code;
 
 #[derive(Deserialize)]
 struct Vector {
@@ -169,10 +169,10 @@ fn shared_program() -> Arc<Program> {
                 "functions":[
                     {"id":"fn.Main","signature":{"results":[integer]},
                      "locals":[{"id":"guard","type":lock},{"id":"counter","type":integer}],
-                     "code":slot_code(json!([integer,channel,function,boolean]),&main)},
-                    {"id":"worker","revision_local":true,
+                     "code":micro_code(json!([integer,channel,function,boolean]),&main)},
+                    {"id":"worker",
                      "upvalues":[{"id":"guard","type":lock},{"id":"counter","type":integer}],
-                     "code":slot_code(json!([pointer,integer,integer,integer,slice,channel,boolean]),&worker)}
+                     "code":micro_code(json!([pointer,integer,integer,integer,slice,channel,boolean]),&worker)}
                 ]
             })),
             LoadLimits::default(),
@@ -324,8 +324,8 @@ fn call_defer_program() -> Arc<Program> {
                 ],
                 "functions":[
                     {"id":"fn.Main","signature":{"results":[integer]},
-                     "locals":[{"id":"total","type":integer}],"code":slot_code(json!([integer,channel,function,integer,integer]),&main)},
-                    {"id":"worker","locals":[{"id":"result","type":integer}],"code":slot_code(json!([channel,integer]), &[
+                     "locals":[{"id":"total","type":integer}],"code":micro_code(json!([integer,channel,function,integer,integer]),&main)},
+                    {"id":"worker","locals":[{"id":"result","type":integer}],"code":micro_code(json!([channel,integer]), &[
                         ("load_global",json!({"global":"start"}),json!({"outputs":[0]})),
                         ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
                         ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
@@ -337,22 +337,22 @@ fn call_defer_program() -> Arc<Program> {
                         ("load_local",json!({"local":"result"}),json!({"outputs":[1]})),
                         ("waitable_send",json!({}),json!({"inputs":[[0,0],[0,1]],"release":[0,1]})),
                         ("return",json!({}),json!({}))])},
-                    {"id":"nested","signature":{"results":[integer]},"code":slot_code(json!([function,integer]), &[
+                    {"id":"nested","signature":{"results":[integer]},"code":micro_code(json!([function,integer]), &[
                         ("make_closure",json!({"function":"cleanup"}),json!({"outputs":[0]})),
                         ("defer_push",json!({}),json!({"inputs":[[0,0]],"release":[0]})),
                         ("call_direct",json!({"function":"helper","result_count":1}),json!({"outputs":[1]})),
                         ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))])},
-                    {"id":"cleanup","code":slot_code(json!([]), &[("return",json!({}),json!({}))])},
+                    {"id":"cleanup","code":micro_code(json!([]), &[("return",json!({}),json!({}))])},
                     {"id":"helper","signature":{"results":[integer]},
-                     "locals":[{"id":"i","type":integer}],"code":slot_code(json!([integer,integer,integer,boolean]),&helper)},
-                    {"id":"recovered","signature":{"results":[integer]},"code":slot_code(json!([function,{"kind":3,"primitive":2},integer]), &[
+                     "locals":[{"id":"i","type":integer}],"code":micro_code(json!([integer,integer,integer,boolean]),&helper)},
+                    {"id":"recovered","signature":{"results":[integer]},"code":micro_code(json!([function,{"kind":3,"primitive":2},integer]), &[
                         ("make_closure",json!({"function":"recoverer"}),json!({"outputs":[0]})),
                         ("defer_push",json!({}),json!({"inputs":[[0,0]],"release":[0]})),
                         ("const",json!({"constant":"panic"}),json!({"outputs":[1]})),
                         ("panic",json!({}),json!({"inputs":[[0,1]],"release":[1]})),
                         ("zero",json!({"type":integer}),json!({"outputs":[2]})),
                         ("return",json!({"result_count":1}),json!({"inputs":[[0,2]],"release":[2]}))])},
-                    {"id":"recoverer","code":slot_code(json!([{"kind":2}]), &[
+                    {"id":"recoverer","code":micro_code(json!([{"kind":2}]), &[
                         ("recover",json!({}),json!({"outputs":[0]})),
                         ("pop",json!({}),json!({"inputs":[[0,0]],"release":[0]})),
                         ("return",json!({}),json!({}))])}

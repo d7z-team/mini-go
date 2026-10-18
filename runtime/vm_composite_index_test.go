@@ -25,7 +25,7 @@ func TestVMMakeSliceUsesNamedStructTypeMetadata(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() String"),
-		Code: testSlotCode([]string{"Int64", "Slice<User>", "User", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Slice<User>", "User", "String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
@@ -75,7 +75,7 @@ func TestLoaderSetIndexSliceRejectsWrongElementType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int64", "Slice<User>", "String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Slice<User>", "String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {

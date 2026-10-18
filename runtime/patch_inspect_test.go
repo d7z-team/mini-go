@@ -7,7 +7,7 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func TestPatchInspectionReportsConstantsCapabilitiesAndIncompatibleContracts(t *testing.T) {
+func TestPatchInspectionReportsConstantsCapabilitiesAndGlobalChanges(t *testing.T) {
 	base := patchTestProgram(t, patchGlobalArtifact(1), "inspect-base")
 	next := patchTestProgram(t, patchGlobalArtifact(2), "inspect-next")
 	base.code.image.Capabilities = []string{"old", "shared"}
@@ -21,14 +21,14 @@ func TestPatchInspectionReportsConstantsCapabilitiesAndIncompatibleContracts(t *
 	}
 	artifact := patchGlobalArtifact(2)
 	artifact.Globals[0].Type = testType("String")
-	artifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
-	incompatible := patchTestProgram(t, artifact, "inspect-incompatible")
-	report, err = ComparePrograms(base, incompatible)
-	if err != nil || report.Compatible || report.Rejection == nil || report.Rejection.Code != "global_shape_changed" || len(report.Modules[0].Globals) != 1 {
-		t.Fatalf("incompatible: %+v %v", report, err)
+	artifact.Functions[0].Code = testMicroCode([]string{"Int64"}, []ir.Instruction{{Op: ir.OpZero, Payload: testTypePayload("Int64")}, {Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
+	changed := patchTestProgram(t, artifact, "inspect-global-change")
+	report, err = ComparePrograms(base, changed)
+	if err != nil || !report.Compatible || report.Rejection != nil || len(report.Modules[0].Globals) != 1 {
+		t.Fatalf("global change: %+v %v", report, err)
 	}
 	for range 10 {
-		again, err := ComparePrograms(base, incompatible)
+		again, err := ComparePrograms(base, changed)
 		if err != nil || !reflect.DeepEqual(report, again) {
 			t.Fatalf("unstable report: %+v %v", again, err)
 		}
@@ -39,7 +39,7 @@ func TestPatchInspectionNamesDeclarationAndEntryChanges(t *testing.T) {
 	base := patchTestProgram(t, patchGlobalArtifact(1), "declarations-base")
 	artifact := patchGlobalArtifact(1)
 	insertTestDelay(artifact.Functions[0].Code, 0, 1)
-	artifact.Functions = append(artifact.Functions, ir.Function{ID: "fn.extra", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})})
+	artifact.Functions = append(artifact.Functions, ir.Function{ID: "fn.extra", Signature: testSignature("function() Void"), Code: testMicroCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})})
 	artifact.Exports = append(artifact.Exports, ir.Export{Name: "Extra", Kind: "function", ID: "fn.extra"})
 	next := patchTestProgram(t, artifact, "declarations-next")
 	next.code.image.Entries = append(next.code.image.Entries, ir.Entry{Name: "extra", ModulePath: artifact.Module.Path, FunctionID: "fn.extra"})
@@ -53,7 +53,7 @@ func TestPatchInspectionNamesDeclarationAndEntryChanges(t *testing.T) {
 		t.Fatalf("declarations: %+v", report)
 	}
 	reverse, err := ComparePrograms(next, base)
-	if err != nil || reverse.Compatible || reverse.Rejection == nil || reverse.Modules[0].Functions[1].Kind != "removed" || reverse.Entries[0].Kind != "removed" {
+	if err != nil || !reverse.Compatible || reverse.Rejection != nil || reverse.Modules[0].Functions[1].Kind != "removed" || reverse.Entries[0].Kind != "removed" {
 		t.Fatalf("removed: %+v %v", reverse, err)
 	}
 }

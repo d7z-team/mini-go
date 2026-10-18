@@ -10,12 +10,12 @@ import (
 func BenchmarkCompileCacheWrite(b *testing.B) {
 	artifact := ir.NewArtifact("bench", "bench")
 	for index := range 100 {
-		code := &ir.SlotCode{Operands: []ir.SlotOperands{{}}}
+		code := &ir.MicroCode{Operands: []ir.RegisterFlow{{}}}
 		descriptor, err := code.Descriptors.Append(ir.ReturnPayload{})
 		if err != nil {
 			b.Fatal(err)
 		}
-		code.Instructions = []ir.SlotInstruction{{Op: ir.OpReturn, Descriptor: descriptor}}
+		code.Instructions = []ir.MicroInstruction{{Op: ir.OpReturn, Descriptor: descriptor}}
 		artifact.Functions = append(artifact.Functions, ir.Function{ID: fmt.Sprintf("fn%d", index), Code: code})
 	}
 	sealed := mustSealArtifact(b, artifact)

@@ -14,7 +14,7 @@ use std::{
     task::Wake as _,
 };
 
-pub(super) const INSTRUCTION_QUANTUM: usize = 1024;
+pub(super) const INSTRUCTION_QUANTUM: usize = 512;
 
 pub(crate) struct TaskRun {
     pub(super) task: Task,
@@ -181,6 +181,21 @@ pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
                         (Data::String(_), Data::String(_))
                     ))
         }
+        PreparedInstruction::UpdateCompareBranch { .. } => {
+            frame.operand_count(frame.pc) >= 3
+                && frame
+                    .prepared
+                    .operands
+                    .inputs_at(frame.pc)
+                    .first()
+                    .is_some_and(|input| {
+                        input.kind == 2
+                            && matches!(
+                                frame.locals.get(input.index as usize),
+                                Some(Local::Inline(_))
+                            )
+                    })
+        }
         PreparedInstruction::Operand => match &frame.prepared.code[frame.pc] {
             Instruction::LoadIndex | Instruction::IndexConvert(_) => {
                 frame.operand_count(frame.pc) >= 2
@@ -212,7 +227,7 @@ pub(super) fn can_execute_private_instruction(task: &Task) -> bool {
                         ))
                     && frame
                         .operand_from_end(frame.pc, 0)
-                        .is_some_and(|value| value.integer().is_ok())
+                        .is_some_and(|value| value.index().is_ok())
             }
             Instruction::MapIterClose(_) => true,
             _ => false,
@@ -319,17 +334,22 @@ pub(super) fn execute_private_slice(
     }
     while steps < quantum {
         let remaining = task.step_grant.as_ref().map_or(0, |grant| grant.remaining);
-        if remaining == 0 {
+        let frame = task.frames.last().unwrap();
+        let pc = frame.pc;
+        let Some(cost) = frame.prepared.costs.get(pc) else {
+            break;
+        };
+        let cost = (*cost).max(1) as usize;
+        if remaining < cost as u64 || cost > quantum - steps {
             break;
         }
         if !try_execute_private_instruction(task, types) {
             break;
         }
-        task.step_grant.as_mut().unwrap().remaining -= 1;
-        task.scheduling_phase =
-            ((usize::from(task.scheduling_phase) + 1) % usize::from(TASK_POLL_INTERVAL)) as u8;
+        task.step_grant.as_mut().unwrap().remaining -= cost as u64;
+        task.scheduling_phase = (task.scheduling_phase + cost as u32) % TASK_POLL_INTERVAL;
         task.transient_roots.clear();
-        steps += 1;
+        steps += cost;
     }
     steps
 }
@@ -352,6 +372,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
         | PreparedInstruction::GetPath(_) => 1,
         PreparedInstruction::Binary(_) | PreparedInstruction::CompareBranch { .. } => 2,
         PreparedInstruction::LenCompareBranch { .. } => 2,
+        PreparedInstruction::UpdateCompareBranch { .. } => 3,
         PreparedInstruction::Operand => match function.code[pc] {
             Instruction::Pop | Instruction::LoadField(_) | Instruction::Len | Instruction::Cap => 1,
             Instruction::LoadIndex
@@ -368,6 +389,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
     let mut next_pc = pc + 1;
     let mut result = None;
     let mut direct_local_result = None;
+    let mut local_update = None;
     match function.execution[pc] {
         PreparedInstruction::MinMax {
             kind,
@@ -655,6 +677,40 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 result = Some(value);
             }
         }
+        PreparedInstruction::UpdateCompareBranch {
+            update,
+            comparison,
+            target,
+            when,
+        } => {
+            let (Some(current), Some(delta), Some(bound)) = (
+                frame.operand_from_end(pc, 2),
+                frame.operand_from_end(pc, 1),
+                frame.operand_from_end(pc, 0),
+            ) else {
+                return false;
+            };
+            let Ok(updated) = crate::operators::binary(update, &current, &delta, types) else {
+                return false;
+            };
+            let Ok(compared) = crate::operators::binary(comparison, &updated, &bound, types) else {
+                return false;
+            };
+            let Data::Bool(matched) = compared.data else {
+                return false;
+            };
+            let local = function.operands.inputs_at(pc)[0].index as usize;
+            let Some(Local::Inline(slot)) = frame.locals.get(local) else {
+                return false;
+            };
+            if crate::instance::frame::InlineScalar::from_value(&updated).is_none() {
+                return false;
+            }
+            local_update = Some((*slot, updated));
+            if matched == when {
+                next_pc = target;
+            }
+        }
         PreparedInstruction::Operand => match &function.code[pc] {
             Instruction::Pop => {}
             Instruction::Zero(_) => {
@@ -725,10 +781,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 let Some(key) = frame.operand_from_end(pc, 0) else {
                     return false;
                 };
-                let Ok(index) = key.integer().and_then(|index| {
-                    usize::try_from(index)
-                        .map_err(|_| RuntimeError::new("panic", "index", "negative index"))
-                }) else {
+                let Ok(index) = key.index() else {
                     return false;
                 };
                 let string_descriptor = function
@@ -851,12 +904,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
                 if frame.operand_count(pc) < 2 {
                     return false;
                 }
-                let Ok(index) =
-                    usize::try_from(match frame.operand_from_end(pc, 0).unwrap().integer() {
-                        Ok(index) => index,
-                        Err(_) => return false,
-                    })
-                else {
+                let Ok(index) = frame.operand_from_end(pc, 0).unwrap().index() else {
                     return false;
                 };
                 let string_descriptor = function
@@ -940,6 +988,11 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
     }
     frame.begin_slots(pc);
     frame.slot_input = 0;
+    if let Some((slot, value)) = local_update
+        && frame.scalar_values.set(slot, &value).is_err()
+    {
+        return false;
+    }
     if let Some(index) = direct_local_result {
         let pushed = match frame.push_prepared_local_result(index) {
             Ok(pushed) => pushed,
@@ -977,7 +1030,7 @@ pub(super) fn try_execute_private_instruction(task: &mut Task, types: &TypeRegis
 mod tests {
     use super::*;
     use serde_json::json;
-    use test_helpers::slot_code;
+    use test_helpers::micro_code;
 
     #[test]
     fn field_reads_follow_storage_layout_with_repeated_blank_fields() {
@@ -994,7 +1047,7 @@ mod tests {
             artifact["functions"] = serde_json::json!([{
                 "id":"fn.Main","signature":{"results":[integer]},
                 "locals":[{"id":"record","type":record}],
-                "code":slot_code(json!([integer,integer,record,record,integer]), &[
+                "code":micro_code(json!([integer,integer,record,record,integer]), &[
                     ("const",json!({"constant":"a"}),json!({"outputs":[0]})),
                     ("const",json!({"constant":"b"}),json!({"outputs":[1]})),
                     ("make_struct",json!({"type":record,"fields":["a","b"]}),json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]})),
@@ -1025,7 +1078,7 @@ mod tests {
                 "id":"fn.Main",
                 "signature":{"results":[integer.clone(),integer.clone()]},
                 "locals":[{"id":"value","type":slice.clone()}],
-                "code":slot_code(json!([integer.clone(),slice.clone(),integer.clone(),integer.clone()]), &[
+                "code":micro_code(json!([integer.clone(),slice.clone(),integer.clone(),integer.clone()]), &[
                     ("const",json!({"constant":"length"}),json!({"outputs":[0]})),
                     ("make_slice",json!({"type":slice.clone()}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
                     // The aggregate slot is copied into the addressable local
@@ -1053,7 +1106,7 @@ mod tests {
                 {"id":"b","type":{"kind":3,"primitive":3},"value":divisor}]);
             artifact["functions"] = serde_json::json!([{
                 "id":"fn.Main", "signature":{"results":[{"kind":3,"primitive":3}]},
-                "code":slot_code(json!(vec![json!({"kind":3,"primitive":3});3]), &[
+                "code":micro_code(json!(vec![json!({"kind":3,"primitive":3});3]), &[
                     ("const",json!({"constant":"a"}),json!({"outputs":[0]})),
                     ("const",json!({"constant":"b"}),json!({"outputs":[1]})),
                     ("binary",json!({"operator":"/"}),json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]})),
@@ -1125,7 +1178,7 @@ mod tests {
                     {"id":"index","type":integer,"value":index}
                 ]);
                 artifact["functions"] = json!([{"id":"fn.Main","signature":{"results":[byte]},
-                "code":slot_code(json!([byte]), &[
+                "code":micro_code(json!([byte]), &[
                     ("load_index",json!({}),json!({"inputs":[[1,0],[1,1]],"outputs":[0]})),
                     ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))
                 ])}]);
@@ -1159,7 +1212,7 @@ mod tests {
         let program = test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([{
                 "id":"fn.Main", "locals":[{"id":"value","type":{"kind":3,"primitive":2}}],
-                "code":slot_code(json!([{"kind":3,"primitive":2}]), &[
+                "code":micro_code(json!([{"kind":3,"primitive":2}]), &[
                     ("zero",json!({"type":{"kind":3,"primitive":2}}),json!({"outputs":[0]})),
                     ("store_local",json!({"local":"value"}),json!({"inputs":[[0,0]],"release":[0]})),
                     ("zero",json!({"type":{"kind":3,"primitive":2}}),json!({"outputs":[0]})),
@@ -1226,7 +1279,7 @@ mod tests {
                         .position(|entry| entry["op"] == name)
                         .unwrap()
                         + 1;
-                    serde_json::json!([opcode, descriptor, operands])
+                    serde_json::json!([opcode, descriptor, operands, 1])
                 };
                 let string = serde_json::json!({"kind":3,"primitive":2});
                 artifact["functions"] = serde_json::json!([{

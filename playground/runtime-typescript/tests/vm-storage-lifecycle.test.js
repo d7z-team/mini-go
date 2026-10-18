@@ -12,7 +12,7 @@ test.each(["reserve", "build", "publish"])(
   async (phase) => {
     const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
     try {
-      const module = [...vm.revision.program.modules.values()][0];
+      const module = [...vm.revision.program.moduleValues()][0];
       const value = intValue(module.registry, 7n);
       const before = vm.stats();
       vm.testAllocationFault = { phase, remaining: 1 };
@@ -32,7 +32,7 @@ test.each(["reserve", "build", "publish"])(
 test("failed map growth releases nested string backing for an immediate retry", async () => {
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
   try {
-    const registry = [...vm.revision.program.modules.values()][0].registry;
+    const registry = [...vm.revision.program.moduleValues()][0].registry;
     const int = primitive(registry, PrimitiveKind.PrimitiveInt);
     const string = primitive(registry, PrimitiveKind.PrimitiveString);
     const mapType = registry.runtime({
@@ -138,7 +138,7 @@ test.each(
 test("a live empty map keeps its layouts when another map is reclaimed", async () => {
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
   try {
-    const registry = [...vm.revision.program.modules.values()][0].registry;
+    const registry = [...vm.revision.program.moduleValues()][0].registry;
     const int = primitive(registry, PrimitiveKind.PrimitiveInt);
     const type = registry.runtime({
       kind: Kind.Map,
@@ -166,7 +166,7 @@ test.each(["reserveControl", "reserveResident"])(
   "iterator replacement preserves the previous owner when %s fails",
   async (reservation) => {
     const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
-    const module = [...vm.revision.program.modules.values()][0];
+    const module = [...vm.revision.program.moduleValues()][0];
     const frame = { fn: { module } };
     try {
       const registry = module.registry;
@@ -209,7 +209,7 @@ test.each(["reserveControl", "reserveResident"])(
 test("major collection releases storage type metadata after its payload dies", async () => {
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
   try {
-    const registry = [...vm.revision.program.modules.values()][0].registry;
+    const registry = [...vm.revision.program.moduleValues()][0].registry;
     const any = registry.runtime({
       kind: Kind.Any,
       primitive: 0,
@@ -231,7 +231,7 @@ test("major collection releases storage type metadata after its payload dies", a
 test("major collection reclaims an unowned descriptor while another task is active", async () => {
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
   try {
-    const registry = [...vm.revision.program.modules.values()][0].registry;
+    const registry = [...vm.revision.program.moduleValues()][0].registry;
     const any = registry.runtime({
       kind: Kind.Any,
       primitive: 0,
@@ -252,7 +252,7 @@ test("major collection reclaims an unowned descriptor while another task is acti
 test("construction pin survives a major collection before payload publication", async () => {
   const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
   try {
-    const registry = [...vm.revision.program.modules.values()][0].registry;
+    const registry = [...vm.revision.program.moduleValues()][0].registry;
     const any = registry.runtime({
       kind: Kind.Any,
       primitive: 0,
@@ -281,7 +281,7 @@ test.each(
   async (container, typedNil) => {
     const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
     try {
-      const registry = [...vm.revision.program.modules.values()][0].registry;
+      const registry = [...vm.revision.program.moduleValues()][0].registry;
       const int = primitive(registry, PrimitiveKind.PrimitiveInt);
       const any = vm.dynamicType(registry, { kind: Kind.Any });
       const pointerType = vm.dynamicType(registry, { kind: Kind.Pointer, elem: int });
@@ -326,7 +326,7 @@ test.each(["build", "publish"])(
   async (phase) => {
     const vm = await VirtualMachine.create(runtimeVector("arithmetic").bytes, {});
     try {
-      const registry = [...vm.revision.program.modules.values()][0].registry;
+      const registry = [...vm.revision.program.moduleValues()][0].registry;
       const int = primitive(registry, PrimitiveKind.PrimitiveInt);
       const mapType = registry.runtime({
         kind: Kind.Map,

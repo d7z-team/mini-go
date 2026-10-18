@@ -41,18 +41,18 @@ func TestBoundedByteSearchYieldsBetweenChunks(t *testing.T) {
 		{ID: "end", Type: testType("Int"), Value: []byte(`4096`)},
 		{ID: "needle", Type: testType("Uint8"), Value: []byte(`122`)},
 	}
-	code := testSlotCode([]string{"String", "Int", "Int", "Uint8", "Int"}, nil, nil)
+	code := testMicroCode([]string{"String", "Int", "Int", "Uint8", "Int"}, nil, nil)
 	artifact.Functions = []ir.Function{{Code: code, ID: "fn.entry", Signature: testSignature("function() Void")}}
 	for range 2 {
 		for slot, id := range []string{"text", "start", "end", "needle"} {
-			appendTestSlotCode(code, []ir.Instruction{{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: id}}}, [][2][]uint32{{nil, {uint32(slot)}}})
+			appendTestMicroCode(code, []ir.Instruction{{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: id}}}, [][2][]uint32{{nil, {uint32(slot)}}})
 		}
-		appendTestSlotCode(code, []ir.Instruction{
+		appendTestMicroCode(code, []ir.Instruction{
 			{Op: ir.OpCallIntrinsic, Payload: ir.CallIntrinsicPayload{ID: "strings.index_byte", ArgCount: 4, ResultCount: 1}},
 			{Op: ir.OpPop},
 		}, [][2][]uint32{{{0, 1, 2, 3}, {4}}, {{4}, nil}})
 	}
-	appendTestSlotCode(code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
+	appendTestMicroCode(code, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 	program := patchTestProgram(t, artifact, "search-budget")
 	for _, cancel := range []bool{false, true} {
 		instance, err := program.Instantiate(t.Context(), InstanceOptions{Limits: Limits{MaxSteps: 6}})

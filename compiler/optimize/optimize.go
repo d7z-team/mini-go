@@ -32,9 +32,7 @@ func Apply(program hir.Program, level Level) (hir.Program, error) {
 	out.Functions = append([]hir.Function(nil), program.Functions...)
 	logicalFunctions := make(map[string]hir.Function, len(program.Functions))
 	for _, function := range program.Functions {
-		if !function.RevisionLocal {
-			logicalFunctions[function.ID] = function
-		}
+		logicalFunctions[function.ID] = function
 	}
 	constants := make(map[string]*constant.Value, len(program.Constants))
 	for _, constant := range program.Constants {
@@ -47,7 +45,9 @@ func Apply(program hir.Program, level Level) (hir.Program, error) {
 			return hir.Program{}, fmt.Errorf("function %s: %w", out.Functions[index].ID, err)
 		}
 		out.Functions[index].Body = optimized
-		markDirectTailCall(&out.Functions[index], logicalFunctions)
+		if level < LevelFull {
+			markDirectTailCall(&out.Functions[index], logicalFunctions)
+		}
 		if level >= LevelFull {
 			body, _ := foldPureBooleanBranches(out.Functions[index].Body)
 			body, _ = propagateAdjacentBooleanLocals(body)
@@ -58,6 +58,17 @@ func Apply(program hir.Program, level Level) (hir.Program, error) {
 			}
 			body, _ = removeDeadPureLocalStores(body, out.Functions[index].ResultLocals)
 			out.Functions[index].Body = body
+		}
+	}
+	if level >= LevelFull {
+		out.Functions = inlineSmallPureCalls(out.Functions)
+		for index := range out.Functions {
+			body, err := optimizeBody(out.Functions[index].Body, constants)
+			if err != nil {
+				return hir.Program{}, fmt.Errorf("function %s after inline: %w", out.Functions[index].ID, err)
+			}
+			out.Functions[index].Body = body
+			markDirectTailCall(&out.Functions[index], logicalFunctions)
 		}
 	}
 	return out, nil

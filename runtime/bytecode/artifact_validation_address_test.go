@@ -23,11 +23,11 @@ func TestAddressAndCapturePathsReportInvalidSegments(t *testing.T) {
 			instruction := Instruction{Op: OpAddressOf, Payload: payload}
 			resultType := "Ptr<Int64>"
 			if capture {
-				artifact.Functions = []Function{{ID: "child", Signature: testSignature("function() Void"), Code: &SlotCode{}, Upvalues: []Upvalue{{ID: "g", Type: testType("Int64")}}}}
+				artifact.Functions = []Function{{ID: "child", Signature: testSignature("function() Void"), Code: &MicroCode{}, Upvalues: []Upvalue{{ID: "g", Type: testType("Int64")}}}}
 				instruction = Instruction{Op: OpMakeClosure, Payload: ClosurePayload{Function: "child", Captures: []AddressPayload{payload}}}
 				resultType = "function() Void"
 			}
-			artifact.Functions = append(artifact.Functions, Function{ID: "main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{resultType}, []Instruction{instruction, {Op: OpPop}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})})
+			artifact.Functions = append(artifact.Functions, Function{ID: "main", Signature: testSignature("function() Void"), Code: testMicroCode([]string{resultType}, []Instruction{instruction, {Op: OpPop}}, [][2][]uint32{{nil, {0}}, {{0}, nil}})})
 			err := testValidateArtifact(&artifact)
 			var diagnostic ValidationError
 			if !errors.As(err, &diagnostic) || diagnostic.Code != test.code || !strings.HasSuffix(diagnostic.Path, ".path[0]"+test.suffix) {
@@ -55,7 +55,7 @@ func TestExportAddressValidation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			artifact := NewArtifact("app", "main")
 			artifact.Requirements = []Requirement{{Kind: "source", ModulePath: "lib", Exports: []string{"Value"}}}
-			artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Ptr<Int64>"), Code: testSlotCode([]string{"Ptr<Int64>"}, []Instruction{
+			artifact.Functions = []Function{{ID: "fn.main", Signature: testSignature("function() Ptr<Int64>"), Code: testMicroCode([]string{"Ptr<Int64>"}, []Instruction{
 				{Op: OpAddressOf, Payload: test.payload},
 				{Op: OpReturn, Payload: ReturnPayload{ResultCount: 1}},
 			}, [][2][]uint32{{nil, {0}}, {{0}, nil}})}}
@@ -76,8 +76,8 @@ func TestExportAddressValidation(t *testing.T) {
 func TestClosureCaptureAddressValidation(t *testing.T) {
 	artifact := NewArtifact("app", "main")
 	artifact.Functions = []Function{
-		{Code: &SlotCode{}, ID: "fn.child", Signature: testSignature("function() Void"), Upvalues: []Upvalue{{ID: "x", Type: testType("Int64")}}},
-		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, []Instruction{
+		{Code: &MicroCode{}, ID: "fn.child", Signature: testSignature("function() Void"), Upvalues: []Upvalue{{ID: "x", Type: testType("Int64")}}},
+		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"function() Void"}, []Instruction{
 			{Op: OpMakeClosure, Payload: ClosurePayload{Function: "fn.child", Captures: []AddressPayload{{Kind: "global", Global: "value", ModulePath: "lib", Export: "Value"}}}},
 			{Op: OpPop},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})},

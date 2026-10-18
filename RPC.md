@@ -55,7 +55,9 @@ func Greeting() string {
 	client := NewGreeterClient(rpc.ClientOptions{TimeoutNanoseconds: 5_000_000_000})
 	defer client.Close()
 	response, err := client.Hello(Request{Name: "Mini-Go"})
-	if err != nil { panic(err) }
+	if err != nil {
+		panic(err)
+	}
 	return response.Message
 }
 ```
@@ -65,16 +67,24 @@ func Greeting() string {
 
 ```go
 provider, err := greeter.NewGreeterProvider(greeterHandler{})
-if err != nil { return err }
+if err != nil {
+	return err
+}
 host, err := rpc.NewHost(rpc.HostOptions{Providers: []rpc.Provider{provider}})
-if err != nil { return err }
+if err != nil {
+	return err
+}
 defer host.Close()
 
 instance, err := program.Instantiate(ctx, runtime.InstanceOptions{FFI: host})
-if err != nil { return err }
+if err != nil {
+	return err
+}
 defer instance.Close()
 result, err := instance.Call(ctx, "greeting")
-if err != nil { return err }
+if err != nil {
+	return err
+}
 message, _ := result.Values[0].StringValue()
 fmt.Println(message)
 ```
@@ -85,7 +95,9 @@ fmt.Println(message)
 type greeterHandler struct{}
 
 func (greeterHandler) Hello(ctx context.Context, request greeter.Request) (greeter.Response, error) {
-	if err := ctx.Err(); err != nil { return greeter.Response{}, err }
+	if err := ctx.Err(); err != nil {
+		return greeter.Response{}, err
+	}
 	return greeter.Response{Message: "Hello, " + request.Name + "!"}, nil
 }
 ```
@@ -96,9 +108,13 @@ func (greeterHandler) Hello(ctx context.Context, request greeter.Request) (greet
 
 ```go
 binder, err := rpc.NewLocalBinder(rpc.LocalBinderOptions{}, provider)
-if err != nil { return err }
+if err != nil {
+	return err
+}
 client, err := greeter.BindGreeterClient(ctx, binder, rpc.BindOptions{})
-if err != nil { return err }
+if err != nil {
+	return err
+}
 defer client.Close()
 response, err := client.Hello(ctx, greeter.Request{Name: "Go"})
 ```
@@ -112,7 +128,9 @@ Go 调用使用 `context.Context` 控制取消和期限。需要按 labels、aff
 type greeterHandler struct{}
 
 func (greeterHandler) Hello(ctx *rpc.Context, request Request) (Response, error) {
-	if err := ctx.Err(); err != nil { return Response{}, err }
+	if err := ctx.Err(); err != nil {
+		return Response{}, err
+	}
 	return Response{Message: "Hello, " + request.Name + "!"}, nil
 }
 
@@ -175,11 +193,19 @@ import { GreeterClient } from "./greeter";
 
 const connection = await connectRPC("wss://example.test/rpc");
 try {
-  const client = await GreeterClient.bind(connection, { labels: { zone: "local" } });
+  const client = await GreeterClient.bind(connection, {
+    labels: { zone: "local" },
+  });
   try {
-    console.log(await client.hello({ name: "TypeScript" }, { timeoutMs: 5_000 }));
-  } finally { await client.close(); }
-} finally { await connection.close(); }
+    console.log(
+      await client.hello({ name: "TypeScript" }, { timeoutMs: 5_000 }),
+    );
+  } finally {
+    await client.close();
+  }
+} finally {
+  await connection.close();
+}
 ```
 
 生成的 `createGreeterProvider` 可通过 `connection.publish` 发布 handler。64 位整数映射为 `bigint`，

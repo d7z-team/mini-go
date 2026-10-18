@@ -71,8 +71,7 @@ The detailed guides below are written in Chinese.
 | Understand component boundaries | [Architecture](./ARCHITECTURE.md) |
 | Build, test, diagnose, or release | [Development guide](./DEVELOPMENT.md) |
 
-Maintainer workflows and contribution rules are in the [development guide](./DEVELOPMENT.md) and
-[AGENTS.md](./AGENTS.md).
+Maintainer workflows are in the [development guide](./DEVELOPMENT.md).
 
 ## License
 

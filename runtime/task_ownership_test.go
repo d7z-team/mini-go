@@ -49,20 +49,20 @@ func TestEntryAdmissionCountsBackgroundTasksBeforeAllocation(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/task-admission", "main")
 
 	wait := []ir.Instruction{{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}}, {Op: ir.OpWaitableRecv}, {Op: ir.OpPop}}
-	worker := testSlotCode([]string{"function() Void", "Waitable<Int>", "Int"}, []ir.Instruction{
+	worker := testMicroCode([]string{"function() Void", "Waitable<Int>", "Int"}, []ir.Instruction{
 		{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.child"}},
 		{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
 	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
-	appendTestSlotCode(worker, wait, [][2][]uint32{{nil, {1}}, {{1}, {2}}, {{2}, nil}})
+	appendTestMicroCode(worker, wait, [][2][]uint32{{nil, {1}}, {{1}, {2}}, {{2}, nil}})
 	insertTestDelay(worker, 0, taskInstructionQuantum)
 	artifact.Functions = []ir.Function{
-		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, []ir.Instruction{
+		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"function() Void"}, []ir.Instruction{
 			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.worker"}},
 			{Op: ir.OpSpawn, Payload: ir.CallPayload{}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
 		{ID: "fn.worker", Signature: testSignature("function() Void"), Code: worker},
-		{ID: "fn.child", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Waitable<Int>", "Int"}, wait, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}})},
+		{ID: "fn.child", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"Waitable<Int>", "Int"}, wait, [][2][]uint32{{nil, {0}}, {{0}, {1}}, {{1}, nil}})},
 	}
 	instance, err := patchTestProgram(t, artifact, "task-admission").Instantiate(t.Context(), InstanceOptions{Limits: Limits{MaxTasks: 2}})
 	if err != nil {
@@ -138,7 +138,7 @@ func TestTaskHandoffKeepsRevisionRoots(t *testing.T) {
 
 func TestReturningFrameKeepsValuesRootedUntilContinuationAcceptsThem(t *testing.T) {
 	artifact := ir.NewArtifact("scheduler/return-roots", "main")
-	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Slice<Uint8>"), Code: testSlotCode([]string{"Slice<Uint8>"}, []ir.Instruction{
+	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Slice<Uint8>"), Code: testMicroCode([]string{"Slice<Uint8>"}, []ir.Instruction{
 		{Op: ir.OpZero, Payload: testTypePayload("Slice<Uint8>")},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})}}

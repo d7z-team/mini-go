@@ -10,7 +10,7 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func lifecycleArtifact(child *ir.SlotCode) ir.Artifact {
+func lifecycleArtifact(child *ir.MicroCode) ir.Artifact {
 	artifact := ir.NewArtifact("scheduler/lifecycle", "main")
 	artifact.Globals = []ir.Global{{ID: "global.completed", Type: testType("Bool")}}
 	entry := []ir.Instruction{
@@ -19,14 +19,14 @@ func lifecycleArtifact(child *ir.SlotCode) ir.Artifact {
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
 	}
 	artifact.Functions = []ir.Function{
-		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, entry, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
-		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, entry, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
-		{ID: "fn.child", RevisionLocal: true, Signature: testSignature("function() Void"), Code: child},
+		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"function() Void"}, entry, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
+		{ID: "fn.main", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"function() Void"}, entry, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
+		{ID: "fn.child", Signature: testSignature("function() Void"), Code: child},
 	}
 	return artifact
 }
 
-func delayedLifecycleChild(code *ir.SlotCode) *ir.SlotCode {
+func delayedLifecycleChild(code *ir.MicroCode) *ir.MicroCode {
 	insertTestDelay(code, 0, taskInstructionQuantum*2)
 	return code
 }
@@ -35,7 +35,7 @@ func loopingLifecycleArtifact() ir.Artifact {
 	artifact := ir.NewArtifact("scheduler/completed", "main")
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Bool"}, []ir.Instruction{
 			{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "loop"}},
 			{Op: ir.OpZero, Payload: testTypePayload("Bool")},
 			{Op: ir.OpPop},
@@ -50,7 +50,7 @@ func TestInterruptHandleOnlyCancelsItsExecution(t *testing.T) {
 	completedArtifact := ir.NewArtifact("scheduler/completed", "main")
 	completedArtifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
+		Code: testMicroCode([]string{}, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}),
 	}}
 	completedArtifact.Exports = []ir.Export{{Name: "Run", Kind: "function", ID: "fn.entry"}}
 	instance, err := patchTestProgram(t, completedArtifact, "completed-interrupt").Instantiate(context.Background(), InstanceOptions{})
@@ -89,7 +89,7 @@ func TestInterruptHandleOnlyCancelsItsExecution(t *testing.T) {
 }
 
 func TestCancelOneBackgroundScopeKeepsOtherScope(t *testing.T) {
-	artifact := lifecycleArtifact(testSlotCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
+	artifact := lifecycleArtifact(testMicroCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
 		{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
 		{Op: ir.OpWaitableRecv},
 		{Op: ir.OpPop},
@@ -123,7 +123,7 @@ func TestCancelOneBackgroundScopeKeepsOtherScope(t *testing.T) {
 }
 
 func TestLibraryInvocationLeavesSpawnedTaskRunning(t *testing.T) {
-	artifact := lifecycleArtifact(delayedLifecycleChild(testSlotCode([]string{"Bool"}, []ir.Instruction{
+	artifact := lifecycleArtifact(delayedLifecycleChild(testMicroCode([]string{"Bool"}, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.true"}},
 		{Op: ir.OpStoreGlobal, Payload: ir.GlobalPayload{Global: "global.completed"}},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
@@ -159,7 +159,7 @@ func TestLibraryInvocationLeavesSpawnedTaskRunning(t *testing.T) {
 }
 
 func TestCancelCompletedRootReleasesBlockedBackgroundTask(t *testing.T) {
-	artifact := lifecycleArtifact(testSlotCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
+	artifact := lifecycleArtifact(testMicroCode([]string{"Waitable<Int>", "Int"}, []ir.Instruction{
 		{Op: ir.OpZero, Payload: ir.TypePayload{Type: testType("Waitable<Int>")}},
 		{Op: ir.OpWaitableRecv},
 		{Op: ir.OpPop},
@@ -199,7 +199,7 @@ func TestCancelCompletedRootReleasesBlockedBackgroundTask(t *testing.T) {
 }
 
 func TestLibraryBackgroundPanicFaultsInstance(t *testing.T) {
-	artifact := lifecycleArtifact(delayedLifecycleChild(testSlotCode([]string{"String"}, []ir.Instruction{
+	artifact := lifecycleArtifact(delayedLifecycleChild(testMicroCode([]string{"String"}, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.failure"}},
 		{Op: ir.OpPanic},
 	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})))
@@ -227,7 +227,7 @@ func TestLibraryBackgroundPanicFaultsInstance(t *testing.T) {
 }
 
 func TestSpawnedTasksShareScopeStepBudget(t *testing.T) {
-	artifact := lifecycleArtifact(testSlotCode([]string{"Bool"}, []ir.Instruction{
+	artifact := lifecycleArtifact(testMicroCode([]string{"Bool"}, []ir.Instruction{
 		{Op: ir.OpZero, Payload: testTypePayload("Bool")},
 		{Op: ir.OpPop},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},

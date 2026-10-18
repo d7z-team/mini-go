@@ -1,52 +1,6 @@
 //! Read-only preparation and atomic publication at an owner boundary.
 use super::*;
 
-pub(super) struct FunctionBindings {
-    pub symbols: LogicalFunctions,
-    pub ids: Vec<usize>,
-    pub targets: Vec<Option<usize>>,
-}
-
-impl FunctionBindings {
-    pub(super) fn prepare(
-        program: &Program,
-        published: &LogicalFunctions,
-    ) -> Result<Self, RuntimeError> {
-        let mut symbols = published.clone();
-        let mut ids = vec![usize::MAX; program.function_table.len()];
-        let mut targets = vec![None; symbols.len()];
-        for function in &program.function_table {
-            if function.declaration.revision_local {
-                continue;
-            }
-            let key = (function.module.clone(), function.name.clone());
-            let id = match symbols.get(&key) {
-                Some(&id) => id,
-                None => {
-                    if symbols.len() >= MAX_LOGICAL_FUNCTIONS {
-                        return Err(RuntimeError::new(
-                            "function_limit",
-                            "patch",
-                            "logical function identity limit exceeded",
-                        ));
-                    }
-                    let id = symbols.len();
-                    symbols.insert(key, id);
-                    targets.push(None);
-                    id
-                }
-            };
-            ids[function.index] = id;
-            targets[id] = Some(function.index);
-        }
-        Ok(Self {
-            symbols,
-            ids,
-            targets,
-        })
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevisionInfo {
     pub generation: u64,
@@ -170,140 +124,29 @@ impl Instance {
                 "host capability is unavailable",
             ));
         }
-        for (module, artifact) in old.decoded.artifacts() {
-            let next =
-                target.decoded.artifacts().get(module).ok_or_else(|| {
-                    RuntimeError::new("module_removed", module, "module was removed")
-                })?;
-            if artifact.module.package != next.module.package {
-                return Err(RuntimeError::new(
-                    "package_changed",
-                    module,
-                    "package name changed",
-                ));
-            }
-            if artifact.globals.len() != next.globals.len() {
-                return Err(RuntimeError::new(
-                    "global_shape_changed",
-                    module,
-                    "global declarations changed",
-                ));
-            }
-        }
         let types = self.types.overlay(target.decoded.types())?;
-        for (module, artifact) in old.decoded.artifacts() {
-            let next = &target.decoded.artifacts()[module];
-            for global in artifact.globals.iter() {
-                let replacement = next
-                    .globals
-                    .iter()
-                    .find(|next| next.id == global.id)
-                    .ok_or_else(|| {
-                        RuntimeError::new("global_shape_changed", module, "global was removed")
-                    })?;
-                if !types.identical(
-                    &old.decoded.types().resolve(module, &global.r#type)?,
-                    &target
-                        .decoded
-                        .types()
-                        .resolve(module, &replacement.r#type)?,
-                )? {
-                    return Err(RuntimeError::new(
-                        "global_shape_changed",
-                        module,
-                        "global type changed",
-                    ));
-                }
-            }
-            for export in artifact.exports.iter() {
-                let replacement = next
-                    .exports
-                    .iter()
-                    .find(|next| next.name == export.name)
-                    .ok_or_else(|| {
-                        RuntimeError::new("export_shape_changed", module, "export was removed")
-                    })?;
-                if export.kind != replacement.kind
-                    || export.id != replacement.id
-                    || export.untyped != replacement.untyped
-                    || !types.identical(
-                        &old.decoded.types().resolve(module, &export.r#type)?,
-                        &target
-                            .decoded
-                            .types()
-                            .resolve(module, &replacement.r#type)?,
-                    )?
-                {
-                    return Err(RuntimeError::new(
-                        "export_shape_changed",
-                        module,
-                        "export changed shape",
-                    ));
-                }
-            }
-            for function in artifact
-                .functions
-                .iter()
-                .filter(|function| !function.revision_local)
-            {
-                let replacement = target
-                    .function(module, &function.id)
-                    .ok()
-                    .filter(|function| !function.declaration.revision_local)
-                    .ok_or_else(|| {
-                        RuntimeError::new(
-                            "call_shape_changed",
-                            module,
-                            "logical function was removed",
-                        )
-                    })?;
-                if !types.signature_identical_from(
-                    old.decoded.types(),
-                    module,
-                    &function.signature,
-                    target.decoded.types(),
-                    module,
-                    &replacement.declaration.signature,
-                )? || function.upvalues.len() != replacement.declaration.upvalues.len()
-                {
-                    return Err(RuntimeError::new(
-                        "call_shape_changed",
-                        module,
-                        "function signature changed",
-                    ));
-                }
-                for (old, new) in function
-                    .upvalues
-                    .iter()
-                    .zip(replacement.declaration.upvalues.iter())
-                {
-                    if old.id != new.id
-                        || !types.identical(
-                            &self
-                                .revision
-                                .program
-                                .decoded
-                                .types()
-                                .resolve(module, &old.r#type)?,
-                            &target.decoded.types().resolve(module, &new.r#type)?,
-                        )?
-                    {
-                        return Err(RuntimeError::new(
-                            "call_shape_changed",
-                            module,
-                            "captured values changed",
-                        ));
-                    }
-                }
-            }
-        }
         let mut globals = Vec::new();
         for (module, artifact) in target.decoded.artifacts() {
-            if old.decoded.artifacts().contains_key(module) {
-                continue;
-            }
             for global in artifact.globals.iter() {
                 let typ = types.resolve(module, &global.r#type)?;
+                let retained = old
+                    .decoded
+                    .artifacts()
+                    .get(module)
+                    .and_then(|artifact| {
+                        artifact.globals.iter().find(|value| value.id == global.id)
+                    })
+                    .is_some_and(|previous| {
+                        old.decoded
+                            .types()
+                            .resolve(module, &previous.r#type)
+                            .ok()
+                            .and_then(|old_type| types.identical(&old_type, &typ).ok())
+                            .unwrap_or(false)
+                    });
+                if retained {
+                    continue;
+                }
                 let value = Value {
                     typ,
                     data: Data::Uninitialized,
@@ -311,22 +154,24 @@ impl Instance {
                 globals.push(((module.clone(), global.id.clone()), value));
             }
         }
-        let changed_modules = target
-            .image()
-            .packages
-            .as_ref()
-            .unwrap()
+        let target_packages = target.image().packages.as_ref().unwrap();
+        let old_packages = old.image().packages.as_ref().unwrap();
+        let mut changed_modules = target_packages
             .iter()
             .filter(|(module, package)| {
-                old.image()
-                    .packages
-                    .as_ref()
-                    .unwrap()
+                old_packages
                     .get(*module)
                     .is_none_or(|old| old.artifact_hash != package.artifact_hash)
             })
             .map(|(module, _)| module.clone())
-            .collect();
+            .collect::<Vec<_>>();
+        changed_modules.extend(
+            old_packages
+                .keys()
+                .filter(|module| !target_packages.contains_key(*module))
+                .cloned(),
+        );
+        changed_modules.sort_unstable();
         Ok(PatchPlan {
             owner: self.heap.owner_id(),
             base: self.revision(),
@@ -373,15 +218,20 @@ impl Instance {
             self.revision.generation.checked_add(1).ok_or_else(|| {
                 RuntimeError::new("revision_limit", "patch", "generation exhausted")
             })?;
-        // Validate function bindings before touching heap metadata.  The
-        // staged type registry must be active while encoding new globals;
+        // The staged type registry must be active while encoding new globals;
         // otherwise a structural type introduced by the target is decoded
         // through the retired registry.  Restore the old registry on every
         // preparation failure so a rejected patch is observationally atomic.
-        let bindings = FunctionBindings::prepare(&plan.target, &self.logical_functions)?;
         let previous_types = self.types.clone();
         self.heap.set_type_registry(plan.types.clone());
         let mut globals = self.globals.clone();
+        globals.retain(|(module, id), _| {
+            plan.target
+                .decoded
+                .artifacts()
+                .get(module)
+                .is_some_and(|artifact| artifact.globals.iter().any(|global| global.id == *id))
+        });
         let mut keys = Vec::with_capacity(plan.globals.len());
         let mut values = Vec::with_capacity(plan.globals.len());
         for (key, value) in plan.globals {
@@ -415,15 +265,12 @@ impl Instance {
         };
         let next = Arc::new(crate::program::Revision {
             generation,
-            logical_functions: bindings.ids,
             program: plan.target,
         });
         self.retired_revisions
             .insert(self.revision.generation, self.revision.clone());
         allocations.commit();
         self.revision = next;
-        self.logical_functions = bindings.symbols;
-        self.call_targets = bindings.targets;
         self.frame_pool.clear();
         self.types = plan.types;
         self.heap.set_type_registry(self.types.clone());

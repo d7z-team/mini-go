@@ -20,10 +20,10 @@ type Spec struct {
 	LocalFields             []FieldSpec   `json:"local_fields"`
 	UpvalueFields           []FieldSpec   `json:"upvalue_fields"`
 	InstructionFields       []FieldSpec   `json:"instruction_fields"`
-	SlotCodeFields          []FieldSpec   `json:"slot_code_fields"`
-	SlotInstructionFields   []FieldSpec   `json:"slot_instruction_fields"`
-	SlotOperandFields       []FieldSpec   `json:"slot_operand_fields"`
-	SlotOperandsFields      []FieldSpec   `json:"slot_operands_fields"`
+	MicroCodeFields         []FieldSpec   `json:"micro_code_fields"`
+	MicroInstructionFields  []FieldSpec   `json:"micro_instruction_fields"`
+	OperandFields           []FieldSpec   `json:"operand_fields"`
+	RegisterFlowFields      []FieldSpec   `json:"register_flow_fields"`
 	ExportFields            []FieldSpec   `json:"export_fields"`
 	RequirementFields       []FieldSpec   `json:"requirement_fields"`
 	ProgramSymbolFields     []FieldSpec   `json:"program_symbol_fields"`
@@ -95,22 +95,24 @@ func CurrentSpec() Spec {
 		LocalFields:        localFieldSpecs(),
 		UpvalueFields:      upvalueFieldSpecs(),
 		InstructionFields:  instructionFieldSpecs(),
-		SlotCodeFields: []FieldSpec{
+		MicroCodeFields: []FieldSpec{
 			{Name: "types", Type: "[]TypeRef", Rule: "temporary slot types"},
-			{Name: "instructions", Type: "[]SlotInstruction"},
-			{Name: "operands", Type: "[]SlotOperands"},
+			{Name: "instructions", Type: "[]MicroInstruction"},
+			{Name: "blocks", Type: "[]BasicBlock", Rule: "maximal executable ranges with logical fuel"},
+			{Name: "operands", Type: "[]RegisterFlow"},
 			{Name: "descriptors", Type: "DescriptorTables", Required: true, Rule: "typed payload tables indexed by instruction descriptor"},
 		},
-		SlotInstructionFields: []FieldSpec{
-			{Name: "0", Type: "uint16", Required: true, Rule: "numeric opcode; tuple has exactly three elements"},
+		MicroInstructionFields: []FieldSpec{
+			{Name: "0", Type: "uint32", Required: true, Rule: "low uint16 opcode and high uint16 typed mode; tuple has exactly four elements"},
 			{Name: "1", Type: "uint32", Required: true, Rule: "index in the opcode's descriptor table"},
 			{Name: "2", Type: "uint32", Required: true, Rule: "operand record index"},
+			{Name: "3", Type: "uint32", Required: true, Rule: "non-zero logical fuel cost"},
 		},
-		SlotOperandFields: []FieldSpec{
+		OperandFields: []FieldSpec{
 			{Name: "0", Type: "uint8", Required: true, Rule: "0: temporary slot; 1: package constant; 2: private local value; tuple has exactly two elements"},
 			{Name: "1", Type: "uint32", Required: true, Rule: "index in the selected storage domain"},
 		},
-		SlotOperandsFields: []FieldSpec{
+		RegisterFlowFields: []FieldSpec{
 			{Name: "inputs", Type: "[]Operand", Rule: "values evaluated in source order; direct locals must not be addressable"},
 			{Name: "outputs", Type: "[]uint32", Rule: "distinct typed targets: high bit clear selects a temporary slot disjoint from input slots; high bit set selects a private local value by the low 31 bits. Unary, binary, zero, len, cap, string-next-rune-index, index-convert, get-path and single-result producers require one output; call_direct and map_iter_next may write multiple results directly to distinct private locals"},
 			{Name: "release", Type: "[]uint32", Rule: "clear after instruction completion, before entering the next instruction"},
@@ -215,7 +217,7 @@ func globalFieldSpecs() []FieldSpec {
 }
 
 func functionFieldSpecs() []FieldSpec {
-	return []FieldSpec{{Name: "id", Type: "string", Required: true}, {Name: "revision_local", Type: "bool"}, {Name: "signature", Type: "FunctionSignature", Required: true}, {Name: "locals", Type: "[]Local"}, {Name: "result_locals", Type: "[]local-id", Rule: "must match named result order"}, {Name: "upvalues", Type: "[]Upvalue"}, {Name: "code", Type: "SlotCode", Required: true}}
+	return []FieldSpec{{Name: "id", Type: "string", Required: true}, {Name: "signature", Type: "FunctionSignature", Required: true}, {Name: "locals", Type: "[]Local"}, {Name: "result_locals", Type: "[]local-id", Rule: "must match named result order"}, {Name: "upvalues", Type: "[]Upvalue"}, {Name: "code", Type: "MicroCode", Required: true}}
 }
 
 func localFieldSpecs() []FieldSpec {

@@ -19,7 +19,7 @@ pub(crate) struct OperandView<'a> {
 }
 
 impl PreparedOperands {
-    pub(super) fn push(&mut self, operands: wire::SlotOperands) {
+    pub(super) fn push(&mut self, operands: wire::RegisterFlow) {
         // Most instructions have at most two inputs. Avoid allocating maps
         // for those, while bounding work for hostile large argument lists.
         let indexed = (operands.inputs.len() > 8).then(|| {
@@ -615,6 +615,26 @@ pub(super) fn verify_types(
                         "length comparison requires a length-bearing object",
                     ));
                 }
+            }
+            UpdateCompareBranch(payload) => {
+                if operands.inputs.len() != 3 || operands.inputs[0].kind != 2 {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        "update comparison requires a direct local and two operands",
+                    ));
+                }
+                let declared = resolve(&payload.r#type)?;
+                if !(0..3).all(|index| registry.identical(input(index), &declared).unwrap_or(false))
+                {
+                    return Err(RuntimeError::new(
+                        "invalid_operand",
+                        path,
+                        format!("update comparison type mismatch at {pc}"),
+                    ));
+                }
+                scalar_result_type(registry, &payload.update, &[input(0), input(1)], path)?;
+                scalar_result_type(registry, &payload.comparison, &[input(0), input(2)], path)?;
             }
             Unary(payload) => {
                 outputs = Some(vec![scalar_result_type(

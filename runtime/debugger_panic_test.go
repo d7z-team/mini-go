@@ -15,7 +15,7 @@ func TestDebuggerSchemaPanic(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 		Locals:    []ir.Local{{ID: "local.msg", Type: testType("String")}},
-		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.message"},
 		}, {
@@ -63,7 +63,7 @@ func TestDebuggerSchemaDeferredReturn(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
 			Op:      ir.OpMakeClosure,
 			Payload: ir.ClosurePayload{Function: "fn.cleanup"},
 		}, {
@@ -78,7 +78,7 @@ func TestDebuggerSchemaDeferredReturn(t *testing.T) {
 	}, {
 		ID:        "fn.cleanup",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{}, []ir.Instruction{{
+		Code: testMicroCode([]string{}, []ir.Instruction{{
 			Op:      ir.OpReturn,
 			Payload: ir.ReturnPayload{ResultCount: 0},
 		}}, [][2][]uint32{{nil, nil}}),
@@ -115,7 +115,7 @@ func TestDebuggerSchemaDeferredReturn(t *testing.T) {
 }
 
 func TestDebuggerSchemaDeferredRecover(t *testing.T) {
-	artifact := deferredPanicTestArtifact(testSlotCode([]string{"Any"}, []ir.Instruction{
+	artifact := deferredPanicTestArtifact(testMicroCode([]string{"Any"}, []ir.Instruction{
 		{Op: ir.OpRecover},
 		{Op: ir.OpPop},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},

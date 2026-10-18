@@ -32,16 +32,16 @@ func TestArtifactProjectionJSONRoundTrip(t *testing.T) {
 
 func TestExportHashExcludesRuntimeArtifactIdentity(t *testing.T) {
 	first := ir.NewArtifact("example/lib", "lib")
-	first.Functions = []ir.Function{{ID: "fn.Value", Code: &ir.SlotCode{}}}
+	first.Functions = []ir.Function{{ID: "fn.Value", Code: &ir.MicroCode{}}}
 	first.Exports = []ir.Export{{Name: "Value", Kind: "function", ID: "fn.Value"}}
 	second := first
 	second.Functions = append([]ir.Function(nil), first.Functions...)
-	code := &ir.SlotCode{Operands: []ir.SlotOperands{{}}}
+	code := &ir.MicroCode{Operands: []ir.RegisterFlow{{}}}
 	descriptor, err := code.Descriptors.Append(ir.ReturnPayload{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	code.Instructions = []ir.SlotInstruction{{Op: ir.OpReturn, Descriptor: descriptor}}
+	code.Instructions = []ir.MicroInstruction{{Op: ir.OpReturn, Descriptor: descriptor}}
 	second.Functions[0].Code = code
 	firstData, err := FromArtifact(first)
 	if err != nil {

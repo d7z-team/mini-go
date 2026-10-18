@@ -56,7 +56,11 @@ test("type dispatch definitions apply only to the selected successor", () => {
     const plan = prepare(
       [
         instruction("type_dispatch", {
-          descriptor: { $subject: 0, $target: 3, cases: [{ $target: 1, $binding: 1 }] },
+          typeDispatch: {
+            subject: 0,
+            defaultTarget: 3,
+            cases: [{ target: 1, binding: 1, original: false }],
+          },
         }),
         instruction("load_local", { local: 1 }, [], [0]),
         instruction("return", {}, [[0, 0]]),
@@ -95,8 +99,13 @@ test("select retains an unchosen receive value and reads hidden send/channel loc
 test("rebind replaces a cell while ordinary stores retain its identity", () => {
   const plan = prepare(
     [
-      instruction("store_local", { local: 0, descriptor: { rebind: true } }, [[1, 0]]),
-      instruction("make_closure", { captures: [{ kind: "local", $index: 0 }] }, [], [0]),
+      instruction("store_local", { local: 0, rebind: true }, [[1, 0]]),
+      instruction(
+        "make_closure",
+        { captures: [{ kind: "local", index: 0, path: [], targetType: {} }] },
+        [],
+        [0],
+      ),
       instruction("store_local", { local: 0 }, [[1, 1]]),
       instruction("return", {}, [[0, 0]]),
     ],

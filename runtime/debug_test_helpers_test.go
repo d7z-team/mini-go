@@ -172,13 +172,13 @@ func requireDebugString(t *testing.T, value Value, want string) {
 }
 
 // deferredPanicTestArtifact runs cleanup while unwinding the main frame's panic.
-func deferredPanicTestArtifact(cleanup *ir.SlotCode) ir.Artifact {
+func deferredPanicTestArtifact(cleanup *ir.MicroCode) ir.Artifact {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Constants = []ir.Constant{{ID: "c.message", Type: testType("String"), Value: json.RawMessage(`"failed"`)}}
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{
+		Code: testMicroCode([]string{"function() Void", "String"}, []ir.Instruction{
 			{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.cleanup"}},
 			{Op: ir.OpDeferPush, Payload: ir.DeferPayload{}},
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.message"}},

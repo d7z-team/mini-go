@@ -65,31 +65,19 @@ func (machine *executionMachine) directCallTarget(frame *frame, inst *preparedIn
 			modulePath = frame.module.modulePath()
 		}
 	}
-	if inst.callRevisionLocal {
-		if frame == nil || frame.revision == nil || frame.revision.modules == nil {
-			return nil, loadedFunction{}, errors.New("revision-local call has no caller revision")
-		}
-		module, ok := frame.revision.modules.module(modulePath)
-		if !ok || module == nil || module.executable == nil {
-			return nil, loadedFunction{}, fmt.Errorf("module %q is not loaded in caller revision", modulePath)
-		}
-		function, ok := module.executable.Functions[inst.call.Function]
-		if !ok {
-			return nil, loadedFunction{}, fmt.Errorf("unknown function %q", inst.call.Function)
-		}
-		return module, function, nil
+	if frame == nil || frame.revision == nil || frame.revision.modules == nil {
+		return nil, loadedFunction{}, errors.New("direct call has no execution revision")
 	}
-	current := machine.vm.revision.Load()
-	if current != nil && frame.revision == current &&
-		inst.callModuleIndex >= 0 && inst.callModuleIndex < len(current.moduleOrder) {
-		module := current.moduleOrder[inst.callModuleIndex]
+	revision := frame.revision
+	if inst.callModuleIndex >= 0 && inst.callModuleIndex < len(revision.moduleOrder) {
+		module := revision.moduleOrder[inst.callModuleIndex]
 		if module != nil && inst.callFunctionIndex >= 0 && inst.callFunctionIndex < len(module.executable.FunctionOrder) {
 			return module, module.executable.FunctionOrder[inst.callFunctionIndex], nil
 		}
 	}
-	target, err := machine.module(modulePath)
-	if err != nil {
-		return nil, loadedFunction{}, err
+	target, ok := revision.modules.module(modulePath)
+	if !ok || target == nil || target.executable == nil {
+		return nil, loadedFunction{}, fmt.Errorf("module %q is not loaded in execution revision", modulePath)
 	}
 	function, ok := target.executable.Functions[inst.call.Function]
 	if !ok {
@@ -379,11 +367,26 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 		}
 		return taskYield{kind: taskYieldBlocked}, nil, nil
 	}
+	deferAllocationLease := false
+	if task.allocationBatch == nil && machine.vm.heap != nil && !task.retryInstruction && task.chargedInstructionSteps == 0 &&
+		len(task.frames) != 0 && machine.vm.controlWaiters.Load() == 0 && !machine.vm.breakpointsActive.Load() &&
+		!machine.vm.debugStepActive.Load() && !machine.vm.hostPauseRequested.Load() {
+		current := task.frames[len(task.frames)-1]
+		if current != nil && !current.completionActive && current.frame != nil {
+			callFrame := current.frame
+			pc := callFrame.pc
+			deferAllocationLease = (task.execution == nil || task.execution.profileEvery == 0) &&
+				pc < len(callFrame.function.FastRunEnd) && callFrame.function.FastRunEnd[pc] != 0
+		}
+	}
 	// The serial owner path does not go through taskBatch.launch, so it must
 	// still receive the same worker TLAB as parallel slices. Without this lease
 	// a nursery-full page can only report errManagedCollection from the mutator
 	// and aggregate values panic instead of reaching the owner safepoint.
-	if task.allocationBatch == nil && machine.vm.heap != nil {
+	// Loader-proven scalar runs cannot allocate. Delay their lease until the
+	// task reaches an instruction that can use it, avoiding a TLAB allocation
+	// for every scheduler quantum in arithmetic-heavy code.
+	if task.allocationBatch == nil && machine.vm.heap != nil && !deferAllocationLease {
 		heap := machine.vm.heap
 		credit := managedBatchCredit
 		heap.mu.Lock()
@@ -485,22 +488,11 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 		if machine.vm.interruptRequested.Load() {
 			return taskYield{}, nil, context.Canceled
 		}
-		if !retrying && task.quantumSteps >= taskInstructionQuantum {
-			return taskYield{kind: taskYieldCooperate}, nil, nil
-		}
-		if !retrying && slice.limit > 0 && slice.attempted >= slice.limit {
-			return taskYield{kind: taskYieldPoll}, nil, nil
-		}
 		if retrying {
 			callFrame.releasePopValues()
 			task.retryInstruction = false
-		} else {
-			slice.attempted++
-			if task.quantumSteps < taskInstructionQuantum {
-				task.quantumSteps++
-			}
 		}
-		debugging := !retrying && (machine.vm.breakpointsActive.Load() || machine.vm.debugStepActive.Load() || machine.vm.hostPauseRequested.Load())
+		debugging := !retrying && task.chargedInstructionSteps == 0 && (machine.vm.breakpointsActive.Load() || machine.vm.debugStepActive.Load() || machine.vm.hostPauseRequested.Load())
 		if debugging {
 			machine.controlMu.Lock()
 			if _, ok := machine.vm.checkDebugPause(task, callFrame, functionID, pc); ok {
@@ -512,29 +504,108 @@ func (machine *executionMachine) runTask(task *executionTask, slice *taskSlice) 
 			}
 			machine.controlMu.Unlock()
 		}
-		if !retrying {
-			if err := task.consumeStep(machine.vm.maxSteps); err != nil {
-				if errors.Is(err, errStepBudgetReserved) {
-					return taskYield{kind: taskYieldBudget}, nil, nil
+		if !retrying && task.chargedInstructionSteps == 0 && !debugging &&
+			(task.execution == nil || task.execution.profileEvery == 0) &&
+			pc < len(callFrame.function.FastRunEnd) && callFrame.function.FastRunEnd[pc] != 0 {
+			runEnd := int(callFrame.function.FastRunEnd[pc])
+			chargeInOwner := false
+			for callFrame.pc < runEnd {
+				fastPC := callFrame.pc
+				fastInstruction := &callFrame.function.Instructions[fastPC]
+				if !fastInstruction.fastScalar {
+					chargeInOwner = true
+					break
 				}
-				return taskYield{}, nil, Error{
-					Generation:         callFrame.revisionGeneration(),
-					ProgramHash:        callFrame.revisionHash(),
-					ModulePath:         callFrame.module.modulePath(),
-					FunctionID:         functionID,
-					PC:                 pc,
-					Op:                 inst.opcodeText(),
-					ExecutionContextID: callFrame.executionContextID,
-					Loc:                runtimeLocation(callFrame, functionID, pc),
-					Err:                err,
+				cost := fastInstruction.logicalCost
+				if cost == 0 {
+					cost = 1
+				}
+				if cost > uint32(taskInstructionQuantum-task.quantumSteps) {
+					return taskYield{kind: taskYieldCooperate}, nil, nil
+				}
+				if slice.limit > 0 && int(cost) > slice.limit-slice.attempted {
+					chargeInOwner = true
+					break
+				}
+				for task.chargedInstructionSteps < cost {
+					if err := task.consumeStep(machine.vm.maxSteps); err != nil {
+						if errors.Is(err, errStepBudgetReserved) {
+							return taskYield{kind: taskYieldBudget}, nil, nil
+						}
+						return taskYield{}, nil, Error{
+							Generation:         callFrame.revisionGeneration(),
+							ProgramHash:        callFrame.revisionHash(),
+							ModulePath:         callFrame.module.modulePath(),
+							FunctionID:         functionID,
+							PC:                 fastPC,
+							Op:                 fastInstruction.opcodeText(),
+							ExecutionContextID: callFrame.executionContextID,
+							Loc:                runtimeLocation(callFrame, functionID, fastPC),
+							Err:                err,
+						}
+					}
+					task.chargedInstructionSteps++
+					slice.attempted++
+					slice.executed++
+					task.quantumSteps++
+				}
+				task.chargedInstructionSteps = 0
+				callFrame.beginMicroInstruction(fastPC, fastInstruction)
+				callFrame.pc++
+				if err := machine.vm.executeInstruction(task, callFrame, fastInstruction); err != nil {
+					return taskYield{}, nil, machine.vm.runtimeInstructionError(callFrame, functionID, fastPC, fastInstruction, err)
+				}
+				// A branch terminates the current straight-line run even when its
+				// target happens to remain inside the same numeric PC interval.
+				if callFrame.pc != fastPC+1 || fastInstruction.op == preparedJump ||
+					fastInstruction.op == preparedJumpIf || fastInstruction.op == preparedCompareBranch {
+					break
 				}
 			}
+			if !chargeInOwner || callFrame.pc != pc {
+				continue
+			}
 		}
-		callFrame.beginSlotInstruction(pc, inst)
-		callFrame.pc++
+		if deferAllocationLease && !inst.fastScalar {
+			return taskYield{kind: taskYieldCooperate}, nil, nil
+		}
 		if !retrying {
-			slice.executed++
+			logicalCost := inst.logicalCost
+			if logicalCost == 0 {
+				logicalCost = 1
+			}
+			for task.chargedInstructionSteps < logicalCost {
+				if task.quantumSteps >= taskInstructionQuantum {
+					return taskYield{kind: taskYieldCooperate}, nil, nil
+				}
+				if slice.limit > 0 && slice.attempted >= slice.limit {
+					return taskYield{kind: taskYieldPoll}, nil, nil
+				}
+				slice.attempted++
+				task.quantumSteps++
+				if err := task.consumeStep(machine.vm.maxSteps); err != nil {
+					if errors.Is(err, errStepBudgetReserved) {
+						return taskYield{kind: taskYieldBudget}, nil, nil
+					}
+					return taskYield{}, nil, Error{
+						Generation:         callFrame.revisionGeneration(),
+						ProgramHash:        callFrame.revisionHash(),
+						ModulePath:         callFrame.module.modulePath(),
+						FunctionID:         functionID,
+						PC:                 pc,
+						Op:                 inst.opcodeText(),
+						ExecutionContextID: callFrame.executionContextID,
+						Loc:                runtimeLocation(callFrame, functionID, pc),
+						Err:                err,
+					}
+				}
+				task.chargedInstructionSteps++
+				slice.executed++
+			}
+			task.chargedInstructionSteps = 0
 		}
+		callFrame.beginMicroInstruction(pc, inst)
+		callFrame.pc++
 		if execution := task.execution; !retrying && execution != nil && execution.profileEvery != 0 && task.profilePhase&execution.profileMask == 0 {
 			execution.recordGuestSample(callFrame, functionID, pc, inst)
 		}

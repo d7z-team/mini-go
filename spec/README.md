@@ -7,6 +7,6 @@
 | [bytecode.json](bytecode.json) | [runtime/bytecode](../runtime/bytecode/) 的字节码模型与校验规则 | Go、Rust、TypeScript runtime |
 | [tools.json](tools.json) | [compilerentry](../compiler/bootstrap/compilerentry/) 的工具接口 DTO | compiler tool、Rust 和 TypeScript tools |
 
-契约由根 [generate.go](../generate.go) 的 `contract-spec` 和 `tools-schema` 入口生成。修改事实来源后运行
-`make generate`，再按[开发指南](../DEVELOPMENT.md#生成与派生物)验证所有消费方；契约身份、版本和组件边界见
+契约由根 [generate.go](../generate.go) 的 `contract-spec` 和 `tools-schema` 入口生成。事实来源、更新顺序
+和跨语言验证见[生成与派生物](../DEVELOPMENT.md#生成与派生物)；契约身份与组件边界见
 [架构说明](../ARCHITECTURE.md)。

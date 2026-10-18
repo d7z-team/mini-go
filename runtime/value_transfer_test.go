@@ -11,7 +11,7 @@ func TestOwnedStringSurvivesSourceFrameReuse(t *testing.T) {
 	typ := predeclaredRuntimeTypes["String"]
 	function := loadedFunction{
 		Decl: ir.Function{
-			ID: "fn.string-transfer", Code: &ir.SlotCode{},
+			ID: "fn.string-transfer", Code: &ir.MicroCode{},
 			Locals: []ir.Local{{ID: "value", Type: typ.Ref}},
 		},
 		LocalTypes: []vmType{typ}, LocalVariadic: []bool{false},
@@ -89,7 +89,7 @@ func TestDirectRendezvousPreservesAnyAggregateAfterSourceFrameReuse(t *testing.T
 
 func transferFrameFunction(id string, typ vmType) loadedFunction {
 	return loadedFunction{
-		Decl:       ir.Function{ID: id, Code: &ir.SlotCode{}, Locals: []ir.Local{{ID: "value", Type: typ.Ref}}},
+		Decl:       ir.Function{ID: id, Code: &ir.MicroCode{}, Locals: []ir.Local{{ID: "value", Type: typ.Ref}}},
 		LocalTypes: []vmType{typ}, LocalVariadic: []bool{false},
 	}
 }
@@ -119,7 +119,7 @@ func directRendezvous(t *testing.T, module *moduleInstance, function loadedFunct
 	if err != nil {
 		t.Fatal(err)
 	}
-	destination.slotOperands = &ir.SlotOperands{Outputs: []uint32{ir.LocalOutput}}
+	destination.slotOperands = &ir.RegisterFlow{Outputs: []uint32{ir.LocalOutput}}
 	if err := receiver.deliver(destination, nil, false); err != nil {
 		destination.recycle()
 		t.Fatal(err)

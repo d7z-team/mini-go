@@ -14,24 +14,24 @@ func TestRecoveredPanicSurvivesNestedDeferredCalls(t *testing.T) {
 			artifact := ir.NewArtifact("recover/lifecycle", "main")
 			artifact.Constants = []ir.Constant{{ID: "message", Type: testType("String"), Value: json.RawMessage(`"failed"`)}}
 			artifact.Functions = []ir.Function{
-				{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void", "String"}, []ir.Instruction{
+				{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"function() Void", "String"}, []ir.Instruction{
 					{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "recover"}},
 					{Op: ir.OpDeferPush, Payload: ir.DeferPayload{}},
 					{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "message"}},
 					{Op: ir.OpPanic},
 				}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, {1}}, {{1}, nil}})},
-				{ID: "recover", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Any"}, []ir.Instruction{
+				{ID: "recover", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"Any"}, []ir.Instruction{
 					{Op: ir.OpRecover},
 					{Op: ir.OpPop},
 					{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "helper", ArgCount: 0, ResultCount: 0}},
 					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
 				}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}, {nil, nil}})},
-				{ID: "helper", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"function() Void"}, []ir.Instruction{
+				{ID: "helper", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"function() Void"}, []ir.Instruction{
 					{Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "cleanup"}},
 					{Op: ir.OpDeferPush, Payload: ir.DeferPayload{}},
 					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
 				}, [][2][]uint32{{nil, {0}}, {{0}, nil}, {nil, nil}})},
-				{ID: "cleanup", Signature: testSignature("function() Void"), Code: testSlotCode([]string{"Any"}, []ir.Instruction{
+				{ID: "cleanup", Signature: testSignature("function() Void"), Code: testMicroCode([]string{"Any"}, []ir.Instruction{
 					{Op: ir.OpRecover},
 					{Op: ir.OpPop},
 					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},
@@ -41,7 +41,7 @@ func TestRecoveredPanicSurvivesNestedDeferredCalls(t *testing.T) {
 				code := artifact.Functions[2].Code
 				code.Instructions = code.Instructions[:2]
 				code.Types = append(code.Types, testType("String"))
-				appendTestSlotCode(code, []ir.Instruction{
+				appendTestMicroCode(code, []ir.Instruction{
 					{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "message"}},
 					{Op: ir.OpPanic},
 				}, [][2][]uint32{{nil, {1}}, {{1}, nil}})

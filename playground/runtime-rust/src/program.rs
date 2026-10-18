@@ -13,7 +13,6 @@ use std::sync::Arc;
 pub(crate) struct Revision {
     pub generation: u64,
     pub program: Arc<Program>,
-    pub logical_functions: Vec<usize>,
 }
 
 impl Revision {
@@ -119,6 +118,10 @@ pub(crate) struct PreparedFunction {
     pub result_types: Vec<crate::types::TypeIdentity>,
     pub result_locals: Vec<usize>,
     pub execution: Vec<PreparedInstruction>,
+    pub modes: Vec<u16>,
+    pub costs: Vec<u32>,
+    pub blocks: Vec<wire::BasicBlock>,
+    pub block_at_pc: Vec<u32>,
     pub operand_types: Vec<Option<crate::types::TypeIdentity>>,
     pub type_dispatches: Vec<PreparedTypeDispatch>,
     pub aggregates: Vec<StructLayout>,
@@ -157,6 +160,12 @@ pub(crate) enum PreparedInstruction {
     },
     LenCompareBranch {
         operator: crate::operators::PreparedOperator,
+        target: usize,
+        when: bool,
+    },
+    UpdateCompareBranch {
+        update: crate::operators::PreparedOperator,
+        comparison: crate::operators::PreparedOperator,
         target: usize,
         when: bool,
     },
@@ -371,7 +380,8 @@ fn prepare_reference_plan(function: &PreparedFunction) -> (Vec<Vec<u64>>, Vec<u3
                 }
             }
             PreparedInstruction::CompareBranch { target, .. }
-            | PreparedInstruction::LenCompareBranch { target, .. } => {
+            | PreparedInstruction::LenCompareBranch { target, .. }
+            | PreparedInstruction::UpdateCompareBranch { target, .. } => {
                 successors[pc].push((*target, None));
                 if pc + 1 < count {
                     successors[pc].push((pc + 1, None));
@@ -597,7 +607,7 @@ impl Program {
                 let code = declaration
                     .code
                     .as_ref()
-                    .ok_or_else(|| RuntimeError::new("invalid_code", &path, "missing slot code"))?;
+                    .ok_or_else(|| RuntimeError::new("invalid_code", &path, "missing microcode"))?;
                 let locals = unique_ids(declaration.locals.iter().map(|value| &value.id), &path)?;
                 let upvalues =
                     unique_ids(declaration.upvalues.iter().map(|value| &value.id), &path)?;
@@ -619,6 +629,10 @@ impl Program {
                     addressable_locals: vec![false; declaration.locals.len()],
                     targets: Vec::new(),
                     execution: Vec::new(),
+                    modes: Vec::new(),
+                    costs: Vec::new(),
+                    blocks: code.blocks.iter().cloned().collect(),
+                    block_at_pc: Vec::new(),
                     operand_types: Vec::new(),
                     type_dispatches: Vec::new(),
                     aggregates: Vec::new(),
@@ -1006,6 +1020,51 @@ impl Program {
                     }
                     function.code.push(instruction);
                     function.opcodes.push(raw.opcode());
+                    function.modes.push(code.instructions[position].mode);
+                    function.costs.push(code.instructions[position].cost);
+                }
+                let mut covered = 0usize;
+                function.block_at_pc = vec![0; function.code.len()];
+                for (block_index, block) in function.blocks.iter().enumerate() {
+                    let first = block.first as usize;
+                    let count = block.count as usize;
+                    if first != covered
+                        || count == 0
+                        || first.saturating_add(count) > function.code.len()
+                    {
+                        return Err(RuntimeError::new(
+                            "invalid_code",
+                            &path,
+                            "invalid basic block range",
+                        ));
+                    }
+                    let cost = function.costs[first..first + count]
+                        .iter()
+                        .try_fold(0u32, |sum, value| sum.checked_add(*value))
+                        .ok_or_else(|| {
+                            RuntimeError::new("invalid_code", &path, "basic block cost overflow")
+                        })?;
+                    if cost != block.cost
+                        || block.fallthrough != u32::MAX
+                            && block.fallthrough as usize >= function.blocks.len()
+                    {
+                        return Err(RuntimeError::new(
+                            "invalid_code",
+                            &path,
+                            "invalid basic block metadata",
+                        ));
+                    }
+                    function.block_at_pc[first..first + count].fill(block_index as u32);
+                    covered += count;
+                }
+                if !function.code.is_empty()
+                    && (function.blocks.is_empty() || covered != function.code.len())
+                {
+                    return Err(RuntimeError::new(
+                        "invalid_code",
+                        &path,
+                        "basic blocks do not cover executable code",
+                    ));
                 }
                 verify_control_flow(&function, &labels, &path)?;
                 for (pc, instruction) in function.code.iter().enumerate() {
@@ -1068,6 +1127,16 @@ impl Program {
                         },
                         LenCompareBranch(payload) => PreparedInstruction::LenCompareBranch {
                             operator: crate::operators::PreparedOperator::parse(&payload.operator)?,
+                            target: *labels.get(&payload.label).ok_or_else(|| {
+                                RuntimeError::new("invalid_jump", &path, &payload.label)
+                            })?,
+                            when: payload.when,
+                        },
+                        UpdateCompareBranch(payload) => PreparedInstruction::UpdateCompareBranch {
+                            update: crate::operators::PreparedOperator::parse(&payload.update)?,
+                            comparison: crate::operators::PreparedOperator::parse(
+                                &payload.comparison,
+                            )?,
                             target: *labels.get(&payload.label).ok_or_else(|| {
                                 RuntimeError::new("invalid_jump", &path, &payload.label)
                             })?,
@@ -1256,6 +1325,7 @@ impl Program {
                     let typ = match instruction {
                         Zero(value) | Convert(value) | TypeAssert(value) | TypeAssertOk(value)
                         | IndexConvert(value) => Some(&value.r#type),
+                        UpdateCompareBranch(value) => Some(&value.r#type),
                         MakeStruct(value) => Some(&value.r#type),
                         MakeSequence(value) => Some(&value.r#type),
                         MakeSlice(value) => Some(&value.r#type),
@@ -1299,6 +1369,30 @@ impl Program {
                                     }
                                 };
                             operation.bind(index, typ, decoded.types())?;
+                        }
+                    }
+                    for (pc, prepared) in function.execution.iter_mut().enumerate() {
+                        let PreparedInstruction::UpdateCompareBranch {
+                            update, comparison, ..
+                        } = prepared
+                        else {
+                            continue;
+                        };
+                        let inputs = function.operands.inputs_at(pc);
+                        for (index, input) in inputs.iter().enumerate() {
+                            let typ = match input.kind {
+                                0 => &function.slot_types[input.index as usize],
+                                2 => &function.local_types[input.index as usize],
+                                _ => &constant_types[input.index as usize],
+                            };
+                            if index < 2 {
+                                update.bind(index, typ, decoded.types())?;
+                            }
+                            if index == 0 {
+                                comparison.bind(0, typ, decoded.types())?;
+                            } else if index == 2 {
+                                comparison.bind(1, typ, decoded.types())?;
+                            }
                         }
                     }
                 }
@@ -1663,7 +1757,7 @@ mod reference_plan_tests {
     fn empty_operands(count: usize) -> PreparedOperands {
         let mut operands = PreparedOperands::default();
         for _ in 0..count {
-            operands.push(wire::SlotOperands::default());
+            operands.push(wire::RegisterFlow::default());
         }
         operands
     }
@@ -1690,6 +1784,10 @@ mod reference_plan_tests {
             result_types: Vec::new(),
             result_locals: Vec::new(),
             execution,
+            modes: vec![0; operand_count],
+            costs: vec![1; operand_count],
+            blocks: Vec::new(),
+            block_at_pc: vec![0; operand_count],
             operand_types: vec![None; operand_count],
             type_dispatches: Vec::new(),
             aggregates: Vec::new(),
@@ -1722,7 +1820,7 @@ mod reference_plan_tests {
     #[test]
     fn direct_result_keeps_destination_identity_live_until_publication() {
         let mut operands = PreparedOperands::default();
-        operands.push(wire::SlotOperands {
+        operands.push(wire::RegisterFlow {
             outputs: crate::contract::GoSlice(Some(vec![LOCAL_OUTPUT])),
             ..Default::default()
         });

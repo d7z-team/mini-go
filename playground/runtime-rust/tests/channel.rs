@@ -8,7 +8,7 @@ use mini_go::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use support::slot_code;
+use support::micro_code;
 
 #[test]
 fn buffered_zero_sized_elements_preserve_type_through_ring_wrap() {
@@ -60,7 +60,7 @@ fn buffered_zero_sized_elements_preserve_type_through_ring_wrap() {
             "type_table":{"nodes":[node,{"id":"channel","kind":9,"direction":1,"elem":element}]},
             "constants":[{"id":"capacity","type":integer,"value":1}],
             "functions":[{"id":"fn.Main","signature":{"results":[element]},
-                "code":slot_code(json!([integer,channel,element]), &instructions)}]
+                "code":micro_code(json!([integer,channel,element]), &instructions)}]
         }));
         let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
         let mut vm = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -98,7 +98,7 @@ fn unbuffered_try_send_delivers_to_waiting_task_without_buffering() {
         "constants":[{"id":"answer","type":integer,"value":42},{"id":"capacity","type":integer,"value":1}],
         "functions":[
             {"id":"fn.Main","signature":{"results":[integer,integer,{"kind":3,"primitive":1}]},
-             "locals":[{"id":"sent","type":boolean}],"code":slot_code(json!([integer,channel,function,boolean,integer]), &[
+             "locals":[{"id":"sent","type":boolean}],"code":micro_code(json!([integer,channel,function,boolean,integer]), &[
                 ("zero",json!({"type":integer}),json!({"outputs":[0]})),
                 ("make_waitable",json!({"type":channel}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
                 ("store_global",json!({"global":"channel"}),json!({"inputs":[[0,1]],"release":[1]})),
@@ -120,7 +120,7 @@ fn unbuffered_try_send_delivers_to_waiting_task_without_buffering() {
                 ("waitable_recv",json!({}),json!({"inputs":[[0,1]],"outputs":[0],"release":[1]})),
                 ("load_local",json!({"local":"sent"}),json!({"outputs":[3]})),
                 ("return",json!({"result_count":3}),json!({"inputs":[[0,4],[0,0],[0,3]],"release":[4,0,3]}))])},
-            {"id":"receiver","code":slot_code(json!([channel,integer,channel]), &[
+            {"id":"receiver","code":micro_code(json!([channel,integer,channel]), &[
                 ("load_global",json!({"global":"ack"}),json!({"outputs":[0]})),
                 ("zero",json!({"type":integer}),json!({"outputs":[1]})),
                 ("waitable_send",json!({}),json!({"inputs":[[0,0],[0,1]],"release":[0,1]})),

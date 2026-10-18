@@ -15,7 +15,7 @@ func TestLoaderStoreLocalRejectsWrongDeclaredType(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
 		Locals:    []ir.Local{{ID: "local.value", Type: testType("Int64")}},
-		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
@@ -38,7 +38,7 @@ func TestLoaderStoreGlobalRejectsWrongDeclaredType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
@@ -58,14 +58,14 @@ func TestLoaderFunctionArgumentRejectsWrongDeclaredType(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Constants = []ir.Constant{{ID: "c.bad", Type: testType("String"), Value: json.RawMessage(`"bad"`)}}
 	artifact.Functions = []ir.Function{{
-		Code:      &ir.SlotCode{},
+		Code:      &ir.MicroCode{},
 		ID:        "fn.accept",
 		Signature: testSignature("function(Int64) Void"),
 		Locals:    []ir.Local{{ID: "local.value", Type: testType("Int64")}},
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
@@ -87,7 +87,7 @@ func TestLoaderReturnRejectsWrongDeclaredType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"String"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
@@ -106,7 +106,7 @@ func TestLoaderReturnRejectsWrongDeclaredType(t *testing.T) {
 func TestVMFunctionFallthroughRejectsMissingReturnValue(t *testing.T) {
 	artifact := ir.NewArtifact("example/module", "main")
 	artifact.Functions = []ir.Function{{
-		Code:      &ir.SlotCode{},
+		Code:      &ir.MicroCode{},
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 	}}
@@ -137,7 +137,7 @@ func TestVMReturnNamedStructCopiesValue(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.init",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"String", "User"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String", "User"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.name"},
 		}, {
@@ -150,7 +150,7 @@ func TestVMReturnNamedStructCopiesValue(t *testing.T) {
 	}, {
 		ID:        "fn.main",
 		Signature: testSignature("function() User"),
-		Code: testSlotCode([]string{"User"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"User"}, []ir.Instruction{{
 			Op:      ir.OpLoadGlobal,
 			Payload: ir.GlobalPayload{Global: "global.user"},
 		}, {

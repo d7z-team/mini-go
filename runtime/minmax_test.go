@@ -120,7 +120,7 @@ func TestProgramExecutesPreparedMinMax(t *testing.T) {
 	}
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Int32"),
-		Code: testSlotCode([]string{"Int32", "Int32", "Int32"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Int32", "Int32", "Int32"}, []ir.Instruction{
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "small"}},
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "large"}},
 			{Op: ir.OpMinMax, Payload: ir.MinMaxPayload{Type: testType("Int32"), Operator: "max", ArgCount: 2}},

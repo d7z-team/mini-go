@@ -32,9 +32,6 @@ func TestPatchPreservesGlobalSlotsAndDoesNotRunInitAgain(t *testing.T) {
 	if instance.vm.rootModule().state.globals["global.total"] != oldCell {
 		t.Fatal("patch replaced the global slot")
 	}
-	if oldCell.module.revision.generation != 2 {
-		t.Fatalf("global slot retained revision %d", oldCell.module.revision.generation)
-	}
 	second, err := instance.Call(context.Background(), "run")
 	if err != nil {
 		t.Fatal(err)
@@ -74,8 +71,8 @@ func TestPatchCommitsCompleteModuleGraphAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value, ok := active.Values[0].Int64(); !ok || value != 21 {
-		t.Fatalf("active result = %#v, want 21", active.Values)
+	if value, ok := active.Values[0].Int64(); !ok || value != 11 {
+		t.Fatalf("active result = %#v, want 11", active.Values)
 	}
 	fresh, err := instance.Call(context.Background(), "run")
 	if err != nil {

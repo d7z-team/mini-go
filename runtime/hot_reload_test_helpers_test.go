@@ -79,19 +79,19 @@ func patchCallArtifact(base, value int64) ir.Artifact {
 		{ID: "const.base", Type: testType("Int64"), Value: json.RawMessage(jsonInt(base))},
 		{ID: "const.value", Type: testType("Int64"), Value: json.RawMessage(jsonInt(value))},
 	}
-	entry := ir.Function{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+	entry := ir.Function{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testMicroCode([]string{"Int64"}, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.base"}},
 	}, [][2][]uint32{{nil, {0}}})}
 	entry.Code.Types = append(entry.Code.Types, testType("Int64"), testType("Int64"))
 	insertTestDelay(entry.Code, len(entry.Code.Instructions), 2)
-	appendTestSlotCode(entry.Code, []ir.Instruction{
+	appendTestMicroCode(entry.Code, []ir.Instruction{
 		{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.value", ResultCount: 1}},
 		{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "+"}},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 	}, [][2][]uint32{{nil, {1}}, {{0, 1}, {2}}, {{2}, nil}})
 	artifact.Functions = []ir.Function{
 		entry,
-		{ID: "fn.value", Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+		{ID: "fn.value", Signature: testSignature("function() Int64"), Code: testMicroCode([]string{"Int64"}, []ir.Instruction{
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.value"}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})},
@@ -100,13 +100,8 @@ func patchCallArtifact(base, value int64) ir.Artifact {
 	return artifact
 }
 
-func patchRevisionLocalCallArtifact(base, value int64, reorder bool) ir.Artifact {
+func patchSnapshotCallArtifact(base, value int64, reorder bool) ir.Artifact {
 	artifact := patchCallArtifact(base, value)
-	for index := range artifact.Functions {
-		if artifact.Functions[index].ID == "fn.value" {
-			artifact.Functions[index].RevisionLocal = true
-		}
-	}
 	if reorder {
 		entry, value := artifact.Functions[0], artifact.Functions[1]
 		artifact.Functions = []ir.Function{value, entry}
@@ -117,12 +112,12 @@ func patchRevisionLocalCallArtifact(base, value int64, reorder bool) ir.Artifact
 func patchTailCallArtifact(value int64) ir.Artifact {
 	artifact := ir.NewArtifact("patch/tail", "main")
 	artifact.Constants = []ir.Constant{{ID: "const.value", Type: testType("Int64"), Value: json.RawMessage(jsonInt(value))}}
-	entry := ir.Function{Code: &ir.SlotCode{}, ID: "fn.entry", Signature: testSignature("function() Int64")}
+	entry := ir.Function{Code: &ir.MicroCode{}, ID: "fn.entry", Signature: testSignature("function() Int64")}
 	insertTestDelay(entry.Code, 0, 2)
-	appendTestSlotCode(entry.Code, []ir.Instruction{{Op: ir.OpTailCallDirect, Payload: ir.CallPayload{Function: "fn.value", ResultCount: 1}}}, [][2][]uint32{{nil, nil}})
+	appendTestMicroCode(entry.Code, []ir.Instruction{{Op: ir.OpTailCallDirect, Payload: ir.CallPayload{Function: "fn.value", ResultCount: 1}}}, [][2][]uint32{{nil, nil}})
 	artifact.Functions = []ir.Function{
 		entry,
-		{ID: "fn.value", Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+		{ID: "fn.value", Signature: testSignature("function() Int64"), Code: testMicroCode([]string{"Int64"}, []ir.Instruction{
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.value"}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})},
@@ -135,12 +130,12 @@ func patchMultiRootArtifact(base int64) ir.Artifact {
 	artifact := ir.NewArtifact("patch/root", "main")
 	artifact.Constants = []ir.Constant{{ID: "const.base", Type: testType("Int64"), Value: json.RawMessage(jsonInt(base))}}
 	artifact.Requirements = []ir.Requirement{{Kind: "source", ModulePath: "patch/dep"}}
-	entry := ir.Function{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+	entry := ir.Function{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testMicroCode([]string{"Int64"}, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.base"}},
 	}, [][2][]uint32{{nil, {0}}})}
 	entry.Code.Types = append(entry.Code.Types, testType("Int64"), testType("Int64"))
 	insertTestDelay(entry.Code, len(entry.Code.Instructions), 2)
-	appendTestSlotCode(entry.Code, []ir.Instruction{
+	appendTestMicroCode(entry.Code, []ir.Instruction{
 		{Op: ir.OpCallDirect, Payload: ir.CallPayload{ModulePath: "patch/dep", Function: "fn.value", ResultCount: 1}},
 		{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "+"}},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
@@ -155,7 +150,7 @@ func patchMultiDependencyArtifact(value int64) ir.Artifact {
 	artifact.Constants = []ir.Constant{{ID: "const.value", Type: testType("Int64"), Value: json.RawMessage(jsonInt(value))}}
 	artifact.Functions = []ir.Function{{
 		ID: "fn.value", Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.value"}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}}),
@@ -167,18 +162,18 @@ func patchMultiDependencyArtifact(value int64) ir.Artifact {
 func patchClosureArtifact(value int64) ir.Artifact {
 	artifact := ir.NewArtifact("patch/closure", "main")
 	artifact.Constants = []ir.Constant{{ID: "const.value", Type: testType("Int64"), Value: json.RawMessage(jsonInt(value))}}
-	entry := ir.Function{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"function() Int64"}, []ir.Instruction{{
+	entry := ir.Function{ID: "fn.entry", Signature: testSignature("function() Int64"), Code: testMicroCode([]string{"function() Int64"}, []ir.Instruction{{
 		Op: ir.OpMakeClosure, Payload: ir.ClosurePayload{Function: "fn.literal.1"},
 	}}, [][2][]uint32{{nil, {0}}})}
 	entry.Code.Types = append(entry.Code.Types, testType("Int64"))
 	insertTestDelay(entry.Code, len(entry.Code.Instructions), 2)
-	appendTestSlotCode(entry.Code, []ir.Instruction{
+	appendTestMicroCode(entry.Code, []ir.Instruction{
 		{Op: ir.OpCallValue, Payload: ir.CallPayload{ResultCount: 1}},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 	}, [][2][]uint32{{{0}, {1}}, {{1}, nil}})
 	artifact.Functions = []ir.Function{
 		entry,
-		{ID: "fn.literal.1", RevisionLocal: true, Signature: testSignature("function() Int64"), Code: testSlotCode([]string{"Int64"}, []ir.Instruction{
+		{ID: "fn.literal.1", Signature: testSignature("function() Int64"), Code: testMicroCode([]string{"Int64"}, []ir.Instruction{
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.value"}},
 			{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
 		}, [][2][]uint32{{nil, {0}}, {{0}, nil}})},
@@ -193,7 +188,7 @@ func patchGlobalArtifact(delta int64) ir.Artifact {
 	artifact.Globals = []ir.Global{{ID: "global.total", Type: testType("Int64")}}
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64", "Int64", "Int64"}, []ir.Instruction{
+		Code: testMicroCode([]string{"Int64", "Int64", "Int64"}, []ir.Instruction{
 			{Op: ir.OpLoadGlobal, Payload: ir.GlobalPayload{Global: "global.total"}},
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.delta"}},
 			{Op: ir.OpBinary, Payload: ir.OperatorPayload{Operator: "+"}},
@@ -210,10 +205,10 @@ func patchPanicArtifact(message string) ir.Artifact {
 	artifact := ir.NewArtifact("patch/panic", "main")
 	data, _ := json.Marshal(message)
 	artifact.Constants = []ir.Constant{{ID: "const.message", Type: testType("String"), Value: data}}
-	entry := ir.Function{Code: &ir.SlotCode{}, ID: "fn.entry", Signature: testSignature("function() Void")}
+	entry := ir.Function{Code: &ir.MicroCode{}, ID: "fn.entry", Signature: testSignature("function() Void")}
 	entry.Code.Types = append(entry.Code.Types, testType("String"))
 	insertTestDelay(entry.Code, 0, 2)
-	appendTestSlotCode(entry.Code, []ir.Instruction{
+	appendTestMicroCode(entry.Code, []ir.Instruction{
 		{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.message"}},
 		{Op: ir.OpPanic},
 	}, [][2][]uint32{{nil, {0}}, {{0}, nil}})
@@ -230,7 +225,7 @@ func patchFFIArtifact() ir.Artifact {
 	}
 	artifact.Functions = []ir.Function{{
 		ID: "fn.entry", Signature: testSignature("function() tuple(Slice<Uint8>, String, Int)"),
-		Code: testSlotCode([]string{"String", "Slice<Uint8>", "Slice<Uint8>", "String", "Int"}, []ir.Instruction{
+		Code: testMicroCode([]string{"String", "Slice<Uint8>", "Slice<Uint8>", "String", "Int"}, []ir.Instruction{
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.route"}},
 			{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "const.payload"}},
 			{Op: ir.OpCallFFI, Payload: ir.CallFFIPayload{ArgCount: 2, ResultCount: 3}},

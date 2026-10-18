@@ -134,7 +134,7 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 			if popErr != nil {
 				return popErr
 			}
-			out, err = frame.module.evalBinary(inst.operator, left, right, inst.numericInputs)
+			out, err = frame.module.evalBinary(inst.operator, left, right, [2]types.PrimitiveKind{inst.numericInputs[0], inst.numericInputs[1]})
 		}
 		if err != nil {
 			return err
@@ -149,6 +149,93 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 			}
 		} else {
 			frame.push(out)
+		}
+	case preparedUpdateCompareBranch:
+		leftInfo := runtimeNumericByPrimitive[inst.numericInputs[0]].info
+		updateInfo := runtimeNumericByPrimitive[inst.numericInputs[1]].info
+		comparisonInfo := runtimeNumericByPrimitive[inst.numericInputs[2]].info
+		if frame.slotInput == 3 && (leftInfo.Kind == types.NumericSigned || leftInfo.Kind == types.NumericUnsigned) &&
+			(updateInfo.Kind == types.NumericSigned || updateInfo.Kind == types.NumericUnsigned) &&
+			(comparisonInfo.Kind == types.NumericSigned || comparisonInfo.Kind == types.NumericUnsigned) {
+			current, currentReady := frame.integerOperand(inst.operands.Inputs[0], leftInfo)
+			update, updateReady := frame.integerOperand(inst.operands.Inputs[1], updateInfo)
+			comparison, comparisonReady := frame.integerOperand(inst.operands.Inputs[2], comparisonInfo)
+			if currentReady && updateReady && comparisonReady {
+				kind := vmScalarSigned
+				if leftInfo.Kind == types.NumericUnsigned {
+					kind = vmScalarUnsigned
+				}
+				updated, handled, fastErr := evalIntegerBinary(inst.updateOperator, inst.runtimeType, kind, current, kind, update)
+				if fastErr != nil {
+					return fastErr
+				}
+				matchedValue, compared, fastErr := evalIntegerBinary(inst.operator, inst.runtimeType, kind, updated.scalar, kind, comparison)
+				if fastErr != nil {
+					return fastErr
+				}
+				localIndex := int(inst.operands.Inputs[0].Index)
+				if handled && compared && localIndex >= 0 && localIndex < len(frame.localCells) {
+					cell := frame.localCells[localIndex]
+					if cell.directOwner == frame && cell.directIndex >= 0 && cell.directIndex < len(frame.directScalars) {
+						frame.directScalars[cell.directIndex] = updated.scalar
+						frame.directKinds[cell.directIndex] = updated.scalarKind
+						frame.directInitialized[cell.directIndex] = true
+						frame.slotInput = 0
+						matched, truthErr := truthy(matchedValue)
+						if truthErr != nil {
+							return truthErr
+						}
+						if matched == inst.updateComparison.When {
+							frame.pc = inst.jumpPC
+						}
+						break
+					}
+				}
+			}
+		}
+		comparisonValue, err := frame.pop()
+		if err != nil {
+			return err
+		}
+		updateValue, err := frame.pop()
+		if err != nil {
+			return err
+		}
+		currentValue, err := frame.pop()
+		if err != nil {
+			return err
+		}
+		updated, err := frame.module.evalBinary(
+			inst.updateOperator,
+			currentValue,
+			updateValue,
+			[2]types.PrimitiveKind{inst.numericInputs[0], inst.numericInputs[1]},
+		)
+		if err != nil {
+			return err
+		}
+		localIndex := int(inst.operands.Inputs[0].Index)
+		if localIndex < 0 || localIndex >= len(frame.localCells) {
+			return errors.New("update comparison local out of range")
+		}
+		if err := frame.localCells[localIndex].store(updated); err != nil {
+			return err
+		}
+		matchedValue, err := frame.module.evalBinary(
+			inst.operator,
+			updated,
+			comparisonValue,
+			[2]types.PrimitiveKind{inst.numericInputs[0], inst.numericInputs[2]},
+		)
+		if err != nil {
+			return err
+		}
+		matched, err := truthy(matchedValue)
+		if err != nil {
+			return err
+		}
+		if matched == inst.updateComparison.When {
+			frame.pc = inst.jumpPC
 		}
 	case preparedMinMax:
 		values, err := frame.popN(inst.minMax.ArgCount)
@@ -725,14 +812,10 @@ func (vm *vm) executeInstructionBody(task *executionTask, frame *frame, inst *pr
 			}
 			captureSlots[i] = slot
 		}
-		var exact *moduleInstance
-		if len(payload.Captures) != 0 || !isLogicalFunction(target) {
-			exact = targetModule
-		}
 		frame.push(newVMValue("Function", functionRef{
 			ModulePath:   targetModule.executable.Artifact.Module.Path,
 			FunctionID:   payload.Function,
-			exact:        exact,
+			exact:        targetModule,
 			captureSlots: captureSlots,
 		}))
 	case preparedCallIntrinsic:

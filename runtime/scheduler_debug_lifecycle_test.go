@@ -10,7 +10,7 @@ import (
 )
 
 func TestDebugSnapshotPreservesPausedTaskScope(t *testing.T) {
-	child := delayedLifecycleChild(testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}))
+	child := delayedLifecycleChild(testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}))
 	artifact := lifecycleArtifact(child)
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.child", pc: len(child.Instructions) - 1, line: 10, column: 2})
 	program := patchTestProgram(t, artifact, "cross-scope-debug")
@@ -31,7 +31,10 @@ func TestDebugSnapshotPreservesPausedTaskScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer instance.vm.leaveOwner()
-	outcome := instance.vm.runPrepared(defaultPollQuantum)
+	var outcome runOutcome
+	for polls := 0; polls < 4 && outcome.state != ExecutionCompleted; polls++ {
+		outcome = instance.vm.runPrepared(defaultPollQuantum)
+	}
 	if outcome.state != ExecutionCompleted {
 		t.Fatalf("first root: %+v", outcome)
 	}
@@ -44,7 +47,9 @@ func TestDebugSnapshotPreservesPausedTaskScope(t *testing.T) {
 	second.scopeID = scopeID
 	instance.vm.machine.attachExecution(scopeID, second)
 	instance.active.Store(second)
-	outcome = instance.vm.runPrepared(defaultPollQuantum)
+	for polls := 0; polls < 8 && outcome.state != ExecutionPaused; polls++ {
+		outcome = instance.vm.runPrepared(defaultPollQuantum)
+	}
 	if outcome.state != ExecutionPaused {
 		t.Fatalf("second poll: %+v", outcome)
 	}
@@ -73,7 +78,7 @@ func TestDebugSnapshotPreservesPausedTaskScope(t *testing.T) {
 }
 
 func TestLibraryBackgroundTaskCanBeInspectedAndContinued(t *testing.T) {
-	child := delayedLifecycleChild(testSlotCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}))
+	child := delayedLifecycleChild(testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}}))
 	artifact := lifecycleArtifact(child)
 	setTestInstructionLocations(t, &artifact, testInstructionLocation{function: "fn.child", pc: len(child.Instructions) - 1, line: 10, column: 2})
 	program := patchTestProgram(t, artifact, "library-background-debug")

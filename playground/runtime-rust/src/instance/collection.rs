@@ -302,8 +302,7 @@ impl Instance {
             self.map_key(&object.typ, key.clone())?;
             return Ok((self.zero(&self.element_type(&object.typ)?)?, false));
         }
-        let index = usize::try_from(key.integer()?)
-            .map_err(|_| RuntimeError::new("panic", "index", "negative index"))?;
+        let index = key.index()?;
         let value = match &object.data {
             Data::Aggregate(value) if value.is_array() && index < value.len() => {
                 Some(value.get(index)?)
@@ -487,21 +486,20 @@ impl Instance {
     pub(super) fn slice_value(
         &mut self,
         mut object: Value,
-        low: i64,
-        high: i64,
-        max: Value,
+        low: usize,
+        high: usize,
+        maximum: Option<usize>,
     ) -> Result<Value, RuntimeError> {
         let mut storage = None;
         if let Data::Pointer(address) = &object.data {
             storage = Some(address.clone());
             object = self.read_address(address)?;
         }
-        let full = max.typ != TypeIdentity::Void;
-        let maximum = if full { max.integer()? } else { high };
-        if low < 0 || high < low || maximum < high {
+        let full = maximum.is_some();
+        let maximum = maximum.unwrap_or(high);
+        if high < low || maximum < high {
             return Err(RuntimeError::new("panic", "slice", "invalid slice bounds"));
         }
-        let (low, high, maximum) = (low as usize, high as usize, maximum as usize);
         Ok(match object.data {
             Data::String(bytes) => {
                 if full || high > bytes.len() {
@@ -861,28 +859,8 @@ mod tests {
             ["first", "second", "third"]
         );
 
-        let source = vm
-            .slice_value(
-                destination.clone(),
-                0,
-                2,
-                Value {
-                    typ: TypeIdentity::Void,
-                    data: Data::Nil,
-                },
-            )
-            .unwrap();
-        let tail = vm
-            .slice_value(
-                destination.clone(),
-                1,
-                3,
-                Value {
-                    typ: TypeIdentity::Void,
-                    data: Data::Nil,
-                },
-            )
-            .unwrap();
+        let source = vm.slice_value(destination.clone(), 0, 2, None).unwrap();
+        let tail = vm.slice_value(destination.clone(), 1, 3, None).unwrap();
         assert_eq!(vm.copy_values(tail, source).unwrap(), 2);
         assert_eq!(
             vm.slice_values(&destination)
@@ -911,7 +889,7 @@ mod tests {
             ]);
             artifact["functions"] = json!([{
                 "id":"fn.Main","signature":{"results":[integer]},
-                "code":test_helpers::slot_code(json!([map,integer]), &[
+                "code":test_helpers::micro_code(json!([map,integer]), &[
                     ("make_map",json!({"type":map,"entry_count":1}),json!({"inputs":[[1,0],[1,1]],"outputs":[0]})),
                     ("load_index",json!({}),json!({"inputs":[[0,0],[1,0]],"outputs":[1],"release":[0]})),
                     ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))

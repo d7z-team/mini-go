@@ -21,6 +21,8 @@ const KIND_COMPLEX = 5;
 const MAX_INLINE_BYTES = 128;
 const MAX_INLINE_LOGICAL_BYTES = BigInt(MAX_INLINE_BYTES);
 
+export type ScalarLaneValue = boolean | bigint | number;
+
 function isInlineLayout(layout: StorageLayout): boolean {
   // Descriptors (pointer, slice, map, interface, function, and resource
   // values) have their own fixed lane representation. The aggregate threshold
@@ -103,8 +105,8 @@ export class FrameStorage {
   private readonly offsets: Uint32Array;
   private readonly initialized: Uint8Array;
   private readonly bools: Uint8Array;
-  private readonly ints: BigInt64Array;
-  private readonly uints: BigUint64Array;
+  private readonly integerLow: Uint32Array;
+  private readonly integerHigh: Uint32Array;
   private readonly numbers: Float64Array;
   private readonly complexReal: Float64Array;
   private readonly complexImag: Float64Array;
@@ -180,8 +182,13 @@ export class FrameStorage {
       this.offsets[index] = next[this.classes[index]!]!++;
     this.initialized = new Uint8Array(types.length);
     this.bools = new Uint8Array(counts[KIND_BOOL]!);
-    this.ints = new BigInt64Array(counts[KIND_INT]!);
-    this.uints = new BigUint64Array(counts[KIND_UINT]!);
+    const integerCount = counts[KIND_INT]! + counts[KIND_UINT]!;
+    this.integerLow = new Uint32Array(integerCount);
+    this.integerHigh = new Uint32Array(integerCount);
+    // Signed and unsigned lanes share one dense pair-u32 bank.
+    let unsignedOffset = counts[KIND_INT]!;
+    for (let index = 0; index < this.classes.length; index++)
+      if (this.classes[index] === KIND_UINT) this.offsets[index] = unsignedOffset++;
     this.numbers = new Float64Array(counts[KIND_FLOAT]!);
     this.complexReal = new Float64Array(counts[KIND_COMPLEX]!);
     this.complexImag = new Float64Array(counts[KIND_COMPLEX]!);
@@ -210,9 +217,9 @@ export class FrameStorage {
       case KIND_BOOL:
         return { type, kind: "bool", value: this.bools[offset] !== 0 };
       case KIND_INT:
-        return { type, kind: "int", value: this.ints[offset]! };
+        return { type, kind: "int", value: this.integerBigInt(offset, true) };
       case KIND_UINT:
-        return { type, kind: "uint", value: this.uints[offset]! };
+        return { type, kind: "uint", value: this.integerBigInt(offset, false) };
       case KIND_FLOAT:
         return { type, kind: "float", value: this.numbers[offset]! };
       case KIND_COMPLEX:
@@ -254,6 +261,50 @@ export class FrameStorage {
         }
         return this.owner.decode(type, layout, this.payload.subarray(offset, offset + layout.size));
     }
+  }
+
+  /** Read a primitive lane without materializing a guest Value wrapper. */
+  readScalar(index: number): ScalarLaneValue | undefined {
+    if (!this.initialized[index]) return undefined;
+    const offset = this.offsets[index]!;
+    switch (this.classes[index]) {
+      case KIND_BOOL:
+        return this.bools[offset] !== 0;
+      case KIND_INT:
+        return this.integerBigInt(offset, true);
+      case KIND_UINT:
+        return this.integerBigInt(offset, false);
+      case KIND_FLOAT:
+        return this.numbers[offset]!;
+      default:
+        return undefined;
+    }
+  }
+
+  private integerBigInt(offset: number, signed: boolean): bigint {
+    const bits = (BigInt(this.integerHigh[offset]!) << 32n) | BigInt(this.integerLow[offset]!);
+    return signed ? BigInt.asIntN(64, bits) : bits;
+  }
+
+  /** Copy an integer lane into caller-owned scratch storage. */
+  readIntegerBits(index: number, target: Uint32Array, targetOffset: number): boolean {
+    const kind = this.classes[index];
+    if (!this.initialized[index] || (kind !== KIND_INT && kind !== KIND_UINT)) return false;
+    const offset = this.offsets[index]!;
+    target[targetOffset] = this.integerLow[offset]!;
+    target[targetOffset + 1] = this.integerHigh[offset]!;
+    return true;
+  }
+
+  /** Write an already normalized pair-u32 integer lane. */
+  writeIntegerBits(index: number, low: number, high: number): boolean {
+    const kind = this.classes[index];
+    if (kind !== KIND_INT && kind !== KIND_UINT) return false;
+    const offset = this.offsets[index]!;
+    this.integerLow[offset] = low;
+    this.integerHigh[offset] = high;
+    this.initialized[index] = 1;
+    return true;
   }
 
   private refreshDynamic(index: number): void {
@@ -322,10 +373,12 @@ export class FrameStorage {
         this.bools[offset] = value.value ? 1 : 0;
         break;
       case KIND_INT:
-        this.ints[offset] = value.value as bigint;
-        break;
       case KIND_UINT:
-        this.uints[offset] = value.value as bigint;
+        {
+          const bits = BigInt.asUintN(64, value.value as bigint);
+          this.integerLow[offset] = Number(bits & 0xffff_ffffn);
+          this.integerHigh[offset] = Number(bits >> 32n);
+        }
         break;
       case KIND_FLOAT:
         this.numbers[offset] = value.value as number;
@@ -337,6 +390,34 @@ export class FrameStorage {
         break;
       }
     }
+    return true;
+  }
+
+  /** Write a primitive lane whose type was proved by the prepared function. */
+  writeScalar(index: number, value: ScalarLaneValue): boolean {
+    const offset = this.offsets[index]!;
+    switch (this.classes[index]) {
+      case KIND_BOOL:
+        if (typeof value !== "boolean") return false;
+        this.bools[offset] = value ? 1 : 0;
+        break;
+      case KIND_INT:
+      case KIND_UINT:
+        if (typeof value !== "bigint") return false;
+        {
+          const bits = BigInt.asUintN(64, value);
+          this.integerLow[offset] = Number(bits & 0xffff_ffffn);
+          this.integerHigh[offset] = Number(bits >> 32n);
+        }
+        break;
+      case KIND_FLOAT:
+        if (typeof value !== "number") return false;
+        this.numbers[offset] = value;
+        break;
+      default:
+        return false;
+    }
+    this.initialized[index] = 1;
     return true;
   }
 
@@ -377,10 +458,9 @@ export class FrameStorage {
         this.bools[offset] = 0;
         break;
       case KIND_INT:
-        this.ints[offset] = 0n;
-        break;
       case KIND_UINT:
-        this.uints[offset] = 0n;
+        this.integerLow[offset] = 0;
+        this.integerHigh[offset] = 0;
         break;
       case KIND_FLOAT:
         this.numbers[offset] = 0;

@@ -9,7 +9,7 @@ use mini_go::{
 };
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
-use support::slot_code;
+use support::micro_code;
 
 #[test]
 fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_methods() {
@@ -37,7 +37,7 @@ fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_meth
     ];
     let mut functions = vec![json!({"id":"fn.Main",
     "signature":{"params":[{"type":reader}],"results":[integer]},
-    "locals":[{"id":"input","type":reader}],"code":slot_code(json!([reader,integer]),&main)})];
+    "locals":[{"id":"input","type":reader}],"code":micro_code(json!([reader,integer]),&main)})];
     let mut identities = Vec::new();
     for index in 0..320 {
         let name = format!("Number{index}");
@@ -51,7 +51,7 @@ fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_meth
         );
         functions.push(json!({"id":function,
         "signature":{"params":[{"type":named}],"results":[integer]},
-        "locals":[{"id":"self","type":named}],"code":slot_code(json!([named,integer]), &[
+        "locals":[{"id":"self","type":named}],"code":micro_code(json!([named,integer]), &[
             ("load_local",json!({"local":"self"}),json!({"outputs":[0]})),
             ("convert",json!({"type":integer}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
             ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))])}));
@@ -67,7 +67,7 @@ fn repeated_interface_assignments_keep_receiver_identity_and_reject_missing_meth
             ("pop", json!({}), json!({"inputs":[[0,1]],"release":[1]})),
         ],
     );
-    artifact["functions"][0]["code"] = slot_code(json!([reader, integer]), &main);
+    artifact["functions"][0]["code"] = micro_code(json!([reader, integer]), &main);
     let updated =
         Arc::new(Program::load(&support::image(artifact), LoadOptions::default()).unwrap());
     let values: Vec<_> = identities
@@ -124,7 +124,7 @@ fn slices_of_named_bytes_preserve_the_element_identity() {
             {"id":"bytes","kind":5,"elem":named}
         ]},
         "functions":[{"id":"fn.Main","signature":{"params":[{"type":slice}],"results":[named]},
-            "locals":[{"id":"input","type":slice}],"code":slot_code(json!([slice,{"kind":3,"primitive":3},named]), &[
+            "locals":[{"id":"input","type":slice}],"code":micro_code(json!([slice,{"kind":3,"primitive":3},named]), &[
                 ("load_local",json!({"local":"input"}),json!({"outputs":[0]})),
                 ("zero",json!({"type":{"kind":3,"primitive":3}}),json!({"outputs":[1]})),
                 ("load_index",json!({}),json!({"inputs":[[0,0],[0,1]],"outputs":[2],"release":[0,1]})),
@@ -174,7 +174,7 @@ fn typed_host_collections_are_copied_and_failure_preserves_prior_results() {
         "constants":[{"id":"key","type":{"kind":3,"primitive":2},"value":"answer"}],
         "functions":[{"id":"fn.Main","signature":{"params":[{"type":map},{"type":slice},{"type":{"kind":3,"primitive":1}},{"type":structure}],"results":[{"kind":3,"primitive":3}]},
         "locals":[{"id":"map","type":map},{"id":"slice","type":slice},{"id":"flag","type":{"kind":3,"primitive":1}},{"id":"payload","type":structure}],
-        "code":slot_code(json!([{"kind":3,"primitive":1},map,{"kind":3,"primitive":2},integer,slice,integer,integer,structure]), &[
+        "code":micro_code(json!([{"kind":3,"primitive":1},map,{"kind":3,"primitive":2},integer,slice,integer,integer,structure]), &[
             ("load_local",json!({"local":"flag"}),json!({"outputs":[0]})),
             ("jump_if",json!({"label":"sum"}),json!({"inputs":[[0,0]],"release":[0]})),
             ("zero",json!({"type":integer}),json!({"outputs":[3]})),
@@ -270,7 +270,7 @@ fn host_struct_defaults_prepared_aggregate_fields_with_boundary_count_one() {
             ]}
         ]},
         "functions":[{"id":"fn.Main","signature":{"params":[{"type":structure}],"results":[integer]},
-            "locals":[{"id":"payload","type":structure}],"code":slot_code(
+            "locals":[{"id":"payload","type":structure}],"code":micro_code(
                 json!([structure,integer]),
                 &[
                     ("load_local",json!({"local":"payload"}),json!({"outputs":[0]})),
@@ -323,7 +323,7 @@ fn shared_host_byte_input_preserves_binary_data_and_validates_nil() {
     let bytes = json!({"kind":5,"node":"bytes"});
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"bytes","kind":5,"elem":{"kind":3,"primitive":9}}]},
-        "functions":[{"id":"fn.Main","signature":{"params":[{"type":bytes}],"results":[bytes]},"locals":[{"id":"bytes","type":bytes}],"code":slot_code(json!([bytes]), &[
+        "functions":[{"id":"fn.Main","signature":{"params":[{"type":bytes}],"results":[bytes]},"locals":[{"id":"bytes","type":bytes}],"code":micro_code(json!([bytes]), &[
             ("load_local",json!({"local":"bytes"}),json!({"outputs":[0]})),
             ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}]
     }));

@@ -23,7 +23,7 @@ pub(super) struct Task {
     pub transient_roots: Vec<Handle>,
     pub allocation_roots: Vec<Value>,
     pub popped_frame: Option<usize>,
-    pub scheduling_phase: u8,
+    pub scheduling_phase: u32,
     pub step_grant: Option<budget::StepGrant>,
     pub selection_completion: Option<Box<select::Selection>>,
     pub pending_write: Option<mutation::PendingWrite>,
@@ -38,6 +38,9 @@ pub(super) struct Task {
     // the liveness map for the instruction being retried.
     pub instruction_frame: Option<usize>,
     pub instruction_frame_suspended: bool,
+    /// Logical fuel charged before a fused micro-op commits. Exact small poll
+    /// budgets can span the charge without exposing a partially executed op.
+    pub charged_instruction_steps: u32,
     pub pending_error: Option<RuntimeError>,
     pub selection_lease: Option<crate::managed_storage::StorageControlLease>,
 }
@@ -981,17 +984,10 @@ impl Instance {
                 self.yield_task();
             }
             MakeWaitable(payload) => {
-                let capacity = self.running.pop()?.integer()?;
-                if capacity < 0 {
-                    return Err(RuntimeError::new(
-                        "value_limit",
-                        "channel",
-                        "invalid capacity",
-                    ));
-                }
+                let capacity = self.running.pop()?.index()?;
                 let typ = self.types.resolve(module, &payload.r#type)?;
                 let element = self.element_type(&typ)?;
-                let resource = self.new_channel_resource(&element, capacity as usize)?;
+                let resource = self.new_channel_resource(&element, capacity)?;
                 let handle = self.allocate(Value {
                     typ: TypeIdentity::Any,
                     data: Data::Resource(Box::new(resource.clone())),
@@ -1066,7 +1062,7 @@ mod tests {
         for cancel in [false, true] {
             let program = super::super::test_helpers::program_with_artifact(|artifact| {
                 artifact["functions"] = serde_json::json!([
-                    {"id":"fn.Main", "code":super::super::test_helpers::slot_code(serde_json::json!([]), &[
+                    {"id":"fn.Main", "code":super::super::test_helpers::micro_code(serde_json::json!([]), &[
                         ("return",serde_json::json!({}),serde_json::json!({}))
                     ])}
                 ]);
@@ -1157,7 +1153,7 @@ mod tests {
     fn ffi_result_batch_rolls_back_when_a_later_handle_fails() {
         let program = super::super::test_helpers::program_with_artifact(|artifact| {
             artifact["functions"] = serde_json::json!([
-                {"id":"fn.Main", "code":super::super::test_helpers::slot_code(serde_json::json!([]), &[
+                {"id":"fn.Main", "code":super::super::test_helpers::micro_code(serde_json::json!([]), &[
                     ("return",serde_json::json!({}),serde_json::json!({}))
                 ])}
             ]);
@@ -1209,7 +1205,7 @@ mod tests {
                 {
                     "id":"fn.Main",
                     "signature":{"results":[]},
-                    "code":super::super::test_helpers::slot_code(
+                    "code":super::super::test_helpers::micro_code(
                         serde_json::json!([wide.clone(), wide.clone(), wide.clone(), wide.clone(), wide.clone()]),
                         &[
                             ("zero",serde_json::json!({"type":wide.clone()}),serde_json::json!({"outputs":[0]})),
@@ -1267,7 +1263,7 @@ mod tests {
                 {
                     "id":"fn.Main",
                     "signature":{"results":[]},
-                    "code":super::super::test_helpers::slot_code(
+                    "code":super::super::test_helpers::micro_code(
                         serde_json::json!([wide.clone(), wide.clone(), wide.clone(), wide.clone(), wide.clone()]),
                         &[
                             ("zero",serde_json::json!({"type":wide.clone()}),serde_json::json!({"outputs":[0]})),
@@ -1350,7 +1346,7 @@ mod tests {
                 {
                     "id":"fn.Main",
                     "signature":{"results":[]},
-                    "code":super::super::test_helpers::slot_code(
+                    "code":super::super::test_helpers::micro_code(
                         serde_json::json!([string.clone(), string.clone(), string.clone(), string.clone(), string.clone()]),
                         &[
                             ("zero",serde_json::json!({"type":string.clone()}),serde_json::json!({"outputs":[0]})),

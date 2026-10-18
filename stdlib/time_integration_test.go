@@ -2,7 +2,6 @@ package stdlib_test
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +12,7 @@ import (
 	minigoruntime "github.com/d7z-team/mini-go/runtime"
 )
 
-func TestTimeFieldLayoutChangeRejectsPatchAndPreservesState(t *testing.T) {
+func TestTimeFieldLayoutChangePatchesAndPreservesState(t *testing.T) {
 	const root = "minigo.test/time-layout-patch"
 	application, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{{ModulePath: root, Files: []source.File{{Path: "main.mgo", Text: `package main
 import "time"
@@ -61,21 +60,23 @@ func Main() int64 { return retained.Unix() }
 	if _, err := instance.Call(context.Background(), "main"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = instance.PreparePatch(context.Background(), programs[1])
-	var patchError minigoruntime.PatchError
-	if !errors.As(err, &patchError) {
-		t.Fatalf("incompatible time layout accepted: %v", err)
+	plan, err := instance.PreparePatch(context.Background(), programs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.ApplyPatch(plan); err != nil {
+		t.Fatal(err)
 	}
 	result, err := instance.Call(context.Background(), "main")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if value, ok := result.Values[0].Int64(); !ok || value != 123 {
-		t.Fatal("failed patch changed retained time")
+		t.Fatal("patch changed retained time")
 	}
 }
 
-func TestTimerPendingAcrossPatchUsesCurrentNamedFunction(t *testing.T) {
+func TestTimerPendingAcrossPatchKeepsExecutionRevision(t *testing.T) {
 	const root = "minigo.test/time-patch"
 	const sourceText = `package main
 
@@ -128,8 +129,31 @@ func Wait() int {
 		t.Fatal(err)
 	}
 	value, ok := result.Values[0].Int64()
-	if !ok || value != 2 {
+	if !ok || value != 1 {
 		t.Fatalf("patched timer result = %#v", result.Values)
+	}
+	newExecution, err := instance.Start("wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for newExecution.State() == minigoruntime.ExecutionRunning {
+		if _, err := newExecution.Poll(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if newExecution.State() != minigoruntime.ExecutionPending {
+		t.Fatalf("new sleeping execution state = %s", newExecution.State())
+	}
+	if err := clock.Advance(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	newResult, err := newExecution.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newValue, ok := newResult.Values[0].Int64()
+	if !ok || newValue != 2 {
+		t.Fatalf("new timer result = %#v", newResult.Values)
 	}
 	retained, err := instance.RetainedRevisions(context.Background())
 	if err != nil {

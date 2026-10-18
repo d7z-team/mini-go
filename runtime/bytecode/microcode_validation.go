@@ -6,18 +6,18 @@ import (
 	"strconv"
 )
 
-// ValidateSlotCode checks descriptor references, operand arity and definite
+// ValidateMicroCode checks descriptor references, operand arity and definite
 // initialization across every reachable edge. Slots contain typed values;
 // clearing a slot ends its initialized lifetime until its next definition.
-func ValidateSlotCode(code *SlotCode, constants []Constant, locals ...Local) error {
-	return validateSlotCode(code, constants, locals, nil)
+func ValidateMicroCode(code *MicroCode, constants []Constant, locals ...Local) error {
+	return validateMicroCode(code, constants, locals, nil)
 }
 
 // validated contains payloads already checked by validateFunctionBody. Keeping
 // that proof local avoids a second descriptor decode and payload validation.
-func validateSlotCode(code *SlotCode, constants []Constant, locals []Local, validated []Instruction) error {
+func validateMicroCode(code *MicroCode, constants []Constant, locals []Local, validated []Instruction) error {
 	if code == nil {
-		return errors.New("missing slot code")
+		return errors.New("missing microcode")
 	}
 	labels := make(map[string]int)
 	for pc, instruction := range code.Instructions {
@@ -138,6 +138,37 @@ func validateSlotCode(code *SlotCode, constants []Constant, locals []Local, vali
 			return fmt.Errorf("slot %d: invalid type", i)
 		}
 	}
+	if len(code.Blocks) != 0 {
+		executableCosts := make([]uint32, 0, len(code.Instructions))
+		for pc, instruction := range code.Instructions {
+			if instruction.Cost == 0 {
+				return fmt.Errorf("instruction %d: logical cost must be positive", pc)
+			}
+			if instruction.Op != OpLabel {
+				executableCosts = append(executableCosts, instruction.Cost)
+			}
+		}
+		covered := uint32(0)
+		for index, block := range code.Blocks {
+			if block.First != covered || block.Count == 0 || uint64(block.First)+uint64(block.Count) > uint64(len(executableCosts)) {
+				return fmt.Errorf("block %d: ranges must be contiguous, non-empty, and in bounds", index)
+			}
+			var cost uint64
+			for pc := block.First; pc < block.First+block.Count; pc++ {
+				cost += uint64(executableCosts[pc])
+			}
+			if cost > ^uint64(0)>>32 || uint32(cost) != block.Cost {
+				return fmt.Errorf("block %d: logical cost mismatch", index)
+			}
+			if block.Fallthrough != NoBlock && uint64(block.Fallthrough) >= uint64(len(code.Blocks)) {
+				return fmt.Errorf("block %d: fallthrough out of range", index)
+			}
+			covered += block.Count
+		}
+		if uint64(covered) != uint64(len(executableCosts)) {
+			return errors.New("basic blocks do not cover executable instructions")
+		}
+	}
 	successors := make([][]int, len(code.Instructions))
 	leaders := make([]bool, len(code.Instructions))
 	for pc, instruction := range code.Instructions {
@@ -152,6 +183,8 @@ func validateSlotCode(code *SlotCode, constants []Constant, locals []Local, vali
 		switch instruction.Op {
 		case OpCompareBranch, OpLenCompareBranch:
 			targets = append(targets, payload.(CompareBranchPayload).Label)
+		case OpUpdateCompareBranch:
+			targets = append(targets, payload.(UpdateCompareBranchPayload).Label)
 		case OpJump, OpJumpIf:
 			targets = append(targets, payload.(JumpPayload).Label)
 			fallsThrough = instruction.Op == OpJumpIf

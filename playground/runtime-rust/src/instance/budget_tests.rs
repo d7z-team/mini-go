@@ -1,19 +1,19 @@
 use super::*;
 use crate::HostValue;
 use serde_json::json;
-use test_helpers::slot_code;
+use test_helpers::micro_code;
 
 #[test]
 fn saturated_totals_preserve_poll_fairness_and_sampling() {
     let program = super::test_helpers::program_with_artifact(|artifact| {
         artifact["type_table"] = json!({"nodes":[{"id":"function","kind":10,"signature":{}}]});
         artifact["functions"] = serde_json::json!([
-            {"id":"fn.Main", "code":slot_code(json!([{"kind":10,"node":"function"}]), &[
+            {"id":"fn.Main", "code":micro_code(json!([{"kind":10,"node":"function"}]), &[
                 ("make_closure",json!({"function":"child"}),json!({"outputs":[0]})),
                 ("spawn",json!({"arg_count":0}),json!({"inputs":[[0,0]],"release":[0]})),
                 ("label",json!({"label":"loop"}),json!({})),
                 ("jump",json!({"label":"loop"}),json!({}))])},
-            {"id":"child", "code":slot_code(json!([]), &[("return",json!({}),json!({}))])}
+            {"id":"child", "code":micro_code(json!([]), &[("return",json!({}),json!({}))])}
         ]);
     });
     let mut vm = Instance::new(
@@ -83,8 +83,9 @@ fn shared_step_limit_configuration() {
 }
 
 #[test]
-fn internal_bytes_and_slice_opcodes_ignore_host_boundary_budgets() {
+fn internal_bytes_accept_unsigned_indices_and_sizes_without_host_boundary_charges() {
     let integer = json!({"kind": wire::Primitive, "primitive": wire::PrimitiveInt});
+    let unsigned = json!({"kind": wire::Primitive, "primitive": wire::PrimitiveUint32});
     let byte = json!({
         "kind": wire::Primitive,
         "primitive": wire::PrimitiveUint8
@@ -96,14 +97,14 @@ fn internal_bytes_and_slice_opcodes_ignore_host_boundary_budgets() {
         });
         artifact["constants"] = json!([
             {"id": "data", "type": bytes.clone(), "value": "/wA="},
-            {"id": "index", "type": integer.clone(), "value": 0},
-            {"id": "length", "type": integer.clone(), "value": 2}
+            {"id": "index", "type": unsigned.clone(), "value": 0},
+            {"id": "length", "type": unsigned.clone(), "value": 2}
         ]);
         artifact["functions"] = json!([{
             "id": "fn.Main",
             "signature": {"results": [integer.clone(), integer.clone()]},
-            "code": slot_code(
-                json!([bytes.clone(), integer.clone(), byte.clone(), integer.clone()]),
+            "code": micro_code(
+                json!([bytes.clone(), unsigned.clone(), byte.clone(), integer.clone(), integer.clone()]),
                 &[
                     ("const", json!({"constant": "data"}), json!({"outputs": [0]})),
                     ("const", json!({"constant": "index"}), json!({"outputs": [1]})),
@@ -123,10 +124,10 @@ fn internal_bytes_and_slice_opcodes_ignore_host_boundary_budgets() {
                         "outputs": [0],
                         "release": [1]
                     })),
-                    ("len", json!({}), json!({"inputs": [[0, 0]], "outputs": [1]})),
+                    ("len", json!({}), json!({"inputs": [[0, 0]], "outputs": [4]})),
                     ("return", json!({"result_count": 2}), json!({
-                        "inputs": [[0, 3], [0, 1]],
-                        "release": [3, 1]
+                        "inputs": [[0, 3], [0, 4]],
+                        "release": [3, 4]
                     }))
                 ]
             )
@@ -165,7 +166,7 @@ fn host_byte_input_still_obeys_boundary_byte_budget() {
             "id": "fn.Main",
             "signature": {"params": [{"type": bytes.clone()}], "results": [bytes.clone()]},
             "locals": [{"id": "input", "type": bytes.clone()}],
-            "code": slot_code(json!([bytes.clone()]), &[
+            "code": micro_code(json!([bytes.clone()]), &[
                 ("load_local", json!({"local": "input"}), json!({"outputs": [0]})),
                 ("return", json!({"result_count": 1}), json!({
                     "inputs": [[0, 0]],

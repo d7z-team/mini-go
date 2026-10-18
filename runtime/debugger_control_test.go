@@ -14,7 +14,7 @@ func TestDebuggerSchemaBreakpoint(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []ir.Local{{ID: "local.answer", Type: testType("Int64")}},
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
@@ -70,7 +70,7 @@ func TestDebuggerSchemaStep(t *testing.T) {
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
 		Locals:    []ir.Local{{ID: "local.answer", Type: testType("Int64")}},
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
@@ -125,7 +125,7 @@ func TestDebuggerSchemaStepOut(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpCallDirect,
 			Payload: ir.CallPayload{Function: "fn.inner", ArgCount: 0, ResultCount: 1},
 		}, {
@@ -135,7 +135,7 @@ func TestDebuggerSchemaStepOut(t *testing.T) {
 	}, {
 		ID:        "fn.inner",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {
@@ -198,7 +198,7 @@ func TestDebuggerSchemaRequestedPause(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Int64"),
-		Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.answer"},
 		}, {

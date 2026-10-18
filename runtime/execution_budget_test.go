@@ -81,7 +81,7 @@ func TestStepGrantReturnsUnusedAllowanceWithoutChargingIt(t *testing.T) {
 
 func TestReservedStepAllowanceParksDriverUntilGrantReturns(t *testing.T) {
 	artifact := ir.NewArtifact("budget/handoff", "main")
-	artifact.Functions = []ir.Function{{ID: "fn.main", Signature: testSignature("function()"), Code: testSlotCode([]string{"Bool"}, []ir.Instruction{
+	artifact.Functions = []ir.Function{{ID: "fn.main", Signature: testSignature("function()"), Code: testMicroCode([]string{"Bool"}, []ir.Instruction{
 		{Op: ir.OpZero, Payload: testTypePayload("Bool")},
 		{Op: ir.OpPop},
 		{Op: ir.OpReturn, Payload: ir.ReturnPayload{}},
@@ -147,7 +147,7 @@ func TestSharedStepLimits(t *testing.T) {
 
 func TestUnlimitedStepsPreservePollCountsAndSampling(t *testing.T) {
 	artifact := ir.NewArtifact("budget/loop", "main")
-	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testSlotCode([]string{}, []ir.Instruction{
+	artifact.Functions = []ir.Function{{ID: "fn.entry", Signature: testSignature("function() Void"), Code: testMicroCode([]string{}, []ir.Instruction{
 		{Op: ir.OpLabel, Payload: ir.LabelPayload{Label: "loop"}},
 		{Op: ir.OpJump, Payload: ir.JumpPayload{Label: "loop"}},
 	}, [][2][]uint32{{nil, nil}, {nil, nil}})}}

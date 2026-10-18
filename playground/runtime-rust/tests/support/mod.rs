@@ -4,9 +4,9 @@ use mini_go::{
 };
 use serde_json::json;
 
-mod slots;
+mod microcode;
 #[allow(unused_imports)]
-pub use slots::slot_code;
+pub use microcode::micro_code;
 
 /// Builds a sealed current-contract image around a minimal test artifact.
 pub fn image(mut artifact: serde_json::Value) -> Vec<u8> {
@@ -17,6 +17,7 @@ pub fn image(mut artifact: serde_json::Value) -> Vec<u8> {
     if artifact.get("module").is_none() {
         artifact["module"] = json!({"path": "test", "package": "main"});
     }
+    microcode::complete_blocks(&mut artifact, &contract);
     let artifact: wire::Artifact = serde_json::from_value(artifact).unwrap();
     let module = &artifact.module.path;
     let mut image: wire::ExecutionImage = serde_json::from_value(json!({

@@ -270,6 +270,14 @@ func encodeFixedJSON(value any) ([]byte, error, bool) {
 		} else {
 			w.encodeCompareBranchPayload(v)
 		}
+	case UpdateCompareBranchPayload:
+		w.encodeUpdateCompareBranchPayload(&v)
+	case *UpdateCompareBranchPayload:
+		if v == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.encodeUpdateCompareBranchPayload(v)
+		}
 	case FieldPathPayload:
 		w.encodeFieldPathPayload(&v)
 	case *FieldPathPayload:
@@ -278,13 +286,13 @@ func encodeFixedJSON(value any) ([]byte, error, bool) {
 		} else {
 			w.encodeFieldPathPayload(v)
 		}
-	case SlotCode:
-		w.encodeSlotCode(&v)
-	case *SlotCode:
+	case MicroCode:
+		w.encodeMicroCode(&v)
+	case *MicroCode:
 		if v == nil {
 			w.data = append(w.data, "null"...)
 		} else {
-			w.encodeSlotCode(v)
+			w.encodeMicroCode(v)
 		}
 	case ExecutionImage:
 		w.encodeExecutionImage(&v)
@@ -535,6 +543,36 @@ func (w *canonicalBuffer) encodeArtifact(v *Artifact) {
 			w.data = append(w.data, ']')
 		}
 	}
+	w.data = append(w.data, '}')
+}
+func (w *canonicalBuffer) encodeBasicBlock(v *BasicBlock) {
+	w.data = append(w.data, '{')
+	comma := false
+	_ = comma
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"first\":"...)
+	w.data = strconv.AppendUint(w.data, uint64(v.First), 10)
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"count\":"...)
+	w.data = strconv.AppendUint(w.data, uint64(v.Count), 10)
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"fallthrough\":"...)
+	w.data = strconv.AppendUint(w.data, uint64(v.Fallthrough), 10)
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"cost\":"...)
+	w.data = strconv.AppendUint(w.data, uint64(v.Cost), 10)
 	w.data = append(w.data, '}')
 }
 func (w *canonicalBuffer) encodeCallFFIPayload(v *CallFFIPayload) {
@@ -1390,6 +1428,25 @@ func (w *canonicalBuffer) encodeDescriptorTables(v *DescriptorTables) {
 			w.data = append(w.data, ']')
 		}
 	}
+	if len(v.UpdateCompareBranch) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"updatecomparebranch\":"...)
+		if v.UpdateCompareBranch == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.UpdateCompareBranch {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.encodeUpdateCompareBranchPayload(&v.UpdateCompareBranch[i0])
+			}
+			w.data = append(w.data, ']')
+		}
+	}
 	if len(v.FieldPath) != 0 {
 		if comma {
 			w.data = append(w.data, ',')
@@ -1651,14 +1708,6 @@ func (w *canonicalBuffer) encodeFunction(v *Function) {
 	comma = true
 	w.data = append(w.data, "\"id\":"...)
 	w.string(string(v.ID))
-	if v.RevisionLocal {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"revision_local\":"...)
-		w.data = strconv.AppendBool(w.data, bool(v.RevisionLocal))
-	}
 	if comma {
 		w.data = append(w.data, ',')
 	}
@@ -1730,7 +1779,7 @@ func (w *canonicalBuffer) encodeFunction(v *Function) {
 	if v.Code == nil {
 		w.data = append(w.data, "null"...)
 	} else {
-		w.encodeSlotCode(&(*v.Code))
+		w.encodeMicroCode(&(*v.Code))
 	}
 	w.data = append(w.data, '}')
 }
@@ -2206,6 +2255,106 @@ func (w *canonicalBuffer) encodeMakeWaitablePayload(v *MakeWaitablePayload) {
 	w.encodeTypeRef(&v.Type)
 	w.data = append(w.data, '}')
 }
+func (w *canonicalBuffer) encodeMicroCode(v *MicroCode) {
+	w.data = append(w.data, '{')
+	comma := false
+	_ = comma
+	if len(v.Types) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"types\":"...)
+		if v.Types == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.Types {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.encodeTypeRef(&v.Types[i0])
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if len(v.Instructions) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"instructions\":"...)
+		if v.Instructions == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.Instructions {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.encodeMicroInstruction(&v.Instructions[i0])
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if len(v.Blocks) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"blocks\":"...)
+		if v.Blocks == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.Blocks {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.encodeBasicBlock(&v.Blocks[i0])
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if len(v.Operands) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"operands\":"...)
+		if v.Operands == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.Operands {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.encodeRegisterFlow(&v.Operands[i0])
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"descriptors\":"...)
+	w.encodeDescriptorTables(&v.Descriptors)
+	w.data = append(w.data, '}')
+}
+func (w *canonicalBuffer) encodeMicroInstruction(v *MicroInstruction) {
+	w.data = append(w.data, '[')
+	word := uint32(v.Op) | uint32(v.Mode)<<16
+	w.data = strconv.AppendUint(w.data, uint64(word), 10)
+	w.data = append(w.data, ',')
+	w.data = strconv.AppendUint(w.data, uint64(v.Descriptor), 10)
+	w.data = append(w.data, ',')
+	w.data = strconv.AppendUint(w.data, uint64(v.Operands), 10)
+	w.data = append(w.data, ',')
+	w.data = strconv.AppendUint(w.data, uint64(v.LogicalCost()), 10)
+	w.data = append(w.data, ']')
+}
 func (w *canonicalBuffer) encodeMinMaxPayload(v *MinMaxPayload) {
 	w.data = append(w.data, '{')
 	comma := false
@@ -2463,6 +2612,88 @@ func (w *canonicalBuffer) encodeProgramSymbols(v *ProgramSymbols) {
 	w.string(string(v.Hash))
 	w.data = append(w.data, '}')
 }
+func (w *canonicalBuffer) encodeRegisterFlow(v *RegisterFlow) {
+	w.data = append(w.data, '{')
+	comma := false
+	_ = comma
+	if len(v.Inputs) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"inputs\":"...)
+		if v.Inputs == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.Inputs {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.encodeOperand(&v.Inputs[i0])
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if len(v.Outputs) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"outputs\":"...)
+		if v.Outputs == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.Outputs {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.data = strconv.AppendUint(w.data, uint64(v.Outputs[i0]), 10)
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if len(v.Release) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"release\":"...)
+		if v.Release == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.Release {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.data = strconv.AppendUint(w.data, uint64(v.Release[i0]), 10)
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	if len(v.ReleaseBefore) != 0 {
+		if comma {
+			w.data = append(w.data, ',')
+		}
+		comma = true
+		w.data = append(w.data, "\"release_before\":"...)
+		if v.ReleaseBefore == nil {
+			w.data = append(w.data, "null"...)
+		} else {
+			w.data = append(w.data, '[')
+			for i0 := range v.ReleaseBefore {
+				if i0 > 0 {
+					w.data = append(w.data, ',')
+				}
+				w.data = strconv.AppendUint(w.data, uint64(v.ReleaseBefore[i0]), 10)
+			}
+			w.data = append(w.data, ']')
+		}
+	}
+	w.data = append(w.data, '}')
+}
 func (w *canonicalBuffer) encodeRequirement(v *Requirement) {
 	w.data = append(w.data, '{')
 	comma := false
@@ -2595,166 +2826,6 @@ func (w *canonicalBuffer) encodeSelectPayload(v *SelectPayload) {
 	}
 	w.data = append(w.data, '}')
 }
-func (w *canonicalBuffer) encodeSlotCode(v *SlotCode) {
-	w.data = append(w.data, '{')
-	comma := false
-	_ = comma
-	if len(v.Types) != 0 {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"types\":"...)
-		if v.Types == nil {
-			w.data = append(w.data, "null"...)
-		} else {
-			w.data = append(w.data, '[')
-			for i0 := range v.Types {
-				if i0 > 0 {
-					w.data = append(w.data, ',')
-				}
-				w.encodeTypeRef(&v.Types[i0])
-			}
-			w.data = append(w.data, ']')
-		}
-	}
-	if len(v.Instructions) != 0 {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"instructions\":"...)
-		if v.Instructions == nil {
-			w.data = append(w.data, "null"...)
-		} else {
-			w.data = append(w.data, '[')
-			for i0 := range v.Instructions {
-				if i0 > 0 {
-					w.data = append(w.data, ',')
-				}
-				w.encodeSlotInstruction(&v.Instructions[i0])
-			}
-			w.data = append(w.data, ']')
-		}
-	}
-	if len(v.Operands) != 0 {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"operands\":"...)
-		if v.Operands == nil {
-			w.data = append(w.data, "null"...)
-		} else {
-			w.data = append(w.data, '[')
-			for i0 := range v.Operands {
-				if i0 > 0 {
-					w.data = append(w.data, ',')
-				}
-				w.encodeSlotOperands(&v.Operands[i0])
-			}
-			w.data = append(w.data, ']')
-		}
-	}
-	if comma {
-		w.data = append(w.data, ',')
-	}
-	comma = true
-	w.data = append(w.data, "\"descriptors\":"...)
-	w.encodeDescriptorTables(&v.Descriptors)
-	w.data = append(w.data, '}')
-}
-func (w *canonicalBuffer) encodeSlotInstruction(v *SlotInstruction) {
-	w.data = append(w.data, '[')
-	w.data = strconv.AppendUint(w.data, uint64(v.Op), 10)
-	w.data = append(w.data, ',')
-	w.data = strconv.AppendUint(w.data, uint64(v.Descriptor), 10)
-	w.data = append(w.data, ',')
-	w.data = strconv.AppendUint(w.data, uint64(v.Operands), 10)
-	w.data = append(w.data, ']')
-}
-func (w *canonicalBuffer) encodeSlotOperands(v *SlotOperands) {
-	w.data = append(w.data, '{')
-	comma := false
-	_ = comma
-	if len(v.Inputs) != 0 {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"inputs\":"...)
-		if v.Inputs == nil {
-			w.data = append(w.data, "null"...)
-		} else {
-			w.data = append(w.data, '[')
-			for i0 := range v.Inputs {
-				if i0 > 0 {
-					w.data = append(w.data, ',')
-				}
-				w.encodeOperand(&v.Inputs[i0])
-			}
-			w.data = append(w.data, ']')
-		}
-	}
-	if len(v.Outputs) != 0 {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"outputs\":"...)
-		if v.Outputs == nil {
-			w.data = append(w.data, "null"...)
-		} else {
-			w.data = append(w.data, '[')
-			for i0 := range v.Outputs {
-				if i0 > 0 {
-					w.data = append(w.data, ',')
-				}
-				w.data = strconv.AppendUint(w.data, uint64(v.Outputs[i0]), 10)
-			}
-			w.data = append(w.data, ']')
-		}
-	}
-	if len(v.Release) != 0 {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"release\":"...)
-		if v.Release == nil {
-			w.data = append(w.data, "null"...)
-		} else {
-			w.data = append(w.data, '[')
-			for i0 := range v.Release {
-				if i0 > 0 {
-					w.data = append(w.data, ',')
-				}
-				w.data = strconv.AppendUint(w.data, uint64(v.Release[i0]), 10)
-			}
-			w.data = append(w.data, ']')
-		}
-	}
-	if len(v.ReleaseBefore) != 0 {
-		if comma {
-			w.data = append(w.data, ',')
-		}
-		comma = true
-		w.data = append(w.data, "\"release_before\":"...)
-		if v.ReleaseBefore == nil {
-			w.data = append(w.data, "null"...)
-		} else {
-			w.data = append(w.data, '[')
-			for i0 := range v.ReleaseBefore {
-				if i0 > 0 {
-					w.data = append(w.data, ',')
-				}
-				w.data = strconv.AppendUint(w.data, uint64(v.ReleaseBefore[i0]), 10)
-			}
-			w.data = append(w.data, ']')
-		}
-	}
-	w.data = append(w.data, '}')
-}
 func (w *canonicalBuffer) encodeSourceFile(v *SourceFile) {
 	w.data = append(w.data, '{')
 	comma := false
@@ -2868,6 +2939,42 @@ func (w *canonicalBuffer) encodeTypePayload(v *TypePayload) {
 	comma = true
 	w.data = append(w.data, "\"type\":"...)
 	w.encodeTypeRef(&v.Type)
+	w.data = append(w.data, '}')
+}
+func (w *canonicalBuffer) encodeUpdateCompareBranchPayload(v *UpdateCompareBranchPayload) {
+	w.data = append(w.data, '{')
+	comma := false
+	_ = comma
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"update\":"...)
+	w.string(string(v.Update))
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"comparison\":"...)
+	w.string(string(v.Comparison))
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"type\":"...)
+	w.encodeTypeRef(&v.Type)
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"label\":"...)
+	w.string(string(v.Label))
+	if comma {
+		w.data = append(w.data, ',')
+	}
+	comma = true
+	w.data = append(w.data, "\"when\":"...)
+	w.data = strconv.AppendBool(w.data, bool(v.When))
 	w.data = append(w.data, '}')
 }
 func (w *canonicalBuffer) encodeUpvalue(v *Upvalue) {
@@ -4358,6 +4465,52 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 			}
 		}
 		return true, nil
+	case *UpdateCompareBranchPayload:
+		if v == nil {
+			return false, nil
+		}
+		r := payloadObject{raw: raw, pos: 1}
+		for r.next() {
+			var err error
+			switch {
+			case r.name == "update":
+				if text, plain := plainPayloadString(r.value); plain {
+					v.Update = string(text)
+				} else {
+					err = json.Unmarshal(r.value, &v.Update)
+				}
+			case r.name == "comparison":
+				if text, plain := plainPayloadString(r.value); plain {
+					v.Comparison = string(text)
+				} else {
+					err = json.Unmarshal(r.value, &v.Comparison)
+				}
+			case r.name == "type":
+				err = DecodeInstructionPayload(r.value, &v.Type)
+			case r.name == "label":
+				if text, plain := plainPayloadString(r.value); plain {
+					v.Label = string(text)
+				} else {
+					err = json.Unmarshal(r.value, &v.Label)
+				}
+			case r.name == "when":
+				switch string(bytes.TrimSpace(r.value)) {
+				case "true":
+					v.When = true
+				case "false":
+					v.When = false
+				case "null":
+				default:
+					err = json.Unmarshal(r.value, &v.When)
+				}
+			default:
+				return true, fmt.Errorf("json: unknown field %q", r.name)
+			}
+			if err != nil {
+				return true, err
+			}
+		}
+		return true, nil
 	case *FieldPathPayload:
 		if v == nil {
 			return false, nil
@@ -4378,7 +4531,7 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 			}
 		}
 		return true, nil
-	case *SlotCode:
+	case *MicroCode:
 		if v == nil {
 			return false, nil
 		}
@@ -4390,6 +4543,8 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 				err = strictUnmarshal(r.value, &v.Types)
 			case r.name == "instructions":
 				err = strictUnmarshal(r.value, &v.Instructions)
+			case r.name == "blocks":
+				err = strictUnmarshal(r.value, &v.Blocks)
 			case r.name == "operands":
 				err = strictUnmarshal(r.value, &v.Operands)
 			case r.name == "descriptors":
@@ -4535,36 +4690,37 @@ func decodeFixedPayload(raw []byte, output any) (bool, error) {
 		return false, nil
 	}
 }
-func (ConstPayload) instructionPayload()         {}
-func (LocalPayload) instructionPayload()         {}
-func (UpvaluePayload) instructionPayload()       {}
-func (GlobalPayload) instructionPayload()        {}
-func (AddressPayload) instructionPayload()       {}
-func (TypePayload) instructionPayload()          {}
-func (OperatorPayload) instructionPayload()      {}
-func (MinMaxPayload) instructionPayload()        {}
-func (MakeSequencePayload) instructionPayload()  {}
-func (MakeMapPayload) instructionPayload()       {}
-func (MakeStructPayload) instructionPayload()    {}
-func (MakeSlicePayload) instructionPayload()     {}
-func (MakeWaitablePayload) instructionPayload()  {}
-func (SelectPayload) instructionPayload()        {}
-func (CountPayload) instructionPayload()         {}
-func (FieldPayload) instructionPayload()         {}
-func (ExportPayload) instructionPayload()        {}
-func (InitModulePayload) instructionPayload()    {}
-func (LabelPayload) instructionPayload()         {}
-func (JumpPayload) instructionPayload()          {}
-func (CallPayload) instructionPayload()          {}
-func (CallInterfacePayload) instructionPayload() {}
-func (ClosurePayload) instructionPayload()       {}
-func (ReturnPayload) instructionPayload()        {}
-func (DeferPayload) instructionPayload()         {}
-func (CallFFIPayload) instructionPayload()       {}
-func (CallIntrinsicPayload) instructionPayload() {}
-func (TypeDispatchPayload) instructionPayload()  {}
-func (CompareBranchPayload) instructionPayload() {}
-func (FieldPathPayload) instructionPayload()     {}
+func (ConstPayload) instructionPayload()               {}
+func (LocalPayload) instructionPayload()               {}
+func (UpvaluePayload) instructionPayload()             {}
+func (GlobalPayload) instructionPayload()              {}
+func (AddressPayload) instructionPayload()             {}
+func (TypePayload) instructionPayload()                {}
+func (OperatorPayload) instructionPayload()            {}
+func (MinMaxPayload) instructionPayload()              {}
+func (MakeSequencePayload) instructionPayload()        {}
+func (MakeMapPayload) instructionPayload()             {}
+func (MakeStructPayload) instructionPayload()          {}
+func (MakeSlicePayload) instructionPayload()           {}
+func (MakeWaitablePayload) instructionPayload()        {}
+func (SelectPayload) instructionPayload()              {}
+func (CountPayload) instructionPayload()               {}
+func (FieldPayload) instructionPayload()               {}
+func (ExportPayload) instructionPayload()              {}
+func (InitModulePayload) instructionPayload()          {}
+func (LabelPayload) instructionPayload()               {}
+func (JumpPayload) instructionPayload()                {}
+func (CallPayload) instructionPayload()                {}
+func (CallInterfacePayload) instructionPayload()       {}
+func (ClosurePayload) instructionPayload()             {}
+func (ReturnPayload) instructionPayload()              {}
+func (DeferPayload) instructionPayload()               {}
+func (CallFFIPayload) instructionPayload()             {}
+func (CallIntrinsicPayload) instructionPayload()       {}
+func (TypeDispatchPayload) instructionPayload()        {}
+func (CompareBranchPayload) instructionPayload()       {}
+func (UpdateCompareBranchPayload) instructionPayload() {}
+func (FieldPathPayload) instructionPayload()           {}
 func (v ConstPayload) descriptorBytes() int {
 	n := 0
 	n += 16 + len(v.Constant)
@@ -4826,6 +4982,19 @@ func (v CompareBranchPayload) descriptorBytes() int {
 	n++
 	return n
 }
+func (v UpdateCompareBranchPayload) descriptorBytes() int {
+	n := 0
+	n += 16 + len(v.Update)
+	n += 16 + len(v.Comparison)
+	n++
+	n++
+	n += 16 + len(v.Type.Named.ModulePath)
+	n += 16 + len(v.Type.Named.DeclID)
+	n += 16 + len(v.Type.Node)
+	n += 16 + len(v.Label)
+	n++
+	return n
+}
 func (v FieldPathPayload) descriptorBytes() int {
 	n := 0
 	n++
@@ -4933,6 +5102,8 @@ func clonePayload(value Payload) Payload {
 		return v
 	case CompareBranchPayload:
 		return v
+	case UpdateCompareBranchPayload:
+		return v
 	case FieldPathPayload:
 		if v.Fields != nil {
 			v.Fields = append(make([]uint32, 0, len(v.Fields)), v.Fields...)
@@ -5002,6 +5173,8 @@ func descriptorBytes(value Payload) int {
 		return v.descriptorBytes()
 	case CompareBranchPayload:
 		return v.descriptorBytes()
+	case UpdateCompareBranchPayload:
+		return v.descriptorBytes()
 	case FieldPathPayload:
 		return v.descriptorBytes()
 	default:
@@ -5070,6 +5243,8 @@ func (w *canonicalBuffer) payload(value Payload) {
 		w.encodeTypeDispatchPayload(&v)
 	case CompareBranchPayload:
 		w.encodeCompareBranchPayload(&v)
+	case UpdateCompareBranchPayload:
+		w.encodeUpdateCompareBranchPayload(&v)
 	case FieldPathPayload:
 		w.encodeFieldPathPayload(&v)
 	default:
@@ -5222,6 +5397,11 @@ func ReadInstructionPayload(value Payload, output any) error {
 		}
 	case *CompareBranchPayload:
 		if p, ok := value.(CompareBranchPayload); ok && v != nil {
+			*v = p
+			return nil
+		}
+	case *UpdateCompareBranchPayload:
+		if p, ok := value.(UpdateCompareBranchPayload); ok && v != nil {
 			*v = p
 			return nil
 		}
@@ -5516,6 +5696,12 @@ func decodePayload(op string, raw json.RawMessage) (Payload, error) {
 		return v, nil
 	case "min_max":
 		var v MinMaxPayload
+		if err := DecodeInstructionPayload(raw, &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "update_compare_branch":
+		var v UpdateCompareBranchPayload
 		if err := DecodeInstructionPayload(raw, &v); err != nil {
 			return nil, err
 		}

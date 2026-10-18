@@ -195,6 +195,7 @@ func runtimeContractRoots() []any {
 		bytecode.TypePayload{},
 		bytecode.TypeDispatchPayload{},
 		bytecode.CompareBranchPayload{},
+		bytecode.UpdateCompareBranchPayload{},
 		bytecode.FieldPathPayload{},
 		bytecode.TypeCase{},
 		bytecode.OperatorPayload{},
@@ -503,7 +504,38 @@ func (g *rustModelGenerator) rustType(t reflect.Type) string {
 }
 
 func (g *rustModelGenerator) emit(t reflect.Type) {
-	if t == reflect.TypeFor[bytecode.SlotInstruction]() || t == reflect.TypeFor[bytecode.Operand]() {
+	if t == reflect.TypeFor[bytecode.MicroInstruction]() {
+		g.out.WriteString(`
+#[derive(Clone,Copy,Debug,Default,Serialize,serde::Deserialize)]
+#[serde(from="(u32,u32,u32,u32)",into="(u32,u32,u32,u32)")]
+pub struct MicroInstruction {
+pub op: u16,
+pub mode: u16,
+pub descriptor: u32,
+pub operands: u32,
+pub cost: u32,
+}
+impl From<(u32,u32,u32,u32)> for MicroInstruction {
+fn from(value:(u32,u32,u32,u32))->Self {Self {
+op:(value.0 & 0xffff) as u16,
+mode:(value.0 >> 16) as u16,
+descriptor:value.1,
+operands:value.2,
+cost:value.3,
+}}
+}
+impl From<MicroInstruction> for (u32,u32,u32,u32) {
+fn from(value:MicroInstruction)->Self {(
+(value.op as u32) | ((value.mode as u32) << 16),
+value.descriptor,
+value.operands,
+value.cost,
+)}
+}
+`)
+		return
+	}
+	if t == reflect.TypeFor[bytecode.Operand]() {
 		var names, typesList []string
 		for index := range t.NumField() {
 			names = append(names, strings.ToLower(t.Field(index).Name))

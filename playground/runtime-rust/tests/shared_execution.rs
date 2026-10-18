@@ -16,7 +16,7 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
-use support::slot_code;
+use support::micro_code;
 
 #[derive(Clone)]
 struct Host {
@@ -60,12 +60,12 @@ fn program() -> Arc<Program> {
         "constants":[{"id":"route","type":{"kind":3,"primitive":2},"value":"gate"},{"id":"answer","type":{"kind":3,"primitive":3},"value":42}],
         "globals":[{"id":"answer","type":{"kind":3,"primitive":3}}],
         "functions":[
-            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":10,"node":"function"},{"kind":3,"primitive":3}]), &[
+            {"id":"fn.Main","signature":{"results":[{"kind":3,"primitive":3}]},"code":micro_code(json!([{"kind":10,"node":"function"},{"kind":3,"primitive":3}]), &[
                 ("make_closure",json!({"function":"worker"}),json!({"outputs":[0]})),
                 ("spawn",json!({"arg_count":0}),json!({"inputs":[[0,0]],"release":[0]})),
                 ("const",json!({"constant":"answer"}),json!({"outputs":[1]})),
                 ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))])},
-            {"id":"worker","code":slot_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
+            {"id":"worker","code":micro_code(json!([{"kind":3,"primitive":2},{"kind":5,"node":"bytes"},{"kind":5,"node":"bytes"},{"kind":3,"primitive":2},{"kind":3,"primitive":3}]), &[
                 ("const",json!({"constant":"route"}),json!({"outputs":[0]})),
                 ("zero",json!({"type":{"kind":5,"node":"bytes"}}),json!({"outputs":[1]})),
                 ("call_ffi",json!({"arg_count":2,"result_count":3}),json!({"inputs":[[0,0],[0,1]],"outputs":[2,3,4],"release":[0,1]})),
@@ -74,11 +74,11 @@ fn program() -> Arc<Program> {
                 ("pop",json!({}),json!({"inputs":[[0,2]],"release":[2]})),
                 ("const",json!({"constant":"answer"}),json!({"outputs":[4]})),
                 ("store_global",json!({"global":"answer"}),json!({"inputs":[[0,4]],"release":[4]}))])},
-            {"id":"park","code":slot_code(json!([{"kind":9,"node":"channel"},{"kind":3,"primitive":3}]), &[
+            {"id":"park","code":micro_code(json!([{"kind":9,"node":"channel"},{"kind":3,"primitive":3}]), &[
                 ("zero",json!({"type":{"kind":9,"node":"channel"}}),json!({"outputs":[0]})),
                 ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
                 ("pop",json!({}),json!({"inputs":[[0,1]],"release":[1]}))])},
-            {"id":"read","signature":{"results":[{"kind":3,"primitive":3}]},"code":slot_code(json!([{"kind":3,"primitive":3}]), &[
+            {"id":"read","signature":{"results":[{"kind":3,"primitive":3}]},"code":micro_code(json!([{"kind":3,"primitive":3}]), &[
                 ("load_global",json!({"global":"answer"}),json!({"outputs":[0]})),
                 ("return",json!({"result_count":1}),json!({"inputs":[[0,0]],"release":[0]}))])}
         ]

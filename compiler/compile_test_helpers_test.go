@@ -135,7 +135,7 @@ func artifactFunctionByName(artifact ir.Artifact, symbols ir.PackageSymbols, nam
 			return function, functionSymbols, true
 		}
 	}
-	return ir.Function{Code: &ir.SlotCode{}}, ir.FunctionSymbols{}, false
+	return ir.Function{Code: &ir.MicroCode{}}, ir.FunctionSymbols{}, false
 }
 
 func packageGlobalNames(symbols ir.PackageSymbols) map[string]string {

@@ -799,11 +799,7 @@ impl Instance {
             match segment.kind.as_str() {
                 "field" => address.path.push(PathElement::Field(segment.field.clone())),
                 "index" => {
-                    let index = self
-                        .load_local(function.locals[&segment.local])?
-                        .integer()?;
-                    let index = usize::try_from(index)
-                        .map_err(|_| RuntimeError::new("panic", "pointer", "negative index"))?;
+                    let index = self.load_local(function.locals[&segment.local])?.index()?;
                     if let Data::Slice(slice) = self.read_address(&address)?.data {
                         if index >= slice.length {
                             return Err(RuntimeError::new(

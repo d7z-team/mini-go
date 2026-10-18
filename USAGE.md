@@ -37,11 +37,15 @@ import (
 func main() {
 	sources, err := workspace.NewMemorySourceSet([]workspace.SourcePackage{{
 		ModulePath: "example/calc",
-		Files: []source.File{{Path: "calc.mgo", Text: "package calc\nfunc Answer() int { return 42 }\n"}},
+		Files:      []source.File{{Path: "calc.mgo", Text: "package calc\nfunc Answer() int { return 42 }\n"}},
 	}})
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	engine, err := minigo.New(minigo.Config{Sources: sources})
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer engine.Close()
 
 	program, checked, err := engine.Compile("example/calc",
@@ -50,10 +54,14 @@ func main() {
 		log.Fatalf("compile: %v; diagnostics: %v", err, checked.Diagnostics)
 	}
 	instance, err := program.Instantiate(context.Background(), runtime.InstanceOptions{})
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer instance.Close()
 	result, err := instance.Call(context.Background(), "answer")
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 	answer, _ := result.Values[0].Int64()
 	fmt.Println(answer)
 }
@@ -69,7 +77,7 @@ func main() {
 ```go
 workspace.SourcePackage{
 	ModulePath: "example/assets",
-	Files: []source.File{{Path: "assets.mgo", Text: "package assets\n"}},
+	Files:      []source.File{{Path: "assets.mgo", Text: "package assets\n"}},
 	Resources: []workspace.ResourceFile{{Path: "templates/welcome.txt", Data: []byte("hello")}},
 }
 ```
@@ -118,10 +126,14 @@ defer，也不表示未配合取消的宿主 I/O 已停止。
 ```go
 // import host "github.com/d7z-team/mini-go/stdlib/host"
 host, err := host.NewDefault(host.DefaultOptions{Capabilities: []string{"console"}})
-if err != nil { return err }
+if err != nil {
+	return err
+}
 defer host.Close()
 instance, err := program.Instantiate(ctx, runtime.InstanceOptions{FFI: host})
-if err != nil { return err }
+if err != nil {
+	return err
+}
 defer instance.Close()
 _, err = instance.CallMain(ctx)
 return err
@@ -135,14 +147,19 @@ Instance 只拥有自己打开的 FFI session，共享 Host 仍由创建者关�
 
 ```go
 plan, err := instance.PreparePatch(ctx, nextProgram)
-if err != nil { return err }
+if err != nil {
+	return err
+}
 defer plan.Close()
-if _, err := instance.ApplyPatch(plan); err != nil { return err }
+if _, err := instance.ApplyPatch(plan); err != nil {
+	return err
+}
 program = nextProgram
 ```
 
-准备失败保持当前状态；提交要求安全点和未变化的基准 revision。已有帧、defer 和闭包继续运行旧
-revision，新命名调用进入新 revision。状态结构变化时创建新实例并由应用转移数据。`ComparePrograms`
+准备失败保持当前状态；提交要求安全点和未变化的基准 revision。每个 execution 在开始时固定其
+revision；已有帧、后续命名调用、defer 和闭包都使用该 revision，补丁提交后新 execution 使用新
+revision。相同 ID 且类型相同的 global 保持状态，新增或类型变化的 global 使用新存储。`ComparePrograms`
 和 `plan.Inspect` 可用于查看候选差异；旧 revision 的引用可用 `RevisionRetention` 和
 `RevisionRoots` 诊断。RPC provider 替换见 [RPC 服务替换与关闭](RPC.md#服务替换与关闭)。
 

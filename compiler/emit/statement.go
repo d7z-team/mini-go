@@ -11,7 +11,7 @@ import (
 	ir "github.com/d7z-team/mini-go/runtime/bytecode"
 )
 
-func (e *packageEmitter) lowerFunction(function *hir.Function, symbols *ir.FunctionSymbols) (ir.SlotCode, error) {
+func (e *packageEmitter) lowerFunction(function *hir.Function, symbols *ir.FunctionSymbols) (ir.MicroCode, error) {
 	l := slotLowerer{packageEmitter: e, locals: make(map[string]types.TypeRef, len(function.Locals)), upvalues: make(map[string]types.TypeRef, len(function.Upvalues))}
 	for _, local := range function.Locals {
 		l.locals[local.ID] = local.Type
@@ -22,7 +22,7 @@ func (e *packageEmitter) lowerFunction(function *hir.Function, symbols *ir.Funct
 	for _, statement := range closeExitedMapIterators(function.Body) {
 		start := len(l.code.Instructions)
 		if err := l.statement(statement); err != nil {
-			return ir.SlotCode{}, fmt.Errorf("%s: %w", function.ID, err)
+			return ir.MicroCode{}, fmt.Errorf("%s: %w", function.ID, err)
 		}
 		if symbols != nil && start < len(l.code.Instructions) {
 			if len(statement.SourcePoints) != 0 {

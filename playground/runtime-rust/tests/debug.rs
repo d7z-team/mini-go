@@ -18,7 +18,7 @@ mod support;
 
 #[test]
 fn selected_task_steps_after_its_own_instruction() {
-    let main = support::slot_code(
+    let main = support::micro_code(
         json!([{"kind":wire::Function,"node":"worker.signature"}]),
         &[
             (
@@ -35,7 +35,7 @@ fn selected_task_steps_after_its_own_instruction() {
             ("jump", json!({"label":"loop"}), json!({})),
         ],
     );
-    let worker = support::slot_code(
+    let worker = support::micro_code(
         json!([{"kind":3,"primitive":3}]),
         &[
             (
@@ -88,7 +88,7 @@ fn selected_task_steps_after_its_own_instruction() {
 
 #[test]
 fn panic_stop_preserves_the_frame_before_resuming_unwinding() {
-    let code = support::slot_code(
+    let code = support::micro_code(
         json!([{"kind":3,"primitive":2}]),
         &[
             (
@@ -123,7 +123,7 @@ fn panic_stop_preserves_the_frame_before_resuming_unwinding() {
 fn paged_variables_borrow_only_requested_children_and_expire_on_resume() {
     let image = support::image(serde_json::json!({
         "type_table":{"nodes":[{"id":"array","kind":6,"length":1024,"elem":{"kind":3,"primitive":3}}]},
-        "functions":[{"id":"fn.Main","locals":[{"id":"items","type":{"kind":6,"node":"array"}}],"code":support::slot_code(json!([]), &[("return",json!({}),json!({}))])}]
+        "functions":[{"id":"fn.Main","locals":[{"id":"items","type":{"kind":6,"node":"array"}}],"code":support::micro_code(json!([]), &[("return",json!({}),json!({}))])}]
     }));
     let program = Arc::new(Program::load(&image, LoadLimits::default()).unwrap());
     let mut instance = Instance::new(program, ExecutionLimits::default()).unwrap();
@@ -183,7 +183,7 @@ fn paged_variables_borrow_only_requested_children_and_expire_on_resume() {
 
 fn program(base: i64) -> Arc<Program> {
     let integer = json!({"kind":3,"primitive":3});
-    let main = support::slot_code(
+    let main = support::micro_code(
         json!([integer, integer]),
         &[
             ("const", json!({"constant":"base"}), json!({"outputs":[0]})),
@@ -205,7 +205,7 @@ fn program(base: i64) -> Arc<Program> {
             ),
         ],
     );
-    let add = support::slot_code(
+    let add = support::micro_code(
         json!([integer, integer, integer]),
         &[
             ("load_local", json!({"local":"x"}), json!({"outputs":[0]})),
@@ -315,7 +315,7 @@ fn waiting_task_pauses_without_consuming_a_step_and_cancels_cleanly() {
     let image = support::image(json!({
         "type_table":{"nodes":[{"id":"channel","kind":wire::Waitable,"direction":1,"elem":integer}]},
         "functions":[{"id":"fn.Main","signature":{"results":[integer]},
-            "code":support::slot_code(json!([channel,integer]), &[
+            "code":support::micro_code(json!([channel,integer]), &[
                 ("zero",json!({"type":channel}),json!({"outputs":[0]})),
                 ("waitable_recv",json!({}),json!({"inputs":[[0,0]],"outputs":[1],"release":[0]})),
                 ("return",json!({"result_count":1}),json!({"inputs":[[0,1]],"release":[1]}))

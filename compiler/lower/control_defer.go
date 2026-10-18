@@ -98,13 +98,12 @@ func (l *lowerer) lowerCapturedCall(expr ast.Expression, scope *funcScope, prefi
 	}
 	l.nextAnonFunc++
 	fn := ir.Function{
-		ID:            fmt.Sprintf("fn.%s.%d", prefix, l.nextAnonFunc),
-		Name:          fmt.Sprintf("%s.%d", prefix, l.nextAnonFunc),
-		RevisionLocal: true,
-		Generated:     true,
-		Signature:     l.hirSignature("function() Void", false),
-		Upvalues:      upvalues,
-		Body:          []ir.Statement{body},
+		ID:        fmt.Sprintf("fn.%s.%d", prefix, l.nextAnonFunc),
+		Name:      fmt.Sprintf("%s.%d", prefix, l.nextAnonFunc),
+		Generated: true,
+		Signature: l.hirSignature("function() Void", false),
+		Upvalues:  upvalues,
+		Body:      []ir.Statement{body},
 	}
 	l.extraFunctions = append(l.extraFunctions, fn)
 	return out, ir.Expression{Kind: ir.ExprFunction, Function: fn.ID, Captures: captures}, true

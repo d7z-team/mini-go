@@ -21,7 +21,7 @@ func TestDebuggerSchemaStepOutFromDeferredCleanup(t *testing.T) {
 			artifact.Functions = []ir.Function{{
 				ID:        "fn.main",
 				Signature: testSignature("function() Int64"),
-				Code: testSlotCode([]string{"Int64"}, []ir.Instruction{{
+				Code: testMicroCode([]string{"Int64"}, []ir.Instruction{{
 					Op:      ir.OpCallDirect,
 					Payload: ir.CallPayload{Function: "fn.inner", ArgCount: 0, ResultCount: 1},
 				}, {
@@ -31,7 +31,7 @@ func TestDebuggerSchemaStepOutFromDeferredCleanup(t *testing.T) {
 			}, {
 				ID:        "fn.inner",
 				Signature: testSignature("function() Int64"),
-				Code: testSlotCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
+				Code: testMicroCode([]string{"function() Void", "Int64"}, []ir.Instruction{{
 					Op:      ir.OpMakeClosure,
 					Payload: ir.ClosurePayload{Function: "fn.cleanup"},
 				}, {
@@ -46,7 +46,7 @@ func TestDebuggerSchemaStepOutFromDeferredCleanup(t *testing.T) {
 			}, {
 				ID:        "fn.cleanup",
 				Signature: testSignature("function() Void"),
-				Code: testSlotCode([]string{}, []ir.Instruction{{
+				Code: testMicroCode([]string{}, []ir.Instruction{{
 					Op:      ir.OpReturn,
 					Payload: ir.ReturnPayload{ResultCount: 0},
 				}}, [][2][]uint32{{nil, nil}}),
@@ -55,7 +55,7 @@ func TestDebuggerSchemaStepOutFromDeferredCleanup(t *testing.T) {
 				artifact.Constants = append(artifact.Constants, ir.Constant{
 					ID: "c.message", Type: testType("String"), Value: json.RawMessage(`"failed"`),
 				})
-				artifact.Functions[0].Code = testSlotCode([]string{"Int64"}, []ir.Instruction{
+				artifact.Functions[0].Code = testMicroCode([]string{"Int64"}, []ir.Instruction{
 					{Op: ir.OpCallDirect, Payload: ir.CallPayload{Function: "fn.inner", ArgCount: 0, ResultCount: 0}},
 					{Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.answer"}},
 					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 1}},
@@ -66,7 +66,7 @@ func TestDebuggerSchemaStepOutFromDeferredCleanup(t *testing.T) {
 				inner.Code.Descriptors.Const[0] = ir.ConstPayload{Constant: "c.message"}
 				inner.Code.Instructions[3].Op = ir.OpPanic
 				inner.Code.Instructions[3].Descriptor = 0
-				artifact.Functions[2].Code = testSlotCode([]string{"Any"}, []ir.Instruction{
+				artifact.Functions[2].Code = testMicroCode([]string{"Any"}, []ir.Instruction{
 					{Op: ir.OpRecover},
 					{Op: ir.OpPop},
 					{Op: ir.OpReturn, Payload: ir.ReturnPayload{ResultCount: 0}},

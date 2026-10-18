@@ -22,7 +22,7 @@ func TestLoaderMakeSequenceRejectsWrongElementType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"String", "Slice<User>"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String", "Slice<User>"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.bad"},
 		}, {
@@ -57,7 +57,7 @@ func TestLoaderMakeMapRejectsWrongValueType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"String", "String", "Map<String, User>"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"String", "String", "Map<String, User>"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.key"},
 		}, {
@@ -92,7 +92,7 @@ func TestVMAppendRejectsWrongElementType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Slice<User>", "String", "Slice<User>"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Slice<User>", "String", "Slice<User>"}, []ir.Instruction{{
 			Op:      ir.OpMakeSequence,
 			Payload: testArrayPayload("Slice<User>", 0),
 		}, {
@@ -123,7 +123,7 @@ func TestVMAppendExpandsEveryUTF8Byte(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Slice<Uint8>"),
-		Code: testSlotCode([]string{"Slice<Uint8>", "String", "Slice<Uint8>"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Slice<Uint8>", "String", "Slice<Uint8>"}, []ir.Instruction{{
 			Op: ir.OpMakeSequence, Payload: testArrayPayload("Slice<Uint8>", 0),
 		}, {
 			Op: ir.OpConst, Payload: ir.ConstPayload{Constant: "c.text"},
@@ -205,7 +205,7 @@ func TestVMSliceStoreAndClearPreserveElementMetadata(t *testing.T) {
 				ID:        "fn.main",
 				Signature: testSignature("function() String"),
 				Locals:    []ir.Local{{ID: "local.users", Type: testType("Slice<User>")}},
-				Code:      testSlotCode([]string{"Int64", "Slice<User>", "String", "User"}, instructions, append(operands, [2][]uint32{nil, {1}}, [2][]uint32{nil, {0}}, [2][]uint32{{1, 0}, {3}}, [2][]uint32{{3}, {2}}, [2][]uint32{{2}, nil})),
+				Code:      testMicroCode([]string{"Int64", "Slice<User>", "String", "User"}, instructions, append(operands, [2][]uint32{nil, {1}}, [2][]uint32{nil, {0}}, [2][]uint32{{1, 0}, {3}}, [2][]uint32{{3}, {2}}, [2][]uint32{{2}, nil})),
 			}}
 			artifact.Exports = []ir.Export{{Name: "Main", Kind: "function", ID: "fn.main"}}
 
@@ -244,7 +244,7 @@ func TestVMCopySliceUsesElementTypeMetadata(t *testing.T) {
 			{ID: "local.dst", Type: testType("Slice<User>")},
 			{ID: "local.src", Type: testType("Slice<User>")},
 		},
-		Code: testSlotCode([]string{"Int64", "Slice<User>", "String", "User", "Slice<User>", "Int"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Slice<User>", "String", "User", "Slice<User>", "Int"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
@@ -332,7 +332,7 @@ func TestVMCopySliceRejectsWrongElementType(t *testing.T) {
 	artifact.Functions = []ir.Function{{
 		ID:        "fn.main",
 		Signature: testSignature("function() Void"),
-		Code: testSlotCode([]string{"Int64", "Slice<User>", "String", "Slice<String>", "Int"}, []ir.Instruction{{
+		Code: testMicroCode([]string{"Int64", "Slice<User>", "String", "Slice<String>", "Int"}, []ir.Instruction{{
 			Op:      ir.OpConst,
 			Payload: ir.ConstPayload{Constant: "c.one"},
 		}, {
