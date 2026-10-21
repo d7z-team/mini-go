@@ -121,7 +121,9 @@ func publicParallelArtifact() ir.Artifact {
 	}
 	appendTestMicroCode(entry, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
 	child := testMicroCode(nil, []ir.Instruction{{Op: ir.OpReturn, Payload: ir.ReturnPayload{}}}, [][2][]uint32{{nil, nil}})
-	insertTestDelay(child, 0, taskInstructionQuantum*16)
+	// Two quanta keep children runnable through the spawn sequence and exercise
+	// redispatch. Concurrency is synchronized by observers, not by a CPU soak.
+	insertTestDelay(child, 0, taskInstructionQuantum)
 	artifact.Functions = []ir.Function{
 		{ID: "fn.entry", Signature: testSignature("function() Void"), Code: entry},
 		{ID: "fn.child", Signature: testSignature("function() Void"), Code: child},

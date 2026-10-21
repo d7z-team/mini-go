@@ -201,45 +201,50 @@ func TestExecutorAdvancesMultipleInstancesAcrossWorkerAndParallelismSettings(t *
 				if err != nil {
 					t.Fatal(err)
 				}
-				program := patchTestProgram(t, publicParallelArtifact(), fmt.Sprintf("shared-%d-%d", workers, parallelism))
-				instances := make([]*Instance, 2)
+				t.Cleanup(func() {
+					if err := executor.Shutdown(context.Background()); err != nil {
+						t.Error(err)
+					}
+				})
+				artifact := publicParallelArtifact()
+				// The entry spawns four children; every instruction has unit cost.
+				wantSteps := int64(len(artifact.Functions[0].Code.Instructions) + 4*len(artifact.Functions[1].Code.Instructions))
+				program := patchTestProgram(t, artifact, fmt.Sprintf("shared-%d-%d", workers, parallelism))
 				executions := make([]*Execution, 2)
-				for index := range instances {
-					instances[index], err = program.Instantiate(t.Context(), InstanceOptions{
+				for index := range executions {
+					instance, err := program.Instantiate(t.Context(), InstanceOptions{
 						Parallelism: parallelism,
 						Executor:    executor,
 					})
 					if err != nil {
-						_ = executor.Shutdown(context.Background())
 						t.Fatal(err)
 					}
-					executions[index], err = instances[index].Start("run")
+					executions[index], err = instance.Start("run")
 					if err != nil {
-						_ = executor.Shutdown(context.Background())
 						t.Fatal(err)
 					}
 				}
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				defer cancel()
 				var group sync.WaitGroup
 				errorsByInstance := make([]error, len(executions))
+				scopes := make([]ScopeStats, len(executions))
 				for index, execution := range executions {
 					group.Go(func() {
-						if _, waitErr := execution.Wait(ctx); waitErr != nil {
+						if _, waitErr := execution.Wait(t.Context()); waitErr != nil {
 							errorsByInstance[index] = waitErr
 							return
 						}
-						_, errorsByInstance[index] = execution.WaitScope(ctx)
+						scopes[index], errorsByInstance[index] = execution.WaitScope(t.Context())
 					})
 				}
 				group.Wait()
-				for _, waitErr := range errorsByInstance {
+				for index, waitErr := range errorsByInstance {
 					if waitErr != nil {
-						t.Fatal(waitErr)
+						t.Fatalf("instance %d: %v", index, waitErr)
 					}
-				}
-				if err := executor.Shutdown(ctx); err != nil {
-					t.Fatal(err)
+					scope := scopes[index]
+					if !scope.Done || scope.RootState != ExecutionCompleted || scope.Tasks != 0 || scope.Steps != wantSteps {
+						t.Fatalf("instance %d scope = %+v, want completed with %d steps and no tasks", index, scope, wantSteps)
+					}
 				}
 			})
 		}
